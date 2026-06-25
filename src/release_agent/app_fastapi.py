@@ -151,7 +151,7 @@ async def chat_page():
 
         // Base path so the UI works at "/" AND under a shared-domain path prefix
         // (e.g. /release-copilot). Derived from where this page is served.
-        const API_BASE = window.location.pathname.replace(/\/+$/, '');
+        const API_BASE = window.location.pathname.replace(/\\/+$/, '');
 
         // Minimal, safe markdown -> HTML for streamed assistant text.
         function renderMarkdown(t) {

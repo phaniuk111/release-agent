@@ -53,6 +53,23 @@ class Settings(BaseSettings):
         default="image-tag-step-report.yml",
         validation_alias=AliasChoices("DEFAULT_WORKFLOW", "RELEASE_DEFAULT_WORKFLOW"),
     )
+    # Workflow dispatched in DEPLOY_REPO to (re)run the deployment simulation.
+    on_merge_workflow: str = Field(
+        default="on-merge-deploy.yml",
+        validation_alias=AliasChoices("ON_MERGE_WORKFLOW", "RELEASE_ON_MERGE_WORKFLOW"),
+    )
+    # Allow-list of workflows the agent may dispatch (enforced). Comma-separated
+    # in env, e.g. ALLOWED_WORKFLOWS="image-tag-step-report.yml,release-promote.yml".
+    allowed_workflows: Annotated[list[str], NoDecode] = Field(
+        default=[
+            "image-tag-step-report.yml",
+            "build-payments-api.yml",
+            "build-orders-api.yml",
+            "release-promote.yml",
+            "create-deployment-pr.yml",
+        ],
+        validation_alias=AliasChoices("ALLOWED_WORKFLOWS", "RELEASE_ALLOWED_WORKFLOWS"),
+    )
     manifest_path: str = Field(
         default="release-manifest.json",
         validation_alias=AliasChoices("MANIFEST_PATH", "RELEASE_MANIFEST_PATH"),
@@ -104,6 +121,21 @@ class Settings(BaseSettings):
                 import json
                 return json.loads(v)  # explicit, since NoDecode disabled auto-parse
             return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
+    @field_validator("allowed_workflows", mode="before")
+    @classmethod
+    def _split_allowed_workflows(cls, v):
+        """Accept a comma-separated string (env) or a JSON array for the dispatch
+        allow-list."""
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            if v.startswith("["):
+                import json
+                return json.loads(v)
+            return [w.strip() for w in v.split(",") if w.strip()]
         return v
 
     def model_post_init(self, __context):

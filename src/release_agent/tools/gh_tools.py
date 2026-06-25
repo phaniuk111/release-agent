@@ -23,13 +23,11 @@ TARGET_REPO = settings.target_repo
 DEPLOY_REPO = getattr(settings, 'deploy_repo', settings.target_repo)
 CONFIG_PATH = settings.config_path
 MANIFEST_PATH = settings.manifest_path
-ALLOWED_WORKFLOWS = {
-    "image-tag-step-report.yml",
-    "build-payments-api.yml",
-    "build-orders-api.yml",
-    # Add your real promote workflow(s) here
-    "release-promote.yml",
-}
+# Dispatchable-workflow allow-list — driven by config (env / Helm ConfigMap), not
+# hardcoded. The default workflow is always allowed so a promote never self-blocks.
+ALLOWED_WORKFLOWS = set(settings.allowed_workflows) | {settings.default_workflow}
+# Workflow used to (re)run the deployment simulation in DEPLOY_REPO.
+ON_MERGE_WORKFLOW = settings.on_merge_workflow
 
 def _resolve_github_token() -> str | None:
     """Resolve a GitHub token from the environment, falling back to the `gh` CLI.
@@ -311,16 +309,17 @@ def apply_json_update(image_tags: str, commit_message: str = "chore(release): up
 def dispatch_workflow(workflow: str = "image-tag-step-report.yml", image_tags: str = "", extra_inputs: str = "") -> str:
     """
     Dispatch a workflow_dispatch event.
-    workflow: filename in .github/workflows (must be in ALLOWED_WORKFLOWS)
+    workflow: filename in .github/workflows (must be in the configured allow-list)
     image_tags: "img1:tag1,img2:tag2"
     extra_inputs: optional JSON string of other inputs
     """
-    if workflow not in ALLOWED_WORKFLOWS and not workflow.endswith(".yml"):
-        # Allow but warn
-        pass
+    # Enforce the config-driven allow-list (safety gate). Set ALLOWED_WORKFLOWS
+    # (env / Helm ConfigMap) to permit additional workflows.
     if workflow not in ALLOWED_WORKFLOWS:
-        # Still permit for PoV flexibility but document it
-        print(f"[WARN] dispatching non-allowlisted workflow: {workflow}")
+        return (
+            f"ERROR dispatching workflow: '{workflow}' is not in the allowed list "
+            f"{sorted(ALLOWED_WORKFLOWS)}. Add it via the ALLOWED_WORKFLOWS config to permit it."
+        )
 
     inputs: dict[str, Any] = {}
     if image_tags:
@@ -622,7 +621,7 @@ def retrigger_deployment_workflow(pr_number: int, simulate_closed_controls: str 
     try:
         g = _get_github_client()
         repo = g.get_repo(DEPLOY_REPO)
-        workflow = repo.get_workflow("on-merge-deploy.yml")
+        workflow = repo.get_workflow(ON_MERGE_WORKFLOW)
 
         inputs = {"pr_number": str(pr_number)}
         if simulate_closed_controls:
@@ -641,6 +640,150 @@ def retrigger_deployment_workflow(pr_number: int, simulate_closed_controls: str 
         return f"ERROR retriggering deployment workflow for PR #{pr_number}: {e}"
 
 
+# ============ Image-tag build verification (PyGithub refactor of gh-image-tag-steps.sh) ============
+
+class VerifyImageTagInput(BaseModel):
+    image: str = Field(..., description="Image name (must be in image-workflows.json)")
+    tag: str = Field(..., description="Git tag that was built, e.g. v1.2.3")
+    repo: str = Field(default="", description="owner/repo where the build ran. Defaults to the target repo.")
+    tag_generation_step: str = Field(default="Generate Git tag", description="Step name that generates the git tag")
+    tag_marker_prefix: str = Field(default="TAG_GENERATED=", description="Log marker prefix emitted by the tag step")
+
+
+def _image_build_workflow(repo_obj, image: str) -> str | None:
+    """Look up an image's build workflow from image-workflows.json."""
+    try:
+        cfg = json.loads(base64.b64decode(repo_obj.get_contents(CONFIG_PATH).content).decode())
+        entry = cfg.get("images", {}).get(image)
+        return entry.get("workflow") if isinstance(entry, dict) else None
+    except Exception:
+        return None
+
+
+def _resolve_tag_commit(repo_obj, tag: str) -> str | None:
+    """Resolve a git tag to the commit SHA it points to (handles annotated tags)."""
+    try:
+        ref = repo_obj.get_git_ref(f"tags/{tag}")
+    except Exception:
+        return None
+    obj = ref.object
+    if obj.type == "tag":  # annotated tag -> dereference to the underlying commit
+        try:
+            return repo_obj.get_git_tag(obj.sha).object.sha
+        except Exception:
+            return obj.sha
+    return obj.sha
+
+
+def _fetch_job_log(repo_full: str, job_id: int) -> str:
+    """Download a job's full log text via the REST API (PyGithub has no helper for this)."""
+    token = _resolve_github_token()
+    if not token:
+        return ""
+    try:
+        import requests
+        r = requests.get(
+            f"https://api.github.com/repos/{repo_full}/actions/jobs/{job_id}/logs",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            allow_redirects=True, timeout=30,
+        )
+        return r.text if r.status_code == 200 else ""
+    except Exception:
+        return ""
+
+
+@tool(args_schema=VerifyImageTagInput)
+def verify_image_tag_build(image: str, tag: str, repo: str = "",
+                           tag_generation_step: str = "Generate Git tag",
+                           tag_marker_prefix: str = "TAG_GENERATED=") -> str:
+    """
+    Verify that image:tag was actually built correctly BEFORE promoting it.
+
+    Resolves the git tag -> commit, finds the image's build-workflow run at that commit,
+    confirms the tag-generation step succeeded AND the job log contains the
+    '<tag_marker_prefix><tag>' marker, and reports the run's RLFT release-control steps.
+    verified=true only when a matching successful run is found.
+    """
+    repo_full = repo or TARGET_REPO
+    try:
+        g = _get_github_client()
+        repo_obj = g.get_repo(repo_full)
+    except Exception as e:
+        return f"ERROR verifying build: {e}"
+
+    workflow = _image_build_workflow(repo_obj, image)
+    if not workflow:
+        return f"ERROR verifying build: image '{image}' is not configured in {CONFIG_PATH} (repo {repo_full})."
+
+    commit = _resolve_tag_commit(repo_obj, tag)
+    if not commit:
+        return f"ERROR verifying build: tag '{tag}' not found in {repo_full}."
+
+    try:
+        wf = repo_obj.get_workflow(workflow)
+        runs = [r for r in itertools.islice(wf.get_runs(), 100) if r.head_sha == commit]
+    except Exception as e:
+        return f"ERROR verifying build: {e}"
+
+    if not runs:
+        return json.dumps({
+            "verified": False, "image": image, "tag": tag, "tag_commit": commit,
+            "workflow": workflow, "repo": repo_full,
+            "reason": f"No '{workflow}' run found at commit {commit[:7]}.",
+        }, indent=2)
+
+    marker = f"{tag_marker_prefix}{tag}"
+
+    def _inspect(run):
+        tag_step, rlft = None, []
+        try:
+            for job in run.jobs():
+                for step in (getattr(job, "steps", None) or []):
+                    name = getattr(step, "name", "") or ""
+                    rec = {"job": job.name, "job_id": job.id,
+                           "number": getattr(step, "number", None), "name": name,
+                           "status": getattr(step, "status", None),
+                           "conclusion": getattr(step, "conclusion", None)}
+                    if name == tag_generation_step and tag_step is None:
+                        tag_step = rec
+                    if name.startswith("RLFT"):
+                        rlft.append({k: rec[k] for k in ("job", "number", "name", "status", "conclusion")})
+        except Exception:
+            pass
+        log_found = bool(
+            tag_step and tag_step.get("conclusion") == "success" and tag_step.get("job_id")
+            and marker in _fetch_job_log(repo_full, tag_step["job_id"])
+        )
+        return tag_step, rlft, log_found
+
+    # Pick the newest run whose tag-gen step succeeded AND the log marker is present.
+    selected = None
+    for run in sorted(runs, key=lambda r: r.created_at, reverse=True):
+        tag_step, rlft, log_found = _inspect(run)
+        if tag_step and tag_step.get("conclusion") == "success" and log_found:
+            selected = (run, tag_step, rlft, log_found)
+            break
+        if selected is None:
+            selected = (run, tag_step, rlft, log_found)
+
+    run, tag_step, rlft, log_found = selected
+    verified = bool(tag_step and tag_step.get("conclusion") == "success" and log_found)
+    return json.dumps({
+        "verified": verified,
+        "image": image, "tag": tag, "tag_commit": commit, "workflow": workflow, "repo": repo_full,
+        "run": {"id": run.id, "name": run.name, "url": run.html_url,
+                "headSha": run.head_sha, "status": run.status, "conclusion": run.conclusion},
+        "tag_generation": ({
+            "step": tag_generation_step, "job": tag_step.get("job"),
+            "status": tag_step.get("status"), "conclusion": tag_step.get("conclusion"),
+            "marker": marker, "log_marker_found": log_found,
+        } if tag_step else {"step": tag_generation_step, "found": False, "marker": marker}),
+        "rlft_controls": rlft,
+        "note": "verified=true means the tag was built by a successful run whose tag-gen step logged "
+                "the marker. Check the RLFT control steps before promoting.",
+    }, indent=2)
+
+
 # Export all tools for the agent
 GH_TOOLS = [
     list_allowed_images,
@@ -655,4 +798,5 @@ GH_TOOLS = [
     get_pr_comments,
     summarize_pr_controls,
     retrigger_deployment_workflow,
+    verify_image_tag_build,
 ]
