@@ -134,6 +134,13 @@ Always work against manifest repo: {TARGET_REPO}
 PRs and controls are usually in the deployment repo: {DEPLOY_REPO} (use the PR tools)
 
 Valid images come from image-workflows.json (use the list_allowed_images tool).
+
+Before promoting a real (non-test) image:tag, you can VERIFY it was actually built correctly with
+verify_image_tag_build(image, tag): it resolves the git tag to its commit, finds the image's build
+workflow run, confirms the tag-generation step succeeded and the job log contains the TAG_GENERATED
+marker, and reports the RLFT release-control steps. Offer this check and report verified true/false
+plus the RLFT controls; warn the user if a promote is requested for an unverified tag.
+
 You MUST propose changes first.
 You MUST get an explicit confirmation token from the user before calling apply_json_update or dispatch_workflow.
 

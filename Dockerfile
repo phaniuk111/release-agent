@@ -1,31 +1,48 @@
-# syntax=docker/dockerfile:1.9
 ###############################################################################
-# Release Copilot image — dependencies installed with uv from pyproject.toml +
-# uv.lock (fully pinned, reproducible). Runs the FastAPI production UI on :8000
-# (matches the Helm chart + /health probe).
+# Release Copilot image — uv-based, enterprise-friendly.
+#
+# External touchpoints are ONLY: (1) the base image, (2) your Python package
+# index. Both are build-args so they can point at internal mirrors — there is no
+# pull from ghcr.io / docker.io/uv and no BuildKit frontend image.
+#
+# Internal-mirror build example:
+#   docker build \
+#     --build-arg BASE_IMAGE=registry.internal/library/python:3.11-slim \
+#     --build-arg PIP_INDEX_URL=https://artifactory.internal/api/pypi/pypi-remote/simple \
+#     -t release-copilot .
 ###############################################################################
+ARG BASE_IMAGE=python:3.11-slim
 
 # ---- builder: install locked deps into a self-contained venv ----
-FROM python:3.11-slim AS builder
+FROM ${BASE_IMAGE} AS builder
 
-# Pinned uv binary from the official distroless image.
-COPY --from=ghcr.io/astral-sh/uv:0.6.17 /uv /uvx /usr/local/bin/
+ARG UV_VERSION=0.6.17
+# Default to public PyPI; override with your internal mirror for air-gapped builds.
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_EXTRA_INDEX_URL=
 
-ENV UV_LINK_MODE=copy \
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
+    UV_INDEX_URL=${PIP_INDEX_URL} \
+    UV_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
+    UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
 WORKDIR /app
 
+# Install uv from the (mirror-able) Python index — no external container registry.
+RUN pip install --no-cache-dir "uv==${UV_VERSION}"
+
 # Install exactly what's pinned in uv.lock (no project build — package = false).
-# Cached on pyproject.toml + uv.lock so src changes don't rebuild the deps layer.
 COPY pyproject.toml uv.lock README.md ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev
 
 # ---- runtime: minimal image, just the venv + app source ----
-FROM python:3.11-slim AS runtime
+FROM ${BASE_IMAGE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
