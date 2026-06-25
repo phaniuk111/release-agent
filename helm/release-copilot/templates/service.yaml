@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "release-copilot.fullname" . }}
+  labels:
+    {{- include "release-copilot.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "release-copilot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: {{ .Values.service.portName }}   # named port — required by Istio/ASM
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

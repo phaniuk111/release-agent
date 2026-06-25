@@ -1,0 +1,135 @@
+name: On PR Merge - Simulate Prod Deployment & Controls
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to simulate (for manual re-runs)'
+        required: false
+        type: string
+      simulate_closed_controls:
+        description: 'Comma-separated controls to mark as closed (e.g. "RLFT approval gate,RLFT deploy control")'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  deploy-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine PR number
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            IS_MERGED="${{ github.event.pull_request.merged }}"
+          else
+            PR_NUM="${{ inputs.pr_number }}"
+            IS_MERGED="true"  # manual run assumes we want to simulate post-merge
+          fi
+
+          if [ -z "$PR_NUM" ]; then
+            echo "No PR number provided"
+            exit 1
+          fi
+
+          echo "pr_number=$PR_NUM" >> $GITHUB_OUTPUT
+          echo "is_merged=$IS_MERGED" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read current prod config
+        id: config
+        run: |
+          if [ -f "configs/prod-images.json" ]; then
+            echo "config_exists=true" >> $GITHUB_OUTPUT
+            echo "images=$(cat configs/prod-images.json | jq -c '.images // {}')" >> $GITHUB_OUTPUT
+          else
+            echo "config_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract image list
+        if: steps.config.outputs.config_exists == 'true'
+        id: images
+        run: |
+          IMAGES_JSON='${{ steps.config.outputs.images }}'
+          echo "image_list=$(echo "$IMAGES_JSON" | jq -r 'to_entries | map("\(.key):\(.value)") | join(", ")')" >> $GITHUB_OUTPUT
+
+      - name: Fetch existing PR comments (to detect external control changes)
+        id: comments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM="${{ steps.pr.outputs.pr_number }}"
+          gh pr view $PR_NUM --repo ${{ github.repository }} --json comments --jq '.comments' > comments.json || echo '[]' > comments.json
+
+          # Look for closed controls in comments
+          CLOSED=$(jq -r '
+            .[] 
+            | select(.body | test("closed|RLFT.*closed"; "i")) 
+            | .body 
+            | capture("(?<ctrl>RLFT[^\\n]+|approval gate[^\\n]+)"; "i").ctrl // empty
+          ' comments.json | sort | uniq | tr '\n' ',' | sed 's/,$//')
+
+          echo "closed_controls=$CLOSED" >> $GITHUB_OUTPUT
+
+      - name: Determine final control states
+        id: controls
+        run: |
+          MANUAL_CLOSED="${{ inputs.simulate_closed_controls }}"
+          DETECTED_CLOSED="${{ steps.comments.outputs.closed_controls }}"
+
+          ALL_CLOSED="$DETECTED_CLOSED"
+          if [ -n "$MANUAL_CLOSED" ]; then
+            ALL_CLOSED="$ALL_CLOSED,$MANUAL_CLOSED"
+          fi
+
+          # Clean and unique
+          FINAL_CLOSED=$(echo "$ALL_CLOSED" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | grep -v '^$' | sort | uniq | tr '\n' ',' | sed 's/,$//')
+
+          echo "closed_list=$FINAL_CLOSED" >> $GITHUB_OUTPUT
+
+          # Default open controls for simulation
+          echo "open_list=RLFT deploy control (if not closed)" >> $GITHUB_OUTPUT
+
+      - name: Post / Update simulation comments on the PR
+        if: steps.pr.outputs.is_merged == 'true' || steps.pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM="${{ steps.pr.outputs.pr_number }}"
+          IMAGES="${{ steps.images.outputs.image_list || 'N/A' }}"
+          CLOSED="${{ steps.controls.outputs.closed_list }}"
+          OPEN="${{ steps.controls.outputs.open_list }}"
+
+          BODY="🔄 **Deployment Simulation - Current State** (re-runnable)
+
+          **Images from config:**
+          $IMAGES
+
+          **Controls Status (detected from comments + manual input):**
+          - Closed: ${CLOSED:-None detected}
+          - Still Open: $OPEN
+
+          **Last updated:** $(date -Iseconds)
+          **Run ID:** ${{ github.run_id }}
+
+          ---
+          *You can re-run this workflow manually (Actions → Re-run) or via workflow_dispatch and pass closed controls to simulate external actions.*"
+
+          gh pr comment $PR_NUM --body "$BODY" --repo ${{ github.repository }}
+
+          echo "Posted/updated status on PR #$PR_NUM"
+
+      - name: Fallback if no PR context
+        if: steps.pr.outputs.pr_number == ''
+        run: |
+          echo "No PR number available for comment."

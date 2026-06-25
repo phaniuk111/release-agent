@@ -1,0 +1,58 @@
+{{- if .Values.virtualService.enabled -}}
+{{- $prefix := .Values.virtualService.pathPrefix | trimSuffix "/" -}}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ include "release-copilot.fullname" . }}
+  labels:
+    {{- include "release-copilot.labels" . | nindent 4 }}
+spec:
+  hosts:
+    {{- toYaml .Values.virtualService.hosts | nindent 4 }}
+  gateways:
+    {{- if .Values.gateway.enabled }}
+    - {{ include "release-copilot.fullname" . }}
+    {{- else }}
+    {{- toYaml .Values.virtualService.gateways | nindent 4 }}
+    {{- end }}
+  http:
+    {{- if $prefix }}
+    # 1) bare "/prefix" -> redirect to "/prefix/" so relative URLs resolve correctly
+    - match:
+        - uri:
+            exact: {{ $prefix | quote }}
+      redirect:
+        uri: {{ printf "%s/" $prefix | quote }}
+    # 2) "/prefix/..." -> strip the prefix before forwarding to the pod
+    - match:
+        - uri:
+            prefix: {{ printf "%s/" $prefix | quote }}
+      rewrite:
+        uri: /
+      route:
+        - destination:
+            host: {{ include "release-copilot.serviceHost" . }}
+            port:
+              number: {{ .Values.service.port }}
+      {{- with .Values.virtualService.timeout }}
+      timeout: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.virtualService.retries }}
+      retries:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- else }}
+    - route:
+        - destination:
+            host: {{ include "release-copilot.serviceHost" . }}
+            port:
+              number: {{ .Values.service.port }}
+      {{- with .Values.virtualService.timeout }}
+      timeout: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.virtualService.retries }}
+      retries:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}

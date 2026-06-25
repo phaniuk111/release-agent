@@ -1,0 +1,54 @@
+✅ {{ include "release-copilot.fullname" . }} deployed to namespace "{{ .Release.Namespace }}".
+
+Release Copilot (FastAPI UI) — image {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+
+1) ASM sidecar injection
+{{- if .Values.istioInjection }}
+   A pod-level injection annotation is set. For managed ASM, also label the namespace:
+     kubectl label namespace {{ .Release.Namespace }} istio.io/rev=asm-managed --overwrite
+   Verify the sidecar is present:
+     kubectl -n {{ .Release.Namespace }} get pod -l app.kubernetes.io/name={{ include "release-copilot.name" . }} -o jsonpath='{.items[0].spec.containers[*].name}'
+{{- else }}
+   istioInjection is disabled — label the namespace for injection if you want the sidecar.
+{{- end }}
+
+2) Reach the app
+{{- if .Values.virtualService.enabled }}
+   VirtualService host(s):
+{{- range .Values.virtualService.hosts }}
+     - http://{{ . }}/
+{{- end }}
+   via gateway:
+{{- if .Values.gateway.enabled }}
+     {{ .Release.Namespace }}/{{ include "release-copilot.fullname" . }} (created by this chart)
+{{- else }}
+{{- range .Values.virtualService.gateways }}
+     {{ . }}
+{{- end }}
+   Point DNS for the host(s) at your ASM ingress gateway's external IP:
+     kubectl -n istio-ingress get svc   # or istio-system, depending on your install
+{{- end }}
+{{- else }}
+   VirtualService is disabled. Port-forward the Service to test:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "release-copilot.fullname" . }} 8080:{{ .Values.service.port }}
+     open http://localhost:8080/
+{{- end }}
+   Health check: GET /health
+
+3) Required configuration
+{{- if not .Values.config.GOOGLE_CLOUD_PROJECT }}
+   ⚠️  config.GOOGLE_CLOUD_PROJECT is empty — Vertex AI calls will fail. Set it:
+        --set config.GOOGLE_CLOUD_PROJECT=<your-project-id>
+{{- end }}
+{{- if not (or .Values.githubToken.existingSecret .Values.githubToken.value) }}
+   ⚠️  No GitHub token configured — GitHub calls will fail. Provide one of:
+        --set githubToken.existingSecret=release-copilot-secrets   (recommended)
+        --set-string githubToken.value=ghp_xxx                     (dev only)
+{{- end }}
+
+4) Vertex AI auth — bind Workload Identity to the ServiceAccount:
+   gcloud iam service-accounts add-iam-policy-binding \
+     release-copilot@<PROJECT_ID>.iam.gserviceaccount.com \
+     --role roles/iam.workloadIdentityUser \
+     --member "serviceAccount:<PROJECT_ID>.svc.id.goog[{{ .Release.Namespace }}/{{ include "release-copilot.serviceAccountName" . }}]"
+   then set serviceAccount.annotations."iam.gke.io/gcp-service-account".

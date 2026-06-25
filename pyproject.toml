@@ -1,0 +1,42 @@
+[project]
+name = "release-copilot"
+version = "0.2.0"
+description = "LangGraph + FastAPI agent that promotes container images via GitHub Actions (GKE/ASM)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Core agent framework (LangGraph / LangChain 1.x APIs)
+    "langgraph>=1.0,<2",
+    "langchain>=1.0,<2",
+    "langchain-core>=1.0,<2",
+    # Vertex AI Gemini
+    "langchain-google-genai>=2.0",
+    "google-genai>=1.0",
+    # Web server (production UI)
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    # GitHub, config, utils
+    "PyGithub>=2.3",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.4",
+    "python-dotenv>=1.0",
+    "rich>=13.9",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+gradio = ["gradio>=4.44"]                                           # only for app_gradio
+postgres = ["langgraph-checkpoint-postgres>=2.0", "psycopg[binary]>=3.2"]  # shared checkpointer
+tracing = ["langsmith>=0.3"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.uv]
+# This is a deployable application, not a library — install dependencies only,
+# don't try to build/install the `release_agent` package itself. The app is run
+# with `uvicorn ... --app-dir src`.
+package = false
+
+[tool.ruff]
+line-length = 100
