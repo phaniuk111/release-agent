@@ -1,0 +1,16 @@
+{{- if .Values.destinationRule.enabled -}}
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: {{ include "release-copilot.fullname" . }}
+  labels:
+    {{- include "release-copilot.labels" . | nindent 4 }}
+spec:
+  host: {{ include "release-copilot.serviceHost" . }}
+  trafficPolicy:
+    loadBalancer:
+      # Session stickiness — keeps a client's chat thread on one pod, which matters
+      # while the checkpointer is in-memory (replicaCount>1).
+      consistentHash:
+        {{- toYaml .Values.destinationRule.consistentHash | nindent 8 }}
+{{- end }}

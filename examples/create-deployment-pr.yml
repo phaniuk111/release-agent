@@ -1,0 +1,102 @@
+# Example workflow to place in your MANIFEST / SOURCE repo (e.g. phaniuk111/devops)
+# This workflow is triggered by the Release Copilot agent via workflow_dispatch.
+# It creates a PR in the separate DEPLOY_REPO with the updated config.
+
+name: Create Deployment PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tags:
+        description: 'Comma-separated image:tag pairs (e.g. payments-api:2.0.99-test)'
+        required: true
+        type: string
+      deploy_repo:
+        description: 'Target deployment repository (owner/repo)'
+        required: false
+        default: 'phaniuk111/deployment-repo'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source (for reference if needed)
+        uses: actions/checkout@v4
+
+      - name: Setup gh CLI
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Create branch and PR in deployment repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DEPLOY_REPO="${{ inputs.deploy_repo }}"
+          IMAGE_TAGS="${{ inputs.image_tags }}"
+
+          echo "Creating PR in $DEPLOY_REPO for images: $IMAGE_TAGS"
+
+          # Generate a unique branch name
+          BRANCH="release/$(date +%Y%m%d-%H%M%S)-$(echo $IMAGE_TAGS | tr -cd '[:alnum:]' | cut -c1-20)"
+
+          # Clone the deployment repo
+          gh repo clone "$DEPLOY_REPO" deployment-repo
+          cd deployment-repo
+
+          git checkout -b "$BRANCH"
+
+          # Update the prod config file with the new images
+          # (In real use, this would merge intelligently with existing values)
+          mkdir -p configs
+
+          # Simple update - for real use you'd want smarter merging
+          echo '{
+            "last_updated": "'"$(date -Iseconds)"'",
+            "requested_by": "release-copilot",
+            "images": {},
+            "promote_to": "prod",
+            "status": "pr-created-by-copilot"
+          }' > configs/prod-images.json
+
+          # Parse image_tags and update
+          IFS=',' read -ra PAIRS <<< "$IMAGE_TAGS"
+          for pair in "${PAIRS[@]}"; do
+            pair=$(echo "$pair" | xargs)
+            if [[ "$pair" == *":"* ]]; then
+              img="${pair%%:*}"
+              tag="${pair#*:}"
+              # Use jq to update
+              jq --arg img "$img" --arg tag "$tag" '.images[$img] = $tag' configs/prod-images.json > tmp.json && mv tmp.json configs/prod-images.json
+            fi
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add configs/prod-images.json
+          git commit -m "chore: update prod images for $IMAGE_TAGS
+
+          Triggered by release-copilot workflow dispatch"
+
+          git push origin "$BRANCH"
+
+          # Create the PR
+          PR_URL=$(gh pr create \
+            --repo "$DEPLOY_REPO" \
+            --head "$BRANCH" \
+            --base main \
+            --title "Release: $IMAGE_TAGS" \
+            --body "This PR was automatically created by the Release Copilot.
+
+          **Images:** $IMAGE_TAGS
+
+          Please review and merge to trigger production deployment simulation.")
+
+          echo "Created PR: $PR_URL"
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT

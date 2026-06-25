@@ -1,0 +1,45 @@
+# Example workflow that can be dispatched by the agent.
+# In a real setup this would read release-manifest.json (or inputs) and mutate prod configs / open PRs.
+name: release-promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tags:
+        description: 'Comma-separated image:tag (e.g. payments-api:2.0.33,orders-api:v1.2.3)'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment'
+        required: false
+        default: 'prod'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log inputs
+        run: |
+          echo "Image tags: ${{ inputs.image_tags }}"
+          echo "Environment: ${{ inputs.environment }}"
+
+      - name: Simulate prod config update (replace with real steps)
+        run: |
+          echo "Would now update Helm values / ArgoCD / Terraform / other JSONs for ${{ inputs.image_tags }}"
+          echo "Create branch + PR or directly apply (depending on policy)"
+
+      - name: RLFT approval gate (example)
+        run: echo "RLFT manual approval would go here"
+
+      - name: Summary
+        run: |
+          echo "Release promotion flow completed for ${{ inputs.image_tags }}" >> $GITHUB_STEP_SUMMARY

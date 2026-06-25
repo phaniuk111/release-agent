@@ -1,0 +1,10 @@
+{
+  "last_updated": "2024-01-01T00:00:00Z",
+  "requested_by": "manual-seed",
+  "images": {
+    "payments-api": "2.0.30",
+    "orders-api": "v1.2.0"
+  },
+  "promote_to": "prod",
+  "status": "seed"
+}

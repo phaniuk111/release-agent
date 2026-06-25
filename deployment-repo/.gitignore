@@ -1,0 +1,7 @@
+# Ignore local test files
+*.bak
+.DS_Store
+Thumbs.db
+
+# Optional: ignore any local overrides
+local-*.json
