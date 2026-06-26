@@ -113,7 +113,12 @@ async def chat_page():
                     <i class="fa-solid fa-server text-emerald-400"></i>
                     <span id="thread-label" class="text-slate-300 font-mono text-xs"></span>
                 </div>
-                <button onclick="newThread()" 
+                <button onclick="showCapabilities()"
+                        class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs flex items-center gap-2">
+                    <i class="fa-solid fa-wand-magic-sparkles text-emerald-400"></i>
+                    <span>What can I do?</span>
+                </button>
+                <button onclick="newThread()"
                         class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs flex items-center gap-2">
                     <i class="fa-solid fa-plus"></i>
                     <span>New Thread</span>
@@ -212,13 +217,15 @@ async def chat_page():
             }
         }
 
-        async function sendMessage() {
+        async function sendMessage(overrideText) {
             const input = document.getElementById('input');
-            const message = input.value.trim();
+            // overrideText lets callers send multi-line messages (the single-line
+            // text input strips newlines, which breaks the PROD change-ticket form).
+            const message = (typeof overrideText === 'string' ? overrideText : input.value).trim();
             if (!message) return;
 
             addMessage('user', message);
-            input.value = '';
+            if (typeof overrideText !== 'string') input.value = '';
 
             const botMsg = addMessage('bot', 'Thinking...', true);
 
@@ -307,13 +314,138 @@ async def chat_page():
             document.getElementById('thread-label').textContent = threadId;
             document.getElementById('chat').innerHTML = '';
             addMessage('bot', 'New conversation started. How can I help with releases?');
+            showCapabilities();
+        }
+
+        // Quick actions — what the agent can do. mode 'send' runs immediately;
+        // otherwise the text is pre-filled so the user edits the image:tag first.
+        const CAPABILITIES = [
+            {icon:'fa-flask',             label:'Promote to UAT',       desc:'paste JSON → PR into UAT',                    form:'uat'},
+            {icon:'fa-shield-halved',     label:'Promote to PROD',      desc:'paste JSON → UAT→PRD PR (auto CHG/RMG)',      form:'prod'},
+            {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify payments-api:v1.2.3 was built'},
+            {icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
+            {icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
+            {icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/RLFT',         send:false, text:'find the deployment PR for payments-api:2.0.0 and summarize its CHG, RMG and RLFT controls'},
+            {icon:'fa-rotate',            label:'Re-run a step',        desc:'re-run apply or dispatch',                    send:false, text:'re-run dispatch_workflow'},
+        ];
+
+        function runQuick(text, send) {
+            if (send) {
+                sendMessage(text);   // send directly so multi-line messages keep their newlines
+                return;
+            }
+            const input = document.getElementById('input');
+            input.value = text;
+            input.focus();
+            try { input.setSelectionRange(text.length, text.length); } catch (e) {}
+        }
+
+        function showCapabilities() {
+            const chat = document.getElementById('chat');
+            const wrap = document.createElement('div');
+            wrap.className = 'message bot rounded-2xl p-4 text-sm';
+
+            const title = document.createElement('div');
+            title.className = 'mb-2 text-slate-300 font-semibold';
+            title.textContent = 'What I can do — pick one to start:';
+            wrap.appendChild(title);
+
+            const grid = document.createElement('div');
+            grid.className = 'grid grid-cols-1 sm:grid-cols-2 gap-2';
+            CAPABILITIES.forEach(c => {
+                const btn = document.createElement('button');
+                btn.className = 'text-left bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl px-3 py-2 flex items-start gap-2';
+                btn.innerHTML = '<i class="fa-solid ' + c.icon + ' text-emerald-400 mt-1"></i>' +
+                    '<span><span class="font-medium">' + c.label + '</span><br>' +
+                    '<span class="text-[11px] text-slate-400">' + c.desc + '</span></span>';
+                btn.addEventListener('click', () => c.form ? showJsonPromote(c.form) : runQuick(c.text, c.send));
+                grid.appendChild(btn);
+            });
+            wrap.appendChild(grid);
+
+            const note = document.createElement('div');
+            note.className = 'text-[10px] text-slate-500 mt-2';
+            note.textContent = 'Highlighted actions run immediately; the rest pre-fill the box so you can edit the image:tag, then Send.';
+            wrap.appendChild(note);
+
+            chat.appendChild(wrap);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        // JSON-paste promote — a textarea prefilled with the env template. The user
+        // edits it (multiple images; for prod a change_request block) and submits the
+        // raw JSON; the agent parses it (the "environment" field routes uat vs prod).
+        function showJsonPromote(env) {
+            const isProd = env === 'prod';
+            const template = isProd ? {
+                environment: 'prod',
+                images: { 'payments-api': '2.0.0', 'orders-api': 'v1.4.0' },
+                change_request: {
+                    short_description: 'Promote payments-api, orders-api to PRD',
+                    description: 'Release of the listed images',
+                    assignment_group: 'Release Management',
+                    implementation_plan: 'Merge UAT into PRD',
+                    backout_plan: 'Revert the merge PR',
+                    risk: 'low',
+                    start_date: '2026-07-05T18:00',
+                    end_date: '2026-07-05T20:00'
+                }
+            } : {
+                environment: 'uat',
+                images: { 'payments-api': '2.0.0', 'orders-api': 'v1.4.0' }
+            };
+
+            const chat = document.getElementById('chat');
+            const wrap = document.createElement('div');
+            wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm';
+
+            const title = document.createElement('div');
+            title.className = 'mb-2 font-semibold flex items-center gap-2 ' + (isProd ? 'text-amber-300' : 'text-emerald-300');
+            title.innerHTML = '<i class="fa-solid ' + (isProd ? 'fa-shield-halved' : 'fa-flask') + '"></i> ' +
+                (isProd ? 'Promote to PROD (UAT → PRD) — edit the change-request JSON' : 'Promote to UAT — edit the images JSON');
+            wrap.appendChild(title);
+
+            const ta = document.createElement('textarea');
+            ta.id = 'promote-json';
+            ta.rows = isProd ? 16 : 7;
+            ta.spellcheck = false;
+            ta.className = 'w-full bg-slate-900 border rounded-lg px-3 py-2 text-xs font-mono mb-2 ' + (isProd ? 'border-amber-700' : 'border-emerald-700');
+            ta.value = JSON.stringify(template, null, 2);
+            wrap.appendChild(ta);
+
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-3';
+            const submit = document.createElement('button');
+            submit.className = (isProd ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500') + ' px-4 py-1.5 rounded-lg text-sm font-medium';
+            submit.textContent = isProd ? 'Propose UAT → PRD' : 'Propose UAT promote';
+            const err = document.createElement('span');
+            err.className = 'text-[11px] text-red-400';
+            submit.addEventListener('click', () => {
+                err.textContent = '';
+                let data;
+                try { data = JSON.parse(ta.value); }
+                catch (e) { err.textContent = 'Invalid JSON: ' + e.message; return; }
+                const imgCount = data.images ? Object.keys(data.images).length : 0;
+                if (!imgCount) { err.textContent = 'Provide at least one image in "images".'; return; }
+                if (isProd && (!data.change_request || Object.keys(data.change_request).length === 0)) {
+                    err.textContent = 'PROD requires a non-empty "change_request" block.'; return;
+                }
+                sendMessage(ta.value);   // send the raw JSON; the agent parses it
+            });
+            row.appendChild(submit);
+            row.appendChild(err);
+            wrap.appendChild(row);
+
+            chat.appendChild(wrap);
+            chat.scrollTop = chat.scrollHeight;
         }
 
         // Welcome message
         window.onload = () => {
             const chat = document.getElementById('chat');
             if (chat.children.length === 0) {
-                addMessage('bot', 'Hello! I can help you update image tags and trigger release workflows.<br><br>Try: <code class="bg-slate-800 px-1 rounded">promote payments-api:2.0.33</code>');
+                addMessage('bot', 'Hello! I can help you update image tags and trigger release workflows.');
+                showCapabilities();
             }
         };
 

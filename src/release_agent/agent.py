@@ -89,20 +89,29 @@ class ReleaseState(BaseModel):
 # ---- Re-runnable apply-phase steps -----------------------------------------
 STEP_APPLY = "apply_manifest"
 STEP_DISPATCH = "dispatch_workflow"
+STEP_RELEASE_PR = "release_pr"     # env promote: update env config JSON + open a PR
 ALL_STEPS = [STEP_APPLY, STEP_DISPATCH]
+
+# Steps used for an environment (uat/prod) promote vs. the legacy dispatch path.
+_ENV_STEPS = [STEP_RELEASE_PR]
 
 # Map the underlying tool name -> canonical step label (used to attribute each
 # ToolMessage back to a step via its tool_call).
 _STEP_BY_TOOL = {
     "apply_json_update": STEP_APPLY,
     "dispatch_workflow": STEP_DISPATCH,
+    "open_release_pr": STEP_RELEASE_PR,
 }
 
 # User-facing words that select a step in a "re-run ..." request.
 _STEP_ALIASES = {
     STEP_APPLY: ["apply_manifest", "apply-manifest", "apply", "commit", "manifest"],
     STEP_DISPATCH: ["dispatch_workflow", "dispatch-workflow", "dispatch", "workflow", "trigger"],
+    STEP_RELEASE_PR: ["release_pr", "release-pr", "pr", "open_pr", "open-pr", "raise_pr"],
 }
+
+# Change-ticket fields required when promoting to prod.
+_CHG_FIELDS = ("chg_name", "chg_summary", "start_date", "end_date")
 
 
 SYSTEM_PROMPT = f"""You are Release Copilot, an expert release assistant for GitHub-based deployments.
@@ -300,13 +309,66 @@ def _is_query_not_promote(text: str) -> bool:
 
 def _detect_environment(text: str) -> str:
     low = text.lower()
+    if re.search(r"\b(uat|user acceptance)\b", low):
+        return "uat"
     if "stag" in low:
         return "staging"
     if re.search(r"\b(dev|development)\b", low):
         return "dev"
-    if re.search(r"\b(qa|uat|test|sandbox|preprod)\b", low):
-        return "non-prod"
+    if re.search(r"\b(prod|production|prd)\b", low):
+        return "prod"
     return "prod"
+
+
+def _extract_change_fields(text: str) -> dict:
+    """Pull change-ticket fields from a (form-built) message. Lines look like:
+        chg_name: CHG0012345
+        chg_summary: Promote payments-api
+        start_date: 2026-07-01T18:00
+        end_date: 2026-07-01T20:00
+    """
+    out: dict[str, str] = {}
+    for field in _CHG_FIELDS:
+        m = re.search(rf"(?im)^\s*{field}\s*[:=]\s*(.+?)\s*$", text)
+        if m:
+            out[field] = m.group(1).strip()
+    return out
+
+
+def _try_parse_json_payload(text: str) -> Optional[dict]:
+    """If the message contains a JSON object with an 'images' field, parse it into a
+    release_request. Supports images as a {name: tag} map or a [{image, tag}] list,
+    plus an optional 'change_request' block (the data the CHG is created from)."""
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    images = data.get("images")
+    pairs: list[dict] = []
+    if isinstance(images, dict):
+        pairs = [{"name": str(k), "tag": str(v)} for k, v in images.items()]
+    elif isinstance(images, list):
+        for it in images:
+            if isinstance(it, dict):
+                name, tag = it.get("image") or it.get("name"), it.get("tag")
+                if name and tag:
+                    pairs.append({"name": str(name), "tag": str(tag)})
+    if not pairs:
+        return None
+    env = str(data.get("environment") or "prod").lower()
+    if env in ("prd", "production"):
+        env = "prod"
+    return {
+        "images": pairs,
+        "environment": env,
+        "change_request": data.get("change_request") or {},
+        "raw": "json-paste",
+    }
 
 
 def _detect_rerun(text: str, current_steps: Optional[list]) -> Optional[list[str]]:
@@ -371,7 +433,17 @@ def parse_intent(state: ReleaseState) -> dict:
         out["rerun_steps"] = rerun
         return out
 
-    pairs = _extract_images_from_text(last)
+    # A pasted JSON payload (multi-image + change_request) is the preferred input.
+    payload = _try_parse_json_payload(last)
+    if payload is not None:
+        out["release_request"] = payload
+        out["rerun_steps"] = None
+        return out
+
+    # Strip change-ticket lines first so their timestamps (e.g. 2026-07-01T18:00)
+    # aren't mis-parsed as image:tag pairs.
+    image_text = re.sub(rf"(?im)^\s*(?:{'|'.join(_CHG_FIELDS)})\s*[:=].*$", "", last)
+    pairs = _extract_images_from_text(image_text)
     # A message that names an image:tag but reads as a question (e.g. "find the
     # PR for payments-api:2.0.1") is a lookup, not a promote — send it to the LLM.
     if pairs and _is_query_not_promote(last):
@@ -379,6 +451,7 @@ def parse_intent(state: ReleaseState) -> dict:
     out["release_request"] = {
         "images": pairs,
         "environment": _detect_environment(last),
+        "change_request": _extract_change_fields(last),
         "raw": last[:300],
     } if pairs else None
     out["rerun_steps"] = None
@@ -392,8 +465,16 @@ def _route_after_parse(state: ReleaseState) -> Literal["propose", "llm", "rerun"
     return "propose" if req and req.get("images") else "llm"
 
 
-def _build_step_call(step: str, image_str: str, token: str) -> dict:
-    """Construct the tool_call for a single re-runnable step."""
+def _steps_for_request(req: dict) -> list[str]:
+    """uat/prod promotes update the env config + open a PR; otherwise the legacy
+    manifest-commit + workflow-dispatch path."""
+    env = (req.get("environment") or "prod").lower()
+    return list(_ENV_STEPS) if env in ("uat", "prod") else list(ALL_STEPS)
+
+
+def _build_step_call(step: str, req: dict, token: str) -> dict:
+    """Construct the tool_call for a single re-runnable step from the request."""
+    image_str = ",".join(f"{i['name']}:{i['tag']}" for i in req.get("images", []))
     if step == STEP_APPLY:
         return {
             "name": "apply_json_update",
@@ -409,6 +490,13 @@ def _build_step_call(step: str, image_str: str, token: str) -> dict:
             "args": {"workflow": DEFAULT_WORKFLOW, "image_tags": image_str},
             "id": f"call_{STEP_DISPATCH}_{uuid.uuid4().hex[:8]}",
         }
+    if step == STEP_RELEASE_PR:
+        env = (req.get("environment") or "prod").lower()
+        args = {"environment": env, "image_tags": image_str}
+        if env == "prod":
+            args["change_request_json"] = json.dumps(req.get("change_request") or {})
+        return {"name": "open_release_pr", "args": args,
+                "id": f"call_{STEP_RELEASE_PR}_{uuid.uuid4().hex[:8]}"}
     raise ValueError(f"unknown step {step}")
 
 
@@ -427,6 +515,20 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
                 "`promote payments-api:2.0.33 and orders-api to v1.2.3`"
             ))]},
         )
+
+    # PROD promotions require a change request (the data the CHG is created from).
+    env = (req.get("environment") or "prod").lower()
+    if env == "prod":
+        cr = req.get("change_request") or {}
+        if not cr:
+            return Command(
+                goto="respond",
+                update={"messages": [AIMessage(content=(
+                    "🔒 Promoting to **prod** (UAT → PRD) requires a change request — it drives the "
+                    "auto-created CHG. Use the **Promote to PROD** action and paste the change-request "
+                    "JSON (environment, images, and a `change_request` block)."
+                ))]},
+            )
 
     image_str = ",".join(f"{i['name']}:{i['tag']}" for i in req["images"])
     token = f"CONFIRM-{uuid.uuid4().hex[:6]}"
@@ -482,14 +584,25 @@ def confirmation_gate(
         except (json.JSONDecodeError, TypeError):
             proposed = {"raw": raw[:500]}
 
+    req = state.release_request or {}
+    env = (req.get("environment") or "prod").lower()
+    change = req.get("change_request") or {}
+    if env == "uat":
+        action = "open a PR into the **UAT** branch"
+    elif env == "prod":
+        action = "open a PR to promote **UAT → PRD** (CHG/RMG auto-created from the change request)"
+    else:
+        action = "apply these changes and dispatch the workflow"
+
     user_reply = interrupt({
         "type": "confirmation",
         "token": token,
         "proposed": proposed,
         "changes": changes,
+        "environment": env,
+        "change_request": change if env == "prod" else {},
         "message": (
-            f"Reply with exactly `{token}` (or `yes {token.split('-', 1)[-1]}`) "
-            "to apply these changes and dispatch the workflow."
+            f"Reply with exactly `{token}` (or `yes {token.split('-', 1)[-1]}`) to {action}."
         ),
         "repo": state.repo,
     })
@@ -517,15 +630,17 @@ def build_apply_and_dispatch(state: ReleaseState) -> dict:
     req = state.release_request or {}
     image_str = ",".join(f"{i['name']}:{i['tag']}" for i in req.get("images", []))
     token = state.confirmation_token or "CONFIRM-xxx"
+    env = (req.get("environment") or "prod").lower()
 
-    calls = [_build_step_call(s, image_str, token) for s in ALL_STEPS]
-    ai = AIMessage(
-        content="Applying the manifest update and dispatching the workflow…",
-        tool_calls=calls,  # type: ignore[arg-type]
-    )
+    steps = _steps_for_request(req)
+    calls = [_build_step_call(s, req, token) for s in steps]
+    content = (f"Opening a release PR to promote {image_str} to {env}…"
+               if STEP_RELEASE_PR in steps
+               else "Applying the manifest update and dispatching the workflow…")
+    ai = AIMessage(content=content, tool_calls=calls)  # type: ignore[arg-type]
     return {
         "messages": [ai],
-        "last_action": {"phase": "confirmed-apply-dispatch", "images": image_str},
+        "last_action": {"phase": "confirmed-apply", "images": image_str, "env": env},
     }
 
 
@@ -544,19 +659,24 @@ def rerun(state: ReleaseState) -> Command[Literal["apply_tools", "respond"]]:
             ))],
         })
 
+    valid = _steps_for_request(req)
     if not steps:
-        names = ", ".join(f"`{s}`" for s in ALL_STEPS)
+        names = ", ".join(f"`{s}`" for s in valid)
         return Command(goto="respond", update={
             "rerun_steps": None,
             "messages": [AIMessage(content=(
                 f"Which step would you like to re-run? Available steps: {names}.\n"
-                "Reply e.g. `re-run dispatch_workflow`, `re-run all`, or `re-run failed`."
+                f"Reply e.g. `re-run {valid[0]}`, `re-run all`, or `re-run failed`."
             ))],
         })
 
-    image_str = ",".join(f"{i['name']}:{i['tag']}" for i in req["images"])
     token = state.confirmation_token or f"RERUN-{uuid.uuid4().hex[:4]}"
-    calls = [_build_step_call(s, image_str, token) for s in steps if s in ALL_STEPS]
+    calls = [_build_step_call(s, req, token) for s in steps if s in valid]
+    if not calls:
+        return Command(goto="respond", update={
+            "rerun_steps": None,
+            "messages": [AIMessage(content=f"No matching step to re-run. Available: {', '.join(valid)}.")],
+        })
     ai = AIMessage(content=f"Re-running step(s): {', '.join(steps)}…", tool_calls=calls)  # type: ignore[arg-type]
     return Command(goto="apply_tools", update={"messages": [ai], "rerun_steps": None})
 
@@ -576,6 +696,12 @@ def _summarize_step_result(step: str, content: str) -> str:
         wf = data.get("workflow", DEFAULT_WORKFLOW)
         inp = json.dumps(data["inputs"]) if data.get("inputs") else ""
         return f"dispatched `{wf}`" + (f" with {inp}" if inp else "")
+    if step == STEP_RELEASE_PR:
+        num, url = data.get("pr_number"), data.get("pr_url") or ""
+        base = f"opened PR #{num} — {url}" if num else "PR opened"
+        if data.get("chg"):
+            base += f" (CHG {data['chg']}, RMG {data.get('rmg')})"
+        return base
     return "ok"
 
 
@@ -600,16 +726,23 @@ def finalize(state: ReleaseState) -> dict:
         if isinstance(m, ToolMessage) and m.tool_call_id in id_to_step:
             batch[id_to_step[m.tool_call_id]] = str(m.content)
 
-    # Merge this batch's results into the persisted per-step status.
+    # Steps to report: this batch's steps (in order) merged with any persisted.
+    order: list[str] = list(dict.fromkeys(id_to_step.values()))
+    for s in (state.steps or []):
+        if s["name"] not in order:
+            order.append(s["name"])
+    if not order:
+        order = list(_steps_for_request(state.release_request or {}))
+
     steps = {s["name"]: dict(s) for s in (state.steps or [])}
-    for name in ALL_STEPS:
+    for name in order:
         steps.setdefault(name, {"name": name, "status": "pending", "detail": "not run yet"})
     for name, content in batch.items():
         if content.startswith("ERROR"):
             steps[name] = {"name": name, "status": "error", "detail": content[:280]}
         else:
             steps[name] = {"name": name, "status": "ok", "detail": _summarize_step_result(name, content)}
-    steps_list = [steps[n] for n in ALL_STEPS]
+    steps_list = [steps[n] for n in order]
 
     icon = {"ok": "✅", "error": "❌", "pending": "⏳"}
     lines = ["**Release steps:**"]
@@ -617,6 +750,7 @@ def finalize(state: ReleaseState) -> dict:
         lines.append(f"{icon.get(s['status'], '•')} `{s['name']}` — {s['detail']}")
 
     failed = [s["name"] for s in steps_list if s["status"] == "error"]
+    example = steps_list[0]["name"] if steps_list else "all"
     lines.append("")
     if failed:
         lines.append(
@@ -626,12 +760,13 @@ def finalize(state: ReleaseState) -> dict:
         )
     else:
         lines.append(
-            "All steps succeeded. You can re-run any step by name, e.g. "
-            "`re-run dispatch_workflow`, or `re-run all`."
+            f"All steps succeeded. You can re-run any step by name, e.g. `re-run {example}`, or `re-run all`."
         )
     lines.append("\nAnything else?")
 
-    if not failed:
+    # The legacy dispatch path opens the PR asynchronously (track_pr finds it);
+    # the env release_pr step already returns the PR in its result above.
+    if not failed and any(s["name"] == STEP_DISPATCH for s in steps_list):
         lines.append("🔎 Locating the deployment PR the workflow is opening…")
 
     # Clear the one-shot confirmation token (a fresh one is minted per promote).

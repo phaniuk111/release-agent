@@ -58,6 +58,28 @@ class Settings(BaseSettings):
         default="on-merge-deploy.yml",
         validation_alias=AliasChoices("ON_MERGE_WORKFLOW", "RELEASE_ON_MERGE_WORKFLOW"),
     )
+    # --- Branch-based promotion in DEPLOY_REPO ---
+    # Promote to UAT  = PR into the UAT branch.
+    # Promote to PROD = PR from the UAT branch into the PRD branch.
+    uat_branch: str = Field(
+        default="UAT",
+        validation_alias=AliasChoices("UAT_BRANCH", "RELEASE_UAT_BRANCH"),
+    )
+    prd_branch: str = Field(
+        default="PRD",
+        validation_alias=AliasChoices("PRD_BRANCH", "PROD_BRANCH", "RELEASE_PRD_BRANCH"),
+    )
+    # JSON config the promotion updates (same path on each env branch).
+    env_config_path: str = Field(
+        default="configs/images.json",
+        validation_alias=AliasChoices("ENV_CONFIG_PATH", "RELEASE_ENV_CONFIG_PATH"),
+    )
+    # Change-request template the pasted JSON updates; the CHG is created from it
+    # when the UAT->PRD PR is raised.
+    change_request_path: str = Field(
+        default="change-request.json",
+        validation_alias=AliasChoices("CHANGE_REQUEST_PATH", "RELEASE_CHANGE_REQUEST_PATH"),
+    )
     # Allow-list of workflows the agent may dispatch (enforced). Comma-separated
     # in env, e.g. ALLOWED_WORKFLOWS="image-tag-step-report.yml,release-promote.yml".
     allowed_workflows: Annotated[list[str], NoDecode] = Field(

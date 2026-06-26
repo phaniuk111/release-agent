@@ -25,7 +25,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gradio = ["gradio>=4.44"]                                           # only for app_gradio
 postgres = ["langgraph-checkpoint-postgres>=2.0", "psycopg[binary]>=3.2"]  # shared checkpointer
 tracing = ["langsmith>=0.3"]
 

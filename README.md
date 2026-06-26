@@ -99,7 +99,7 @@ Agent: ✅ Updated release-manifest.json (sha...)
 - Streaming support (SSE) so the chat feels responsive.
 - Threaded conversations (MemorySaver for PoV → Postgres checkpointer recommended for prod).
 
-**Production note**: FastAPI is significantly more production-ready than Gradio or similar demo frameworks. It is async, scalable, easy to instrument, and the standard choice for Python services running in Kubernetes. Gradio is kept only as a legacy demo option.
+**Production note**: FastAPI is the single interface — async, scalable, easy to instrument, and the standard choice for Python services running in Kubernetes.
 
 See the specs in the [design/](./design/) folder:
 - [design/spec.md](./design/spec.md) — Focused implementation spec
