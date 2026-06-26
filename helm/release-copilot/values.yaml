@@ -13,7 +13,7 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Container entrypoint — runs the FastAPI app (the image's default CMD is the Gradio UI).
+# Container entrypoint — runs the FastAPI app (matches the image's default CMD).
 command:
   - python
   - -m

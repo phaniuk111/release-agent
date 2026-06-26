@@ -22,7 +22,7 @@ source .venv/bin/activate
 ### 1. Google / Vertex AI (using your gcloud)
 ```bash
 gcloud auth application-default login
-gcloud config set project flash-keel-412418
+gcloud config set project your-gcp-project
 ```
 
 ### 2. GitHub CLI
@@ -33,7 +33,7 @@ gh auth login
 
 ### 3. Environment variables (critical)
 ```bash
-export GOOGLE_CLOUD_PROJECT=flash-keel-412418
+export GOOGLE_CLOUD_PROJECT=your-gcp-project
 export GOOGLE_CLOUD_LOCATION=us-central1
 
 # Separate repos (as you requested)
@@ -167,7 +167,7 @@ Go back to the PR — you should see a new "**Current State**" comment that refl
 
 ## Troubleshooting
 
-- **No GCP project error** → make sure `gcloud config set project flash-keel-412418` and ADC login done.
+- **No GCP project error** → make sure `gcloud config set project your-gcp-project` and ADC login done.
 - **Workflow not creating PR** → ensure `create-deployment-pr.yml` is in the source repo and you dispatched the correct workflow name.
 - **No comments on merge** → check that the deployment repo has `on-merge-deploy.yml` and that you actually merged the PR.
 - **Budget warning** → the agent has £10 protection. Confirm when it asks or it will stop.

@@ -122,6 +122,6 @@ See `deployment-repo/PUSH_INSTRUCTIONS.md` for more re-run examples.
 
 - After pushing, update your agent environment variables.
 - Use the testing subagent or manual UI to drive the flow.
-- The budget protection and Vertex AI (flash-keel-412418 via ADC) remain active.
+- The budget protection and Vertex AI (your-gcp-project via ADC) remain active.
 
 Let me know when the repo is pushed and you want help wiring the dispatch workflow or testing the full flow.

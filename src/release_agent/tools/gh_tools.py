@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import uuid
 from typing import Any
 
 from github import Github, Auth, GithubException
@@ -784,6 +785,168 @@ def verify_image_tag_build(image: str, tag: str, repo: str = "",
     }, indent=2)
 
 
+# ============ Environment promotion: update config JSON + open a PR (PyGithub) ============
+
+class OpenReleasePRInput(BaseModel):
+    environment: str = Field(..., description="Target environment: uat or prod")
+    image_tags: str = Field(..., description="Comma-separated image:tag pairs (supports multiple)")
+    change_request_json: str = Field(
+        default="",
+        description="JSON object of the change_request block (required for prod) — drives the auto-created CHG.",
+    )
+
+
+def _upsert_json_file(repo, branch: str, path: str, new_doc: dict) -> None:
+    """Create or update a JSON file on a branch."""
+    try:
+        c = repo.get_contents(path, ref=branch)
+        sha = c.sha
+    except Exception:
+        sha = None
+    content = json.dumps(new_doc, indent=2)
+    msg = f"chore(release): update {path}"
+    if sha:
+        repo.update_file(path, msg, content, sha, branch=branch)
+    else:
+        repo.create_file(path, msg, content, branch=branch)
+
+
+def _read_json_file(repo, branch: str, path: str) -> dict:
+    try:
+        c = repo.get_contents(path, ref=branch)
+        return json.loads(c.decoded_content.decode())
+    except Exception:
+        return {}
+
+
+@tool(args_schema=OpenReleasePRInput)
+def open_release_pr(environment: str, image_tags: str, change_request_json: str = "") -> str:
+    """
+    Branch-based promotion in the deploy repo:
+      - uat : open a PR INTO the UAT branch (updates the images config).
+      - prod: open a PR from the UAT branch INTO the PRD branch. The pasted change
+        request (change_request_json) updates the change-request TEMPLATE file; the
+        CHG (and RMG) are auto-created from it and posted as PR comments.
+    Supports multiple image:tag pairs.
+    """
+    raw = (environment or "").strip().lower()
+    if raw == "uat":
+        env = "uat"
+    elif raw in ("prod", "prd", "production"):
+        env = "prod"
+    else:
+        return f"ERROR opening release PR: unsupported environment '{environment}' (use uat or prod)."
+
+    try:
+        pairs = _parse_pairs(image_tags)
+    except ValueError as e:
+        return f"ERROR opening release PR: {e}"
+    if not pairs:
+        return "ERROR opening release PR: no image:tag pairs provided."
+
+    cr: dict = {}
+    if change_request_json.strip():
+        try:
+            cr = json.loads(change_request_json)
+        except Exception:
+            return "ERROR opening release PR: change_request_json is not valid JSON."
+    if env == "prod" and not cr:
+        return "ERROR opening release PR: prod promotion requires a change_request block (drives the CHG)."
+
+    uat_branch, prd_branch = settings.uat_branch, settings.prd_branch
+    images_path, cr_path = settings.env_config_path, settings.change_request_path
+    base = uat_branch if env == "uat" else prd_branch
+    source = uat_branch  # both flows branch off UAT (prod = promote UAT -> PRD)
+
+    g = _get_github_client()
+    try:
+        repo = g.get_repo(DEPLOY_REPO)
+    except Exception as e:
+        return f"ERROR opening release PR: {e}"
+    try:
+        source_ref = repo.get_git_ref(f"heads/{source}")
+    except Exception:
+        return (f"ERROR opening release PR: source branch '{source}' not found in {DEPLOY_REPO}. "
+                f"Create the '{uat_branch}' and '{prd_branch}' env branches first.")
+    try:
+        repo.get_branch(base)
+    except Exception:
+        return f"ERROR opening release PR: base branch '{base}' not found in {DEPLOY_REPO}."
+
+    image_map = {i: t for i, t in pairs}
+    image_str = ",".join(f"{i}:{t}" for i, t in pairs)
+    branch = f"release/{env}/{uuid.uuid4().hex[:8]}"
+
+    chg = rmg = None
+    try:
+        repo.create_git_ref(f"refs/heads/{branch}", source_ref.object.sha)
+
+        # 1) images config (carried on the env branch)
+        cfg = _read_json_file(repo, branch, images_path)
+        cfg["environment"] = env
+        cfg.setdefault("images", {})
+        cfg["images"].update(image_map)
+        cfg["requested_by"] = "release-copilot"
+        cfg["status"] = "pr-open"
+        _upsert_json_file(repo, branch, images_path, cfg)
+
+        # 2) change-request template (prod) — the pasted JSON updates it
+        if env == "prod":
+            cr_doc = {"environment": "prod", "images": image_map,
+                      "change_request": cr, "status": "pending-chg"}
+            _upsert_json_file(repo, branch, cr_path, cr_doc)
+
+        # PR
+        if env == "uat":
+            title = f"Promote to UAT: {image_str}"
+            body = f"Promote `{image_str}` into the **{uat_branch}** branch.\n\n- Images config: `{images_path}`"
+        else:
+            title = f"Promote UAT → PRD: {image_str}"
+            body = (f"Promote `{image_str}` from **{uat_branch}** into **{prd_branch}**.\n\n"
+                    f"- Images config: `{images_path}`\n- Change request: `{cr_path}`\n\n"
+                    "CHG/RMG are auto-created from the change request (see PR comments).")
+        pr = repo.create_pull(title=title, body=body, head=branch, base=base)
+
+        # 3) auto-create CHG/RMG from the change request, posted as PR comments
+        if env == "prod":
+            from datetime import datetime, timezone
+            ym = datetime.now(timezone.utc).strftime("%Y%m")
+            seq = f"{uuid.uuid4().int % 100000:05d}"
+            chg, rmg = f"CHG-{ym}-{seq}", f"RMG-{ym}-{seq}"
+            sd = cr.get("short_description") or cr.get("summary") or image_str
+            window = ""
+            if cr.get("start_date") or cr.get("end_date"):
+                window = f"\n- **Window:** {cr.get('start_date','?')} → {cr.get('end_date','?')}"
+            pr.create_issue_comment("\n".join([
+                "📋 **Change management & release controls** (auto-created from the change request)",
+                "",
+                f"- **CHG:** {chg}",
+                f"- **RMG:** {rmg}",
+                f"- **Summary:** {sd}",
+                f"- **Images:** {image_str}{window}",
+                "",
+                "**Control gates (RLFT):**",
+                "- RLFT approval gate: open",
+                "- RLFT deploy control: open",
+            ]))
+    except Exception as e:
+        return f"ERROR opening release PR: {e}"
+
+    result = {
+        "ok": True, "environment": env, "image_tags": image_str,
+        "images_config": images_path, "branch": branch,
+        "base_branch": base, "source_branch": source,
+        "pr_number": pr.number, "pr_url": pr.html_url,
+        "note": (f"UAT→PRD PR opened; CHG {chg} / RMG {rmg} auto-created from the change request "
+                 "and posted as PR comments." if env == "prod"
+                 else f"PR opened into '{uat_branch}'. Review and merge to apply."),
+    }
+    if env == "prod":
+        result["change_request_template"] = cr_path
+        result["chg"], result["rmg"] = chg, rmg
+    return json.dumps(result, indent=2)
+
+
 # Export all tools for the agent
 GH_TOOLS = [
     list_allowed_images,
@@ -799,4 +962,5 @@ GH_TOOLS = [
     summarize_pr_controls,
     retrigger_deployment_workflow,
     verify_image_tag_build,
+    open_release_pr,
 ]
