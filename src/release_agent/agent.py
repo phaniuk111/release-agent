@@ -319,6 +319,8 @@ _QUERY_WORDS = {
     "comment", "ticket", "chg", "rmg", "pr", "prs", "pull", "request", "which",
     "what", "where", "when", "how", "why", "check", "view", "read", "tell",
     "is", "are", "did", "does",
+    # verification / lookups (route to the LLM, not the promote gate)
+    "verify", "verified", "validate", "build", "built", "builds",
 }
 
 
