@@ -136,7 +136,7 @@ async def chat_page():
         <div class="flex gap-2">
             <input id="input" 
                    type="text" 
-                   placeholder="e.g. promote payments-api:2.0.33 to prod"
+                   placeholder="e.g. promote <image>:<tag> to uat"
                    class="flex-1 bg-slate-800 border border-slate-600 rounded-2xl px-5 py-3 text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500">
             <button onclick="sendMessage()" 
                     class="bg-emerald-600 hover:bg-emerald-500 px-8 rounded-2xl font-medium flex items-center gap-2">
@@ -322,10 +322,10 @@ async def chat_page():
         const CAPABILITIES = [
             {icon:'fa-flask',             label:'Promote to UAT',       desc:'paste JSON → PR into UAT',                    form:'uat'},
             {icon:'fa-shield-halved',     label:'Promote to PROD',      desc:'paste JSON → UAT→PRD PR (auto CHG/RMG)',      form:'prod'},
-            {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify payments-api:v1.2.3 was built'},
+            {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
             {icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
             {icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
-            {icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/RLFT',         send:false, text:'find the deployment PR for payments-api:2.0.0 and summarize its CHG, RMG and RLFT controls'},
+            {icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/RLFT',         send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
             {icon:'fa-rotate',            label:'Re-run a step',        desc:'re-run apply or dispatch',                    send:false, text:'re-run dispatch_workflow'},
         ];
 
@@ -379,20 +379,20 @@ async def chat_page():
             const isProd = env === 'prod';
             const template = isProd ? {
                 environment: 'prod',
-                images: { 'payments-api': '2.0.0', 'orders-api': 'v1.4.0' },
+                images: { '<image-name>': '<tag>', '<another-image>': '<tag>' },
                 change_request: {
-                    short_description: 'Promote payments-api, orders-api to PRD',
-                    description: 'Release of the listed images',
-                    assignment_group: 'Release Management',
-                    implementation_plan: 'Merge UAT into PRD',
-                    backout_plan: 'Revert the merge PR',
-                    risk: 'low',
-                    start_date: '2026-07-05T18:00',
-                    end_date: '2026-07-05T20:00'
+                    short_description: '<short description of the change>',
+                    description: '<detailed description>',
+                    assignment_group: '<assignment group>',
+                    implementation_plan: '<implementation plan>',
+                    backout_plan: '<backout plan>',
+                    risk: '<low|medium|high>',
+                    start_date: '<YYYY-MM-DDThh:mm>',
+                    end_date: '<YYYY-MM-DDThh:mm>'
                 }
             } : {
                 environment: 'uat',
-                images: { 'payments-api': '2.0.0', 'orders-api': 'v1.4.0' }
+                images: { '<image-name>': '<tag>', '<another-image>': '<tag>' }
             };
 
             const chat = document.getElementById('chat');
@@ -422,6 +422,9 @@ async def chat_page():
             err.className = 'text-[11px] text-red-400';
             submit.addEventListener('click', () => {
                 err.textContent = '';
+                if (ta.value.indexOf('<') !== -1 || ta.value.indexOf('>') !== -1) {
+                    err.textContent = 'Replace the <…> placeholders with real values first.'; return;
+                }
                 let data;
                 try { data = JSON.parse(ta.value); }
                 catch (e) { err.textContent = 'Invalid JSON: ' + e.message; return; }
