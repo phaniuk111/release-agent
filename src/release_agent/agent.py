@@ -21,7 +21,6 @@ AIMessage with tool_calls as its most recent AIMessage.
 from __future__ import annotations
 
 import json
-import re
 import time
 import uuid
 from typing import Annotated, Any, List, Literal, Optional
@@ -241,8 +240,20 @@ _STOP_WORDS = {
     "a", "an", "image", "version", "bump", "rollout", "roll", "out",
 } | _ENV_WORDS
 
-# A tag must look like a version / sha / 'latest' — NOT an environment word.
-_TAG_RE = re.compile(r"^(?:v?\d[\w.\-]*|latest|[0-9a-f]{7,40})$", re.I)
+def _looks_like_tag(tag: str) -> bool:
+    """A tag looks like a version / sha / 'latest' — NOT an environment word."""
+    t = tag.strip().lower()
+    if not t:
+        return False
+    if t == "latest":
+        return True
+    if t[0] == "v" and len(t) > 1 and t[1].isdigit():                  # v1.2.3
+        return True
+    if t[0].isdigit():                                                 # 2.0.0
+        return True
+    if 7 <= len(t) <= 40 and all(c in "0123456789abcdef" for c in t):  # git sha
+        return True
+    return False
 
 
 def _is_image_name(name: str) -> bool:
@@ -250,13 +261,13 @@ def _is_image_name(name: str) -> bool:
     return (
         len(name) >= 2
         and not name.isdigit()
-        and bool(re.search(r"[a-z]", name))
+        and any(c.isalpha() for c in name)
         and name not in _STOP_WORDS
     )
 
 
 def _is_tag(tag: str) -> bool:
-    return tag.lower() not in _STOP_WORDS and bool(_TAG_RE.match(tag.strip()))
+    return tag.lower() not in _STOP_WORDS and _looks_like_tag(tag)
 
 
 def _extract_images_from_text(text: str) -> list[dict]:
@@ -274,64 +285,91 @@ def _extract_images_from_text(text: str) -> list[dict]:
 
     def add(name: str, tag: str) -> None:
         name = name.lower()
-        if not _is_image_name(name) or tag.lower() in _STOP_WORDS:
+        tag = tag.strip().strip(".,;:)")
+        if not tag or not _is_image_name(name) or tag.lower() in _STOP_WORDS:
             return
         if not any(p["name"] == name for p in pairs):
             pairs.append({"name": name, "tag": tag})
 
-    # primary: name:tag or name=tag  (name must start with a letter)
-    for m in re.finditer(r"([A-Za-z][\w-]*)[:=](v?[\w][\w.\-]*)", text):
-        add(m.group(1), m.group(2))
+    tokens = text.replace(",", " ").split()
+
+    # primary: a token of the form name:tag or name=tag (name starts with a letter)
+    for tok in tokens:
+        sep = ":" if ":" in tok else ("=" if "=" in tok else None)
+        if not sep:
+            continue
+        name, _, tag = tok.partition(sep)
+        if name and name[0].isalpha():
+            add(name, tag)
 
     # secondary: "name to|as|tag <version>"  (value must look like a tag, not an env)
-    for m in re.finditer(r"([A-Za-z][\w-]*)\s+(?:to|as|tag)\s+([\w][\w.\-]*)", text, re.I):
-        name, tag = m.group(1), m.group(2)
-        if _is_tag(tag):
-            add(name, tag)
+    for i in range(len(tokens) - 2):
+        if tokens[i + 1].lower() in ("to", "as", "tag"):
+            name, tag = tokens[i], tokens[i + 2]
+            if name and name[0].isalpha() and _is_tag(tag):
+                add(name, tag)
 
     return pairs
 
 
-_PROMOTE_VERBS = re.compile(r"\b(promote|deploy|releas|ship|roll\s?out|bump|cut|set)\b", re.I)
-_QUERY_HINTS = re.compile(
-    r"\b(find|show|list|get|summari[sz]e|track|status|comment|ticket|chg|rmg|prs?|"
-    r"pull\s?request|which|what|where|when|how|why|check|view|read|tell|is|are|did|does)\b|\?",
-    re.I,
-)
+# Whole-word sets for intent classification (no regex).
+_PROMOTE_PREFIXES = ("promote", "deploy", "releas", "ship", "rollout", "bump", "cut")
+_QUERY_WORDS = {
+    "find", "show", "list", "get", "summarize", "summarise", "track", "status",
+    "comment", "ticket", "chg", "rmg", "pr", "prs", "pull", "request", "which",
+    "what", "where", "when", "how", "why", "check", "view", "read", "tell",
+    "is", "are", "did", "does",
+}
+
+
+def _norm_words(text: str) -> list[str]:
+    """Lowercased word tokens with non-alphanumerics treated as separators."""
+    return "".join(c if c.isalnum() else " " for c in text.lower()).split()
+
+
+def _has_promote_verb(words: list[str]) -> bool:
+    return "set" in words or any(w.startswith(_PROMOTE_PREFIXES) for w in words)
 
 
 def _is_query_not_promote(text: str) -> bool:
-    """True when the message mentions an image:tag but reads as a question/lookup
-    (e.g. 'find the PR for payments-api:2.0.1') rather than a promote command, so
-    it should go to the LLM/ReAct path instead of the confirmation gate."""
-    return bool(_QUERY_HINTS.search(text)) and not _PROMOTE_VERBS.search(text)
+    """True when the message names an image:tag but reads as a question/lookup
+    (e.g. 'find the PR for payments-api:2.0.1') rather than a promote command."""
+    words = _norm_words(text)
+    is_query = "?" in text or any(w in _QUERY_WORDS for w in words)
+    return is_query and not _has_promote_verb(words)
 
 
 def _detect_environment(text: str) -> str:
     low = text.lower()
-    if re.search(r"\b(uat|user acceptance)\b", low):
+    words = set(_norm_words(text))
+    if "uat" in words or "user acceptance" in low:
         return "uat"
     if "stag" in low:
         return "staging"
-    if re.search(r"\b(dev|development)\b", low):
+    if "dev" in words or "development" in words:
         return "dev"
-    if re.search(r"\b(prod|production|prd)\b", low):
+    if words & {"prod", "production", "prd"}:
         return "prod"
     return "prod"
 
 
+def _is_chg_line(line: str) -> bool:
+    sep = ":" if ":" in line else ("=" if "=" in line else None)
+    if not sep:
+        return False
+    return line.partition(sep)[0].strip().lower() in _CHG_FIELDS
+
+
 def _extract_change_fields(text: str) -> dict:
-    """Pull change-ticket fields from a (form-built) message. Lines look like:
-        chg_name: CHG0012345
-        chg_summary: Promote payments-api
-        start_date: 2026-07-01T18:00
-        end_date: 2026-07-01T20:00
-    """
+    """Pull change-ticket fields from lines like 'chg_name: CHG0012345' (no regex)."""
     out: dict[str, str] = {}
-    for field in _CHG_FIELDS:
-        m = re.search(rf"(?im)^\s*{field}\s*[:=]\s*(.+?)\s*$", text)
-        if m:
-            out[field] = m.group(1).strip()
+    for line in text.splitlines():
+        if not _is_chg_line(line):
+            continue
+        sep = ":" if ":" in line else "="
+        key, _, val = line.partition(sep)
+        if val.strip():
+            out[key.strip().lower()] = val.strip()
     return out
 
 
@@ -339,11 +377,11 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
     """If the message contains a JSON object with an 'images' field, parse it into a
     release_request. Supports images as a {name: tag} map or a [{image, tag}] list,
     plus an optional 'change_request' block (the data the CHG is created from)."""
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
         return None
     try:
-        data = json.loads(m.group(0))
+        data = json.loads(text[start:end + 1])
     except (json.JSONDecodeError, TypeError):
         return None
     if not isinstance(data, dict):
@@ -378,14 +416,17 @@ def _detect_rerun(text: str, current_steps: Optional[list]) -> Optional[list[str
     list of step labels when it is. An empty list means "re-run intent but the
     step is unspecified" — the rerun node will then list the available steps.
     """
-    low = text.lower()
-    if not re.search(r"\b(re-?run|re-?try|re-?execute|redo|run again|try again)\b", low):
+    # space-padded normalized words, so " word " is a whole-word check (no regex)
+    norm = " " + " ".join(_norm_words(text)) + " "
+    rerun_phrases = (" rerun ", " re run ", " retry ", " re try ", " reexecute ",
+                     " re execute ", " redo ", " run again ", " try again ")
+    if not any(p in norm for p in rerun_phrases):
         return None
 
-    if re.search(r"\b(all|both|everything|entire|whole)\b", low):
-        return list(ALL_STEPS)
+    if any(w in norm for w in (" all ", " both ", " everything ", " entire ", " whole ")):
+        return [s["name"] for s in current_steps] if current_steps else list(ALL_STEPS)
 
-    if "fail" in low and current_steps:
+    if "fail" in text.lower() and current_steps:
         failed = [s["name"] for s in current_steps if s.get("status") == "error"]
         if failed:
             return failed
@@ -393,13 +434,13 @@ def _detect_rerun(text: str, current_steps: Optional[list]) -> Optional[list[str
     requested: list[str] = []
     # "step 1" / "step 2"
     for canon, idx in zip(ALL_STEPS, ("1", "2")):
-        if re.search(rf"\bstep\s*{idx}\b", low):
+        if f" step {idx} " in norm:
             requested.append(canon)
-    # name aliases (whole-word match)
+    # name aliases (whole-word match; aliases normalized the same way)
     for canon, aliases in _STEP_ALIASES.items():
         if canon in requested:
             continue
-        if any(re.search(rf"\b{re.escape(a)}\b", low) for a in aliases):
+        if any(f" {' '.join(_norm_words(a))} " in norm for a in aliases):
             requested.append(canon)
 
     seen, ordered = set(), []
@@ -442,7 +483,7 @@ def parse_intent(state: ReleaseState) -> dict:
 
     # Strip change-ticket lines first so their timestamps (e.g. 2026-07-01T18:00)
     # aren't mis-parsed as image:tag pairs.
-    image_text = re.sub(rf"(?im)^\s*(?:{'|'.join(_CHG_FIELDS)})\s*[:=].*$", "", last)
+    image_text = " ".join(ln for ln in last.splitlines() if not _is_chg_line(ln))
     pairs = _extract_images_from_text(image_text)
     # A message that names an image:tag but reads as a question (e.g. "find the
     # PR for payments-api:2.0.1") is a lookup, not a promote — send it to the LLM.

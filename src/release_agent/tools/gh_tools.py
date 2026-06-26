@@ -8,7 +8,6 @@ import base64
 import itertools
 import json
 import os
-import re
 import subprocess
 import uuid
 from typing import Any
@@ -435,7 +434,7 @@ def _find_prs_for_images(image_tags: str, limit: int = 20) -> list[dict]:
     try:
         g = _get_github_client()
         repo = g.get_repo(DEPLOY_REPO)
-        tokens = [t for t in re.split(r"[\s:,]+", image_tags.lower()) if t]
+        tokens = [t for t in image_tags.lower().replace(":", " ").replace(",", " ").split() if t]
         if not tokens:
             return []
         out: list[dict] = []
@@ -492,7 +491,7 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
         # Token-based scan of recent PRs (reliable; no search-index delay and
         # tolerant of ':' vs ' ' between image and tag). A PR matches if every
         # token of the search term appears in its title or head branch.
-        tokens = [t for t in re.split(r"[\s:,]+", search_term.lower()) if t]
+        tokens = [t for t in search_term.lower().replace(":", " ").replace(",", " ").split() if t]
         results: dict[int, dict] = {}
         for pr in itertools.islice(repo.get_pulls(state="all", sort="created", direction="desc"), 80):
             hay = f"{pr.title} {pr.head.ref or ''}".lower()
