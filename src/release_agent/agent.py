@@ -161,10 +161,10 @@ PROMOTION MODEL — SIT → UAT → PRD (important):
 - LEAD TIME: the change request's start_date must be at least one day out (tomorrow or later) — a prod
   release can't be raised for a same-day start. If start_date is today/past, refuse and ask for a later date.
 - NOTHING TO RELEASE: if UAT has no changes vs PRD, do not raise a PR — say there is nothing to release.
-- REMOVE / UNSTAGE: before the day is locked, a developer can pull an image back out of today's release.
-  Call remove_from_release(image_names="<name>[,<name>...]") — it reverts each image to the tag currently on
-  PRD (or drops it if it was new), so it no longer ships today. It's reversible (promote again to re-add).
-  Refused once the day is locked (the UAT → PRD PR is raised) — then point them to that PR to amend/close.
+- REMOVE / UNSTAGE: to pull an image back out of the release, call
+  remove_from_release(image_names="<name>[,<name>...]"). It raises a fresh PR into the protected SIT
+  branch deleting that image from the images config; reviewers merge it and it flows SIT → UAT → PRD.
+  The agent never edits branches directly or merges. Report the SIT PR link.
 - Once the day is locked (today's UAT → PRD PR exists), refuse further adds and point to that PR.
 
 PRD RELEASE CONTROL GATE (mandatory): when a developer wants a PRD/prod release and gives an

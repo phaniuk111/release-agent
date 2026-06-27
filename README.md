@@ -119,7 +119,7 @@ it **locks the day**, so it must not happen earlier or no more images could be a
 - **After the cutoff:** the prod request (or the `raise_prod_release` tool) raises the one UAT → PRD PR with the full UAT set; this needs a change request (drives the auto-created **CHG/RMG**) and locks the day.
 - **Lead time:** the change request's `start_date` must be **tomorrow or later** (`PRD_LEAD_TIME_DAYS`, default 1) — a same-day production start is refused, no PR raised.
 - **Nothing to release:** if UAT has no changes vs PRD (a quiet day), no PR is raised — the tool reports there is nothing to release rather than opening an empty PR. The agent is request-driven, so nothing auto-raises either.
-- **Remove / unstage:** before the day is locked, "remove `<image>` from today's release" (`remove_from_release`) opens a PR chain (working → SIT → UAT) that reverts that image to the tag currently on PRD, or drops it if it was new, so it no longer ships today. Reversible (promote again). Refused once the UAT → PRD PR is raised (points you to that PR to amend/close).
+- **Remove / unstage:** "remove `<image>` from the release" (`remove_from_release`) raises a **fresh PR into the protected SIT branch** that deletes the image from the config. The agent doesn't edit branches or merge — reviewers merge the SIT PR and it flows `SIT → UAT → PRD`. Returns the SIT PR link.
 - **Locked:** once today's UAT → PRD PR exists (open or merged), further adds are refused with a link to that PR.
 - **Build-control gate:** every staged image is checked first — a failed RLFT/RFTL control blocks it (see above).
 
