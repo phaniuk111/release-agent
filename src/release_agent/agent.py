@@ -616,8 +616,11 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
             ))]},
         )
 
-    # PROD promotions: (1) gate on build controls, then (2) require a change request.
+    # PROD promotions: (1) gate on build controls, (2) honor the daily window —
+    # if a PRD release already exists today, ADD to it (no new change request);
+    # otherwise require a change request to open the day's release.
     env = (req.get("environment") or "prod").lower()
+    pre_msgs: list = []
     if env == "prod":
         summary, all_passed, all_located = _prod_controls_summary(req)
         # Fail-closed: a located control that FAILED blocks the promotion.
@@ -629,20 +632,43 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
                     "PRD until they're resolved and the build is re-run."
                 ))]},
             )
-        cr = req.get("change_request") or {}
-        if not cr:
-            note = summary + "\n\n"
-            if not all_located:
-                note += ("Some controls couldn't be auto-located — share the build **run id** that "
-                         "generated the tag and I'll verify them.\n\n")
+
+        from .tools.gh_tools import get_release_status
+        status = get_release_status()
+        today_pr = status.get("prd_pr_today")
+
+        if status.get("cutoff_passed"):
             return Command(
                 goto="respond",
                 update={"messages": [AIMessage(content=(
-                    note + "🔒 Promoting to **prod** (UAT → PRD) requires a change request — it drives the "
-                    "auto-created CHG. Use the **Promote to PROD** action and paste the change-request "
-                    "JSON (environment, images, and a `change_request` block)."
+                    summary + f"\n\n🔒 {status.get('reason', 'Past the PRD cutoff for today.')} "
+                    "The next release window opens tomorrow."
                 ))]},
             )
+
+        if today_pr:
+            # Release-train: add these images to today's existing PRD PR.
+            pre_msgs.append(AIMessage(content=(
+                summary + f"\n\n🚂 A PRD release already exists today — **PR #{today_pr['number']}** "
+                f"({today_pr['url']}, by {today_pr.get('author') or 'unknown'}). I'll **add** these "
+                "images to that release (one release train per day, same CHG). Confirm to proceed."
+            )))
+        else:
+            cr = req.get("change_request") or {}
+            if not cr:
+                note = summary + "\n\n"
+                if not all_located:
+                    note += ("Some controls couldn't be auto-located — share the build **run id** that "
+                             "generated the tag and I'll verify them.\n\n")
+                return Command(
+                    goto="respond",
+                    update={"messages": [AIMessage(content=(
+                        note + "🔒 Promoting to **prod** (UAT → PRD) requires a change request — it drives the "
+                        "auto-created CHG. Use the **Promote to PROD** action and paste the change-request "
+                        "JSON (environment, images, and a `change_request` block)."
+                    ))]},
+                )
+            pre_msgs.append(AIMessage(content=summary))
 
     image_str = ",".join(f"{i['name']}:{i['tag']}" for i in req["images"])
     token = f"CONFIRM-{uuid.uuid4().hex[:6]}"
@@ -654,7 +680,7 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
     ai = AIMessage(content="", tool_calls=[tool_call])  # type: ignore[arg-type]
     return Command(
         goto="propose_tools",
-        update={"messages": [ai], "confirmation_token": token},
+        update={"messages": pre_msgs + [ai], "confirmation_token": token},
     )
 
 
@@ -704,7 +730,13 @@ def confirmation_gate(
     if env == "uat":
         action = "open a PR into the **UAT** branch"
     elif env == "prod":
-        action = "open a PR to promote **UAT → PRD** (CHG/RMG auto-created from the change request)"
+        # Release-train: adding to today's PR vs opening the day's release PR.
+        from .tools.gh_tools import get_release_status
+        today_pr = (get_release_status() or {}).get("prd_pr_today")
+        if today_pr:
+            action = f"**add** these images to today's PRD release **PR #{today_pr['number']}** (same CHG)"
+        else:
+            action = "open a PR to promote **UAT → PRD** (CHG/RMG auto-created from the change request)"
     else:
         action = "apply these changes and dispatch the workflow"
 
@@ -812,7 +844,11 @@ def _summarize_step_result(step: str, content: str) -> str:
         return f"dispatched `{wf}`" + (f" with {inp}" if inp else "")
     if step == STEP_RELEASE_PR:
         num, url = data.get("pr_number"), data.get("pr_url") or ""
-        base = f"opened PR #{num} — {url}" if num else "PR opened"
+        if data.get("action") == "added_to_existing":
+            verb = "added to today's PRD release PR"
+        else:
+            verb = "opened PR"
+        base = f"{verb} #{num} — {url}" if num else "PR updated"
         if data.get("chg"):
             base += f" (CHG {data['chg']}, RMG {data.get('rmg')})"
         return base
