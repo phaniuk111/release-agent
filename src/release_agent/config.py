@@ -89,6 +89,24 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("PRD_ONCE_PER_DAY", "RELEASE_PRD_ONCE_PER_DAY"),
     )
+    # Repo where image build pipelines run (tags + build runs + control steps live
+    # here). Empty -> falls back to the target repo.
+    build_repo: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUILD_REPO", "RELEASE_BUILD_REPO"),
+    )
+    # Step-name prefixes that mark release controls in the build pipeline
+    # (e.g. "RLFT approval gate", "RFTL0001 ..."). Comma-separated.
+    control_prefixes: Annotated[list[str], NoDecode] = Field(
+        default=["RLFT", "RFTL"],
+        validation_alias=AliasChoices("CONTROL_PREFIXES", "RELEASE_CONTROL_PREFIXES"),
+    )
+    # Block a PRD release when any build control failed (fail-closed). When a build
+    # run can't be located we don't hard-block; the agent asks for the run id.
+    prd_require_controls: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PRD_REQUIRE_CONTROLS", "RELEASE_PRD_REQUIRE_CONTROLS"),
+    )
     # Allow-list of workflows the agent may dispatch (enforced). Comma-separated
     # in env, e.g. ALLOWED_WORKFLOWS="image-tag-step-report.yml,release-promote.yml".
     allowed_workflows: Annotated[list[str], NoDecode] = Field(
@@ -154,11 +172,11 @@ class Settings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
-    @field_validator("allowed_workflows", mode="before")
+    @field_validator("allowed_workflows", "control_prefixes", mode="before")
     @classmethod
     def _split_allowed_workflows(cls, v):
-        """Accept a comma-separated string (env) or a JSON array for the dispatch
-        allow-list."""
+        """Accept a comma-separated string (env) or a JSON array for list settings
+        (dispatch allow-list, control prefixes)."""
         if isinstance(v, str):
             v = v.strip()
             if not v:

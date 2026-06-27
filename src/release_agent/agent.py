@@ -149,6 +149,19 @@ workflow run, confirms the tag-generation step succeeded and the job log contain
 marker, and reports the RLFT release-control steps. Offer this check and report verified true/false
 plus the RLFT controls; warn the user if a promote is requested for an unverified tag.
 
+PRD RELEASE CONTROL GATE (mandatory): when a developer wants a PRD/prod release and gives an
+image:tag, you MUST first call get_build_controls(image, tag) to fetch the release CONTROLS
+(RLFT/RFTL gates) recorded in that tag's build pipeline run, and report each one as PASSED or
+FAILED (e.g. "RFTL0001: FAILED, RFTL0002: PASSED"). Rules:
+- The tool finds the build run from the tag automatically. If it returns need_run_id (the run can't
+  be located from image+tag), ASK the developer for the GitHub Actions run id that generated the
+  tag, then call get_build_controls(run_id=<that id>).
+- If ANY control FAILED (gate != PASS), do NOT proceed to open the PRD PR — tell the developer which
+  controls failed and that they must be resolved/re-run first.
+- Only when ALL controls PASSED should you continue with the prod promotion (open_release_pr).
+open_release_pr also enforces this gate server-side for prod, but you should surface the per-control
+PASS/FAIL result to the developer up front.
+
 You MUST propose changes first.
 You MUST get an explicit confirmation token from the user before calling apply_json_update or dispatch_workflow.
 
@@ -543,6 +556,50 @@ def _build_step_call(step: str, req: dict, token: str) -> dict:
     raise ValueError(f"unknown step {step}")
 
 
+def _prod_controls_summary(req: dict) -> tuple[str, bool, bool]:
+    """Fetch each image:tag's build-pipeline release controls (RLFT/RFTL) and return
+    (markdown summary, all_passed, all_located). Used to surface PASS/FAIL up front
+    on a PRD release and block when a control failed."""
+    from .tools.gh_tools import (
+        _get_github_client, _build_repo_full, _find_build_run, _controls_report,
+    )
+    images = req.get("images") or []
+    repo_full = _build_repo_full()
+    try:
+        repo_obj = _get_github_client().get_repo(repo_full)
+    except Exception as e:
+        return (f"⚠️ Couldn't reach the build repo `{repo_full}`: {e}", False, False)
+
+    lines, all_passed, all_located = [], True, True
+    for im in images:
+        name, tag = im.get("name"), im.get("tag")
+        try:
+            run, err = _find_build_run(repo_obj, name, tag)
+            if run is None:
+                all_located = False
+                lines.append(f"• **{name}:{tag}** — ⚠️ build run not found ({err}); share the run id "
+                             "that generated this tag.")
+                continue
+            rep = _controls_report(repo_full, name, tag, run)
+            ctrls = rep["controls"]
+            if not ctrls:
+                all_located = False
+                lines.append(f"• **{name}:{tag}** — ⚠️ no control steps in [this run]({rep['run']['url']}).")
+                continue
+            marks = []
+            for c in ctrls:
+                m = "✅" if c["passed"] else ("❌" if c["failed"] else "⏳")
+                marks.append(f"{m} {c['control']}")
+            ok = rep["all_controls_passed"]
+            all_passed = all_passed and ok
+            lines.append(f"• **{name}:{tag}** — controls {'PASS' if ok else 'FAIL'} "
+                         f"([run]({rep['run']['url']})): " + " · ".join(marks))
+        except Exception as e:
+            all_located = False
+            lines.append(f"• **{name}:{tag}** — ⚠️ controls check error: {e}")
+    return ("**Build release controls (RLFT/RFTL):**\n" + "\n".join(lines), all_passed, all_located)
+
+
 def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]:
     """Craft an AIMessage with a real tool_call so ToolNode can run propose_update.
 
@@ -559,15 +616,29 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
             ))]},
         )
 
-    # PROD promotions require a change request (the data the CHG is created from).
+    # PROD promotions: (1) gate on build controls, then (2) require a change request.
     env = (req.get("environment") or "prod").lower()
     if env == "prod":
-        cr = req.get("change_request") or {}
-        if not cr:
+        summary, all_passed, all_located = _prod_controls_summary(req)
+        # Fail-closed: a located control that FAILED blocks the promotion.
+        if all_located and not all_passed:
             return Command(
                 goto="respond",
                 update={"messages": [AIMessage(content=(
-                    "🔒 Promoting to **prod** (UAT → PRD) requires a change request — it drives the "
+                    summary + "\n\n❌ One or more build controls **FAILED** — I can't promote this to "
+                    "PRD until they're resolved and the build is re-run."
+                ))]},
+            )
+        cr = req.get("change_request") or {}
+        if not cr:
+            note = summary + "\n\n"
+            if not all_located:
+                note += ("Some controls couldn't be auto-located — share the build **run id** that "
+                         "generated the tag and I'll verify them.\n\n")
+            return Command(
+                goto="respond",
+                update={"messages": [AIMessage(content=(
+                    note + "🔒 Promoting to **prod** (UAT → PRD) requires a change request — it drives the "
                     "auto-created CHG. Use the **Promote to PROD** action and paste the change-request "
                     "JSON (environment, images, and a `change_request` block)."
                 ))]},

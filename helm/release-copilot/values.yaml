@@ -45,6 +45,13 @@ config:
   # per day, and only before this UTC hour. The UI shows today's window status.
   PRD_CUTOFF_HOUR_UTC: "16"
   PRD_ONCE_PER_DAY: "true"
+  # Build-control gate: repo where image build pipelines run (tags + runs +
+  # RLFT/RFTL control steps). Empty -> target repo.
+  BUILD_REPO: ""
+  # Step-name prefixes that mark release controls in the build pipeline.
+  CONTROL_PREFIXES: "RLFT,RFTL"
+  # Fail-closed: block a PRD release when any build control failed.
+  PRD_REQUIRE_CONTROLS: "true"
 
 # Extra raw env entries appended to the container (list of {name,value|valueFrom}).
 extraEnv: []

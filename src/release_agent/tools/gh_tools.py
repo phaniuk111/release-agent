@@ -651,11 +651,14 @@ class VerifyImageTagInput(BaseModel):
 
 
 def _image_build_workflow(repo_obj, image: str) -> str | None:
-    """Look up an image's build workflow from image-workflows.json."""
+    """Look up an image's build workflow from image-workflows.json. Accepts either
+    the 'build_workflow' or 'workflow' key (different repos use different names)."""
     try:
         cfg = json.loads(base64.b64decode(repo_obj.get_contents(CONFIG_PATH).content).decode())
         entry = cfg.get("images", {}).get(image)
-        return entry.get("workflow") if isinstance(entry, dict) else None
+        if isinstance(entry, dict):
+            return entry.get("build_workflow") or entry.get("workflow")
+        return None
     except Exception:
         return None
 
@@ -782,6 +785,123 @@ def verify_image_tag_build(image: str, tag: str, repo: str = "",
         "note": "verified=true means the tag was built by a successful run whose tag-gen step logged "
                 "the marker. Check the RLFT control steps before promoting.",
     }, indent=2)
+
+
+# ============ Build-pipeline release controls (RLFT/RFTL pass/fail) ============
+
+class BuildControlsInput(BaseModel):
+    image: str = Field(default="", description="Image name (to find the build workflow + resolve the tag). Optional if run_id is given.")
+    tag: str = Field(default="", description="Git tag that was built, e.g. v1.2.3. Optional if run_id is given.")
+    repo: str = Field(default="", description="owner/repo where the build ran. Defaults to the configured build repo / target repo.")
+    run_id: int = Field(default=0, description="GitHub Actions run id that generated the tag. Pass it to skip tag->run discovery, or when discovery can't find the run.")
+
+
+# Step conclusions that count as a failed control gate.
+_FAIL_CONCLUSIONS = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
+
+
+def _is_control_step(name: str) -> bool:
+    return any(name.startswith(p) for p in settings.control_prefixes)
+
+
+def _collect_controls(run) -> list[dict]:
+    """Enumerate a build run's release-control steps (RLFT/RFTL...) with pass/fail."""
+    controls = []
+    for job in run.jobs():
+        for step in (getattr(job, "steps", None) or []):
+            name = getattr(step, "name", "") or ""
+            if not _is_control_step(name):
+                continue
+            concl = getattr(step, "conclusion", None)
+            controls.append({
+                "control": name, "job": job.name,
+                "status": getattr(step, "status", None), "conclusion": concl,
+                "passed": concl == "success", "failed": concl in _FAIL_CONCLUSIONS,
+            })
+    return controls
+
+
+def _build_repo_full(repo: str = "") -> str:
+    return repo or settings.build_repo or TARGET_REPO
+
+
+def _find_build_run(repo_obj, image: str, tag: str):
+    """Return (newest build run for image at tag's commit, None) or (None, reason)."""
+    workflow = _image_build_workflow(repo_obj, image)
+    if not workflow:
+        return None, f"image '{image}' has no build workflow in {CONFIG_PATH}"
+    commit = _resolve_tag_commit(repo_obj, tag)
+    if not commit:
+        return None, f"tag '{tag}' not found"
+    try:
+        wf = repo_obj.get_workflow(workflow)
+        runs = [r for r in itertools.islice(wf.get_runs(), 100) if r.head_sha == commit]
+    except Exception as e:
+        return None, str(e)
+    if not runs:
+        return None, f"no '{workflow}' run found at commit {commit[:7]}"
+    return sorted(runs, key=lambda r: r.created_at, reverse=True)[0], None
+
+
+def _controls_report(repo_full, image, tag, run) -> dict:
+    controls = _collect_controls(run)
+    passed = [c["control"] for c in controls if c["passed"]]
+    failed = [c["control"] for c in controls if c["failed"]]
+    other = [c["control"] for c in controls if not c["passed"] and not c["failed"]]
+    gate_pass = bool(controls) and not failed and not other
+    return {
+        "image": image, "tag": tag, "repo": repo_full,
+        "run": {"id": run.id, "name": run.name, "url": run.html_url,
+                "head_sha": run.head_sha, "conclusion": run.conclusion, "created_at": str(run.created_at)},
+        "controls": controls,
+        "summary": {"total": len(controls), "passed": passed, "failed": failed, "other": other},
+        "gate": "PASS" if gate_pass else ("FAIL" if failed else "UNKNOWN"),
+        "all_controls_passed": gate_pass,
+    }
+
+
+@tool(args_schema=BuildControlsInput)
+def get_build_controls(image: str = "", tag: str = "", repo: str = "", run_id: int = 0) -> str:
+    """
+    Fetch the release CONTROLS (RLFT/RFTL gates) recorded in the build pipeline for
+    an image:tag and report which PASSED and which FAILED — run this BEFORE a PRD
+    release. Either pass run_id (the GitHub Actions run that generated the tag), OR
+    pass image+tag and it locates the run from the tag's commit automatically. If it
+    can't find the run from image+tag, it returns need_run_id and you must ask the
+    developer for the run id that generated the tag.
+    """
+    repo_full = _build_repo_full(repo)
+    try:
+        g = _get_github_client()
+        repo_obj = g.get_repo(repo_full)
+    except Exception as e:
+        return f"ERROR fetching controls: {e}"
+
+    if run_id:
+        try:
+            run = repo_obj.get_workflow_run(int(run_id))
+        except Exception:
+            return (f"ERROR fetching controls: run id {run_id} not found in {repo_full}. "
+                    "Check the run id and that the repo is the build-pipeline repo.")
+    else:
+        if not (image and tag):
+            return ("NEED_INPUT: provide a run_id, or both image and tag, so I can locate the "
+                    "build-pipeline run that generated the tag.")
+        run, err = _find_build_run(repo_obj, image, tag)
+        if run is None:
+            return json.dumps({
+                "need_run_id": True, "image": image, "tag": tag, "repo": repo_full, "reason": err,
+                "ask": (f"I couldn't locate the build run for {image}:{tag} in {repo_full} ({err}). "
+                        "Please provide the GitHub Actions run id that generated this tag."),
+            }, indent=2)
+
+    report = _controls_report(repo_full, image, tag, run)
+    if not report["controls"]:
+        report["note"] = (f"No control steps matched prefixes {settings.control_prefixes} in this run — "
+                          "verify the run id / build pipeline.")
+    else:
+        report["note"] = "gate=PASS only when every control passed. Do NOT promote to PRD with any FAILED control."
+    return json.dumps(report, indent=2)
 
 
 # ============ Environment promotion: update config JSON + open a PR (PyGithub) ============
@@ -926,6 +1046,31 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
                 extra = f" Existing release: PR #{p['number']} by {p.get('author') or 'unknown'} — {p['url']}."
             return f"ERROR opening release PR: {status.get('reason', 'PRD release not allowed right now.')}{extra}"
 
+    # Build-control gate (fail-closed): block a PRD release if any release control
+    # failed in the build pipeline for any image:tag. If a build run can't be
+    # located we don't hard-block — the conversational flow asks for the run id.
+    if env == "prod" and settings.prd_require_controls:
+        try:
+            bg = _get_github_client()
+            brepo = bg.get_repo(_build_repo_full())
+        except Exception:
+            brepo = None
+        if brepo is not None:
+            failures = []
+            for image, tag in pairs:
+                run, _err = _find_build_run(brepo, image, tag)
+                if run is None:
+                    continue  # unverifiable here; chat flow asks for the run id
+                rep = _controls_report(_build_repo_full(), image, tag, run)
+                if rep["summary"]["failed"]:
+                    failures.append(
+                        f"{image}:{tag} → FAILED controls: {', '.join(rep['summary']['failed'])} "
+                        f"(build run {rep['run']['url']})"
+                    )
+            if failures:
+                return ("ERROR opening release PR: build controls failed — cannot promote to PRD.\n"
+                        + "\n".join(failures))
+
     uat_branch, prd_branch = settings.uat_branch, settings.prd_branch
     images_path, cr_path = settings.env_config_path, settings.change_request_path
     base = uat_branch if env == "uat" else prd_branch
@@ -1035,6 +1180,7 @@ GH_TOOLS = [
     summarize_pr_controls,
     retrigger_deployment_workflow,
     verify_image_tag_build,
+    get_build_controls,
     open_release_pr,
     check_release_window,
 ]
