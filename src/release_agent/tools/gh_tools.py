@@ -1032,48 +1032,125 @@ def check_release_window() -> str:
     return json.dumps(get_release_status(), indent=2)
 
 
-def _add_images_to_uat(repo, pairs: list) -> dict:
-    """Stage image:tag pairs on the UAT branch images config — the day's release
-    accumulates here (SIT->UAT->PRD). Returns the full updated UAT image set."""
-    images_path, uat = settings.env_config_path, settings.uat_branch
-    cfg = _read_json_file(repo, uat, images_path)
+def _merge_pr(pr, method: str = "squash"):
+    """Merge a PR once GitHub has computed mergeability. Returns (merged, detail).
+    On protected branches that require review, the merge is refused — we report it
+    and leave the PR open for approval."""
+    import time
+    for _ in range(8):
+        try:
+            pr.update()
+        except Exception:
+            pass
+        if pr.mergeable is not None:
+            break
+        time.sleep(1)
+    if pr.mergeable is False:
+        return False, f"awaiting review/checks ({pr.mergeable_state})"
+    try:
+        pr.merge(merge_method=method)
+        return True, "merged"
+    except Exception as e:
+        return False, f"could not auto-merge (likely branch protection): {e}"
+
+
+def _apply_via_pr_chain(repo, mutate_fn, summary: str) -> dict:
+    """Branches are protected — never commit to them directly. Apply a change to the
+    images config via PRs along the chain: a fresh working branch -> SIT -> UAT.
+    Each step is a PR (merged when protection allows). mutate_fn(images: dict) -> bool
+    mutates the images map in place and returns True if it changed anything."""
+    sit, uat = settings.sit_branch, settings.uat_branch
+    images_path = settings.env_config_path
+    prs: list = []
+
+    sit_ref = repo.get_git_ref(f"heads/{sit}")
+    work = f"change/sit/{uuid.uuid4().hex[:8]}"
+    repo.create_git_ref(f"refs/heads/{work}", sit_ref.object.sha)
+    cfg = _read_json_file(repo, work, images_path)
     if not isinstance(cfg, dict):
         cfg = {}
-    cfg["environment"] = "uat"
     cfg.setdefault("images", {})
-    cfg["images"].update({i: t for i, t in pairs})
+    changed = mutate_fn(cfg["images"])
+    if not changed:
+        try:
+            repo.get_git_ref(f"heads/{work}").delete()
+        except Exception:
+            pass
+        return {"changed": False, "prs": []}
     cfg["updated_by"] = "release-copilot"
-    _upsert_json_file(repo, uat, images_path, cfg)
-    return cfg["images"]
+    _upsert_json_file(repo, work, images_path, cfg)
+
+    # 1) working branch -> SIT
+    pr_sit = repo.create_pull(title=f"{summary} (→ {sit})", body=summary, head=work, base=sit)
+    ok, detail = _merge_pr(pr_sit, "squash")
+    prs.append({"stage": f"→{sit}", "number": pr_sit.number, "url": pr_sit.html_url,
+                "merged": ok, "detail": detail})
+    # 2) SIT -> UAT (promote) — only if SIT actually advanced
+    if ok:
+        try:
+            pr_uat = repo.create_pull(title=f"Promote {sit} → {uat}: {summary}", body=summary,
+                                      head=sit, base=uat)
+            ok2, detail2 = _merge_pr(pr_uat, "merge")
+            prs.append({"stage": f"{sit}→{uat}", "number": pr_uat.number, "url": pr_uat.html_url,
+                        "merged": ok2, "detail": detail2})
+        except Exception as e:
+            prs.append({"stage": f"{sit}→{uat}", "error": str(e)})
+    return {"changed": True, "prs": prs}
+
+
+def _pr_chain_note(prs: list) -> str:
+    """One-line human summary of the PRs raised by _apply_via_pr_chain."""
+    if not prs:
+        return "No change (already in that state)."
+    bits = []
+    for p in prs:
+        if p.get("number"):
+            bits.append(f"PR #{p['number']} {p['stage']} ({'merged' if p.get('merged') else p.get('detail', 'open')})")
+        elif p.get("error"):
+            bits.append(f"{p['stage']} failed: {p['error']}")
+    return "; ".join(bits) + "."
+
+
+def _add_images_to_uat(repo, pairs: list) -> dict:
+    """Stage image:tag pairs for the day's release via the protected-branch PR chain
+    (working -> SIT -> UAT). Returns {uat_images, prs, changed}."""
+    image_map = {i: t for i, t in pairs}
+
+    def _mut(images):
+        before = dict(images)
+        images.update(image_map)
+        return images != before
+
+    summary = "Add " + ",".join(f"{i}:{t}" for i, t in pairs) + " to release"
+    res = _apply_via_pr_chain(repo, _mut, summary)
+    uat_images = (_read_json_file(repo, settings.uat_branch, settings.env_config_path) or {}).get("images", {}) or {}
+    return {"uat_images": uat_images, "prs": res["prs"], "changed": res["changed"]}
 
 
 def _unstage_images_from_uat(repo, names: list) -> dict:
-    """Remove image(s) from today's pending release on UAT: revert each to the tag
-    currently on PRD (so it's no longer pending), or drop it entirely if PRD doesn't
-    have it. Only commits if something actually changed."""
-    images_path, uat, prd = settings.env_config_path, settings.uat_branch, settings.prd_branch
-    uat_cfg = _read_json_file(repo, uat, images_path)
-    if not isinstance(uat_cfg, dict):
-        uat_cfg = {}
-    uat_images = uat_cfg.get("images", {}) or {}
-    prd_images = (_read_json_file(repo, prd, images_path) or {}).get("images", {}) or {}
+    """Remove image(s) from the day's release via the protected-branch PR chain
+    (working -> SIT -> UAT): revert each to PRD's current tag, or drop it if new."""
+    prd_images = (_read_json_file(repo, settings.prd_branch, settings.env_config_path) or {}).get("images", {}) or {}
     reverted, removed, not_found = [], [], []
-    for n in names:
-        if n not in uat_images:
-            not_found.append(n)
-        elif n in prd_images:
-            uat_images[n] = prd_images[n]
-            reverted.append(f"{n}→{prd_images[n]} (PRD)")
-        else:
-            del uat_images[n]
-            removed.append(n)
-    if reverted or removed:
-        uat_cfg["images"] = uat_images
-        uat_cfg["updated_by"] = "release-copilot"
-        _upsert_json_file(repo, uat, images_path, uat_cfg)
+
+    def _mut(images):
+        for n in names:
+            if n not in images:
+                not_found.append(n)
+            elif n in prd_images:
+                images[n] = prd_images[n]
+                reverted.append(f"{n}→{prd_images[n]} (PRD)")
+            else:
+                del images[n]
+                removed.append(n)
+        return bool(reverted or removed)
+
+    summary = "Remove " + ",".join(names) + " from release"
+    res = _apply_via_pr_chain(repo, _mut, summary)
+    uat_images = (_read_json_file(repo, settings.uat_branch, settings.env_config_path) or {}).get("images", {}) or {}
     pending = {i: t for i, t in uat_images.items() if prd_images.get(i) != t}
     return {"reverted": reverted, "removed": removed, "not_found": not_found,
-            "pending_after": pending}
+            "pending_after": pending, "prs": res["prs"], "changed": res["changed"]}
 
 
 class RemoveFromReleaseInput(BaseModel):
@@ -1116,8 +1193,13 @@ def remove_from_release(image_names: str) -> str:
         note_parts.append("dropped (was new): " + ", ".join(res["removed"]))
     if res["not_found"]:
         note_parts.append("not staged: " + ", ".join(res["not_found"]))
+    pr_str = "; ".join(
+        f"PR #{p['number']} {p['stage']} ({'merged' if p.get('merged') else p.get('detail', 'open')})"
+        for p in res.get("prs", []) if p.get("number"))
     note = ("Removed from today's release — " if changed else "No changes — ") + (
         "; ".join(note_parts) or "nothing matched") + f". {len(res['pending_after'])} image(s) still pending."
+    if pr_str:
+        note += f" Via {pr_str}."
     return json.dumps({"ok": True, "action": "unstaged", **res, "note": note}, indent=2)
 
 
@@ -1273,13 +1355,15 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
     except Exception as e:
         return f"ERROR opening release PR: {e}"
 
-    # --- UAT: just stage onto UAT ---
+    # --- UAT: stage onto UAT via the protected-branch PR chain (working->SIT->UAT) ---
     if env == "uat":
-        imgs = _add_images_to_uat(repo, pairs)
+        res = _add_images_to_uat(repo, pairs)
+        imgs = res["uat_images"]
         return json.dumps({
             "ok": True, "environment": "uat", "action": "staged_to_uat",
-            "image_tags": image_str, "uat_images": imgs,
-            "note": f"Staged {image_str} onto UAT ({len(imgs)} image(s) now on UAT).",
+            "image_tags": image_str, "uat_images": imgs, "prs": res["prs"],
+            "note": f"Staged {image_str} via PR chain (working→SIT→UAT). {_pr_chain_note(res['prs'])} "
+                    f"{len(imgs)} image(s) on UAT.",
         }, indent=2)
 
     # --- PROD path ---
@@ -1294,17 +1378,18 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
     if failures:
         return ("ERROR: build controls failed — cannot stage for PRD release.\n" + "\n".join(failures))
 
-    # Stage the requested images onto UAT.
-    imgs = _add_images_to_uat(repo, pairs)
+    # Stage the requested images for today's release via the PR chain (working->SIT->UAT).
+    res = _add_images_to_uat(repo, pairs)
+    imgs = res["uat_images"]
 
     if not status.get("cutoff_passed"):
         cutoff = settings.prd_cutoff_hour_utc
         return json.dumps({
             "ok": True, "environment": "prod", "action": "staged_to_uat",
-            "image_tags": image_str, "uat_images": imgs,
-            "note": (f"Staged {image_str} onto UAT for today's release ({len(imgs)} image(s) total). "
-                     f"The single UAT→PRD PR is raised after {cutoff:02d}:00 UTC — until then more "
-                     "images can be added."),
+            "image_tags": image_str, "uat_images": imgs, "prs": res["prs"],
+            "note": (f"Staged {image_str} for today's release via PR chain (working→SIT→UAT). "
+                     f"{_pr_chain_note(res['prs'])} {len(imgs)} image(s) on UAT. The single UAT→PRD PR "
+                     f"is raised after {cutoff:02d}:00 UTC — until then more images can be added."),
         }, indent=2)
 
     # Cutoff passed → raise the day's UAT→PRD release PR.

@@ -150,10 +150,11 @@ marker, and reports the RLFT release-control steps. Offer this check and report 
 plus the RLFT controls; warn the user if a promote is requested for an unverified tag.
 
 PROMOTION MODEL — SIT → UAT → PRD (important):
-- Images flow SIT → UAT → PRD. Through the day, every "promote to prod / add image" request STAGES
-  the image on the UAT branch (the day's release accumulates there). The single UAT → PRD release PR
-  is raised ONLY after the daily cutoff (raising it LOCKS the day, so it must not happen earlier or
-  no more images could be added).
+- The env branches (SIT, UAT, PRD) are PROTECTED — never edited directly; every change is a PR. A
+  "promote to prod / add image" request opens a PR chain (working branch → SIT → UAT) so the image
+  lands on UAT, where the day's release accumulates. The single UAT → PRD release PR is raised ONLY
+  after the daily cutoff (raising it LOCKS the day, so it must not happen earlier or no more images
+  could be added).
 - Before the cutoff: a prod request stages onto UAT (no change request needed yet).
 - After the cutoff: the prod request (or raise_prod_release) raises the one UAT → PRD PR with the full
   UAT set; this requires a change request (drives the CHG/RMG) and locks the day.
