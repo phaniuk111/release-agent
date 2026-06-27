@@ -818,6 +818,68 @@ def _read_json_file(repo, branch: str, path: str) -> dict:
         return {}
 
 
+# ---- Today's PRD release window (shared across sessions via GitHub) ----
+
+def _todays_prd_prs() -> list:
+    """PRD-branch PRs created today (UTC). GitHub is the cross-session source of
+    truth, so any session sees the same 'is there a release today?' answer."""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
+    g = _get_github_client()
+    repo = g.get_repo(DEPLOY_REPO)
+    out = []
+    for pr in itertools.islice(
+        repo.get_pulls(state="all", base=settings.prd_branch, sort="created", direction="desc"), 40
+    ):
+        d = pr.created_at.astimezone(timezone.utc).date()
+        if d == today:
+            out.append(pr)
+        elif d < today:
+            break
+    return out
+
+
+def get_release_status() -> dict:
+    """Today's PRD release status: whether a PRD PR already exists today, whether
+    the daily UTC cutoff has passed, and whether a new PRD release can be created."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    cutoff = settings.prd_cutoff_hour_utc
+    cutoff_passed = now.hour >= cutoff
+    base = {"date_utc": now.date().isoformat(), "now_utc": now.strftime("%H:%M"),
+            "cutoff_utc": f"{cutoff:02d}:00", "cutoff_passed": cutoff_passed}
+    try:
+        prs = _todays_prd_prs()
+    except Exception as e:
+        return {**base, "error": str(e), "can_create_prd": True, "prd_pr_today": None}
+    today_pr = prs[0] if prs else None
+    can_create = (today_pr is None or not settings.prd_once_per_day) and not cutoff_passed
+    if today_pr is not None and settings.prd_once_per_day:
+        reason = f"A PRD release PR was already created today (#{today_pr.number})."
+    elif cutoff_passed:
+        reason = f"Past the {cutoff:02d}:00 UTC cutoff — no more PRD releases today."
+    else:
+        reason = f"PRD window open until {cutoff:02d}:00 UTC."
+    return {
+        **base,
+        "can_create_prd": can_create,
+        "reason": reason,
+        "prd_pr_today": ({
+            "number": today_pr.number, "url": today_pr.html_url, "title": today_pr.title,
+            "state": today_pr.state, "author": today_pr.user.login if today_pr.user else None,
+            "created_at": str(today_pr.created_at),
+        } if today_pr else None),
+    }
+
+
+@tool
+def check_release_window() -> str:
+    """Report today's PRD release status (UTC): whether a PRD release PR already
+    exists today, whether the daily cutoff has passed, and whether a new PRD
+    release can still be created. Shared across all sessions/developers via GitHub."""
+    return json.dumps(get_release_status(), indent=2)
+
+
 @tool(args_schema=OpenReleasePRInput)
 def open_release_pr(environment: str, image_tags: str, change_request_json: str = "") -> str:
     """
@@ -851,6 +913,18 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
             return "ERROR opening release PR: change_request_json is not valid JSON."
     if env == "prod" and not cr:
         return "ERROR opening release PR: prod promotion requires a change_request block (drives the CHG)."
+
+    # Daily PRD policy (shared across sessions via GitHub): at most one PRD PR per
+    # day, created before the UTC cutoff. Blocks a second developer in another
+    # session from raising a duplicate same-day release.
+    if env == "prod":
+        status = get_release_status()
+        if not status.get("can_create_prd", True):
+            extra = ""
+            if status.get("prd_pr_today"):
+                p = status["prd_pr_today"]
+                extra = f" Existing release: PR #{p['number']} by {p.get('author') or 'unknown'} — {p['url']}."
+            return f"ERROR opening release PR: {status.get('reason', 'PRD release not allowed right now.')}{extra}"
 
     uat_branch, prd_branch = settings.uat_branch, settings.prd_branch
     images_path, cr_path = settings.env_config_path, settings.change_request_path
@@ -962,4 +1036,5 @@ GH_TOOLS = [
     retrigger_deployment_workflow,
     verify_image_tag_build,
     open_release_pr,
+    check_release_window,
 ]

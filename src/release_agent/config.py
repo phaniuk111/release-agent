@@ -80,6 +80,15 @@ class Settings(BaseSettings):
         default="change-request.json",
         validation_alias=AliasChoices("CHANGE_REQUEST_PATH", "RELEASE_CHANGE_REQUEST_PATH"),
     )
+    # PRD release policy: at most one PRD PR per day, created before this UTC hour.
+    prd_cutoff_hour_utc: int = Field(
+        default=16,
+        validation_alias=AliasChoices("PRD_CUTOFF_HOUR_UTC", "RELEASE_PRD_CUTOFF_HOUR_UTC"),
+    )
+    prd_once_per_day: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PRD_ONCE_PER_DAY", "RELEASE_PRD_ONCE_PER_DAY"),
+    )
     # Allow-list of workflows the agent may dispatch (enforced). Comma-separated
     # in env, e.g. ALLOWED_WORKFLOWS="image-tag-step-report.yml,release-promote.yml".
     allowed_workflows: Annotated[list[str], NoDecode] = Field(
