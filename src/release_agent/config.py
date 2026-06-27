@@ -99,6 +99,12 @@ class Settings(BaseSettings):
         default=1,
         validation_alias=AliasChoices("PRD_LEAD_TIME_DAYS", "RELEASE_PRD_LEAD_TIME_DAYS"),
     )
+    # Max tool-call turns in the free-form ReAct lane before stopping gracefully
+    # (guards against runaway llm<->tools loops, well under recursion_limit=25).
+    react_max_tool_turns: int = Field(
+        default=8,
+        validation_alias=AliasChoices("REACT_MAX_TOOL_TURNS", "RELEASE_REACT_MAX_TOOL_TURNS"),
+    )
     # Repo where image build pipelines run (tags + build runs + control steps live
     # here). Empty -> falls back to the target repo.
     build_repo: str = Field(

@@ -81,6 +81,8 @@ class ReleaseState(BaseModel):
     steps: Optional[List[dict]] = None
     # Set by parse when the user asks to re-run step(s); routes to the rerun node.
     rerun_steps: Optional[List[str]] = None
+    # Tool-call turns taken in the free-form ReAct lane this user turn (loop guard).
+    llm_tool_turns: int = 0
     repo: str = Field(default=TARGET_REPO)
     deploy_repo: str = Field(default=DEPLOY_REPO)
 
@@ -511,7 +513,7 @@ def parse_intent(state: ReleaseState) -> dict:
     # NOTE: do not inject the SystemMessage here. add_messages would APPEND it
     # after the user's HumanMessage, and Gemini only honors a *leading* system
     # instruction — so the prompt would be ignored. call_llm prepends it instead.
-    out: dict[str, Any] = {}
+    out: dict[str, Any] = {"llm_tool_turns": 0}  # reset the ReAct loop guard each turn
 
     # A re-run request reuses the prior release_request/steps — don't re-parse images.
     rerun = _detect_rerun(last, state.steps)
@@ -1050,6 +1052,26 @@ def respond(state: ReleaseState) -> dict:
     ))]}
 
 
+def react_giveup(state: ReleaseState) -> dict:
+    """Stop the ReAct lane gracefully when it hits the tool-call cap. Answers the
+    last (unexecuted) tool_calls so the message history stays valid, then returns a
+    helpful message instead of looping to the recursion limit and crashing."""
+    last = state.messages[-1] if state.messages else None
+    tool_msgs = []
+    for tc in (getattr(last, "tool_calls", None) or []):
+        tcid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+        if tcid:
+            tool_msgs.append(ToolMessage(
+                content="Skipped: reached the tool-call limit for this request.",
+                tool_call_id=tcid,
+            ))
+    msg = AIMessage(content=(
+        "I've run several lookups without converging on an answer. Could you narrow "
+        "the request — e.g. a specific `image:tag` or PR number — and I'll dig in directly?"
+    ))
+    return {"messages": tool_msgs + [msg]}
+
+
 def build_graph(checkpointer=None):
     """Build and return the compiled graph.
     LLM is created lazily to avoid import-time credential requirements.
@@ -1101,11 +1123,19 @@ def build_graph(checkpointer=None):
         except Exception:
             pass
 
-        return {"messages": [resp]}
+        update = {"messages": [resp]}
+        # Count a ReAct tool turn each time the model asks to call tools.
+        if getattr(resp, "tool_calls", None):
+            update["llm_tool_turns"] = (state.llm_tool_turns or 0) + 1
+        return update
 
-    def route_after_llm(state: ReleaseState) -> Literal["llm_tools", "__end__"]:
+    def route_after_llm(state: ReleaseState) -> Literal["llm_tools", "giveup", "__end__"]:
         last = state.messages[-1] if state.messages else None
-        return "llm_tools" if getattr(last, "tool_calls", None) else END
+        if getattr(last, "tool_calls", None):
+            if (state.llm_tool_turns or 0) >= settings.react_max_tool_turns:
+                return "giveup"   # cap reached → stop gracefully
+            return "llm_tools"
+        return END
 
     # Retry only TRANSIENT failures (network blips, 5xx, rate limits) — never
     # deterministic ones (404/422/auth), which won't fix on retry. Mainly catches
@@ -1150,6 +1180,7 @@ def build_graph(checkpointer=None):
     graph.add_node("respond", respond)
     graph.add_node("llm", call_llm, retry_policy=retry)
     graph.add_node("llm_tools", tool_node, retry_policy=retry)
+    graph.add_node("react_giveup", react_giveup)
 
     # Entry + branch: re-run request, concrete image:tag pairs, or free-form chat.
     graph.add_edge(START, "parse")
@@ -1169,12 +1200,13 @@ def build_graph(checkpointer=None):
     graph.add_edge("track_pr", END)
     graph.add_edge("respond", END)
 
-    # Free-form ReAct path.
+    # Free-form ReAct path (with a tool-call cap that exits via react_giveup).
     graph.add_conditional_edges(
         "llm", route_after_llm,
-        {"llm_tools": "llm_tools", END: END},
+        {"llm_tools": "llm_tools", "giveup": "react_giveup", END: END},
     )
     graph.add_edge("llm_tools", "llm")
+    graph.add_edge("react_giveup", END)
 
     return graph.compile(checkpointer=checkpointer)
 
