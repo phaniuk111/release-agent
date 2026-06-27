@@ -54,13 +54,30 @@ def _resolve_github_token() -> str | None:
     return None
 
 
+# HTTP-level retry for transient GitHub failures (5xx, secondary rate limits, network
+# blips). Idempotent methods only (urllib3 excludes POST), so PR/branch *creation* is
+# never retried — no risk of duplicate PRs. This layer matters because the tools catch
+# exceptions and return strings, so a node-level retry alone wouldn't see the blip.
+def _gh_retry():
+    try:
+        from urllib3.util.retry import Retry
+        return Retry(
+            total=4, backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            respect_retry_after_header=True,
+        )
+    except Exception:
+        return None
+
+
 # Initialize PyGithub client (PAT via GH_TOKEN/GITHUB_TOKEN, or the gh CLI login)
 def _get_github_client() -> Github:
     token = _resolve_github_token()
+    retry = _gh_retry()
     if token:
-        return Github(auth=Auth.Token(token))
+        return Github(auth=Auth.Token(token), retry=retry)
     # Fallback - unauthenticated (will hit rate limits / 404s on private repos)
-    return Github()
+    return Github(retry=retry)
 
 
 # Pydantic schemas for tool inputs (better validation + schema generation)

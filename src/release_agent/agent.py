@@ -36,7 +36,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, interrupt, RetryPolicy
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -1107,6 +1107,31 @@ def build_graph(checkpointer=None):
         last = state.messages[-1] if state.messages else None
         return "llm_tools" if getattr(last, "tool_calls", None) else END
 
+    # Retry only TRANSIENT failures (network blips, 5xx, rate limits) — never
+    # deterministic ones (404/422/auth), which won't fix on retry. Mainly catches
+    # Vertex/LLM hiccups in the `llm` node and any tool exception that escapes
+    # ToolNode's own error handling. (GitHub API blips are also retried lower down,
+    # at the HTTP layer in _get_github_client.)
+    def _is_transient_error(exc: Exception) -> bool:
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            return True
+        if type(exc).__name__ in {
+            "ServiceUnavailable", "DeadlineExceeded", "ResourceExhausted",
+            "InternalServerError", "TooManyRequests", "Aborted", "GatewayTimeout",
+        }:
+            return True
+        try:
+            import requests
+            if isinstance(exc, requests.exceptions.RequestException):
+                return True
+        except Exception:
+            pass
+        status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+        return isinstance(status, int) and (status == 429 or status >= 500)
+
+    retry = RetryPolicy(max_attempts=3, initial_interval=0.5, backoff_factor=2.0,
+                        jitter=True, retry_on=_is_transient_error)
+
     # One ToolNode implementation, registered under three deterministic names so
     # each graph node has exactly one outgoing edge.
     tool_node = ToolNode(GH_TOOLS)
@@ -1115,16 +1140,16 @@ def build_graph(checkpointer=None):
 
     graph.add_node("parse", parse_intent)
     graph.add_node("propose", propose)
-    graph.add_node("propose_tools", tool_node)
+    graph.add_node("propose_tools", tool_node, retry_policy=retry)
     graph.add_node("gate", confirmation_gate)
     graph.add_node("apply", build_apply_and_dispatch)
     graph.add_node("rerun", rerun)
-    graph.add_node("apply_tools", tool_node)
+    graph.add_node("apply_tools", tool_node, retry_policy=retry)
     graph.add_node("finalize", finalize)
-    graph.add_node("track_pr", track_pr)
+    graph.add_node("track_pr", track_pr, retry_policy=retry)
     graph.add_node("respond", respond)
-    graph.add_node("llm", call_llm)
-    graph.add_node("llm_tools", tool_node)
+    graph.add_node("llm", call_llm, retry_policy=retry)
+    graph.add_node("llm_tools", tool_node, retry_policy=retry)
 
     # Entry + branch: re-run request, concrete image:tag pairs, or free-form chat.
     graph.add_edge(START, "parse")

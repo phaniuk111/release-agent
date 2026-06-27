@@ -146,6 +146,7 @@ every developer without a separate database.
 ## Architecture Highlights
 
 - Pure LangGraph `StateGraph` with explicit nodes + `interrupt()` for confirmation.
+- **Transient-failure resilience:** a LangGraph `RetryPolicy` on the tool/LLM nodes (retries only network blips, 5xx, and rate limits — never 404/422/auth), plus HTTP-level retry on the PyGithub client (idempotent methods only, so PR creation is never double-fired).
 - Tools are thin, validated wrappers around `gh` (subprocess, list args only).
 - **FastAPI** as the main interface (chosen for production readiness).
 - Streaming support (SSE) so the chat feels responsive.
