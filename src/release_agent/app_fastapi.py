@@ -348,6 +348,7 @@ async def chat_page():
         const CAPABILITIES = [
             {icon:'fa-flask',             label:'Promote to UAT',       desc:'stage image(s) on the UAT branch',           form:'uat'},
             {icon:'fa-shield-halved',     label:'Promote to PROD',      desc:'stage on UAT; UAT→PRD PR raised after cutoff', form:'prod'},
+            {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage an image before the cutoff',          send:false, text:"remove <image-name> from today's release"},
             {icon:'fa-calendar-day',      label:"Today's release window", desc:'is a PRD release already scheduled today?',  send:true,  text:'is there a PRD release scheduled today?'},
             {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
             {icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RLFT/RFTL gates for a tag',         send:false, text:'check build controls for <image>:<tag> before a PRD release'},
