@@ -981,27 +981,37 @@ def get_release_status() -> dict:
         repo = g.get_repo(DEPLOY_REPO)
         uat_cfg = _read_json_file(repo, settings.uat_branch, settings.env_config_path)
         uat_images = uat_cfg.get("images", {}) if isinstance(uat_cfg, dict) else {}
+        prd_cfg = _read_json_file(repo, settings.prd_branch, settings.env_config_path)
+        prd_images = prd_cfg.get("images", {}) if isinstance(prd_cfg, dict) else {}
         prs = _todays_prd_prs()
     except Exception as e:
         return {**base, "error": str(e), "can_add": True, "can_raise_prod": False,
-                "locked": False, "uat_images": {}, "prd_pr_today": None}
+                "locked": False, "uat_images": {}, "pending_changes": {}, "prd_pr_today": None}
+
+    # Pending = images on UAT whose tag differs from PRD (what an UAT->PRD PR would
+    # actually promote). UAT config persists across days, so "has any images" is NOT
+    # the same as "has something to release today" — compare against PRD.
+    pending = {i: t for i, t in uat_images.items() if prd_images.get(i) != t}
 
     today_pr = prs[0] if prs else None         # today's UAT->PRD release PR (post-cutoff)
     locked = today_pr is not None              # release raised -> no more adds today
     can_add = not locked                       # adds land on UAT until the PR is raised
-    can_raise_prod = cutoff_passed and not locked and bool(uat_images)
+    can_raise_prod = cutoff_passed and not locked and bool(pending)
 
     if locked:
         reason = f"Today's UAT→PRD release PR #{today_pr.number} is raised — the day is locked."
+    elif not pending:
+        reason = ("No changes on UAT vs PRD — nothing to release"
+                  + (" (cutoff passed)." if cutoff_passed else f"; UAT→PRD opens after {cutoff:02d}:00 UTC."))
     elif cutoff_passed:
-        reason = (f"Cutoff passed — raise the UAT→PRD release PR ({len(uat_images)} image(s) in UAT)."
-                  if uat_images else "Cutoff passed — no images in UAT to release.")
+        reason = f"Cutoff passed — raise the UAT→PRD release PR ({len(pending)} image(s) to promote)."
     else:
-        reason = (f"Collecting on UAT ({len(uat_images)} image(s)); the UAT→PRD PR opens after "
-                  f"{cutoff:02d}:00 UTC.")
+        reason = (f"Collecting on UAT ({len(pending)} image(s) pending vs PRD); the UAT→PRD PR opens "
+                  f"after {cutoff:02d}:00 UTC.")
     return {
         **base,
         "uat_images": uat_images,
+        "pending_changes": pending,
         "locked": locked,
         "can_add": can_add,
         "can_raise_prod": can_raise_prod,
@@ -1037,17 +1047,54 @@ def _add_images_to_uat(repo, pairs: list) -> dict:
     return cfg["images"]
 
 
+def _lead_time_ok(cr: dict):
+    """Production changes need lead time: the change request's start_date must be at
+    least `prd_lead_time_days` ahead (default 1 -> tomorrow or later).
+    Returns (ok: bool, message: str)."""
+    from datetime import datetime, timezone, timedelta
+    raw = str(cr.get("start_date") or "").strip()
+    lead = settings.prd_lead_time_days
+    if not raw:
+        return False, ("the change request needs a start_date — production releases need lead time, so "
+                       f"the start date must be at least {lead} day(s) out.")
+    dt = None
+    for candidate in (raw, raw[:10]):  # accept 'YYYY-MM-DDThh:mm' or 'YYYY-MM-DD'
+        try:
+            dt = datetime.fromisoformat(candidate)
+            break
+        except Exception:
+            continue
+    if dt is None:
+        return False, f"could not parse start_date '{raw}' (use YYYY-MM-DD or YYYY-MM-DDThh:mm)."
+    earliest = datetime.now(timezone.utc).date() + timedelta(days=lead)
+    if dt.date() < earliest:
+        return False, (f"start_date {dt.date().isoformat()} is too soon — production changes need "
+                       f"{lead} day(s) lead time, so the start date must be {earliest.isoformat()} "
+                       "(tomorrow) or later.")
+    return True, ""
+
+
 def _raise_uat_to_prd_pr(repo, cr: dict) -> str:
     """Post-cutoff: raise the single UAT->PRD release PR with everything accumulated
-    on UAT, auto-creating the CHG/RMG. Raising it locks the day."""
+    on UAT, auto-creating the CHG/RMG. Raising it locks the day. The change's
+    start_date must satisfy the production lead time."""
     uat, prd = settings.uat_branch, settings.prd_branch
     images_path, cr_path = settings.env_config_path, settings.change_request_path
     try:
         uat_cfg = _read_json_file(repo, uat, images_path)
         uat_images = uat_cfg.get("images", {}) if isinstance(uat_cfg, dict) else {}
-        if not uat_images:
-            return "ERROR raising release: no images accumulated on UAT to promote."
-        image_str = ",".join(f"{i}:{t}" for i, t in uat_images.items())
+        prd_cfg = _read_json_file(repo, prd, images_path)
+        prd_images = prd_cfg.get("images", {}) if isinstance(prd_cfg, dict) else {}
+        # Only the images that actually differ from PRD get promoted. If nothing
+        # changed (a quiet day), do NOT raise an empty release PR.
+        pending = {i: t for i, t in uat_images.items() if prd_images.get(i) != t}
+        if not pending:
+            return ("NOTE: nothing to release — UAT already matches PRD (no new images staged). "
+                    "No UAT→PRD PR was raised.")
+        ok, msg = _lead_time_ok(cr)
+        if not ok:
+            return f"ERROR raising release: {msg}"
+        image_str = ",".join(f"{i}:{t}" for i, t in pending.items())
         try:
             source_ref = repo.get_git_ref(f"heads/{uat}")
         except Exception:
@@ -1055,8 +1102,8 @@ def _raise_uat_to_prd_pr(repo, cr: dict) -> str:
 
         branch = f"release/prod/{uuid.uuid4().hex[:8]}"
         repo.create_git_ref(f"refs/heads/{branch}", source_ref.object.sha)
-        cr_doc = {"environment": "prod", "images": uat_images, "change_request": cr,
-                  "status": "pending-chg"}
+        cr_doc = {"environment": "prod", "images": pending, "promoting_to_state": uat_images,
+                  "change_request": cr, "status": "pending-chg"}
         _upsert_json_file(repo, branch, cr_path, cr_doc)
 
         title = f"Release UAT → PRD: {image_str}"
@@ -1084,7 +1131,7 @@ def _raise_uat_to_prd_pr(repo, cr: dict) -> str:
             "image_tags": image_str, "branch": branch, "base_branch": prd, "source_branch": uat,
             "pr_number": pr.number, "pr_url": pr.html_url,
             "change_request_template": cr_path, "chg": chg, "rmg": rmg,
-            "note": (f"Daily UAT→PRD release PR #{pr.number} raised with {len(uat_images)} image(s); "
+            "note": (f"Daily UAT→PRD release PR #{pr.number} raised promoting {len(pending)} image(s); "
                      f"CHG {chg} / RMG {rmg} created. The day is now locked."),
         }, indent=2)
     except Exception as e:

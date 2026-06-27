@@ -157,6 +157,9 @@ PROMOTION MODEL — SIT → UAT → PRD (important):
 - Before the cutoff: a prod request stages onto UAT (no change request needed yet).
 - After the cutoff: the prod request (or raise_prod_release) raises the one UAT → PRD PR with the full
   UAT set; this requires a change request (drives the CHG/RMG) and locks the day.
+- LEAD TIME: the change request's start_date must be at least one day out (tomorrow or later) — a prod
+  release can't be raised for a same-day start. If start_date is today/past, refuse and ask for a later date.
+- NOTHING TO RELEASE: if UAT has no changes vs PRD, do not raise a PR — say there is nothing to release.
 - Once the day is locked (today's UAT → PRD PR exists), refuse further adds and point to that PR.
 
 PRD RELEASE CONTROL GATE (mandatory): when a developer wants a PRD/prod release and gives an
@@ -669,6 +672,17 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
                         note + f"⏰ The {status.get('cutoff_utc')} UTC cutoff has passed. Raising today's "
                         "**UAT → PRD** release PR requires a change request (it drives the CHG). Use the "
                         "**Promote to PROD** action and paste the change-request JSON."
+                    ))]},
+                )
+            # Production lead time: the change start_date must be tomorrow or later.
+            from .tools.gh_tools import _lead_time_ok
+            lead_ok, lead_msg = _lead_time_ok(cr)
+            if not lead_ok:
+                return Command(
+                    goto="respond",
+                    update={"messages": [AIMessage(content=(
+                        summary + f"\n\n📅 Can't raise the release — {lead_msg} Update the change "
+                        "request's `start_date` and resubmit."
                     ))]},
                 )
             pre_msgs.append(AIMessage(content=(
