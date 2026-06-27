@@ -1127,30 +1127,28 @@ def _add_images_to_uat(repo, pairs: list) -> dict:
     return {"uat_images": uat_images, "prs": res["prs"], "changed": res["changed"]}
 
 
-def _unstage_images_from_uat(repo, names: list) -> dict:
-    """Remove image(s) from the day's release via the protected-branch PR chain
-    (working -> SIT -> UAT): revert each to PRD's current tag, or drop it if new."""
-    prd_images = (_read_json_file(repo, settings.prd_branch, settings.env_config_path) or {}).get("images", {}) or {}
-    reverted, removed, not_found = [], [], []
-
-    def _mut(images):
-        for n in names:
-            if n not in images:
-                not_found.append(n)
-            elif n in prd_images:
-                images[n] = prd_images[n]
-                reverted.append(f"{n}→{prd_images[n]} (PRD)")
-            else:
-                del images[n]
-                removed.append(n)
-        return bool(reverted or removed)
-
-    summary = "Remove " + ",".join(names) + " from release"
-    res = _apply_via_pr_chain(repo, _mut, summary)
-    uat_images = (_read_json_file(repo, settings.uat_branch, settings.env_config_path) or {}).get("images", {}) or {}
-    pending = {i: t for i, t in uat_images.items() if prd_images.get(i) != t}
-    return {"reverted": reverted, "removed": removed, "not_found": not_found,
-            "pending_after": pending, "prs": res["prs"], "changed": res["changed"]}
+def _open_sit_pr(repo, mutate_fn, summary: str):
+    """Raise ONE PR into the protected SIT branch (no merge — reviewers decide).
+    mutate_fn(images: dict) -> bool edits the images map in place and returns True if
+    it changed anything. Returns the PR, or None if nothing changed."""
+    sit = settings.sit_branch
+    images_path = settings.env_config_path
+    sit_ref = repo.get_git_ref(f"heads/{sit}")
+    work = f"change/sit/{uuid.uuid4().hex[:8]}"
+    repo.create_git_ref(f"refs/heads/{work}", sit_ref.object.sha)
+    cfg = _read_json_file(repo, work, images_path)
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg.setdefault("images", {})
+    if not mutate_fn(cfg["images"]):
+        try:
+            repo.get_git_ref(f"heads/{work}").delete()
+        except Exception:
+            pass
+        return None
+    cfg["updated_by"] = "release-copilot"
+    _upsert_json_file(repo, work, images_path, cfg)
+    return repo.create_pull(title=f"{summary} (→ {sit})", body=summary, head=work, base=sit)
 
 
 class RemoveFromReleaseInput(BaseModel):
@@ -1161,11 +1159,10 @@ class RemoveFromReleaseInput(BaseModel):
 
 @tool(args_schema=RemoveFromReleaseInput)
 def remove_from_release(image_names: str) -> str:
-    """Remove (unstage) image(s) from TODAY'S pending PRD release on the UAT branch —
-    use before the cutoff / before the UAT->PRD PR is raised. Each named image is
-    reverted to the tag currently on PRD (or dropped if it's new), so it no longer
-    ships in today's release. Reversible (just promote it again). Refused once the
-    day is locked (the UAT->PRD PR has been raised)."""
+    """Remove image(s) from the release by raising a fresh PR into the protected SIT
+    branch that deletes them from the images config. The agent does NOT edit branches
+    directly or merge — reviewers merge the SIT PR and it flows SIT->UAT->PRD. Returns
+    the SIT PR link."""
     names = []
     for tok in image_names.replace(",", " ").split():
         tok = tok.strip()
@@ -1173,34 +1170,41 @@ def remove_from_release(image_names: str) -> str:
             names.append(tok.split(":", 1)[0])
     if not names:
         return "ERROR: no image names provided to remove."
-
-    status = get_release_status()
-    if status.get("locked"):
-        p = status.get("prd_pr_today") or {}
-        return (f"ERROR: today's UAT→PRD release PR #{p.get('number')} is already raised — UAT is locked. "
-                f"Amend or close {p.get('url','')} to change the release.")
     try:
         repo = _get_github_client().get_repo(DEPLOY_REPO)
     except Exception as e:
         return f"ERROR removing from release: {e}"
 
-    res = _unstage_images_from_uat(repo, names)
-    changed = res["reverted"] or res["removed"]
-    note_parts = []
-    if res["reverted"]:
-        note_parts.append("reverted to PRD: " + ", ".join(res["reverted"]))
-    if res["removed"]:
-        note_parts.append("dropped (was new): " + ", ".join(res["removed"]))
-    if res["not_found"]:
-        note_parts.append("not staged: " + ", ".join(res["not_found"]))
-    pr_str = "; ".join(
-        f"PR #{p['number']} {p['stage']} ({'merged' if p.get('merged') else p.get('detail', 'open')})"
-        for p in res.get("prs", []) if p.get("number"))
-    note = ("Removed from today's release — " if changed else "No changes — ") + (
-        "; ".join(note_parts) or "nothing matched") + f". {len(res['pending_after'])} image(s) still pending."
-    if pr_str:
-        note += f" Via {pr_str}."
-    return json.dumps({"ok": True, "action": "unstaged", **res, "note": note}, indent=2)
+    sit = settings.sit_branch
+    sit_images = (_read_json_file(repo, sit, settings.env_config_path) or {}).get("images", {}) or {}
+    targets = [n for n in names if n in sit_images]
+    not_found = [n for n in names if n not in sit_images]
+    if not targets:
+        return (f"No SIT PR raised — {', '.join(names)} not found in the release config on {sit} "
+                f"(currently on {sit}: {', '.join(sit_images) or 'none'}).")
+
+    def _mut(images):
+        changed = False
+        for n in targets:
+            if n in images:
+                del images[n]
+                changed = True
+        return changed
+
+    pr = _open_sit_pr(repo, _mut, "Remove " + ",".join(targets) + " from release")
+    note = (f"Raised SIT PR #{pr.number} removing {', '.join(targets)} — {pr.html_url}. "
+            f"Merge it (review) to drop the image; it then flows {sit}→{settings.uat_branch}→"
+            f"{settings.prd_branch}.")
+    if not_found:
+        note += f" Not in {sit}: {', '.join(not_found)}."
+    status = get_release_status()
+    if status.get("locked"):
+        p = status.get("prd_pr_today") or {}
+        note += (f" Note: today's {settings.uat_branch}→{settings.prd_branch} release PR "
+                 f"#{p.get('number')} is already raised, so this removal applies from the next cycle.")
+    return json.dumps({"ok": True, "action": "sit_removal_pr", "removed": targets,
+                       "not_found": not_found, "pr_number": pr.number, "pr_url": pr.html_url,
+                       "note": note}, indent=2)
 
 
 def _lead_time_ok(cr: dict):
