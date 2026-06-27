@@ -177,7 +177,15 @@ async def chat_page():
         // Minimal, safe markdown -> HTML for streamed assistant text.
         function renderMarkdown(t) {
             t = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            // [text](url) markdown links -> stash so the bare-URL linkifier below
+            // doesn't double-wrap the URL inside the href attribute.
+            const _links = [];
+            t = t.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, function(m, txt, url) {
+                _links.push('<a href="' + url + '" target="_blank" class="underline text-emerald-400">' + txt + '</a>');
+                return 'LINKTOKEN' + (_links.length - 1) + 'ENDTOKEN';
+            });
             t = t.replace(/(https?:\\/\\/[^\\s<]+)/g, '<a href="$1" target="_blank" class="underline text-emerald-400">$1</a>');
+            t = t.replace(/LINKTOKEN(\\d+)ENDTOKEN/g, function(m, i) { return _links[+i]; });
             t = t.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
             t = t.replace(/`([^`]+)`/g, '<code class="bg-slate-800 px-1 rounded text-emerald-300">$1</code>');
             t = t.replace(/\\n/g, '<br>');
