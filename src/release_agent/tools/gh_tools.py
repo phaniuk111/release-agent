@@ -840,7 +840,10 @@ def _find_build_run(repo_obj, image: str, tag: str):
         return None, str(e)
     if not runs:
         return None, f"no '{workflow}' run found at commit {commit[:7]}"
-    return sorted(runs, key=lambda r: r.created_at, reverse=True)[0], None
+    # Multiple tags can point at the same commit, so head_sha alone is ambiguous.
+    # Tag-triggered runs carry the tag name in head_branch — prefer an exact match.
+    exact = [r for r in runs if (getattr(r, "head_branch", "") or "") == tag]
+    return sorted(exact or runs, key=lambda r: r.created_at, reverse=True)[0], None
 
 
 def _controls_report(repo_full, image, tag, run) -> dict:
