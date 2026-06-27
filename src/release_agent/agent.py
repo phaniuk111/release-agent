@@ -160,6 +160,10 @@ PROMOTION MODEL — SIT → UAT → PRD (important):
 - LEAD TIME: the change request's start_date must be at least one day out (tomorrow or later) — a prod
   release can't be raised for a same-day start. If start_date is today/past, refuse and ask for a later date.
 - NOTHING TO RELEASE: if UAT has no changes vs PRD, do not raise a PR — say there is nothing to release.
+- REMOVE / UNSTAGE: before the day is locked, a developer can pull an image back out of today's release.
+  Call remove_from_release(image_names="<name>[,<name>...]") — it reverts each image to the tag currently on
+  PRD (or drops it if it was new), so it no longer ships today. It's reversible (promote again to re-add).
+  Refused once the day is locked (the UAT → PRD PR is raised) — then point them to that PR to amend/close.
 - Once the day is locked (today's UAT → PRD PR exists), refuse further adds and point to that PR.
 
 PRD RELEASE CONTROL GATE (mandatory): when a developer wants a PRD/prod release and gives an
@@ -366,6 +370,18 @@ def _is_query_not_promote(text: str) -> bool:
     return is_query and not _has_promote_verb(words)
 
 
+_REMOVAL_WORDS = {"remove", "unstage", "drop", "exclude", "withdraw", "deselect", "unselect"}
+
+
+def _is_removal(text: str) -> bool:
+    """True when the user wants to remove/unstage an image from today's release."""
+    words = set(_norm_words(text))
+    if words & _REMOVAL_WORDS:
+        return True
+    low = text.lower()
+    return "back out" in low or "take out" in low
+
+
 def _detect_environment(text: str) -> str:
     low = text.lower()
     words = set(_norm_words(text))
@@ -499,6 +515,14 @@ def parse_intent(state: ReleaseState) -> dict:
     rerun = _detect_rerun(last, state.steps)
     if rerun is not None:
         out["rerun_steps"] = rerun
+        return out
+
+    # A remove/unstage request must NOT be parsed as a promote (a tagged
+    # "remove orders-api:v1.1.0" would otherwise look like a stage). Route it to
+    # the LLM, which calls remove_from_release.
+    if _is_removal(last):
+        out["release_request"] = None
+        out["rerun_steps"] = None
         return out
 
     # A pasted JSON payload (multi-image + change_request) is the preferred input.

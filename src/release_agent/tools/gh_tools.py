@@ -1047,6 +1047,80 @@ def _add_images_to_uat(repo, pairs: list) -> dict:
     return cfg["images"]
 
 
+def _unstage_images_from_uat(repo, names: list) -> dict:
+    """Remove image(s) from today's pending release on UAT: revert each to the tag
+    currently on PRD (so it's no longer pending), or drop it entirely if PRD doesn't
+    have it. Only commits if something actually changed."""
+    images_path, uat, prd = settings.env_config_path, settings.uat_branch, settings.prd_branch
+    uat_cfg = _read_json_file(repo, uat, images_path)
+    if not isinstance(uat_cfg, dict):
+        uat_cfg = {}
+    uat_images = uat_cfg.get("images", {}) or {}
+    prd_images = (_read_json_file(repo, prd, images_path) or {}).get("images", {}) or {}
+    reverted, removed, not_found = [], [], []
+    for n in names:
+        if n not in uat_images:
+            not_found.append(n)
+        elif n in prd_images:
+            uat_images[n] = prd_images[n]
+            reverted.append(f"{n}→{prd_images[n]} (PRD)")
+        else:
+            del uat_images[n]
+            removed.append(n)
+    if reverted or removed:
+        uat_cfg["images"] = uat_images
+        uat_cfg["updated_by"] = "release-copilot"
+        _upsert_json_file(repo, uat, images_path, uat_cfg)
+    pending = {i: t for i, t in uat_images.items() if prd_images.get(i) != t}
+    return {"reverted": reverted, "removed": removed, "not_found": not_found,
+            "pending_after": pending}
+
+
+class RemoveFromReleaseInput(BaseModel):
+    image_names: str = Field(
+        ..., description="Comma-separated image names to remove from today's release. Tags are "
+        "optional/ignored (e.g. 'orders-api' or 'orders-api:v1.1.0').")
+
+
+@tool(args_schema=RemoveFromReleaseInput)
+def remove_from_release(image_names: str) -> str:
+    """Remove (unstage) image(s) from TODAY'S pending PRD release on the UAT branch —
+    use before the cutoff / before the UAT->PRD PR is raised. Each named image is
+    reverted to the tag currently on PRD (or dropped if it's new), so it no longer
+    ships in today's release. Reversible (just promote it again). Refused once the
+    day is locked (the UAT->PRD PR has been raised)."""
+    names = []
+    for tok in image_names.replace(",", " ").split():
+        tok = tok.strip()
+        if tok:
+            names.append(tok.split(":", 1)[0])
+    if not names:
+        return "ERROR: no image names provided to remove."
+
+    status = get_release_status()
+    if status.get("locked"):
+        p = status.get("prd_pr_today") or {}
+        return (f"ERROR: today's UAT→PRD release PR #{p.get('number')} is already raised — UAT is locked. "
+                f"Amend or close {p.get('url','')} to change the release.")
+    try:
+        repo = _get_github_client().get_repo(DEPLOY_REPO)
+    except Exception as e:
+        return f"ERROR removing from release: {e}"
+
+    res = _unstage_images_from_uat(repo, names)
+    changed = res["reverted"] or res["removed"]
+    note_parts = []
+    if res["reverted"]:
+        note_parts.append("reverted to PRD: " + ", ".join(res["reverted"]))
+    if res["removed"]:
+        note_parts.append("dropped (was new): " + ", ".join(res["removed"]))
+    if res["not_found"]:
+        note_parts.append("not staged: " + ", ".join(res["not_found"]))
+    note = ("Removed from today's release — " if changed else "No changes — ") + (
+        "; ".join(note_parts) or "nothing matched") + f". {len(res['pending_after'])} image(s) still pending."
+    return json.dumps({"ok": True, "action": "unstaged", **res, "note": note}, indent=2)
+
+
 def _lead_time_ok(cr: dict):
     """Production changes need lead time: the change request's start_date must be at
     least `prd_lead_time_days` ahead (default 1 -> tomorrow or later).
@@ -1290,5 +1364,6 @@ GH_TOOLS = [
     get_build_controls,
     open_release_pr,
     raise_prod_release,
+    remove_from_release,
     check_release_window,
 ]
