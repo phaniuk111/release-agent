@@ -149,6 +149,16 @@ workflow run, confirms the tag-generation step succeeded and the job log contain
 marker, and reports the RLFT release-control steps. Offer this check and report verified true/false
 plus the RLFT controls; warn the user if a promote is requested for an unverified tag.
 
+PROMOTION MODEL — SIT → UAT → PRD (important):
+- Images flow SIT → UAT → PRD. Through the day, every "promote to prod / add image" request STAGES
+  the image on the UAT branch (the day's release accumulates there). The single UAT → PRD release PR
+  is raised ONLY after the daily cutoff (raising it LOCKS the day, so it must not happen earlier or
+  no more images could be added).
+- Before the cutoff: a prod request stages onto UAT (no change request needed yet).
+- After the cutoff: the prod request (or raise_prod_release) raises the one UAT → PRD PR with the full
+  UAT set; this requires a change request (drives the CHG/RMG) and locks the day.
+- Once the day is locked (today's UAT → PRD PR exists), refuse further adds and point to that PR.
+
 PRD RELEASE CONTROL GATE (mandatory): when a developer wants a PRD/prod release and gives an
 image:tag, you MUST first call get_build_controls(image, tag) to fetch the release CONTROLS
 (RLFT/RFTL gates) recorded in that tag's build pipeline run, and report each one as PASSED or
@@ -156,11 +166,10 @@ FAILED (e.g. "RFTL0001: FAILED, RFTL0002: PASSED"). Rules:
 - The tool finds the build run from the tag automatically. If it returns need_run_id (the run can't
   be located from image+tag), ASK the developer for the GitHub Actions run id that generated the
   tag, then call get_build_controls(run_id=<that id>).
-- If ANY control FAILED (gate != PASS), do NOT proceed to open the PRD PR — tell the developer which
+- If ANY control FAILED (gate != PASS), do NOT stage it for the PRD release — tell the developer which
   controls failed and that they must be resolved/re-run first.
-- Only when ALL controls PASSED should you continue with the prod promotion (open_release_pr).
-open_release_pr also enforces this gate server-side for prod, but you should surface the per-control
-PASS/FAIL result to the developer up front.
+- Only when ALL controls PASSED should you continue (open_release_pr stages onto UAT, and after the
+  cutoff raises the UAT → PRD PR). open_release_pr enforces this gate server-side too.
 
 You MUST propose changes first.
 You MUST get an explicit confirmation token from the user before calling apply_json_update or dispatch_workflow.
@@ -616,9 +625,9 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
             ))]},
         )
 
-    # PROD promotions: (1) gate on build controls, (2) honor the daily window —
-    # if a PRD release already exists today, ADD to it (no new change request);
-    # otherwise require a change request to open the day's release.
+    # PROD promotions (SIT->UAT->PRD): controls gate, then honor the daily window.
+    # Before the cutoff, images are STAGED on UAT (no change request needed). After
+    # the cutoff, the single UAT->PRD release PR is raised (change request required).
     env = (req.get("environment") or "prod").lower()
     pre_msgs: list = []
     if env == "prod":
@@ -628,32 +637,26 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
             return Command(
                 goto="respond",
                 update={"messages": [AIMessage(content=(
-                    summary + "\n\n❌ One or more build controls **FAILED** — I can't promote this to "
-                    "PRD until they're resolved and the build is re-run."
+                    summary + "\n\n❌ One or more build controls **FAILED** — I can't stage this for the "
+                    "PRD release until they're resolved and the build is re-run."
                 ))]},
             )
 
         from .tools.gh_tools import get_release_status
         status = get_release_status()
-        today_pr = status.get("prd_pr_today")
 
-        if status.get("cutoff_passed"):
+        if status.get("locked"):
+            p = status.get("prd_pr_today") or {}
             return Command(
                 goto="respond",
                 update={"messages": [AIMessage(content=(
-                    summary + f"\n\n🔒 {status.get('reason', 'Past the PRD cutoff for today.')} "
-                    "The next release window opens tomorrow."
+                    summary + f"\n\n🔒 Today's UAT→PRD release **PR #{p.get('number')}** is already raised "
+                    f"({p.get('url','')}) — the day is locked, no more images can be added."
                 ))]},
             )
 
-        if today_pr:
-            # Release-train: add these images to today's existing PRD PR.
-            pre_msgs.append(AIMessage(content=(
-                summary + f"\n\n🚂 A PRD release already exists today — **PR #{today_pr['number']}** "
-                f"({today_pr['url']}, by {today_pr.get('author') or 'unknown'}). I'll **add** these "
-                "images to that release (one release train per day, same CHG). Confirm to proceed."
-            )))
-        else:
+        if status.get("cutoff_passed"):
+            # Raise path — change request required.
             cr = req.get("change_request") or {}
             if not cr:
                 note = summary + "\n\n"
@@ -663,12 +666,22 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
                 return Command(
                     goto="respond",
                     update={"messages": [AIMessage(content=(
-                        note + "🔒 Promoting to **prod** (UAT → PRD) requires a change request — it drives the "
-                        "auto-created CHG. Use the **Promote to PROD** action and paste the change-request "
-                        "JSON (environment, images, and a `change_request` block)."
+                        note + f"⏰ The {status.get('cutoff_utc')} UTC cutoff has passed. Raising today's "
+                        "**UAT → PRD** release PR requires a change request (it drives the CHG). Use the "
+                        "**Promote to PROD** action and paste the change-request JSON."
                     ))]},
                 )
-            pre_msgs.append(AIMessage(content=summary))
+            pre_msgs.append(AIMessage(content=(
+                summary + "\n\n⏰ Cutoff passed — I'll stage these on UAT and **raise today's UAT → PRD "
+                "release PR** (CHG/RMG auto-created). Confirm to proceed."
+            )))
+        else:
+            # Staging path — no change request needed; release happens at the cutoff.
+            pre_msgs.append(AIMessage(content=(
+                summary + f"\n\n🧺 I'll **stage** these on the **UAT** branch for today's release. The single "
+                f"UAT → PRD PR is raised after **{status.get('cutoff_utc')} UTC**, so more images can be "
+                "added until then. Confirm to stage."
+            )))
 
     image_str = ",".join(f"{i['name']}:{i['tag']}" for i in req["images"])
     token = f"CONFIRM-{uuid.uuid4().hex[:6]}"
@@ -728,15 +741,15 @@ def confirmation_gate(
     env = (req.get("environment") or "prod").lower()
     change = req.get("change_request") or {}
     if env == "uat":
-        action = "open a PR into the **UAT** branch"
+        action = "stage these images on the **UAT** branch"
     elif env == "prod":
-        # Release-train: adding to today's PR vs opening the day's release PR.
+        # Stage on UAT (before cutoff) vs raise the day's UAT→PRD release PR (after).
         from .tools.gh_tools import get_release_status
-        today_pr = (get_release_status() or {}).get("prd_pr_today")
-        if today_pr:
-            action = f"**add** these images to today's PRD release **PR #{today_pr['number']}** (same CHG)"
+        status = get_release_status() or {}
+        if status.get("cutoff_passed"):
+            action = "**raise today's UAT → PRD release PR** (CHG/RMG auto-created from the change request)"
         else:
-            action = "open a PR to promote **UAT → PRD** (CHG/RMG auto-created from the change request)"
+            action = f"**stage** these images on **UAT** (the UAT → PRD PR is raised after {status.get('cutoff_utc')} UTC)"
     else:
         action = "apply these changes and dispatch the workflow"
 
@@ -843,12 +856,12 @@ def _summarize_step_result(step: str, content: str) -> str:
         inp = json.dumps(data["inputs"]) if data.get("inputs") else ""
         return f"dispatched `{wf}`" + (f" with {inp}" if inp else "")
     if step == STEP_RELEASE_PR:
+        action = data.get("action")
+        if action == "staged_to_uat":
+            imgs = data.get("uat_images") or {}
+            return f"staged on UAT ({len(imgs)} image(s) total) — UAT→PRD PR is raised after the cutoff"
         num, url = data.get("pr_number"), data.get("pr_url") or ""
-        if data.get("action") == "added_to_existing":
-            verb = "added to today's PRD release PR"
-        else:
-            verb = "opened PR"
-        base = f"{verb} #{num} — {url}" if num else "PR updated"
+        base = f"raised UAT→PRD release PR #{num} — {url}" if num else "release updated"
         if data.get("chg"):
             base += f" (CHG {data['chg']}, RMG {data.get('rmg')})"
         return base

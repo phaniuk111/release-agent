@@ -101,21 +101,31 @@ control prefix; pass/fail comes from each step's conclusion. The standalone
 `verify_image_tag_build` check (tag-gen step + log marker) still exists for
 build-authenticity verification.
 
-## Daily PRD release window (shared across sessions)
+## Daily release flow — SIT → UAT → PRD (accumulate, then cut at the cutoff)
 
-Two developers in **separate chat sessions** still see the same answer to "is a
-production release already scheduled today?" — because the shared memory is
-**GitHub itself**, not any in-process state. A PRD release == a UAT→PRD PR created
-today, so `GET /api/release-status` reads the deploy repo's PRD-branch PRs live.
+The deploy repo has three branches: **SIT → UAT → PRD**. Through the day, every
+"promote to prod / add image" request **stages the image on UAT** (the day's
+release set accumulates there). The single **UAT → PRD** release PR is raised
+**only after the daily cutoff** (default 16:00 UTC) — raising it **locks the day**,
+so it must not happen earlier or no more images could be added.
 
-- **Side panel:** the UI shows a banner — 🟢 *window open* / 🚀 *already scheduled today (PR #N, by author)* / 🔒 *cutoff passed* — refreshed on load, after every turn, and every 60s.
-- **Policy (enforced in `open_release_pr`):** at most **one PRD PR per day**, and only **before the UTC cutoff** (default 16:00). A second same-day prod promotion is rejected with a link to the existing PR. UAT promotions are unrestricted.
-- **Ask it in chat:** "is there a PRD release scheduled today?" (the `check_release_window` tool).
-- **Config:** `PRD_CUTOFF_HOUR_UTC` (default `16`), `PRD_ONCE_PER_DAY` (default `true`).
+- **Before the cutoff:** promote-to-prod stages onto UAT (no change request needed yet). Multiple developers keep adding all day.
+- **After the cutoff:** the prod request (or the `raise_prod_release` tool) raises the one UAT → PRD PR with the full UAT set; this needs a change request (drives the auto-created **CHG/RMG**) and locks the day.
+- **Locked:** once today's UAT → PRD PR exists (open or merged), further adds are refused with a link to that PR.
+- **Build-control gate:** every staged image is checked first — a failed RLFT/RFTL control blocks it (see above).
+
+This is **shared across sessions** because the state lives in **GitHub itself**
+(the UAT images config + the UAT→PRD PR), not in any in-process memory. The side
+panel reads `GET /api/release-status` live and shows one of: 🧺 *collecting on UAT
+(N images)* / ⏰ *cutoff passed — ready to raise* / 🔒 *raised & locked (PR #N)*,
+refreshed on load, after every turn, and every 60s. Ask in chat: *"is there a PRD
+release scheduled today?"* (`check_release_window`).
+
+- **Config:** `SIT_BRANCH`/`UAT_BRANCH`/`PRD_BRANCH`, `PRD_CUTOFF_HOUR_UTC` (default `16`).
 
 The per-session LangGraph checkpointer is only for *conversation* memory; the
-cross-session release fact is durable in GitHub, so it survives restarts and is
-consistent for every user without a separate database.
+release state is durable in GitHub, so it survives restarts and is consistent for
+every developer without a separate database.
 
 ## What It Does Today (PoV)
 

@@ -41,10 +41,14 @@ config:
   ON_MERGE_WORKFLOW: "on-merge-deploy.yml"
   # Comma-separated allow-list of workflows the agent may dispatch (enforced).
   ALLOWED_WORKFLOWS: "image-tag-step-report.yml,release-promote.yml,create-deployment-pr.yml"
-  # PRD release policy (shared across all sessions via GitHub): at most one PRD PR
-  # per day, and only before this UTC hour. The UI shows today's window status.
+  # Promotion branches in DEPLOY_REPO (SIT -> UAT -> PRD). Images accumulate on
+  # UAT through the day; the single UAT->PRD release PR is raised after the cutoff.
+  SIT_BRANCH: "SIT"
+  UAT_BRANCH: "UAT"
+  PRD_BRANCH: "PRD"
+  # Daily release window: the UAT->PRD PR may be raised only after this UTC hour
+  # (raising it locks the day). The UI shows today's window status.
   PRD_CUTOFF_HOUR_UTC: "16"
-  PRD_ONCE_PER_DAY: "true"
   # Build-control gate: repo where image build pipelines run (tags + runs +
   # RLFT/RFTL control steps). Empty -> target repo.
   BUILD_REPO: ""
