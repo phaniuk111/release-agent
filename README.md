@@ -84,6 +84,22 @@ Agent: ✅ Updated release-manifest.json (sha...)
        Ask me: "summarize PR 42" or "get controls status" to track CHG ticket and RLFT gates in the PR comments.
 ```
 
+## Daily PRD release window (shared across sessions)
+
+Two developers in **separate chat sessions** still see the same answer to "is a
+production release already scheduled today?" — because the shared memory is
+**GitHub itself**, not any in-process state. A PRD release == a UAT→PRD PR created
+today, so `GET /api/release-status` reads the deploy repo's PRD-branch PRs live.
+
+- **Side panel:** the UI shows a banner — 🟢 *window open* / 🚀 *already scheduled today (PR #N, by author)* / 🔒 *cutoff passed* — refreshed on load, after every turn, and every 60s.
+- **Policy (enforced in `open_release_pr`):** at most **one PRD PR per day**, and only **before the UTC cutoff** (default 16:00). A second same-day prod promotion is rejected with a link to the existing PR. UAT promotions are unrestricted.
+- **Ask it in chat:** "is there a PRD release scheduled today?" (the `check_release_window` tool).
+- **Config:** `PRD_CUTOFF_HOUR_UTC` (default `16`), `PRD_ONCE_PER_DAY` (default `true`).
+
+The per-session LangGraph checkpointer is only for *conversation* memory; the
+cross-session release fact is durable in GitHub, so it survives restarts and is
+consistent for every user without a separate database.
+
 ## What It Does Today (PoV)
 
 - Uses existing `devops/image-workflows.json` to know valid images.

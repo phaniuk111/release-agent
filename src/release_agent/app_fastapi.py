@@ -126,8 +126,24 @@ async def chat_page():
             </div>
         </div>
 
+        <!-- Today's PRD release window (shared across all sessions via GitHub) -->
+        <div id="release-banner"
+             class="mb-4 rounded-2xl border px-4 py-3 text-sm hidden border-slate-700 bg-slate-900">
+            <div class="flex items-center gap-3">
+                <i id="rb-icon" class="fa-solid fa-circle-notch fa-spin text-slate-400"></i>
+                <div class="flex-1">
+                    <div id="rb-title" class="font-semibold text-slate-200">Checking today's release window…</div>
+                    <div id="rb-detail" class="text-xs text-slate-400 mt-0.5"></div>
+                </div>
+                <button onclick="loadReleaseStatus()" title="Refresh"
+                        class="text-slate-500 hover:text-slate-300 text-xs">
+                    <i class="fa-solid fa-rotate-right"></i>
+                </button>
+            </div>
+        </div>
+
         <!-- Chat Area -->
-        <div id="chat" 
+        <div id="chat"
              class="chat-container overflow-y-auto bg-slate-900 border border-slate-700 rounded-2xl p-4 mb-4 space-y-4">
             <!-- Messages injected here -->
         </div>
@@ -285,6 +301,8 @@ async def chat_page():
                 if (!isInterrupt && botMsg) {
                     botMsg.querySelector('div').classList.remove('streaming');
                 }
+                // A turn may have raised/blocked a PRD PR — refresh the window banner.
+                loadReleaseStatus();
             } catch (err) {
                 botMsg.querySelector('div').innerHTML = `<span class="text-red-400">Error: ${err.message}</span>`;
             }
@@ -322,6 +340,7 @@ async def chat_page():
         const CAPABILITIES = [
             {icon:'fa-flask',             label:'Promote to UAT',       desc:'paste JSON → PR into UAT',                    form:'uat'},
             {icon:'fa-shield-halved',     label:'Promote to PROD',      desc:'paste JSON → UAT→PRD PR (auto CHG/RMG)',      form:'prod'},
+            {icon:'fa-calendar-day',      label:"Today's release window", desc:'is a PRD release already scheduled today?',  send:true,  text:'is there a PRD release scheduled today?'},
             {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
             {icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
             {icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
@@ -443,6 +462,54 @@ async def chat_page():
             chat.scrollTop = chat.scrollHeight;
         }
 
+        // Today's PRD release window — shared across ALL sessions/developers
+        // because it's read live from GitHub (the PRD PR is the source of truth).
+        async function loadReleaseStatus() {
+            const banner = document.getElementById('release-banner');
+            const icon = document.getElementById('rb-icon');
+            const title = document.getElementById('rb-title');
+            const detail = document.getElementById('rb-detail');
+            try {
+                const res = await fetch(API_BASE + '/api/release-status');
+                const s = await res.json();
+                banner.classList.remove('hidden');
+                // reset state classes
+                banner.className = 'mb-4 rounded-2xl border px-4 py-3 text-sm';
+                if (s.error) {
+                    banner.classList.add('border-slate-700', 'bg-slate-900');
+                    icon.className = 'fa-solid fa-triangle-exclamation text-slate-400';
+                    title.textContent = "Couldn't check today's release window";
+                    detail.textContent = s.error;
+                    return;
+                }
+                const foot = `UTC now ${s.now_utc} • cutoff ${s.cutoff_utc} • ${s.date_utc}`;
+                if (s.prd_pr_today) {
+                    const p = s.prd_pr_today;
+                    banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
+                    icon.className = 'fa-solid fa-calendar-check text-amber-400';
+                    title.innerHTML = `🚀 PRD release already scheduled today — `
+                        + `<a href="${p.url}" target="_blank" class="underline text-amber-300">PR #${p.number}</a>`
+                        + ` <span class="text-xs font-normal text-amber-200/80">(${p.state}, by ${p.author || 'unknown'})</span>`;
+                    detail.textContent = `Only one PRD release per day. ${foot}`;
+                } else if (s.cutoff_passed) {
+                    banner.classList.add('border-rose-600/50', 'bg-rose-500/10');
+                    icon.className = 'fa-solid fa-lock text-rose-400';
+                    title.textContent = '🔒 PRD cutoff passed — no production release today';
+                    detail.textContent = `The next window opens tomorrow before ${s.cutoff_utc} UTC. ${foot}`;
+                } else {
+                    banner.classList.add('border-emerald-600/50', 'bg-emerald-500/10');
+                    icon.className = 'fa-solid fa-circle-check text-emerald-400';
+                    title.textContent = '🟢 No PRD release yet today — window is open';
+                    detail.textContent = `You can raise one PRD release before ${s.cutoff_utc} UTC. ${foot}`;
+                }
+            } catch (e) {
+                banner.classList.remove('hidden');
+                icon.className = 'fa-solid fa-triangle-exclamation text-slate-400';
+                title.textContent = "Couldn't reach the release-status endpoint";
+                detail.textContent = String(e);
+            }
+        }
+
         // Welcome message
         window.onload = () => {
             const chat = document.getElementById('chat');
@@ -450,6 +517,9 @@ async def chat_page():
                 addMessage('bot', 'Hello! I can help you update image tags and trigger release workflows.');
                 showCapabilities();
             }
+            loadReleaseStatus();
+            // Keep it fresh so a release raised in another session shows up here.
+            setInterval(loadReleaseStatus, 60000);
         };
 
         // Enter key support
@@ -529,6 +599,18 @@ async def chat_endpoint(req: ChatRequest):
             "X-Accel-Buffering": "no",   # critical when behind nginx
         }
     )
+
+
+@app.get("/api/release-status")
+async def release_status_endpoint():
+    """Today's PRD release window — read live from GitHub so every session/developer
+    sees the same answer (the PRD PR is the shared source of truth)."""
+    from .tools.gh_tools import get_release_status
+    try:
+        return get_release_status()
+    except Exception as e:
+        logger.exception("Error computing release status")
+        return {"error": str(e)}
 
 
 @app.get("/health")
