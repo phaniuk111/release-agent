@@ -346,8 +346,8 @@ async def chat_page():
         // Quick actions — what the agent can do. mode 'send' runs immediately;
         // otherwise the text is pre-filled so the user edits the image:tag first.
         const CAPABILITIES = [
-            {icon:'fa-flask',             label:'Promote to UAT',       desc:'paste JSON → PR into UAT',                    form:'uat'},
-            {icon:'fa-shield-halved',     label:'Promote to PROD',      desc:'paste JSON → UAT→PRD PR (auto CHG/RMG)',      form:'prod'},
+            {icon:'fa-flask',             label:'Promote to UAT',       desc:'stage image(s) on the UAT branch',           form:'uat'},
+            {icon:'fa-shield-halved',     label:'Promote to PROD',      desc:'stage on UAT; UAT→PRD PR raised after cutoff', form:'prod'},
             {icon:'fa-calendar-day',      label:"Today's release window", desc:'is a PRD release already scheduled today?',  send:true,  text:'is there a PRD release scheduled today?'},
             {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
             {icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RLFT/RFTL gates for a tag',         send:false, text:'check build controls for <image>:<tag> before a PRD release'},
@@ -491,27 +491,26 @@ async def chat_page():
                     detail.textContent = s.error;
                     return;
                 }
-                const foot = `UTC now ${s.now_utc} • cutoff ${s.cutoff_utc} • ${s.date_utc}`;
-                if (s.prd_pr_today) {
+                const n = Object.keys(s.uat_images || {}).length;
+                const foot = `${n} image(s) on UAT • UTC now ${s.now_utc} • cutoff ${s.cutoff_utc} • ${s.date_utc}`;
+                if (s.locked) {
                     const p = s.prd_pr_today;
-                    banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
-                    icon.className = 'fa-solid fa-calendar-check text-amber-400';
-                    title.innerHTML = `🚂 PRD release train running today — `
-                        + `<a href="${p.url}" target="_blank" class="underline text-amber-300">PR #${p.number}</a>`
-                        + ` <span class="text-xs font-normal text-amber-200/80">(${p.state}, by ${p.author || 'unknown'})</span>`;
-                    detail.textContent = s.can_add_prd
-                        ? `One release per day — promoting to prod ADDS your image to this PR. ${foot}`
-                        : `Only one PRD release per day. ${foot}`;
-                } else if (s.cutoff_passed) {
                     banner.classList.add('border-rose-600/50', 'bg-rose-500/10');
                     icon.className = 'fa-solid fa-lock text-rose-400';
-                    title.textContent = '🔒 PRD cutoff passed — no production release today';
-                    detail.textContent = `The next window opens tomorrow before ${s.cutoff_utc} UTC. ${foot}`;
+                    title.innerHTML = `🔒 Today's UAT→PRD release is raised — `
+                        + `<a href="${p.url}" target="_blank" class="underline text-rose-300">PR #${p.number}</a>`
+                        + ` <span class="text-xs font-normal text-rose-200/80">(${p.state}, by ${p.author || 'unknown'})</span>`;
+                    detail.textContent = `Day locked — no more images can be added. ${foot}`;
+                } else if (s.cutoff_passed) {
+                    banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
+                    icon.className = 'fa-solid fa-bell text-amber-400';
+                    title.textContent = '⏰ Cutoff passed — ready to raise the UAT→PRD release PR';
+                    detail.textContent = `Promote to prod now raises the day's release PR. ${foot}`;
                 } else {
                     banner.classList.add('border-emerald-600/50', 'bg-emerald-500/10');
-                    icon.className = 'fa-solid fa-circle-check text-emerald-400';
-                    title.textContent = '🟢 No PRD release yet today — window is open';
-                    detail.textContent = `You can raise one PRD release before ${s.cutoff_utc} UTC. ${foot}`;
+                    icon.className = 'fa-solid fa-layer-group text-emerald-400';
+                    title.textContent = '🧺 Collecting images on UAT for the daily release';
+                    detail.textContent = `Promote to prod STAGES on UAT; the UAT→PRD PR opens after ${s.cutoff_utc} UTC. ${foot}`;
                 }
             } catch (e) {
                 banner.classList.remove('hidden');

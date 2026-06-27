@@ -944,8 +944,9 @@ def _read_json_file(repo, branch: str, path: str) -> dict:
 # ---- Today's PRD release window (shared across sessions via GitHub) ----
 
 def _todays_prd_prs() -> list:
-    """PRD-branch PRs created today (UTC). GitHub is the cross-session source of
-    truth, so any session sees the same 'is there a release today?' answer."""
+    """Today's (UTC) UAT->PRD release PRs that LOCK the day — open or merged. A
+    closed-unmerged PR is abandoned and does not lock. GitHub is the cross-session
+    source of truth, so any session sees the same answer."""
     from datetime import datetime, timezone
     today = datetime.now(timezone.utc).date()
     g = _get_github_client()
@@ -955,16 +956,20 @@ def _todays_prd_prs() -> list:
         repo.get_pulls(state="all", base=settings.prd_branch, sort="created", direction="desc"), 40
     ):
         d = pr.created_at.astimezone(timezone.utc).date()
-        if d == today:
-            out.append(pr)
-        elif d < today:
+        if d < today:
             break
+        if d == today and (pr.state == "open" or pr.merged_at is not None):
+            out.append(pr)
     return out
 
 
 def get_release_status() -> dict:
-    """Today's PRD release status: whether a PRD PR already exists today, whether
-    the daily UTC cutoff has passed, and whether a new PRD release can be created."""
+    """Today's PRD release status under the SIT->UAT->PRD model.
+
+    Images accumulate on UAT through the day; the single UAT->PRD release PR is
+    raised ONLY after the cutoff (and raising it locks the day). Reports the UAT
+    accumulation, whether the cutoff has passed, whether the day is locked, and
+    whether images can still be added / the release can be raised."""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     cutoff = settings.prd_cutoff_hour_utc
@@ -972,23 +977,34 @@ def get_release_status() -> dict:
     base = {"date_utc": now.date().isoformat(), "now_utc": now.strftime("%H:%M"),
             "cutoff_utc": f"{cutoff:02d}:00", "cutoff_passed": cutoff_passed}
     try:
+        g = _get_github_client()
+        repo = g.get_repo(DEPLOY_REPO)
+        uat_cfg = _read_json_file(repo, settings.uat_branch, settings.env_config_path)
+        uat_images = uat_cfg.get("images", {}) if isinstance(uat_cfg, dict) else {}
         prs = _todays_prd_prs()
     except Exception as e:
-        return {**base, "error": str(e), "can_create_prd": True, "prd_pr_today": None}
-    today_pr = prs[0] if prs else None
-    can_create = (today_pr is None or not settings.prd_once_per_day) and not cutoff_passed
-    if today_pr is not None and settings.prd_once_per_day:
-        reason = f"A PRD release PR was already created today (#{today_pr.number})."
+        return {**base, "error": str(e), "can_add": True, "can_raise_prod": False,
+                "locked": False, "uat_images": {}, "prd_pr_today": None}
+
+    today_pr = prs[0] if prs else None         # today's UAT->PRD release PR (post-cutoff)
+    locked = today_pr is not None              # release raised -> no more adds today
+    can_add = not locked                       # adds land on UAT until the PR is raised
+    can_raise_prod = cutoff_passed and not locked and bool(uat_images)
+
+    if locked:
+        reason = f"Today's UAT→PRD release PR #{today_pr.number} is raised — the day is locked."
     elif cutoff_passed:
-        reason = f"Past the {cutoff:02d}:00 UTC cutoff — no more PRD releases today."
+        reason = (f"Cutoff passed — raise the UAT→PRD release PR ({len(uat_images)} image(s) in UAT)."
+                  if uat_images else "Cutoff passed — no images in UAT to release.")
     else:
-        reason = f"PRD window open until {cutoff:02d}:00 UTC."
+        reason = (f"Collecting on UAT ({len(uat_images)} image(s)); the UAT→PRD PR opens after "
+                  f"{cutoff:02d}:00 UTC.")
     return {
         **base,
-        "can_create_prd": can_create,
-        # Release-train: when a PRD PR exists today, more images can be ADDED to it
-        # (up to the cutoff) rather than opening a new PR.
-        "can_add_prd": bool(today_pr) and not cutoff_passed,
+        "uat_images": uat_images,
+        "locked": locked,
+        "can_add": can_add,
+        "can_raise_prod": can_raise_prod,
         "reason": reason,
         "prd_pr_today": ({
             "number": today_pr.number, "url": today_pr.html_url, "title": today_pr.title,
@@ -1006,59 +1022,105 @@ def check_release_window() -> str:
     return json.dumps(get_release_status(), indent=2)
 
 
-def _add_images_to_pr(repo, pr_number: int, pairs: list, cr: dict) -> str:
-    """Release-train: add image:tag pairs to today's existing PRD PR instead of
-    opening a new one (one release per day; multiple developers contribute)."""
-    image_map = {i: t for i, t in pairs}
-    image_str = ",".join(f"{i}:{t}" for i, t in pairs)
+def _add_images_to_uat(repo, pairs: list) -> dict:
+    """Stage image:tag pairs on the UAT branch images config — the day's release
+    accumulates here (SIT->UAT->PRD). Returns the full updated UAT image set."""
+    images_path, uat = settings.env_config_path, settings.uat_branch
+    cfg = _read_json_file(repo, uat, images_path)
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg["environment"] = "uat"
+    cfg.setdefault("images", {})
+    cfg["images"].update({i: t for i, t in pairs})
+    cfg["updated_by"] = "release-copilot"
+    _upsert_json_file(repo, uat, images_path, cfg)
+    return cfg["images"]
+
+
+def _raise_uat_to_prd_pr(repo, cr: dict) -> str:
+    """Post-cutoff: raise the single UAT->PRD release PR with everything accumulated
+    on UAT, auto-creating the CHG/RMG. Raising it locks the day."""
+    uat, prd = settings.uat_branch, settings.prd_branch
     images_path, cr_path = settings.env_config_path, settings.change_request_path
     try:
-        pr = repo.get_pull(int(pr_number))
-        if pr.state != "open":
-            return (f"ERROR adding to PRD release PR #{pr_number}: it is {pr.state}, not open. "
-                    "Today's release is already closed.")
-        branch = pr.head.ref
+        uat_cfg = _read_json_file(repo, uat, images_path)
+        uat_images = uat_cfg.get("images", {}) if isinstance(uat_cfg, dict) else {}
+        if not uat_images:
+            return "ERROR raising release: no images accumulated on UAT to promote."
+        image_str = ",".join(f"{i}:{t}" for i, t in uat_images.items())
+        try:
+            source_ref = repo.get_git_ref(f"heads/{uat}")
+        except Exception:
+            return f"ERROR raising release: UAT branch '{uat}' not found in {DEPLOY_REPO}."
 
-        # 1) merge into the images config on the release branch
-        cfg = _read_json_file(repo, branch, images_path)
-        cfg.setdefault("images", {})
-        cfg["images"].update(image_map)
-        _upsert_json_file(repo, branch, images_path, cfg)
+        branch = f"release/prod/{uuid.uuid4().hex[:8]}"
+        repo.create_git_ref(f"refs/heads/{branch}", source_ref.object.sha)
+        cr_doc = {"environment": "prod", "images": uat_images, "change_request": cr,
+                  "status": "pending-chg"}
+        _upsert_json_file(repo, branch, cr_path, cr_doc)
 
-        # 2) merge into the change-request images list (same CHG covers the train)
-        crdoc = _read_json_file(repo, branch, cr_path)
-        if crdoc:
-            crdoc.setdefault("images", {})
-            crdoc["images"].update(image_map)
-            _upsert_json_file(repo, branch, cr_path, crdoc)
+        title = f"Release UAT → PRD: {image_str}"
+        body = (f"Daily production release — promote **{uat}** → **{prd}**.\n\n"
+                f"- Images: `{image_str}`\n- Change request: `{cr_path}`\n\n"
+                "CHG/RMG auto-created from the change request (see comments).")
+        pr = repo.create_pull(title=title, body=body, head=branch, base=prd)
 
-        # 3) PR comment recording the addition
-        note = (cr.get("short_description") or cr.get("summary")) if cr else None
-        lines = [f"➕ **Added to this release:** `{image_str}`",
-                 f"- `{images_path}` now carries these tags (same change request / CHG)."]
-        if note:
-            lines.append(f"- Note: {note}")
-        pr.create_issue_comment("\n".join(lines))
-
+        from datetime import datetime, timezone
+        ym = datetime.now(timezone.utc).strftime("%Y%m")
+        seq = f"{uuid.uuid4().int % 100000:05d}"
+        chg, rmg = f"CHG-{ym}-{seq}", f"RMG-{ym}-{seq}"
+        sd = cr.get("short_description") or cr.get("summary") or image_str
+        window = ""
+        if cr.get("start_date") or cr.get("end_date"):
+            window = f"\n- **Window:** {cr.get('start_date','?')} → {cr.get('end_date','?')}"
+        pr.create_issue_comment("\n".join([
+            "📋 **Change management & release controls** (auto-created from the change request)",
+            "", f"- **CHG:** {chg}", f"- **RMG:** {rmg}", f"- **Summary:** {sd}",
+            f"- **Images:** {image_str}{window}", "",
+            "**Control gates (RLFT):**", "- RLFT approval gate: open", "- RLFT deploy control: open",
+        ]))
         return json.dumps({
-            "ok": True, "environment": "prod", "action": "added_to_existing",
-            "image_tags": image_str, "pr_number": pr.number, "pr_url": pr.html_url,
-            "branch": branch,
-            "note": (f"Added {image_str} to today's PRD release PR #{pr.number} — one release per day, "
-                     "merged into the same change request / CHG."),
+            "ok": True, "environment": "prod", "action": "raised_uat_to_prd",
+            "image_tags": image_str, "branch": branch, "base_branch": prd, "source_branch": uat,
+            "pr_number": pr.number, "pr_url": pr.html_url,
+            "change_request_template": cr_path, "chg": chg, "rmg": rmg,
+            "note": (f"Daily UAT→PRD release PR #{pr.number} raised with {len(uat_images)} image(s); "
+                     f"CHG {chg} / RMG {rmg} created. The day is now locked."),
         }, indent=2)
     except Exception as e:
-        return f"ERROR adding to PRD release PR #{pr_number}: {e}"
+        return f"ERROR raising release: {e}"
+
+
+def _prod_controls_failures(pairs: list) -> list:
+    """Return human-readable failure strings for any requested image whose build
+    controls FAILED (empty list = none failed or unverifiable)."""
+    if not settings.prd_require_controls:
+        return []
+    try:
+        brepo = _get_github_client().get_repo(_build_repo_full())
+    except Exception:
+        return []
+    failures = []
+    for image, tag in pairs:
+        run, _err = _find_build_run(brepo, image, tag)
+        if run is None:
+            continue  # unverifiable here; the chat flow asks for the run id
+        rep = _controls_report(_build_repo_full(), image, tag, run)
+        if rep["summary"]["failed"]:
+            failures.append(f"{image}:{tag} → FAILED controls: {', '.join(rep['summary']['failed'])} "
+                            f"(build run {rep['run']['url']})")
+    return failures
 
 
 @tool(args_schema=OpenReleasePRInput)
 def open_release_pr(environment: str, image_tags: str, change_request_json: str = "") -> str:
     """
-    Branch-based promotion in the deploy repo:
-      - uat : open a PR INTO the UAT branch (updates the images config).
-      - prod: open a PR from the UAT branch INTO the PRD branch. The pasted change
-        request (change_request_json) updates the change-request TEMPLATE file; the
-        CHG (and RMG) are auto-created from it and posted as PR comments.
+    SIT -> UAT -> PRD promotion in the deploy repo.
+      - uat : stage image:tag(s) onto the UAT branch (the day's release accumulates).
+      - prod: BEFORE the daily cutoff this also just stages onto UAT (the UAT->PRD PR
+        is NOT raised yet, so more images can keep being added). AFTER the cutoff it
+        stages onto UAT and raises the single UAT->PRD release PR (change_request
+        required) which auto-creates the CHG/RMG and LOCKS the day.
     Supports multiple image:tag pairs.
     """
     raw = (environment or "").strip().lower()
@@ -1075,6 +1137,7 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
         return f"ERROR opening release PR: {e}"
     if not pairs:
         return "ERROR opening release PR: no image:tag pairs provided."
+    image_str = ",".join(f"{i}:{t}" for i, t in pairs)
 
     cr: dict = {}
     if change_request_json.strip():
@@ -1082,48 +1145,6 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
             cr = json.loads(change_request_json)
         except Exception:
             return "ERROR opening release PR: change_request_json is not valid JSON."
-    # Prod create-vs-add (release-train: one PRD PR per day; additional images are
-    # ADDED to that PR rather than opening a new one). After the cutoff, nothing.
-    prod_add_to = None
-    if env == "prod":
-        status = get_release_status()
-        if status.get("cutoff_passed"):
-            return f"ERROR opening release PR: {status.get('reason', 'past the PRD cutoff for today')}"
-        today = status.get("prd_pr_today")
-        if today:
-            prod_add_to = today["number"]  # contribute to today's existing release
-        elif not cr:
-            return "ERROR opening release PR: prod promotion requires a change_request block (drives the CHG)."
-
-    # Build-control gate (fail-closed): block a PRD release if any release control
-    # failed in the build pipeline for any image:tag. If a build run can't be
-    # located we don't hard-block — the conversational flow asks for the run id.
-    if env == "prod" and settings.prd_require_controls:
-        try:
-            bg = _get_github_client()
-            brepo = bg.get_repo(_build_repo_full())
-        except Exception:
-            brepo = None
-        if brepo is not None:
-            failures = []
-            for image, tag in pairs:
-                run, _err = _find_build_run(brepo, image, tag)
-                if run is None:
-                    continue  # unverifiable here; chat flow asks for the run id
-                rep = _controls_report(_build_repo_full(), image, tag, run)
-                if rep["summary"]["failed"]:
-                    failures.append(
-                        f"{image}:{tag} → FAILED controls: {', '.join(rep['summary']['failed'])} "
-                        f"(build run {rep['run']['url']})"
-                    )
-            if failures:
-                return ("ERROR opening release PR: build controls failed — cannot promote to PRD.\n"
-                        + "\n".join(failures))
-
-    uat_branch, prd_branch = settings.uat_branch, settings.prd_branch
-    images_path, cr_path = settings.env_config_path, settings.change_request_path
-    base = uat_branch if env == "uat" else prd_branch
-    source = uat_branch  # both flows branch off UAT (prod = promote UAT -> PRD)
 
     g = _get_github_client()
     try:
@@ -1131,92 +1152,77 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
     except Exception as e:
         return f"ERROR opening release PR: {e}"
 
-    # Release-train: add to today's existing PRD PR instead of opening a new one.
-    if env == "prod" and prod_add_to is not None:
-        return _add_images_to_pr(repo, prod_add_to, pairs, cr)
+    # --- UAT: just stage onto UAT ---
+    if env == "uat":
+        imgs = _add_images_to_uat(repo, pairs)
+        return json.dumps({
+            "ok": True, "environment": "uat", "action": "staged_to_uat",
+            "image_tags": image_str, "uat_images": imgs,
+            "note": f"Staged {image_str} onto UAT ({len(imgs)} image(s) now on UAT).",
+        }, indent=2)
 
+    # --- PROD path ---
+    status = get_release_status()
+    if status.get("locked"):
+        p = status.get("prd_pr_today") or {}
+        return (f"ERROR: today's UAT→PRD release PR #{p.get('number')} is already raised — the day is "
+                f"locked, no more images can be added. {p.get('url','')}")
+
+    # Build-control gate (fail-closed) for the requested images.
+    failures = _prod_controls_failures(pairs)
+    if failures:
+        return ("ERROR: build controls failed — cannot stage for PRD release.\n" + "\n".join(failures))
+
+    # Stage the requested images onto UAT.
+    imgs = _add_images_to_uat(repo, pairs)
+
+    if not status.get("cutoff_passed"):
+        cutoff = settings.prd_cutoff_hour_utc
+        return json.dumps({
+            "ok": True, "environment": "prod", "action": "staged_to_uat",
+            "image_tags": image_str, "uat_images": imgs,
+            "note": (f"Staged {image_str} onto UAT for today's release ({len(imgs)} image(s) total). "
+                     f"The single UAT→PRD PR is raised after {cutoff:02d}:00 UTC — until then more "
+                     "images can be added."),
+        }, indent=2)
+
+    # Cutoff passed → raise the day's UAT→PRD release PR.
+    if not cr:
+        return ("ERROR: the cutoff has passed — raising the UAT→PRD release requires a change_request "
+                "block (drives the CHG).")
+    return _raise_uat_to_prd_pr(repo, cr)
+
+
+class RaiseReleaseInput(BaseModel):
+    change_request_json: str = Field(
+        default="", description="change_request block (required) the CHG is created from.")
+
+
+@tool(args_schema=RaiseReleaseInput)
+def raise_prod_release(change_request_json: str = "") -> str:
+    """Raise today's single UAT->PRD production release PR with everything currently
+    staged on UAT. Allowed ONLY after the daily cutoff (raising it locks the day).
+    Requires a change_request block to drive the CHG/RMG."""
+    status = get_release_status()
+    if status.get("locked"):
+        p = status.get("prd_pr_today") or {}
+        return f"ERROR: today's release PR #{p.get('number')} is already raised — locked. {p.get('url','')}"
+    if not status.get("cutoff_passed"):
+        return (f"ERROR: the UAT→PRD release can only be raised after {status.get('cutoff_utc')} UTC. "
+                "Until then images keep accumulating on UAT.")
+    cr: dict = {}
+    if change_request_json.strip():
+        try:
+            cr = json.loads(change_request_json)
+        except Exception:
+            return "ERROR: change_request_json is not valid JSON."
+    if not cr:
+        return "ERROR: raising the release requires a change_request block (drives the CHG)."
     try:
-        source_ref = repo.get_git_ref(f"heads/{source}")
-    except Exception:
-        return (f"ERROR opening release PR: source branch '{source}' not found in {DEPLOY_REPO}. "
-                f"Create the '{uat_branch}' and '{prd_branch}' env branches first.")
-    try:
-        repo.get_branch(base)
-    except Exception:
-        return f"ERROR opening release PR: base branch '{base}' not found in {DEPLOY_REPO}."
-
-    image_map = {i: t for i, t in pairs}
-    image_str = ",".join(f"{i}:{t}" for i, t in pairs)
-    branch = f"release/{env}/{uuid.uuid4().hex[:8]}"
-
-    chg = rmg = None
-    try:
-        repo.create_git_ref(f"refs/heads/{branch}", source_ref.object.sha)
-
-        # 1) images config (carried on the env branch)
-        cfg = _read_json_file(repo, branch, images_path)
-        cfg["environment"] = env
-        cfg.setdefault("images", {})
-        cfg["images"].update(image_map)
-        cfg["requested_by"] = "release-copilot"
-        cfg["status"] = "pr-open"
-        _upsert_json_file(repo, branch, images_path, cfg)
-
-        # 2) change-request template (prod) — the pasted JSON updates it
-        if env == "prod":
-            cr_doc = {"environment": "prod", "images": image_map,
-                      "change_request": cr, "status": "pending-chg"}
-            _upsert_json_file(repo, branch, cr_path, cr_doc)
-
-        # PR
-        if env == "uat":
-            title = f"Promote to UAT: {image_str}"
-            body = f"Promote `{image_str}` into the **{uat_branch}** branch.\n\n- Images config: `{images_path}`"
-        else:
-            title = f"Promote UAT → PRD: {image_str}"
-            body = (f"Promote `{image_str}` from **{uat_branch}** into **{prd_branch}**.\n\n"
-                    f"- Images config: `{images_path}`\n- Change request: `{cr_path}`\n\n"
-                    "CHG/RMG are auto-created from the change request (see PR comments).")
-        pr = repo.create_pull(title=title, body=body, head=branch, base=base)
-
-        # 3) auto-create CHG/RMG from the change request, posted as PR comments
-        if env == "prod":
-            from datetime import datetime, timezone
-            ym = datetime.now(timezone.utc).strftime("%Y%m")
-            seq = f"{uuid.uuid4().int % 100000:05d}"
-            chg, rmg = f"CHG-{ym}-{seq}", f"RMG-{ym}-{seq}"
-            sd = cr.get("short_description") or cr.get("summary") or image_str
-            window = ""
-            if cr.get("start_date") or cr.get("end_date"):
-                window = f"\n- **Window:** {cr.get('start_date','?')} → {cr.get('end_date','?')}"
-            pr.create_issue_comment("\n".join([
-                "📋 **Change management & release controls** (auto-created from the change request)",
-                "",
-                f"- **CHG:** {chg}",
-                f"- **RMG:** {rmg}",
-                f"- **Summary:** {sd}",
-                f"- **Images:** {image_str}{window}",
-                "",
-                "**Control gates (RLFT):**",
-                "- RLFT approval gate: open",
-                "- RLFT deploy control: open",
-            ]))
+        repo = _get_github_client().get_repo(DEPLOY_REPO)
     except Exception as e:
-        return f"ERROR opening release PR: {e}"
-
-    result = {
-        "ok": True, "environment": env, "image_tags": image_str,
-        "images_config": images_path, "branch": branch,
-        "base_branch": base, "source_branch": source,
-        "pr_number": pr.number, "pr_url": pr.html_url,
-        "note": (f"UAT→PRD PR opened; CHG {chg} / RMG {rmg} auto-created from the change request "
-                 "and posted as PR comments." if env == "prod"
-                 else f"PR opened into '{uat_branch}'. Review and merge to apply."),
-    }
-    if env == "prod":
-        result["change_request_template"] = cr_path
-        result["chg"], result["rmg"] = chg, rmg
-    return json.dumps(result, indent=2)
+        return f"ERROR raising release: {e}"
+    return _raise_uat_to_prd_pr(repo, cr)
 
 
 # Export all tools for the agent
@@ -1236,5 +1242,6 @@ GH_TOOLS = [
     verify_image_tag_build,
     get_build_controls,
     open_release_pr,
+    raise_prod_release,
     check_release_window,
 ]

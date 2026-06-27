@@ -58,9 +58,13 @@ class Settings(BaseSettings):
         default="on-merge-deploy.yml",
         validation_alias=AliasChoices("ON_MERGE_WORKFLOW", "RELEASE_ON_MERGE_WORKFLOW"),
     )
-    # --- Branch-based promotion in DEPLOY_REPO ---
-    # Promote to UAT  = PR into the UAT branch.
-    # Promote to PROD = PR from the UAT branch into the PRD branch.
+    # --- Branch-based promotion in DEPLOY_REPO (SIT -> UAT -> PRD) ---
+    # During the day, images accumulate on UAT. Only AFTER the daily cutoff is a
+    # single UAT -> PRD PR raised (that PR locks the day's release).
+    sit_branch: str = Field(
+        default="SIT",
+        validation_alias=AliasChoices("SIT_BRANCH", "RELEASE_SIT_BRANCH"),
+    )
     uat_branch: str = Field(
         default="UAT",
         validation_alias=AliasChoices("UAT_BRANCH", "RELEASE_UAT_BRANCH"),
