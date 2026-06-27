@@ -342,6 +342,7 @@ async def chat_page():
             {icon:'fa-shield-halved',     label:'Promote to PROD',      desc:'paste JSON → UAT→PRD PR (auto CHG/RMG)',      form:'prod'},
             {icon:'fa-calendar-day',      label:"Today's release window", desc:'is a PRD release already scheduled today?',  send:true,  text:'is there a PRD release scheduled today?'},
             {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
+            {icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RLFT/RFTL gates for a tag',         send:false, text:'check build controls for <image>:<tag> before a PRD release'},
             {icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
             {icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
             {icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/RLFT',         send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},

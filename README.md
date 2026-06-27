@@ -84,6 +84,23 @@ Agent: ✅ Updated release-manifest.json (sha...)
        Ask me: "summarize PR 42" or "get controls status" to track CHG ticket and RLFT gates in the PR comments.
 ```
 
+## PRD build-control gate (RLFT/RFTL pass/fail)
+
+Before a production release, the agent fetches the **release controls recorded in
+the tag's build pipeline** and reports each one PASS/FAIL — e.g. *RFTL0001: PASSED,
+RFTL0002: FAILED*. A PRD release is **fail-closed**: if any control failed, it's blocked.
+
+- **Trigger:** ask for a PRD release with an image:tag ("promote payments-api:v1.1.0 to prod") — controls are shown up front before the change-request step.
+- **Auto-discovery:** the tag is resolved to its commit and the build-workflow run at that commit is found automatically.
+- **Run id fallback:** if the run can't be located from the tag, the agent **asks the developer for the GitHub Actions run id** that generated the tag, then fetches controls from `get_build_controls(run_id=…)`.
+- **Server-side enforcement:** `open_release_pr` re-checks controls for prod and refuses to open the PR if any failed (so the UI JSON-paste path is gated too).
+- **Config:** `BUILD_REPO` (where build pipelines run; defaults to the target repo), `CONTROL_PREFIXES` (default `RLFT,RFTL`), `PRD_REQUIRE_CONTROLS` (default `true`).
+
+Controls are GitHub Actions **steps** in the build job whose name starts with a
+control prefix; pass/fail comes from each step's conclusion. The standalone
+`verify_image_tag_build` check (tag-gen step + log marker) still exists for
+build-authenticity verification.
+
 ## Daily PRD release window (shared across sessions)
 
 Two developers in **separate chat sessions** still see the same answer to "is a
