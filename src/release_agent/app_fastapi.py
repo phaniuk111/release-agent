@@ -496,10 +496,12 @@ async def chat_page():
                     const p = s.prd_pr_today;
                     banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
                     icon.className = 'fa-solid fa-calendar-check text-amber-400';
-                    title.innerHTML = `🚀 PRD release already scheduled today — `
+                    title.innerHTML = `🚂 PRD release train running today — `
                         + `<a href="${p.url}" target="_blank" class="underline text-amber-300">PR #${p.number}</a>`
                         + ` <span class="text-xs font-normal text-amber-200/80">(${p.state}, by ${p.author || 'unknown'})</span>`;
-                    detail.textContent = `Only one PRD release per day. ${foot}`;
+                    detail.textContent = s.can_add_prd
+                        ? `One release per day — promoting to prod ADDS your image to this PR. ${foot}`
+                        : `Only one PRD release per day. ${foot}`;
                 } else if (s.cutoff_passed) {
                     banner.classList.add('border-rose-600/50', 'bg-rose-500/10');
                     icon.className = 'fa-solid fa-lock text-rose-400';

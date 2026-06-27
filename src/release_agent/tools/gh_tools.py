@@ -986,6 +986,9 @@ def get_release_status() -> dict:
     return {
         **base,
         "can_create_prd": can_create,
+        # Release-train: when a PRD PR exists today, more images can be ADDED to it
+        # (up to the cutoff) rather than opening a new PR.
+        "can_add_prd": bool(today_pr) and not cutoff_passed,
         "reason": reason,
         "prd_pr_today": ({
             "number": today_pr.number, "url": today_pr.html_url, "title": today_pr.title,
@@ -1001,6 +1004,51 @@ def check_release_window() -> str:
     exists today, whether the daily cutoff has passed, and whether a new PRD
     release can still be created. Shared across all sessions/developers via GitHub."""
     return json.dumps(get_release_status(), indent=2)
+
+
+def _add_images_to_pr(repo, pr_number: int, pairs: list, cr: dict) -> str:
+    """Release-train: add image:tag pairs to today's existing PRD PR instead of
+    opening a new one (one release per day; multiple developers contribute)."""
+    image_map = {i: t for i, t in pairs}
+    image_str = ",".join(f"{i}:{t}" for i, t in pairs)
+    images_path, cr_path = settings.env_config_path, settings.change_request_path
+    try:
+        pr = repo.get_pull(int(pr_number))
+        if pr.state != "open":
+            return (f"ERROR adding to PRD release PR #{pr_number}: it is {pr.state}, not open. "
+                    "Today's release is already closed.")
+        branch = pr.head.ref
+
+        # 1) merge into the images config on the release branch
+        cfg = _read_json_file(repo, branch, images_path)
+        cfg.setdefault("images", {})
+        cfg["images"].update(image_map)
+        _upsert_json_file(repo, branch, images_path, cfg)
+
+        # 2) merge into the change-request images list (same CHG covers the train)
+        crdoc = _read_json_file(repo, branch, cr_path)
+        if crdoc:
+            crdoc.setdefault("images", {})
+            crdoc["images"].update(image_map)
+            _upsert_json_file(repo, branch, cr_path, crdoc)
+
+        # 3) PR comment recording the addition
+        note = (cr.get("short_description") or cr.get("summary")) if cr else None
+        lines = [f"➕ **Added to this release:** `{image_str}`",
+                 f"- `{images_path}` now carries these tags (same change request / CHG)."]
+        if note:
+            lines.append(f"- Note: {note}")
+        pr.create_issue_comment("\n".join(lines))
+
+        return json.dumps({
+            "ok": True, "environment": "prod", "action": "added_to_existing",
+            "image_tags": image_str, "pr_number": pr.number, "pr_url": pr.html_url,
+            "branch": branch,
+            "note": (f"Added {image_str} to today's PRD release PR #{pr.number} — one release per day, "
+                     "merged into the same change request / CHG."),
+        }, indent=2)
+    except Exception as e:
+        return f"ERROR adding to PRD release PR #{pr_number}: {e}"
 
 
 @tool(args_schema=OpenReleasePRInput)
@@ -1034,20 +1082,18 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
             cr = json.loads(change_request_json)
         except Exception:
             return "ERROR opening release PR: change_request_json is not valid JSON."
-    if env == "prod" and not cr:
-        return "ERROR opening release PR: prod promotion requires a change_request block (drives the CHG)."
-
-    # Daily PRD policy (shared across sessions via GitHub): at most one PRD PR per
-    # day, created before the UTC cutoff. Blocks a second developer in another
-    # session from raising a duplicate same-day release.
+    # Prod create-vs-add (release-train: one PRD PR per day; additional images are
+    # ADDED to that PR rather than opening a new one). After the cutoff, nothing.
+    prod_add_to = None
     if env == "prod":
         status = get_release_status()
-        if not status.get("can_create_prd", True):
-            extra = ""
-            if status.get("prd_pr_today"):
-                p = status["prd_pr_today"]
-                extra = f" Existing release: PR #{p['number']} by {p.get('author') or 'unknown'} — {p['url']}."
-            return f"ERROR opening release PR: {status.get('reason', 'PRD release not allowed right now.')}{extra}"
+        if status.get("cutoff_passed"):
+            return f"ERROR opening release PR: {status.get('reason', 'past the PRD cutoff for today')}"
+        today = status.get("prd_pr_today")
+        if today:
+            prod_add_to = today["number"]  # contribute to today's existing release
+        elif not cr:
+            return "ERROR opening release PR: prod promotion requires a change_request block (drives the CHG)."
 
     # Build-control gate (fail-closed): block a PRD release if any release control
     # failed in the build pipeline for any image:tag. If a build run can't be
@@ -1084,6 +1130,11 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
         repo = g.get_repo(DEPLOY_REPO)
     except Exception as e:
         return f"ERROR opening release PR: {e}"
+
+    # Release-train: add to today's existing PRD PR instead of opening a new one.
+    if env == "prod" and prod_add_to is not None:
+        return _add_images_to_pr(repo, prod_add_to, pairs, cr)
+
     try:
         source_ref = repo.get_git_ref(f"heads/{source}")
     except Exception:
