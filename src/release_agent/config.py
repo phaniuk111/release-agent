@@ -93,6 +93,12 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("PRD_ONCE_PER_DAY", "RELEASE_PRD_ONCE_PER_DAY"),
     )
+    # Minimum lead time (days) between raising the UAT->PRD release PR and the
+    # change's start_date. 1 = the start date must be tomorrow or later.
+    prd_lead_time_days: int = Field(
+        default=1,
+        validation_alias=AliasChoices("PRD_LEAD_TIME_DAYS", "RELEASE_PRD_LEAD_TIME_DAYS"),
+    )
     # Repo where image build pipelines run (tags + build runs + control steps live
     # here). Empty -> falls back to the target repo.
     build_repo: str = Field(

@@ -49,6 +49,9 @@ config:
   # Daily release window: the UAT->PRD PR may be raised only after this UTC hour
   # (raising it locks the day). The UI shows today's window status.
   PRD_CUTOFF_HOUR_UTC: "16"
+  # Lead time (days) required between raising the release and the change start_date.
+  # 1 = the change request start_date must be tomorrow or later.
+  PRD_LEAD_TIME_DAYS: "1"
   # Build-control gate: repo where image build pipelines run (tags + runs +
   # RLFT/RFTL control steps). Empty -> target repo.
   BUILD_REPO: ""
