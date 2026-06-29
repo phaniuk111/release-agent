@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field
 # Config - using Pydantic settings for consistency
 from ..config import settings
 
-TARGET_REPO = settings.target_repo
-DEPLOY_REPO = getattr(settings, 'deploy_repo', settings.target_repo)
+BUILD_REPO = settings.build_repo
+DEPLOY_REPO = settings.deploy_repo
 CONFIG_PATH = settings.config_path
 MANIFEST_PATH = settings.manifest_path
 # Dispatchable-workflow allow-list — driven by config (env / Helm ConfigMap), not
@@ -28,6 +28,7 @@ MANIFEST_PATH = settings.manifest_path
 ALLOWED_WORKFLOWS = set(settings.allowed_workflows) | {settings.default_workflow}
 # Workflow used to (re)run the deployment simulation in DEPLOY_REPO.
 ON_MERGE_WORKFLOW = settings.on_merge_workflow
+
 
 def _resolve_github_token() -> str | None:
     """Resolve a GitHub token from the environment, falling back to the `gh` CLI.
@@ -61,8 +62,10 @@ def _resolve_github_token() -> str | None:
 def _gh_retry():
     try:
         from urllib3.util.retry import Retry
+
         return Retry(
-            total=4, backoff_factor=0.5,
+            total=4,
+            backoff_factor=0.5,
             status_forcelist=(429, 500, 502, 503, 504),
             respect_retry_after_header=True,
         )
@@ -83,7 +86,8 @@ def _get_github_client() -> Github:
 # Pydantic schemas for tool inputs (better validation + schema generation)
 class ImageTagsInput(BaseModel):
     image_tags: str = Field(
-        ..., description="Comma-separated image:tag pairs, e.g. 'payments-api:2.0.33,orders-api:v1.2.3'"
+        ...,
+        description="Comma-separated image:tag pairs, e.g. 'payments-api:2.0.33,orders-api:v1.2.3'",
     )
 
 
@@ -91,19 +95,17 @@ class ApplyJsonUpdateInput(BaseModel):
     image_tags: str = Field(..., description="Comma-separated image:tag pairs")
     commit_message: str = Field(
         default="chore(release): update image tags via release-agent chat",
-        description="Commit message for the update"
+        description="Commit message for the update",
     )
 
 
 class DispatchWorkflowInput(BaseModel):
     workflow: str = Field(
-        default="image-tag-step-report.yml",
-        description="Workflow filename to dispatch"
+        default="image-tag-step-report.yml", description="Workflow filename to dispatch"
     )
     image_tags: str = Field(default="", description="Comma-separated image:tag pairs to pass")
     extra_inputs: str = Field(
-        default="",
-        description="Optional JSON string with additional workflow inputs"
+        default="", description="Optional JSON string with additional workflow inputs"
     )
 
 
@@ -117,8 +119,7 @@ class GetWorkflowStatusInput(BaseModel):
 
 class FindPrsInput(BaseModel):
     search_term: str = Field(
-        default="",
-        description="Search term for PRs (e.g. image name, tag, or 'CHG')"
+        default="", description="Search term for PRs (e.g. image name, tag, or 'CHG')"
     )
     limit: int = Field(default=5, ge=1, le=20)
 
@@ -129,14 +130,19 @@ class PrNumberInput(BaseModel):
 
 class PrCommentsInput(BaseModel):
     pr_number: int = Field(..., description="Pull request number")
-    limit: int = Field(default=100, ge=1, le=300, description="Max comments to fetch (defaults high so the agent sees all PR comments, e.g. CHG/RMG tickets and RLFT gates)")
+    limit: int = Field(
+        default=100,
+        ge=1,
+        le=300,
+        description="Max comments to fetch (defaults high so the agent sees all PR comments, e.g. CHG/RMG tickets and RLFT gates)",
+    )
 
 
 class RetriggerDeploymentWorkflowInput(BaseModel):
     pr_number: int = Field(..., description="PR number in the deployment repo to simulate for")
     simulate_closed_controls: str = Field(
         default="",
-        description="Comma-separated list of controls to mark as closed (e.g. 'RLFT approval gate,RLFT deploy control'). Use this to simulate external actions."
+        description="Comma-separated list of controls to mark as closed (e.g. 'RLFT approval gate,RLFT deploy control'). Use this to simulate external actions.",
     )
 
 
@@ -145,7 +151,7 @@ def list_allowed_images() -> str:
     """Return the list of known images and their build workflows from the config JSON."""
     try:
         g = _get_github_client()
-        repo = g.get_repo(TARGET_REPO)
+        repo = g.get_repo(BUILD_REPO)
         content_file = repo.get_contents(CONFIG_PATH)
         content = base64.b64decode(content_file.content).decode()
         cfg = json.loads(content)
@@ -161,7 +167,7 @@ def _fetch_current_manifest() -> str:
     path = MANIFEST_PATH
     try:
         g = _get_github_client()
-        repo = g.get_repo(TARGET_REPO)
+        repo = g.get_repo(BUILD_REPO)
         content_file = repo.get_contents(path)
         content = base64.b64decode(content_file.content).decode()
         return content
@@ -173,7 +179,7 @@ def _fetch_current_manifest() -> str:
                 "requested_by": "chat-agent",
                 "images": {},
                 "promote_to": "prod",
-                "status": "empty"
+                "status": "empty",
             }
             return json.dumps(skeleton, indent=2)
         return f"ERROR reading manifest: {e}"
@@ -216,12 +222,15 @@ def propose_update(image_tags: str) -> str:
         proposed["last_updated"] = "proposed"
         proposed["status"] = "proposed"
 
-        return json.dumps({
-            "current": current,
-            "proposed": proposed,
-            "changes": changes,
-            "note": "This is a proposal only. Reply with the confirmation token to apply."
-        }, indent=2)
+        return json.dumps(
+            {
+                "current": current,
+                "proposed": proposed,
+                "changes": changes,
+                "note": "This is a proposal only. Reply with the confirmation token to apply.",
+            },
+            indent=2,
+        )
     except Exception as e:
         return f"ERROR proposing update: {e}"
 
@@ -239,7 +248,10 @@ def _parse_pairs(image_tags: str) -> list[tuple[str, str]]:
 
 
 @tool(args_schema=ApplyJsonUpdateInput)
-def apply_json_update(image_tags: str, commit_message: str = "chore(release): update image tags via release-agent chat") -> str:
+def apply_json_update(
+    image_tags: str,
+    commit_message: str = "chore(release): update image tags via release-agent chat",
+) -> str:
     """
     Apply image:tag updates to the release manifest in the GitHub repo.
     This MUTATES the repository. Only call after user confirmation.
@@ -256,7 +268,7 @@ def apply_json_update(image_tags: str, commit_message: str = "chore(release): up
 
     g = _get_github_client()
     try:
-        repo = g.get_repo(TARGET_REPO)
+        repo = g.get_repo(BUILD_REPO)
     except Exception as e:
         return f"ERROR applying update: {e}"
 
@@ -292,13 +304,16 @@ def apply_json_update(image_tags: str, commit_message: str = "chore(release): up
                 commit = repo.update_file(MANIFEST_PATH, commit_message, new_content, sha)
             else:
                 commit = repo.create_file(MANIFEST_PATH, commit_message, new_content)
-            return json.dumps({
-                "ok": True,
-                "updated_file": MANIFEST_PATH,
-                "commit": commit["commit"].sha,
-                "url": commit["commit"].html_url,
-                "new_manifest": current,
-            }, indent=2)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "updated_file": MANIFEST_PATH,
+                    "commit": commit["commit"].sha,
+                    "url": commit["commit"].html_url,
+                    "new_manifest": current,
+                },
+                indent=2,
+            )
         except GithubException as e:
             last_err = e
             if e.status == 409:
@@ -306,14 +321,17 @@ def apply_json_update(image_tags: str, commit_message: str = "chore(release): up
                 # or another commit landed first — re-check before retrying.
                 applied = _desired_already_present()
                 if applied is not None:
-                    return json.dumps({
-                        "ok": True,
-                        "updated_file": MANIFEST_PATH,
-                        "commit": None,
-                        "url": f"https://github.com/{TARGET_REPO}/blob/main/{MANIFEST_PATH}",
-                        "new_manifest": applied,
-                        "note": "Desired tags already present (409 conflict resolved idempotently).",
-                    }, indent=2)
+                    return json.dumps(
+                        {
+                            "ok": True,
+                            "updated_file": MANIFEST_PATH,
+                            "commit": None,
+                            "url": f"https://github.com/{BUILD_REPO}/blob/main/{MANIFEST_PATH}",
+                            "new_manifest": applied,
+                            "note": "Desired tags already present (409 conflict resolved idempotently).",
+                        },
+                        indent=2,
+                    )
                 continue  # stale SHA — retry with a freshly-read SHA
             return f"ERROR applying update: {e}"
         except Exception as e:
@@ -323,7 +341,9 @@ def apply_json_update(image_tags: str, commit_message: str = "chore(release): up
 
 
 @tool(args_schema=DispatchWorkflowInput)
-def dispatch_workflow(workflow: str = "image-tag-step-report.yml", image_tags: str = "", extra_inputs: str = "") -> str:
+def dispatch_workflow(
+    workflow: str = "image-tag-step-report.yml", image_tags: str = "", extra_inputs: str = ""
+) -> str:
     """
     Dispatch a workflow_dispatch event.
     workflow: filename in .github/workflows (must be in the configured allow-list)
@@ -350,20 +370,23 @@ def dispatch_workflow(workflow: str = "image-tag-step-report.yml", image_tags: s
 
     try:
         g = _get_github_client()
-        repo = g.get_repo(TARGET_REPO)
+        repo = g.get_repo(BUILD_REPO)
         workflow_obj = repo.get_workflow(workflow)
         # Dispatch against the repo's actual default branch (not a hardcoded
         # "main") so repos on master/develop/etc. still fire — and so the ref
         # matches the default branch the manifest is read/written on.
         workflow_obj.create_dispatch(ref=repo.default_branch, inputs=inputs)
 
-        return json.dumps({
-            "dispatched": True,
-            "workflow": workflow,
-            "repo": TARGET_REPO,
-            "inputs": inputs,
-            "note": "Workflow dispatched. Use get_recent_runs or get_workflow_status to check progress."
-        }, indent=2)
+        return json.dumps(
+            {
+                "dispatched": True,
+                "workflow": workflow,
+                "repo": BUILD_REPO,
+                "inputs": inputs,
+                "note": "Workflow dispatched. Use get_recent_runs or get_workflow_status to check progress.",
+            },
+            indent=2,
+        )
     except Exception as e:
         return f"ERROR dispatching workflow: {e}"
 
@@ -373,7 +396,7 @@ def get_recent_runs(limit: int = 5) -> str:
     """List recent workflow runs for the repo (good for status after dispatch)."""
     try:
         g = _get_github_client()
-        repo = g.get_repo(TARGET_REPO)
+        repo = g.get_repo(BUILD_REPO)
         # islice over the PaginatedList: lazy (only fetches the page(s) needed,
         # unlike list(...) which pulls the ENTIRE history) AND empty-safe (a bare
         # [:limit] slice raises IndexError on an empty PaginatedList in PyGithub).
@@ -381,15 +404,17 @@ def get_recent_runs(limit: int = 5) -> str:
 
         result = []
         for run in runs:
-            result.append({
-                "databaseId": run.id,
-                "workflowName": run.name or "unknown",
-                "event": run.event,
-                "status": run.status,
-                "conclusion": run.conclusion,
-                "createdAt": str(run.created_at),
-                "url": run.html_url,
-            })
+            result.append(
+                {
+                    "databaseId": run.id,
+                    "workflowName": run.name or "unknown",
+                    "event": run.event,
+                    "status": run.status,
+                    "conclusion": run.conclusion,
+                    "createdAt": str(run.created_at),
+                    "url": run.html_url,
+                }
+            )
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"ERROR listing runs: {e}"
@@ -403,47 +428,59 @@ def get_workflow_status(run_id: str) -> str:
     """
     try:
         g = _get_github_client()
-        repo = g.get_repo(TARGET_REPO)
+        repo = g.get_repo(BUILD_REPO)
         run = repo.get_workflow_run(int(run_id))
 
         jobs_data = []
         try:
             for job in run.jobs():
                 steps_data = []
-                for step in getattr(job, 'steps', []) or []:
-                    steps_data.append({
-                        "number": getattr(step, 'number', None),
-                        "name": getattr(step, 'name', None),
-                        "status": getattr(step, 'status', None),
-                        "conclusion": getattr(step, 'conclusion', None),
-                        "started_at": str(getattr(step, 'started_at', '')) if getattr(step, 'started_at', None) else None,
-                        "completed_at": str(getattr(step, 'completed_at', '')) if getattr(step, 'completed_at', None) else None,
-                    })
-                jobs_data.append({
-                    "name": job.name,
-                    "status": job.status,
-                    "conclusion": job.conclusion,
-                    "steps": steps_data,
-                })
+                for step in getattr(job, "steps", []) or []:
+                    steps_data.append(
+                        {
+                            "number": getattr(step, "number", None),
+                            "name": getattr(step, "name", None),
+                            "status": getattr(step, "status", None),
+                            "conclusion": getattr(step, "conclusion", None),
+                            "started_at": str(getattr(step, "started_at", ""))
+                            if getattr(step, "started_at", None)
+                            else None,
+                            "completed_at": str(getattr(step, "completed_at", ""))
+                            if getattr(step, "completed_at", None)
+                            else None,
+                        }
+                    )
+                jobs_data.append(
+                    {
+                        "name": job.name,
+                        "status": job.status,
+                        "conclusion": job.conclusion,
+                        "steps": steps_data,
+                    }
+                )
         except Exception as job_err:
             jobs_data = [{"error": str(job_err)}]
 
-        return json.dumps({
-            "databaseId": run.id,
-            "workflowName": run.name or "unknown",
-            "event": run.event,
-            "status": run.status,
-            "conclusion": run.conclusion,
-            "createdAt": str(run.created_at),
-            "url": run.html_url,
-            "jobs": jobs_data,
-            "note": "Step conclusions are available. The free-text GITHUB_STEP_SUMMARY markdown is not exposed by the GitHub API."
-        }, indent=2)
+        return json.dumps(
+            {
+                "databaseId": run.id,
+                "workflowName": run.name or "unknown",
+                "event": run.event,
+                "status": run.status,
+                "conclusion": run.conclusion,
+                "createdAt": str(run.created_at),
+                "url": run.html_url,
+                "jobs": jobs_data,
+                "note": "Step conclusions are available. The free-text GITHUB_STEP_SUMMARY markdown is not exposed by the GitHub API.",
+            },
+            indent=2,
+        )
     except Exception as e:
         return f"ERROR getting run {run_id}: {e}"
 
 
 # ==================== PR Tracking Tools (for deployment repo) ====================
+
 
 def _find_prs_for_images(image_tags: str, limit: int = 20) -> list[dict]:
     """Return deployment-repo PRs whose title/branch matches ALL tokens of the
@@ -455,15 +492,19 @@ def _find_prs_for_images(image_tags: str, limit: int = 20) -> list[dict]:
         if not tokens:
             return []
         out: list[dict] = []
-        for pr in itertools.islice(repo.get_pulls(state="all", sort="created", direction="desc"), 60):
+        for pr in itertools.islice(
+            repo.get_pulls(state="all", sort="created", direction="desc"), 60
+        ):
             hay = f"{pr.title} {pr.head.ref or ''}".lower()
             if all(tok in hay for tok in tokens):
-                out.append({
-                    "number": pr.number,
-                    "url": pr.html_url,
-                    "title": pr.title,
-                    "state": pr.state,
-                })
+                out.append(
+                    {
+                        "number": pr.number,
+                        "url": pr.html_url,
+                        "title": pr.title,
+                        "state": pr.state,
+                    }
+                )
                 if len(out) >= limit:
                     break
         return out
@@ -484,6 +525,7 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
     Use search_term like image name, tag, or 'CHG' to filter.
     Example: search_term="payments-api:2.0.33" or "CHG-12345"
     """
+
     def _pr_dict(pr):
         return {
             "number": pr.number,
@@ -499,7 +541,11 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
         repo = g.get_repo(DEPLOY_REPO)
 
         if not search_term:
-            pulls = list(itertools.islice(repo.get_pulls(state="all", sort="created", direction="desc"), limit))
+            pulls = list(
+                itertools.islice(
+                    repo.get_pulls(state="all", sort="created", direction="desc"), limit
+                )
+            )
             return json.dumps(
                 {"repo": DEPLOY_REPO, "search_term": "recent", "prs": [_pr_dict(p) for p in pulls]},
                 indent=2,
@@ -510,7 +556,9 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
         # token of the search term appears in its title or head branch.
         tokens = [t for t in search_term.lower().replace(":", " ").replace(",", " ").split() if t]
         results: dict[int, dict] = {}
-        for pr in itertools.islice(repo.get_pulls(state="all", sort="created", direction="desc"), 80):
+        for pr in itertools.islice(
+            repo.get_pulls(state="all", sort="created", direction="desc"), 80
+        ):
             hay = f"{pr.title} {pr.head.ref or ''}".lower()
             if tokens and all(tok in hay for tok in tokens):
                 results[pr.number] = _pr_dict(pr)
@@ -536,7 +584,11 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
                 pass
 
         return json.dumps(
-            {"repo": DEPLOY_REPO, "search_term": search_term, "prs": list(results.values())[:limit]},
+            {
+                "repo": DEPLOY_REPO,
+                "search_term": search_term,
+                "prs": list(results.values())[:limit],
+            },
             indent=2,
         )
     except Exception as e:
@@ -549,18 +601,21 @@ def _fetch_pr_details(pr_number: int) -> str:
         g = _get_github_client()
         repo = g.get_repo(DEPLOY_REPO)
         pr = repo.get_pull(pr_number)
-        return json.dumps({
-            "number": pr.number,
-            "title": pr.title,
-            "url": pr.html_url,
-            "state": pr.state,
-            "headRefName": pr.head.ref,
-            "baseRefName": pr.base.ref,
-            "author": pr.user.login if pr.user else None,
-            "createdAt": str(pr.created_at),
-            "updatedAt": str(pr.updated_at),
-            "mergedAt": str(pr.merged_at) if pr.merged_at else None,
-        }, indent=2)
+        return json.dumps(
+            {
+                "number": pr.number,
+                "title": pr.title,
+                "url": pr.html_url,
+                "state": pr.state,
+                "headRefName": pr.head.ref,
+                "baseRefName": pr.base.ref,
+                "author": pr.user.login if pr.user else None,
+                "createdAt": str(pr.created_at),
+                "updatedAt": str(pr.updated_at),
+                "mergedAt": str(pr.merged_at) if pr.merged_at else None,
+            },
+            indent=2,
+        )
     except Exception as e:
         return f"ERROR getting PR #{pr_number}: {e}"
 
@@ -581,18 +636,23 @@ def _fetch_pr_comments(pr_number: int, limit: int = 100) -> str:
 
         simplified = []
         for c in comments:
-            simplified.append({
-                "id": c.id,
-                "user": c.user.login if c.user else None,
-                "created_at": str(c.created_at),
-                "body": c.body[:2000] if c.body else "",
-            })
-        return json.dumps({
-            "repo": DEPLOY_REPO,
-            "pr": pr_number,
-            "comment_count": len(simplified),
-            "comments": simplified
-        }, indent=2)
+            simplified.append(
+                {
+                    "id": c.id,
+                    "user": c.user.login if c.user else None,
+                    "created_at": str(c.created_at),
+                    "body": c.body[:2000] if c.body else "",
+                }
+            )
+        return json.dumps(
+            {
+                "repo": DEPLOY_REPO,
+                "pr": pr_number,
+                "comment_count": len(simplified),
+                "comments": simplified,
+            },
+            indent=2,
+        )
     except Exception as e:
         return f"ERROR getting comments for PR #{pr_number}: {e}"
 
@@ -619,11 +679,14 @@ def summarize_pr_controls(pr_number: int) -> str:
         details = json.loads(_fetch_pr_details(pr_number))
         comments_data = json.loads(_fetch_pr_comments(pr_number, limit=100))
 
-        return json.dumps({
-            "pr_details": details,
-            "comments": comments_data.get("comments", []),
-            "note": "Look for CHG and RMG tickets, 'RLFT', 'closed', 'opened', 'approved', 'gate' in the comments."
-        }, indent=2)
+        return json.dumps(
+            {
+                "pr_details": details,
+                "comments": comments_data.get("comments", []),
+                "note": "Look for CHG and RMG tickets, 'RLFT', 'closed', 'opened', 'approved', 'gate' in the comments.",
+            },
+            indent=2,
+        )
     except Exception as e:
         return f"ERROR summarizing PR #{pr_number}: {e}"
 
@@ -646,25 +709,35 @@ def retrigger_deployment_workflow(pr_number: int, simulate_closed_controls: str 
 
         workflow.create_dispatch(ref=repo.default_branch, inputs=inputs)
 
-        return json.dumps({
-            "triggered": True,
-            "repo": DEPLOY_REPO,
-            "pr_number": pr_number,
-            "simulate_closed_controls": simulate_closed_controls,
-            "note": "Workflow retriggered. Use summarize_pr_controls or get_pr_comments to see the updated status."
-        }, indent=2)
+        return json.dumps(
+            {
+                "triggered": True,
+                "repo": DEPLOY_REPO,
+                "pr_number": pr_number,
+                "simulate_closed_controls": simulate_closed_controls,
+                "note": "Workflow retriggered. Use summarize_pr_controls or get_pr_comments to see the updated status.",
+            },
+            indent=2,
+        )
     except Exception as e:
         return f"ERROR retriggering deployment workflow for PR #{pr_number}: {e}"
 
 
 # ============ Image-tag build verification (PyGithub refactor of gh-image-tag-steps.sh) ============
 
+
 class VerifyImageTagInput(BaseModel):
     image: str = Field(..., description="Image name (must be in image-workflows.json)")
     tag: str = Field(..., description="Git tag that was built, e.g. v1.2.3")
-    repo: str = Field(default="", description="owner/repo where the build ran. Defaults to the target repo.")
-    tag_generation_step: str = Field(default="Generate Git tag", description="Step name that generates the git tag")
-    tag_marker_prefix: str = Field(default="TAG_GENERATED=", description="Log marker prefix emitted by the tag step")
+    repo: str = Field(
+        default="", description="owner/repo where the build ran. Defaults to the target repo."
+    )
+    tag_generation_step: str = Field(
+        default="Generate Git tag", description="Step name that generates the git tag"
+    )
+    tag_marker_prefix: str = Field(
+        default="TAG_GENERATED=", description="Log marker prefix emitted by the tag step"
+    )
 
 
 def _image_build_workflow(repo_obj, image: str) -> str | None:
@@ -702,10 +775,12 @@ def _fetch_job_log(repo_full: str, job_id: int) -> str:
         return ""
     try:
         import requests
+
         r = requests.get(
             f"https://api.github.com/repos/{repo_full}/actions/jobs/{job_id}/logs",
             headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-            allow_redirects=True, timeout=30,
+            allow_redirects=True,
+            timeout=30,
         )
         return r.text if r.status_code == 200 else ""
     except Exception:
@@ -713,9 +788,13 @@ def _fetch_job_log(repo_full: str, job_id: int) -> str:
 
 
 @tool(args_schema=VerifyImageTagInput)
-def verify_image_tag_build(image: str, tag: str, repo: str = "",
-                           tag_generation_step: str = "Generate Git tag",
-                           tag_marker_prefix: str = "TAG_GENERATED=") -> str:
+def verify_image_tag_build(
+    image: str,
+    tag: str,
+    repo: str = "",
+    tag_generation_step: str = "Generate Git tag",
+    tag_marker_prefix: str = "TAG_GENERATED=",
+) -> str:
     """
     Verify that image:tag was actually built correctly BEFORE promoting it.
 
@@ -724,7 +803,7 @@ def verify_image_tag_build(image: str, tag: str, repo: str = "",
     '<tag_marker_prefix><tag>' marker, and reports the run's RLFT release-control steps.
     verified=true only when a matching successful run is found.
     """
-    repo_full = repo or TARGET_REPO
+    repo_full = repo or BUILD_REPO
     try:
         g = _get_github_client()
         repo_obj = g.get_repo(repo_full)
@@ -746,11 +825,18 @@ def verify_image_tag_build(image: str, tag: str, repo: str = "",
         return f"ERROR verifying build: {e}"
 
     if not runs:
-        return json.dumps({
-            "verified": False, "image": image, "tag": tag, "tag_commit": commit,
-            "workflow": workflow, "repo": repo_full,
-            "reason": f"No '{workflow}' run found at commit {commit[:7]}.",
-        }, indent=2)
+        return json.dumps(
+            {
+                "verified": False,
+                "image": image,
+                "tag": tag,
+                "tag_commit": commit,
+                "workflow": workflow,
+                "repo": repo_full,
+                "reason": f"No '{workflow}' run found at commit {commit[:7]}.",
+            },
+            indent=2,
+        )
 
     marker = f"{tag_marker_prefix}{tag}"
 
@@ -758,20 +844,28 @@ def verify_image_tag_build(image: str, tag: str, repo: str = "",
         tag_step, rlft = None, []
         try:
             for job in run.jobs():
-                for step in (getattr(job, "steps", None) or []):
+                for step in getattr(job, "steps", None) or []:
                     name = getattr(step, "name", "") or ""
-                    rec = {"job": job.name, "job_id": job.id,
-                           "number": getattr(step, "number", None), "name": name,
-                           "status": getattr(step, "status", None),
-                           "conclusion": getattr(step, "conclusion", None)}
+                    rec = {
+                        "job": job.name,
+                        "job_id": job.id,
+                        "number": getattr(step, "number", None),
+                        "name": name,
+                        "status": getattr(step, "status", None),
+                        "conclusion": getattr(step, "conclusion", None),
+                    }
                     if name == tag_generation_step and tag_step is None:
                         tag_step = rec
                     if name.startswith("RLFT"):
-                        rlft.append({k: rec[k] for k in ("job", "number", "name", "status", "conclusion")})
+                        rlft.append(
+                            {k: rec[k] for k in ("job", "number", "name", "status", "conclusion")}
+                        )
         except Exception:
             pass
         log_found = bool(
-            tag_step and tag_step.get("conclusion") == "success" and tag_step.get("job_id")
+            tag_step
+            and tag_step.get("conclusion") == "success"
+            and tag_step.get("job_id")
             and marker in _fetch_job_log(repo_full, tag_step["job_id"])
         )
         return tag_step, rlft, log_found
@@ -788,29 +882,61 @@ def verify_image_tag_build(image: str, tag: str, repo: str = "",
 
     run, tag_step, rlft, log_found = selected
     verified = bool(tag_step and tag_step.get("conclusion") == "success" and log_found)
-    return json.dumps({
-        "verified": verified,
-        "image": image, "tag": tag, "tag_commit": commit, "workflow": workflow, "repo": repo_full,
-        "run": {"id": run.id, "name": run.name, "url": run.html_url,
-                "headSha": run.head_sha, "status": run.status, "conclusion": run.conclusion},
-        "tag_generation": ({
-            "step": tag_generation_step, "job": tag_step.get("job"),
-            "status": tag_step.get("status"), "conclusion": tag_step.get("conclusion"),
-            "marker": marker, "log_marker_found": log_found,
-        } if tag_step else {"step": tag_generation_step, "found": False, "marker": marker}),
-        "rlft_controls": rlft,
-        "note": "verified=true means the tag was built by a successful run whose tag-gen step logged "
-                "the marker. Check the RLFT control steps before promoting.",
-    }, indent=2)
+    return json.dumps(
+        {
+            "verified": verified,
+            "image": image,
+            "tag": tag,
+            "tag_commit": commit,
+            "workflow": workflow,
+            "repo": repo_full,
+            "run": {
+                "id": run.id,
+                "name": run.name,
+                "url": run.html_url,
+                "headSha": run.head_sha,
+                "status": run.status,
+                "conclusion": run.conclusion,
+            },
+            "tag_generation": (
+                {
+                    "step": tag_generation_step,
+                    "job": tag_step.get("job"),
+                    "status": tag_step.get("status"),
+                    "conclusion": tag_step.get("conclusion"),
+                    "marker": marker,
+                    "log_marker_found": log_found,
+                }
+                if tag_step
+                else {"step": tag_generation_step, "found": False, "marker": marker}
+            ),
+            "rlft_controls": rlft,
+            "note": "verified=true means the tag was built by a successful run whose tag-gen step logged "
+            "the marker. Check the RLFT control steps before promoting.",
+        },
+        indent=2,
+    )
 
 
 # ============ Build-pipeline release controls (RLFT/RFTL pass/fail) ============
 
+
 class BuildControlsInput(BaseModel):
-    image: str = Field(default="", description="Image name (to find the build workflow + resolve the tag). Optional if run_id is given.")
-    tag: str = Field(default="", description="Git tag that was built, e.g. v1.2.3. Optional if run_id is given.")
-    repo: str = Field(default="", description="owner/repo where the build ran. Defaults to the configured build repo / target repo.")
-    run_id: int = Field(default=0, description="GitHub Actions run id that generated the tag. Pass it to skip tag->run discovery, or when discovery can't find the run.")
+    image: str = Field(
+        default="",
+        description="Image name (to find the build workflow + resolve the tag). Optional if run_id is given.",
+    )
+    tag: str = Field(
+        default="", description="Git tag that was built, e.g. v1.2.3. Optional if run_id is given."
+    )
+    repo: str = Field(
+        default="",
+        description="owner/repo where the build ran. Defaults to the configured build repo / target repo.",
+    )
+    run_id: int = Field(
+        default=0,
+        description="GitHub Actions run id that generated the tag. Pass it to skip tag->run discovery, or when discovery can't find the run.",
+    )
 
 
 # Step conclusions that count as a failed control gate.
@@ -825,21 +951,26 @@ def _collect_controls(run) -> list[dict]:
     """Enumerate a build run's release-control steps (RLFT/RFTL...) with pass/fail."""
     controls = []
     for job in run.jobs():
-        for step in (getattr(job, "steps", None) or []):
+        for step in getattr(job, "steps", None) or []:
             name = getattr(step, "name", "") or ""
             if not _is_control_step(name):
                 continue
             concl = getattr(step, "conclusion", None)
-            controls.append({
-                "control": name, "job": job.name,
-                "status": getattr(step, "status", None), "conclusion": concl,
-                "passed": concl == "success", "failed": concl in _FAIL_CONCLUSIONS,
-            })
+            controls.append(
+                {
+                    "control": name,
+                    "job": job.name,
+                    "status": getattr(step, "status", None),
+                    "conclusion": concl,
+                    "passed": concl == "success",
+                    "failed": concl in _FAIL_CONCLUSIONS,
+                }
+            )
     return controls
 
 
 def _build_repo_full(repo: str = "") -> str:
-    return repo or settings.build_repo or TARGET_REPO
+    return repo or settings.build_repo
 
 
 def _find_build_run(repo_obj, image: str, tag: str):
@@ -870,9 +1001,17 @@ def _controls_report(repo_full, image, tag, run) -> dict:
     other = [c["control"] for c in controls if not c["passed"] and not c["failed"]]
     gate_pass = bool(controls) and not failed and not other
     return {
-        "image": image, "tag": tag, "repo": repo_full,
-        "run": {"id": run.id, "name": run.name, "url": run.html_url,
-                "head_sha": run.head_sha, "conclusion": run.conclusion, "created_at": str(run.created_at)},
+        "image": image,
+        "tag": tag,
+        "repo": repo_full,
+        "run": {
+            "id": run.id,
+            "name": run.name,
+            "url": run.html_url,
+            "head_sha": run.head_sha,
+            "conclusion": run.conclusion,
+            "created_at": str(run.created_at),
+        },
         "controls": controls,
         "summary": {"total": len(controls), "passed": passed, "failed": failed, "other": other},
         "gate": "PASS" if gate_pass else ("FAIL" if failed else "UNKNOWN"),
@@ -901,30 +1040,48 @@ def get_build_controls(image: str = "", tag: str = "", repo: str = "", run_id: i
         try:
             run = repo_obj.get_workflow_run(int(run_id))
         except Exception:
-            return (f"ERROR fetching controls: run id {run_id} not found in {repo_full}. "
-                    "Check the run id and that the repo is the build-pipeline repo.")
+            return (
+                f"ERROR fetching controls: run id {run_id} not found in {repo_full}. "
+                "Check the run id and that the repo is the build-pipeline repo."
+            )
     else:
         if not (image and tag):
-            return ("NEED_INPUT: provide a run_id, or both image and tag, so I can locate the "
-                    "build-pipeline run that generated the tag.")
+            return (
+                "NEED_INPUT: provide a run_id, or both image and tag, so I can locate the "
+                "build-pipeline run that generated the tag."
+            )
         run, err = _find_build_run(repo_obj, image, tag)
         if run is None:
-            return json.dumps({
-                "need_run_id": True, "image": image, "tag": tag, "repo": repo_full, "reason": err,
-                "ask": (f"I couldn't locate the build run for {image}:{tag} in {repo_full} ({err}). "
-                        "Please provide the GitHub Actions run id that generated this tag."),
-            }, indent=2)
+            return json.dumps(
+                {
+                    "need_run_id": True,
+                    "image": image,
+                    "tag": tag,
+                    "repo": repo_full,
+                    "reason": err,
+                    "ask": (
+                        f"I couldn't locate the build run for {image}:{tag} in {repo_full} ({err}). "
+                        "Please provide the GitHub Actions run id that generated this tag."
+                    ),
+                },
+                indent=2,
+            )
 
     report = _controls_report(repo_full, image, tag, run)
     if not report["controls"]:
-        report["note"] = (f"No control steps matched prefixes {settings.control_prefixes} in this run — "
-                          "verify the run id / build pipeline.")
+        report["note"] = (
+            f"No control steps matched prefixes {settings.control_prefixes} in this run — "
+            "verify the run id / build pipeline."
+        )
     else:
-        report["note"] = "gate=PASS only when every control passed. Do NOT promote to PRD with any FAILED control."
+        report["note"] = (
+            "gate=PASS only when every control passed. Do NOT promote to PRD with any FAILED control."
+        )
     return json.dumps(report, indent=2)
 
 
 # ============ Environment promotion: update config JSON + open a PR (PyGithub) ============
+
 
 class OpenReleasePRInput(BaseModel):
     environment: str = Field(..., description="Target environment: uat or prod")
@@ -960,11 +1117,13 @@ def _read_json_file(repo, branch: str, path: str) -> dict:
 
 # ---- Today's PRD release window (shared across sessions via GitHub) ----
 
+
 def _todays_prd_prs() -> list:
     """Today's (UTC) UAT->PRD release PRs that LOCK the day — open or merged. A
     closed-unmerged PR is abandoned and does not lock. GitHub is the cross-session
     source of truth, so any session sees the same answer."""
     from datetime import datetime, timezone
+
     today = datetime.now(timezone.utc).date()
     g = _get_github_client()
     repo = g.get_repo(DEPLOY_REPO)
@@ -988,11 +1147,16 @@ def get_release_status() -> dict:
     accumulation, whether the cutoff has passed, whether the day is locked, and
     whether images can still be added / the release can be raised."""
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     cutoff = settings.prd_cutoff_hour_utc
     cutoff_passed = now.hour >= cutoff
-    base = {"date_utc": now.date().isoformat(), "now_utc": now.strftime("%H:%M"),
-            "cutoff_utc": f"{cutoff:02d}:00", "cutoff_passed": cutoff_passed}
+    base = {
+        "date_utc": now.date().isoformat(),
+        "now_utc": now.strftime("%H:%M"),
+        "cutoff_utc": f"{cutoff:02d}:00",
+        "cutoff_passed": cutoff_passed,
+    }
     try:
         g = _get_github_client()
         repo = g.get_repo(DEPLOY_REPO)
@@ -1002,29 +1166,42 @@ def get_release_status() -> dict:
         prd_images = prd_cfg.get("images", {}) if isinstance(prd_cfg, dict) else {}
         prs = _todays_prd_prs()
     except Exception as e:
-        return {**base, "error": str(e), "can_add": True, "can_raise_prod": False,
-                "locked": False, "uat_images": {}, "pending_changes": {}, "prd_pr_today": None}
+        return {
+            **base,
+            "error": str(e),
+            "can_add": True,
+            "can_raise_prod": False,
+            "locked": False,
+            "uat_images": {},
+            "pending_changes": {},
+            "prd_pr_today": None,
+        }
 
     # Pending = images on UAT whose tag differs from PRD (what an UAT->PRD PR would
     # actually promote). UAT config persists across days, so "has any images" is NOT
     # the same as "has something to release today" — compare against PRD.
     pending = {i: t for i, t in uat_images.items() if prd_images.get(i) != t}
 
-    today_pr = prs[0] if prs else None         # today's UAT->PRD release PR (post-cutoff)
-    locked = today_pr is not None              # release raised -> no more adds today
-    can_add = not locked                       # adds land on UAT until the PR is raised
+    today_pr = prs[0] if prs else None  # today's UAT->PRD release PR (post-cutoff)
+    locked = today_pr is not None  # release raised -> no more adds today
+    can_add = not locked  # adds land on UAT until the PR is raised
     can_raise_prod = cutoff_passed and not locked and bool(pending)
 
     if locked:
         reason = f"Today's UAT→PRD release PR #{today_pr.number} is raised — the day is locked."
     elif not pending:
-        reason = ("No changes on UAT vs PRD — nothing to release"
-                  + (" (cutoff passed)." if cutoff_passed else f"; UAT→PRD opens after {cutoff:02d}:00 UTC."))
+        reason = "No changes on UAT vs PRD — nothing to release" + (
+            " (cutoff passed)." if cutoff_passed else f"; UAT→PRD opens after {cutoff:02d}:00 UTC."
+        )
     elif cutoff_passed:
-        reason = f"Cutoff passed — raise the UAT→PRD release PR ({len(pending)} image(s) to promote)."
+        reason = (
+            f"Cutoff passed — raise the UAT→PRD release PR ({len(pending)} image(s) to promote)."
+        )
     else:
-        reason = (f"Collecting on UAT ({len(pending)} image(s) pending vs PRD); the UAT→PRD PR opens "
-                  f"after {cutoff:02d}:00 UTC.")
+        reason = (
+            f"Collecting on UAT ({len(pending)} image(s) pending vs PRD); the UAT→PRD PR opens "
+            f"after {cutoff:02d}:00 UTC."
+        )
     return {
         **base,
         "uat_images": uat_images,
@@ -1033,11 +1210,18 @@ def get_release_status() -> dict:
         "can_add": can_add,
         "can_raise_prod": can_raise_prod,
         "reason": reason,
-        "prd_pr_today": ({
-            "number": today_pr.number, "url": today_pr.html_url, "title": today_pr.title,
-            "state": today_pr.state, "author": today_pr.user.login if today_pr.user else None,
-            "created_at": str(today_pr.created_at),
-        } if today_pr else None),
+        "prd_pr_today": (
+            {
+                "number": today_pr.number,
+                "url": today_pr.html_url,
+                "title": today_pr.title,
+                "state": today_pr.state,
+                "author": today_pr.user.login if today_pr.user else None,
+                "created_at": str(today_pr.created_at),
+            }
+            if today_pr
+            else None
+        ),
     }
 
 
@@ -1054,6 +1238,7 @@ def _merge_pr(pr, method: str = "squash"):
     On protected branches that require review, the merge is refused — we report it
     and leave the PR open for approval."""
     import time
+
     for _ in range(8):
         try:
             pr.update()
@@ -1100,16 +1285,31 @@ def _apply_via_pr_chain(repo, mutate_fn, summary: str) -> dict:
     # 1) working branch -> SIT
     pr_sit = repo.create_pull(title=f"{summary} (→ {sit})", body=summary, head=work, base=sit)
     ok, detail = _merge_pr(pr_sit, "squash")
-    prs.append({"stage": f"→{sit}", "number": pr_sit.number, "url": pr_sit.html_url,
-                "merged": ok, "detail": detail})
+    prs.append(
+        {
+            "stage": f"→{sit}",
+            "number": pr_sit.number,
+            "url": pr_sit.html_url,
+            "merged": ok,
+            "detail": detail,
+        }
+    )
     # 2) SIT -> UAT (promote) — only if SIT actually advanced
     if ok:
         try:
-            pr_uat = repo.create_pull(title=f"Promote {sit} → {uat}: {summary}", body=summary,
-                                      head=sit, base=uat)
+            pr_uat = repo.create_pull(
+                title=f"Promote {sit} → {uat}: {summary}", body=summary, head=sit, base=uat
+            )
             ok2, detail2 = _merge_pr(pr_uat, "merge")
-            prs.append({"stage": f"{sit}→{uat}", "number": pr_uat.number, "url": pr_uat.html_url,
-                        "merged": ok2, "detail": detail2})
+            prs.append(
+                {
+                    "stage": f"{sit}→{uat}",
+                    "number": pr_uat.number,
+                    "url": pr_uat.html_url,
+                    "merged": ok2,
+                    "detail": detail2,
+                }
+            )
         except Exception as e:
             prs.append({"stage": f"{sit}→{uat}", "error": str(e)})
     return {"changed": True, "prs": prs}
@@ -1122,7 +1322,9 @@ def _pr_chain_note(prs: list) -> str:
     bits = []
     for p in prs:
         if p.get("number"):
-            bits.append(f"PR #{p['number']} {p['stage']} ({'merged' if p.get('merged') else p.get('detail', 'open')})")
+            bits.append(
+                f"PR #{p['number']} {p['stage']} ({'merged' if p.get('merged') else p.get('detail', 'open')})"
+            )
         elif p.get("error"):
             bits.append(f"{p['stage']} failed: {p['error']}")
     return "; ".join(bits) + "."
@@ -1140,7 +1342,9 @@ def _add_images_to_uat(repo, pairs: list) -> dict:
 
     summary = "Add " + ",".join(f"{i}:{t}" for i, t in pairs) + " to release"
     res = _apply_via_pr_chain(repo, _mut, summary)
-    uat_images = (_read_json_file(repo, settings.uat_branch, settings.env_config_path) or {}).get("images", {}) or {}
+    uat_images = (_read_json_file(repo, settings.uat_branch, settings.env_config_path) or {}).get(
+        "images", {}
+    ) or {}
     return {"uat_images": uat_images, "prs": res["prs"], "changed": res["changed"]}
 
 
@@ -1148,7 +1352,9 @@ def _remove_images_via_chain(repo, names: list) -> dict:
     """Remove image(s) from the release via the protected-branch PR chain
     (working -> SIT, then promote SIT -> UAT), merging both so the removal reaches
     UAT: revert each image to PRD's current tag, or drop it if it's new."""
-    prd_images = (_read_json_file(repo, settings.prd_branch, settings.env_config_path) or {}).get("images", {}) or {}
+    prd_images = (_read_json_file(repo, settings.prd_branch, settings.env_config_path) or {}).get(
+        "images", {}
+    ) or {}
     reverted, removed, not_found = [], [], []
 
     def _mut(images):
@@ -1164,14 +1370,21 @@ def _remove_images_via_chain(repo, names: list) -> dict:
         return bool(reverted or removed)
 
     res = _apply_via_pr_chain(repo, _mut, "Remove " + ",".join(names) + " from release")
-    return {"reverted": reverted, "removed": removed, "not_found": not_found,
-            "prs": res["prs"], "changed": res["changed"]}
+    return {
+        "reverted": reverted,
+        "removed": removed,
+        "not_found": not_found,
+        "prs": res["prs"],
+        "changed": res["changed"],
+    }
 
 
 class RemoveFromReleaseInput(BaseModel):
     image_names: str = Field(
-        ..., description="Comma-separated image names to remove from today's release. Tags are "
-        "optional/ignored (e.g. 'orders-api' or 'orders-api:v1.1.0').")
+        ...,
+        description="Comma-separated image names to remove from today's release. Tags are "
+        "optional/ignored (e.g. 'orders-api' or 'orders-api:v1.1.0').",
+    )
 
 
 @tool(args_schema=RemoveFromReleaseInput)
@@ -1195,8 +1408,10 @@ def remove_from_release(image_names: str) -> str:
 
     res = _remove_images_via_chain(repo, names)
     if not res["changed"]:
-        return (f"No change — {', '.join(res['not_found']) or ','.join(names)} not found in the release "
-                "config; nothing to remove.")
+        return (
+            f"No change — {', '.join(res['not_found']) or ','.join(names)} not found in the release "
+            "config; nothing to remove."
+        )
     parts = []
     if res["reverted"]:
         parts.append("reverted to PRD: " + ", ".join(res["reverted"]))
@@ -1213,11 +1428,14 @@ def _lead_time_ok(cr: dict):
     least `prd_lead_time_days` ahead (default 1 -> tomorrow or later).
     Returns (ok: bool, message: str)."""
     from datetime import datetime, timezone, timedelta
+
     raw = str(cr.get("start_date") or "").strip()
     lead = settings.prd_lead_time_days
     if not raw:
-        return False, ("the change request needs a start_date — production releases need lead time, so "
-                       f"the start date must be at least {lead} day(s) out.")
+        return False, (
+            "the change request needs a start_date — production releases need lead time, so "
+            f"the start date must be at least {lead} day(s) out."
+        )
     dt = None
     for candidate in (raw, raw[:10]):  # accept 'YYYY-MM-DDThh:mm' or 'YYYY-MM-DD'
         try:
@@ -1229,9 +1447,11 @@ def _lead_time_ok(cr: dict):
         return False, f"could not parse start_date '{raw}' (use YYYY-MM-DD or YYYY-MM-DDThh:mm)."
     earliest = datetime.now(timezone.utc).date() + timedelta(days=lead)
     if dt.date() < earliest:
-        return False, (f"start_date {dt.date().isoformat()} is too soon — production changes need "
-                       f"{lead} day(s) lead time, so the start date must be {earliest.isoformat()} "
-                       "(tomorrow) or later.")
+        return False, (
+            f"start_date {dt.date().isoformat()} is too soon — production changes need "
+            f"{lead} day(s) lead time, so the start date must be {earliest.isoformat()} "
+            "(tomorrow) or later."
+        )
     return True, ""
 
 
@@ -1250,8 +1470,10 @@ def _raise_uat_to_prd_pr(repo, cr: dict) -> str:
         # changed (a quiet day), do NOT raise an empty release PR.
         pending = {i: t for i, t in uat_images.items() if prd_images.get(i) != t}
         if not pending:
-            return ("NOTE: nothing to release — UAT already matches PRD (no new images staged). "
-                    "No UAT→PRD PR was raised.")
+            return (
+                "NOTE: nothing to release — UAT already matches PRD (no new images staged). "
+                "No UAT→PRD PR was raised."
+            )
         ok, msg = _lead_time_ok(cr)
         if not ok:
             return f"ERROR raising release: {msg}"
@@ -1263,38 +1485,69 @@ def _raise_uat_to_prd_pr(repo, cr: dict) -> str:
 
         branch = f"release/prod/{uuid.uuid4().hex[:8]}"
         repo.create_git_ref(f"refs/heads/{branch}", source_ref.object.sha)
-        cr_doc = {"environment": "prod", "images": pending, "promoting_to_state": uat_images,
-                  "change_request": cr, "status": "pending-chg"}
+        cr_doc = {
+            "environment": "prod",
+            "images": pending,
+            "promoting_to_state": uat_images,
+            "change_request": cr,
+            "status": "pending-chg",
+        }
         _upsert_json_file(repo, branch, cr_path, cr_doc)
 
         title = f"Release UAT → PRD: {image_str}"
-        body = (f"Daily production release — promote **{uat}** → **{prd}**.\n\n"
-                f"- Images: `{image_str}`\n- Change request: `{cr_path}`\n\n"
-                "CHG/RMG auto-created from the change request (see comments).")
+        body = (
+            f"Daily production release — promote **{uat}** → **{prd}**.\n\n"
+            f"- Images: `{image_str}`\n- Change request: `{cr_path}`\n\n"
+            "CHG/RMG auto-created from the change request (see comments)."
+        )
         pr = repo.create_pull(title=title, body=body, head=branch, base=prd)
 
         from datetime import datetime, timezone
+
         ym = datetime.now(timezone.utc).strftime("%Y%m")
         seq = f"{uuid.uuid4().int % 100000:05d}"
         chg, rmg = f"CHG-{ym}-{seq}", f"RMG-{ym}-{seq}"
         sd = cr.get("short_description") or cr.get("summary") or image_str
         window = ""
         if cr.get("start_date") or cr.get("end_date"):
-            window = f"\n- **Window:** {cr.get('start_date','?')} → {cr.get('end_date','?')}"
-        pr.create_issue_comment("\n".join([
-            "📋 **Change management & release controls** (auto-created from the change request)",
-            "", f"- **CHG:** {chg}", f"- **RMG:** {rmg}", f"- **Summary:** {sd}",
-            f"- **Images:** {image_str}{window}", "",
-            "**Control gates (RLFT):**", "- RLFT approval gate: open", "- RLFT deploy control: open",
-        ]))
-        return json.dumps({
-            "ok": True, "environment": "prod", "action": "raised_uat_to_prd",
-            "image_tags": image_str, "branch": branch, "base_branch": prd, "source_branch": uat,
-            "pr_number": pr.number, "pr_url": pr.html_url,
-            "change_request_template": cr_path, "chg": chg, "rmg": rmg,
-            "note": (f"Daily UAT→PRD release PR #{pr.number} raised promoting {len(pending)} image(s); "
-                     f"CHG {chg} / RMG {rmg} created. The day is now locked."),
-        }, indent=2)
+            window = f"\n- **Window:** {cr.get('start_date', '?')} → {cr.get('end_date', '?')}"
+        pr.create_issue_comment(
+            "\n".join(
+                [
+                    "📋 **Change management & release controls** (auto-created from the change request)",
+                    "",
+                    f"- **CHG:** {chg}",
+                    f"- **RMG:** {rmg}",
+                    f"- **Summary:** {sd}",
+                    f"- **Images:** {image_str}{window}",
+                    "",
+                    "**Control gates (RLFT):**",
+                    "- RLFT approval gate: open",
+                    "- RLFT deploy control: open",
+                ]
+            )
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "environment": "prod",
+                "action": "raised_uat_to_prd",
+                "image_tags": image_str,
+                "branch": branch,
+                "base_branch": prd,
+                "source_branch": uat,
+                "pr_number": pr.number,
+                "pr_url": pr.html_url,
+                "change_request_template": cr_path,
+                "chg": chg,
+                "rmg": rmg,
+                "note": (
+                    f"Daily UAT→PRD release PR #{pr.number} raised promoting {len(pending)} image(s); "
+                    f"CHG {chg} / RMG {rmg} created. The day is now locked."
+                ),
+            },
+            indent=2,
+        )
     except Exception as e:
         return f"ERROR raising release: {e}"
 
@@ -1315,8 +1568,10 @@ def _prod_controls_failures(pairs: list) -> list:
             continue  # unverifiable here; the chat flow asks for the run id
         rep = _controls_report(_build_repo_full(), image, tag, run)
         if rep["summary"]["failed"]:
-            failures.append(f"{image}:{tag} → FAILED controls: {', '.join(rep['summary']['failed'])} "
-                            f"(build run {rep['run']['url']})")
+            failures.append(
+                f"{image}:{tag} → FAILED controls: {', '.join(rep['summary']['failed'])} "
+                f"(build run {rep['run']['url']})"
+            )
     return failures
 
 
@@ -1337,7 +1592,9 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
     elif raw in ("prod", "prd", "production"):
         env = "prod"
     else:
-        return f"ERROR opening release PR: unsupported environment '{environment}' (use uat or prod)."
+        return (
+            f"ERROR opening release PR: unsupported environment '{environment}' (use uat or prod)."
+        )
 
     try:
         pairs = _parse_pairs(image_tags)
@@ -1364,24 +1621,35 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
     if env == "uat":
         res = _add_images_to_uat(repo, pairs)
         imgs = res["uat_images"]
-        return json.dumps({
-            "ok": True, "environment": "uat", "action": "staged_to_uat",
-            "image_tags": image_str, "uat_images": imgs, "prs": res["prs"],
-            "note": f"Staged {image_str} via PR chain (working→SIT→UAT). {_pr_chain_note(res['prs'])} "
-                    f"{len(imgs)} image(s) on UAT.",
-        }, indent=2)
+        return json.dumps(
+            {
+                "ok": True,
+                "environment": "uat",
+                "action": "staged_to_uat",
+                "image_tags": image_str,
+                "uat_images": imgs,
+                "prs": res["prs"],
+                "note": f"Staged {image_str} via PR chain (working→SIT→UAT). {_pr_chain_note(res['prs'])} "
+                f"{len(imgs)} image(s) on UAT.",
+            },
+            indent=2,
+        )
 
     # --- PROD path ---
     status = get_release_status()
     if status.get("locked"):
         p = status.get("prd_pr_today") or {}
-        return (f"ERROR: today's UAT→PRD release PR #{p.get('number')} is already raised — the day is "
-                f"locked, no more images can be added. {p.get('url','')}")
+        return (
+            f"ERROR: today's UAT→PRD release PR #{p.get('number')} is already raised — the day is "
+            f"locked, no more images can be added. {p.get('url', '')}"
+        )
 
     # Build-control gate (fail-closed) for the requested images.
     failures = _prod_controls_failures(pairs)
     if failures:
-        return ("ERROR: build controls failed — cannot stage for PRD release.\n" + "\n".join(failures))
+        return "ERROR: build controls failed — cannot stage for PRD release.\n" + "\n".join(
+            failures
+        )
 
     # Stage the requested images for today's release via the PR chain (working->SIT->UAT).
     res = _add_images_to_uat(repo, pairs)
@@ -1389,24 +1657,36 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
 
     if not status.get("cutoff_passed"):
         cutoff = settings.prd_cutoff_hour_utc
-        return json.dumps({
-            "ok": True, "environment": "prod", "action": "staged_to_uat",
-            "image_tags": image_str, "uat_images": imgs, "prs": res["prs"],
-            "note": (f"Staged {image_str} for today's release via PR chain (working→SIT→UAT). "
-                     f"{_pr_chain_note(res['prs'])} {len(imgs)} image(s) on UAT. The single UAT→PRD PR "
-                     f"is raised after {cutoff:02d}:00 UTC — until then more images can be added."),
-        }, indent=2)
+        return json.dumps(
+            {
+                "ok": True,
+                "environment": "prod",
+                "action": "staged_to_uat",
+                "image_tags": image_str,
+                "uat_images": imgs,
+                "prs": res["prs"],
+                "note": (
+                    f"Staged {image_str} for today's release via PR chain (working→SIT→UAT). "
+                    f"{_pr_chain_note(res['prs'])} {len(imgs)} image(s) on UAT. The single UAT→PRD PR "
+                    f"is raised after {cutoff:02d}:00 UTC — until then more images can be added."
+                ),
+            },
+            indent=2,
+        )
 
     # Cutoff passed → raise the day's UAT→PRD release PR.
     if not cr:
-        return ("ERROR: the cutoff has passed — raising the UAT→PRD release requires a change_request "
-                "block (drives the CHG).")
+        return (
+            "ERROR: the cutoff has passed — raising the UAT→PRD release requires a change_request "
+            "block (drives the CHG)."
+        )
     return _raise_uat_to_prd_pr(repo, cr)
 
 
 class RaiseReleaseInput(BaseModel):
     change_request_json: str = Field(
-        default="", description="change_request block (required) the CHG is created from.")
+        default="", description="change_request block (required) the CHG is created from."
+    )
 
 
 @tool(args_schema=RaiseReleaseInput)
@@ -1417,10 +1697,12 @@ def raise_prod_release(change_request_json: str = "") -> str:
     status = get_release_status()
     if status.get("locked"):
         p = status.get("prd_pr_today") or {}
-        return f"ERROR: today's release PR #{p.get('number')} is already raised — locked. {p.get('url','')}"
+        return f"ERROR: today's release PR #{p.get('number')} is already raised — locked. {p.get('url', '')}"
     if not status.get("cutoff_passed"):
-        return (f"ERROR: the UAT→PRD release can only be raised after {status.get('cutoff_utc')} UTC. "
-                "Until then images keep accumulating on UAT.")
+        return (
+            f"ERROR: the UAT→PRD release can only be raised after {status.get('cutoff_utc')} UTC. "
+            "Until then images keep accumulating on UAT."
+        )
     cr: dict = {}
     if change_request_json.strip():
         try:

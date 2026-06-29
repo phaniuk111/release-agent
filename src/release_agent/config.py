@@ -34,13 +34,22 @@ def _get_gcp_project() -> str:
 
 class Settings(BaseSettings):
     # Each field accepts several env var spellings so the names used in the
-    # README / .env.example / shell exports (e.g. RELEASE_AGENT_TARGET_REPO,
-    # DEPLOY_REPO, GOOGLE_CLOUD_PROJECT) are all honored — previously only the
+    # README / .env.example / shell exports (e.g. BUILD_REPO, DEPLOY_REPO,
+    # GOOGLE_CLOUD_PROJECT) are all honored — previously only the
     # RELEASE_-prefixed names worked, so exports were silently ignored.
-    target_repo: str = Field(
+    #
+    # BUILD_REPO: code + config + build repo.  Holds image-workflows.json, the
+    # git tags GitHub Actions create, build runs, and RLFT/RFTL control steps.
+    # Legacy env spellings are accepted as backward-compatible aliases so
+    # existing deployments don't silently misroute.
+    build_repo: str = Field(
         default="phaniuk111/devops",
         validation_alias=AliasChoices(
-            "RELEASE_AGENT_TARGET_REPO", "RELEASE_TARGET_REPO", "TARGET_REPO"
+            "BUILD_REPO",
+            "RELEASE_BUILD_REPO",
+            "RELEASE_AGENT_TARGET_REPO",
+            "RELEASE_TARGET_REPO",
+            "TARGET_REPO",
         ),
     )
     deploy_repo: str = Field(
@@ -105,12 +114,6 @@ class Settings(BaseSettings):
         default=8,
         validation_alias=AliasChoices("REACT_MAX_TOOL_TURNS", "RELEASE_REACT_MAX_TOOL_TURNS"),
     )
-    # Repo where image build pipelines run (tags + build runs + control steps live
-    # here). Empty -> falls back to the target repo.
-    build_repo: str = Field(
-        default="",
-        validation_alias=AliasChoices("BUILD_REPO", "RELEASE_BUILD_REPO"),
-    )
     # Step-name prefixes that mark release controls in the build pipeline
     # (e.g. "RLFT approval gate", "RFTL0001 ..."). Comma-separated.
     control_prefixes: Annotated[list[str], NoDecode] = Field(
@@ -147,9 +150,7 @@ class Settings(BaseSettings):
     # Vertex AI Gen AI project — resolved at runtime (env or gcloud), never hardcoded in source code
     gcp_project: str = Field(
         default="",
-        validation_alias=AliasChoices(
-            "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "RELEASE_GCP_PROJECT"
-        ),
+        validation_alias=AliasChoices("GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "RELEASE_GCP_PROJECT"),
     )
     gcp_location: str = Field(
         default="us-central1",
@@ -161,9 +162,7 @@ class Settings(BaseSettings):
     # (gemini-2.0-flash was retired); override per-project/region if needed.
     gemini_model: str = Field(
         default="gemini-2.5-flash",
-        validation_alias=AliasChoices(
-            "GEMINI_MODEL", "VERTEX_MODEL", "RELEASE_GEMINI_MODEL"
-        ),
+        validation_alias=AliasChoices("GEMINI_MODEL", "VERTEX_MODEL", "RELEASE_GEMINI_MODEL"),
     )
 
     # App metadata (used by FastAPI)
@@ -184,6 +183,7 @@ class Settings(BaseSettings):
                 return ["*"]
             if v.startswith("["):
                 import json
+
                 return json.loads(v)  # explicit, since NoDecode disabled auto-parse
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
@@ -199,6 +199,7 @@ class Settings(BaseSettings):
                 return []
             if v.startswith("["):
                 import json
+
                 return json.loads(v)
             return [w.strip() for w in v.split(",") if w.strip()]
         return v

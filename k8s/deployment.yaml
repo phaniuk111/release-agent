@@ -21,7 +21,7 @@ spec:
         - containerPort: 8000
           name: http
         env:
-        - name: RELEASE_AGENT_TARGET_REPO
+        - name: BUILD_REPO
           value: "phaniuk111/devops"
         # Deployment repo where PRs with CHG tickets and controls are created
         # - name: DEPLOY_REPO

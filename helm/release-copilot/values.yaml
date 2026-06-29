@@ -31,7 +31,9 @@ containerPort: 8000
 
 # --- Non-secret configuration (rendered into a ConfigMap, injected via envFrom) ---
 config:
-  RELEASE_AGENT_TARGET_REPO: "phaniuk111/devops"
+  # Two repos: BUILD_REPO (code + config + builds/tags + RLFT controls) and DEPLOY_REPO
+  # (SIT/UAT/PRD GitOps branches). Legacy RELEASE_AGENT_TARGET_REPO is still accepted.
+  BUILD_REPO: "phaniuk111/devops"
   DEPLOY_REPO: "phaniuk111/deployment-repo"
   # REQUIRED for Vertex AI. Leave set to your GCP project id.
   GOOGLE_CLOUD_PROJECT: ""
@@ -52,9 +54,6 @@ config:
   # Lead time (days) required between raising the release and the change start_date.
   # 1 = the change request start_date must be tomorrow or later.
   PRD_LEAD_TIME_DAYS: "1"
-  # Build-control gate: repo where image build pipelines run (tags + runs +
-  # RLFT/RFTL control steps). Empty -> target repo.
-  BUILD_REPO: ""
   # Step-name prefixes that mark release controls in the build pipeline.
   CONTROL_PREFIXES: "RLFT,RFTL"
   # Fail-closed: block a PRD release when any build control failed.

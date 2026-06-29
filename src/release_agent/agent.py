@@ -28,7 +28,6 @@ from typing import Annotated, Any, List, Literal, Optional
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
-    HumanMessage,
     SystemMessage,
     ToolMessage,
 )
@@ -40,7 +39,7 @@ from langgraph.types import Command, interrupt, RetryPolicy
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .tools.gh_tools import GH_TOOLS, TARGET_REPO, DEPLOY_REPO, _find_prs_for_images
+from .tools.gh_tools import BUILD_REPO, DEPLOY_REPO, GH_TOOLS, _find_prs_for_images
 from .budget import (
     get_budget_tracker,
     check_budget_before_call,
@@ -71,6 +70,7 @@ except Exception:
 
 class ReleaseState(BaseModel):
     """Shared state for the release agent using Pydantic for structure and validation."""
+
     model_config = {"arbitrary_types_allowed": True}
     messages: Annotated[List[AnyMessage], add_messages] = Field(default_factory=list)
     release_request: Optional[dict] = None
@@ -83,14 +83,14 @@ class ReleaseState(BaseModel):
     rerun_steps: Optional[List[str]] = None
     # Tool-call turns taken in the free-form ReAct lane this user turn (loop guard).
     llm_tool_turns: int = 0
-    repo: str = Field(default=TARGET_REPO)
+    repo: str = Field(default=BUILD_REPO)
     deploy_repo: str = Field(default=DEPLOY_REPO)
 
 
 # ---- Re-runnable apply-phase steps -----------------------------------------
 STEP_APPLY = "apply_manifest"
 STEP_DISPATCH = "dispatch_workflow"
-STEP_RELEASE_PR = "release_pr"     # env promote: update env config JSON + open a PR
+STEP_RELEASE_PR = "release_pr"  # env promote: update env config JSON + open a PR
 ALL_STEPS = [STEP_APPLY, STEP_DISPATCH]
 
 # Steps used for an environment (uat/prod) promote vs. the legacy dispatch path.
@@ -140,7 +140,7 @@ the ticket numbers and statuses found in the comments. Never guess a PR number o
 cannot find the PR or comments, say so plainly. Only give a generic definition when no specific
 release/PR is in context.
 
-Always work against manifest repo: {TARGET_REPO}
+Always work against the build/source repo (BUILD_REPO): {BUILD_REPO}
 PRs and controls are usually in the deployment repo: {DEPLOY_REPO} (use the PR tools)
 
 Valid images come from image-workflows.json (use the list_allowed_images tool).
@@ -212,7 +212,7 @@ Confirmation flow:
 - Show the user a unique token like CONFIRM-abc123
 - Only after they reply with that exact token, proceed to apply + dispatch.
 
-Current manifest repo: {TARGET_REPO}
+Current build/source repo: {BUILD_REPO}
 Deployment / PR repo: {DEPLOY_REPO}
 """
 
@@ -232,8 +232,11 @@ def message_text(msg) -> str:
         for block in content:
             if isinstance(block, str):
                 parts.append(block)
-            elif isinstance(block, dict) and isinstance(block.get("text"), str) \
-                    and block.get("type") in (None, "text"):
+            elif (
+                isinstance(block, dict)
+                and isinstance(block.get("text"), str)
+                and block.get("type") in (None, "text")
+            ):
                 parts.append(block["text"])
         return "".join(parts)
     return str(content) if content else ""
@@ -264,14 +267,49 @@ def _get_llm():
 
 # Words that are never image names and never tags (deployment environments + filler).
 _ENV_WORDS = {
-    "prod", "production", "stage", "staging", "dev", "development",
-    "qa", "uat", "test", "testing", "sandbox", "preprod", "perf", "canary",
+    "prod",
+    "production",
+    "stage",
+    "staging",
+    "dev",
+    "development",
+    "qa",
+    "uat",
+    "test",
+    "testing",
+    "sandbox",
+    "preprod",
+    "perf",
+    "canary",
 }
 _STOP_WORDS = {
-    "to", "and", "the", "for", "update", "promote", "set", "as", "tag",
-    "in", "on", "env", "environment", "deploy", "release", "please", "with",
-    "a", "an", "image", "version", "bump", "rollout", "roll", "out",
+    "to",
+    "and",
+    "the",
+    "for",
+    "update",
+    "promote",
+    "set",
+    "as",
+    "tag",
+    "in",
+    "on",
+    "env",
+    "environment",
+    "deploy",
+    "release",
+    "please",
+    "with",
+    "a",
+    "an",
+    "image",
+    "version",
+    "bump",
+    "rollout",
+    "roll",
+    "out",
 } | _ENV_WORDS
+
 
 def _looks_like_tag(tag: str) -> bool:
     """A tag looks like a version / sha / 'latest' — NOT an environment word."""
@@ -280,9 +318,9 @@ def _looks_like_tag(tag: str) -> bool:
         return False
     if t == "latest":
         return True
-    if t[0] == "v" and len(t) > 1 and t[1].isdigit():                  # v1.2.3
+    if t[0] == "v" and len(t) > 1 and t[1].isdigit():  # v1.2.3
         return True
-    if t[0].isdigit():                                                 # 2.0.0
+    if t[0].isdigit():  # 2.0.0
         return True
     if 7 <= len(t) <= 40 and all(c in "0123456789abcdef" for c in t):  # git sha
         return True
@@ -348,12 +386,43 @@ def _extract_images_from_text(text: str) -> list[dict]:
 # Whole-word sets for intent classification (no regex).
 _PROMOTE_PREFIXES = ("promote", "deploy", "releas", "ship", "rollout", "bump", "cut")
 _QUERY_WORDS = {
-    "find", "show", "list", "get", "summarize", "summarise", "track", "status",
-    "comment", "ticket", "chg", "rmg", "pr", "prs", "pull", "request", "which",
-    "what", "where", "when", "how", "why", "check", "view", "read", "tell",
-    "is", "are", "did", "does",
+    "find",
+    "show",
+    "list",
+    "get",
+    "summarize",
+    "summarise",
+    "track",
+    "status",
+    "comment",
+    "ticket",
+    "chg",
+    "rmg",
+    "pr",
+    "prs",
+    "pull",
+    "request",
+    "which",
+    "what",
+    "where",
+    "when",
+    "how",
+    "why",
+    "check",
+    "view",
+    "read",
+    "tell",
+    "is",
+    "are",
+    "did",
+    "does",
     # verification / lookups (route to the LLM, not the promote gate)
-    "verify", "verified", "validate", "build", "built", "builds",
+    "verify",
+    "verified",
+    "validate",
+    "build",
+    "built",
+    "builds",
 }
 
 
@@ -428,7 +497,7 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
     if start == -1 or end == -1 or end <= start:
         return None
     try:
-        data = json.loads(text[start:end + 1])
+        data = json.loads(text[start : end + 1])
     except (json.JSONDecodeError, TypeError):
         return None
     if not isinstance(data, dict):
@@ -465,8 +534,17 @@ def _detect_rerun(text: str, current_steps: Optional[list]) -> Optional[list[str
     """
     # space-padded normalized words, so " word " is a whole-word check (no regex)
     norm = " " + " ".join(_norm_words(text)) + " "
-    rerun_phrases = (" rerun ", " re run ", " retry ", " re try ", " reexecute ",
-                     " re execute ", " redo ", " run again ", " try again ")
+    rerun_phrases = (
+        " rerun ",
+        " re run ",
+        " retry ",
+        " re try ",
+        " reexecute ",
+        " re execute ",
+        " redo ",
+        " run again ",
+        " try again ",
+    )
     if not any(p in norm for p in rerun_phrases):
         return None
 
@@ -544,12 +622,16 @@ def parse_intent(state: ReleaseState) -> dict:
     # PR for payments-api:2.0.1") is a lookup, not a promote — send it to the LLM.
     if pairs and _is_query_not_promote(last):
         pairs = []
-    out["release_request"] = {
-        "images": pairs,
-        "environment": _detect_environment(last),
-        "change_request": _extract_change_fields(last),
-        "raw": last[:300],
-    } if pairs else None
+    out["release_request"] = (
+        {
+            "images": pairs,
+            "environment": _detect_environment(last),
+            "change_request": _extract_change_fields(last),
+            "raw": last[:300],
+        }
+        if pairs
+        else None
+    )
     out["rerun_steps"] = None
     return out
 
@@ -591,8 +673,11 @@ def _build_step_call(step: str, req: dict, token: str) -> dict:
         args = {"environment": env, "image_tags": image_str}
         if env == "prod":
             args["change_request_json"] = json.dumps(req.get("change_request") or {})
-        return {"name": "open_release_pr", "args": args,
-                "id": f"call_{STEP_RELEASE_PR}_{uuid.uuid4().hex[:8]}"}
+        return {
+            "name": "open_release_pr",
+            "args": args,
+            "id": f"call_{STEP_RELEASE_PR}_{uuid.uuid4().hex[:8]}",
+        }
     raise ValueError(f"unknown step {step}")
 
 
@@ -601,8 +686,12 @@ def _prod_controls_summary(req: dict) -> tuple[str, bool, bool]:
     (markdown summary, all_passed, all_located). Used to surface PASS/FAIL up front
     on a PRD release and block when a control failed."""
     from .tools.gh_tools import (
-        _get_github_client, _build_repo_full, _find_build_run, _controls_report,
+        _get_github_client,
+        _build_repo_full,
+        _find_build_run,
+        _controls_report,
     )
+
     images = req.get("images") or []
     repo_full = _build_repo_full()
     try:
@@ -617,14 +706,18 @@ def _prod_controls_summary(req: dict) -> tuple[str, bool, bool]:
             run, err = _find_build_run(repo_obj, name, tag)
             if run is None:
                 all_located = False
-                lines.append(f"• **{name}:{tag}** — ⚠️ build run not found ({err}); share the run id "
-                             "that generated this tag.")
+                lines.append(
+                    f"• **{name}:{tag}** — ⚠️ build run not found ({err}); share the run id "
+                    "that generated this tag."
+                )
                 continue
             rep = _controls_report(repo_full, name, tag, run)
             ctrls = rep["controls"]
             if not ctrls:
                 all_located = False
-                lines.append(f"• **{name}:{tag}** — ⚠️ no control steps in [this run]({rep['run']['url']}).")
+                lines.append(
+                    f"• **{name}:{tag}** — ⚠️ no control steps in [this run]({rep['run']['url']})."
+                )
                 continue
             marks = []
             for c in ctrls:
@@ -632,8 +725,10 @@ def _prod_controls_summary(req: dict) -> tuple[str, bool, bool]:
                 marks.append(f"{m} {c['control']}")
             ok = rep["all_controls_passed"]
             all_passed = all_passed and ok
-            lines.append(f"• **{name}:{tag}** — controls {'PASS' if ok else 'FAIL'} "
-                         f"([run]({rep['run']['url']})): " + " · ".join(marks))
+            lines.append(
+                f"• **{name}:{tag}** — controls {'PASS' if ok else 'FAIL'} "
+                f"([run]({rep['run']['url']})): " + " · ".join(marks)
+            )
         except Exception as e:
             all_located = False
             lines.append(f"• **{name}:{tag}** — ⚠️ controls check error: {e}")
@@ -650,10 +745,16 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
     if not req or not req.get("images"):
         return Command(
             goto="respond",
-            update={"messages": [AIMessage(content=(
-                "I didn't find any image:tag pairs. Try: "
-                "`promote payments-api:2.0.33 and orders-api to v1.2.3`"
-            ))]},
+            update={
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "I didn't find any image:tag pairs. Try: "
+                            "`promote payments-api:2.0.33 and orders-api to v1.2.3`"
+                        )
+                    )
+                ]
+            },
         )
 
     # PROD promotions (SIT->UAT->PRD): controls gate, then honor the daily window.
@@ -667,23 +768,38 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
         if all_located and not all_passed:
             return Command(
                 goto="respond",
-                update={"messages": [AIMessage(content=(
-                    summary + "\n\n❌ One or more build controls **FAILED** — I can't stage this for the "
-                    "PRD release until they're resolved and the build is re-run."
-                ))]},
+                update={
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                summary
+                                + "\n\n❌ One or more build controls **FAILED** — I can't stage this for the "
+                                "PRD release until they're resolved and the build is re-run."
+                            )
+                        )
+                    ]
+                },
             )
 
         from .tools.gh_tools import get_release_status
+
         status = get_release_status()
 
         if status.get("locked"):
             p = status.get("prd_pr_today") or {}
             return Command(
                 goto="respond",
-                update={"messages": [AIMessage(content=(
-                    summary + f"\n\n🔒 Today's UAT→PRD release **PR #{p.get('number')}** is already raised "
-                    f"({p.get('url','')}) — the day is locked, no more images can be added."
-                ))]},
+                update={
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                summary
+                                + f"\n\n🔒 Today's UAT→PRD release **PR #{p.get('number')}** is already raised "
+                                f"({p.get('url', '')}) — the day is locked, no more images can be added."
+                            )
+                        )
+                    ]
+                },
             )
 
         if status.get("cutoff_passed"):
@@ -692,38 +808,65 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
             if not cr:
                 note = summary + "\n\n"
                 if not all_located:
-                    note += ("Some controls couldn't be auto-located — share the build **run id** that "
-                             "generated the tag and I'll verify them.\n\n")
+                    note += (
+                        "Some controls couldn't be auto-located — share the build **run id** that "
+                        "generated the tag and I'll verify them.\n\n"
+                    )
                 return Command(
                     goto="respond",
-                    update={"messages": [AIMessage(content=(
-                        note + f"⏰ The {status.get('cutoff_utc')} UTC cutoff has passed. Raising today's "
-                        "**UAT → PRD** release PR requires a change request (it drives the CHG). Use the "
-                        "**Promote to PROD** action and paste the change-request JSON."
-                    ))]},
+                    update={
+                        "messages": [
+                            AIMessage(
+                                content=(
+                                    note
+                                    + f"⏰ The {status.get('cutoff_utc')} UTC cutoff has passed. Raising today's "
+                                    "**UAT → PRD** release PR requires a change request (it drives the CHG). Use the "
+                                    "**Promote to PROD** action and paste the change-request JSON."
+                                )
+                            )
+                        ]
+                    },
                 )
             # Production lead time: the change start_date must be tomorrow or later.
             from .tools.gh_tools import _lead_time_ok
+
             lead_ok, lead_msg = _lead_time_ok(cr)
             if not lead_ok:
                 return Command(
                     goto="respond",
-                    update={"messages": [AIMessage(content=(
-                        summary + f"\n\n📅 Can't raise the release — {lead_msg} Update the change "
-                        "request's `start_date` and resubmit."
-                    ))]},
+                    update={
+                        "messages": [
+                            AIMessage(
+                                content=(
+                                    summary
+                                    + f"\n\n📅 Can't raise the release — {lead_msg} Update the change "
+                                    "request's `start_date` and resubmit."
+                                )
+                            )
+                        ]
+                    },
                 )
-            pre_msgs.append(AIMessage(content=(
-                summary + "\n\n⏰ Cutoff passed — I'll stage these on UAT and **raise today's UAT → PRD "
-                "release PR** (CHG/RMG auto-created). Confirm to proceed."
-            )))
+            pre_msgs.append(
+                AIMessage(
+                    content=(
+                        summary
+                        + "\n\n⏰ Cutoff passed — I'll stage these on UAT and **raise today's UAT → PRD "
+                        "release PR** (CHG/RMG auto-created). Confirm to proceed."
+                    )
+                )
+            )
         else:
             # Staging path — no change request needed; release happens at the cutoff.
-            pre_msgs.append(AIMessage(content=(
-                summary + f"\n\n🧺 I'll **stage** these on the **UAT** branch for today's release. The single "
-                f"UAT → PRD PR is raised after **{status.get('cutoff_utc')} UTC**, so more images can be "
-                "added until then. Confirm to stage."
-            )))
+            pre_msgs.append(
+                AIMessage(
+                    content=(
+                        summary
+                        + f"\n\n🧺 I'll **stage** these on the **UAT** branch for today's release. The single "
+                        f"UAT → PRD PR is raised after **{status.get('cutoff_utc')} UTC**, so more images can be "
+                        "added until then. Confirm to stage."
+                    )
+                )
+            )
 
     image_str = ",".join(f"{i['name']}:{i['tag']}" for i in req["images"])
     token = f"CONFIRM-{uuid.uuid4().hex[:6]}"
@@ -766,11 +909,17 @@ def confirmation_gate(
         if raw.startswith("ERROR"):
             return Command(
                 goto="respond",
-                update={"messages": [AIMessage(content=(
-                    f"⚠️ Could not build a proposal: {raw}\n\n"
-                    "(If this is a GitHub error, make sure `GH_TOKEN` is set and "
-                    "the repo/manifest path exist.)"
-                ))]},
+                update={
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                f"⚠️ Could not build a proposal: {raw}\n\n"
+                                "(If this is a GitHub error, make sure `GH_TOKEN` is set and "
+                                "the repo/manifest path exist.)"
+                            )
+                        )
+                    ]
+                },
             )
         try:
             data = json.loads(raw)
@@ -787,6 +936,7 @@ def confirmation_gate(
     elif env == "prod":
         # Stage on UAT (before cutoff) vs raise the day's UAT→PRD release PR (after).
         from .tools.gh_tools import get_release_status
+
         status = get_release_status() or {}
         if status.get("cutoff_passed"):
             action = "**raise today's UAT → PRD release PR** (CHG/RMG auto-created from the change request)"
@@ -795,18 +945,20 @@ def confirmation_gate(
     else:
         action = "apply these changes and dispatch the workflow"
 
-    user_reply = interrupt({
-        "type": "confirmation",
-        "token": token,
-        "proposed": proposed,
-        "changes": changes,
-        "environment": env,
-        "change_request": change if env == "prod" else {},
-        "message": (
-            f"Reply with exactly `{token}` (or `yes {token.split('-', 1)[-1]}`) to {action}."
-        ),
-        "repo": state.repo,
-    })
+    user_reply = interrupt(
+        {
+            "type": "confirmation",
+            "token": token,
+            "proposed": proposed,
+            "changes": changes,
+            "environment": env,
+            "change_request": change if env == "prod" else {},
+            "message": (
+                f"Reply with exactly `{token}` (or `yes {token.split('-', 1)[-1]}`) to {action}."
+            ),
+            "repo": state.repo,
+        }
+    )
 
     text = str(user_reply).strip().lower() if user_reply is not None else ""
     expected = token.lower()
@@ -817,10 +969,16 @@ def confirmation_gate(
         return Command(goto="apply", update={"confirmation_token": token, "proposed": proposed})
     return Command(
         goto="respond",
-        update={"messages": [AIMessage(content=(
-            f"❌ Not confirmed (received: {user_reply!r}). No changes were applied.\n"
-            f"Send the exact token `{token}` to proceed, or start a new request."
-        ))]},
+        update={
+            "messages": [
+                AIMessage(
+                    content=(
+                        f"❌ Not confirmed (received: {user_reply!r}). No changes were applied.\n"
+                        f"Send the exact token `{token}` to proceed, or start a new request."
+                    )
+                )
+            ]
+        },
     )
 
 
@@ -835,9 +993,11 @@ def build_apply_and_dispatch(state: ReleaseState) -> dict:
 
     steps = _steps_for_request(req)
     calls = [_build_step_call(s, req, token) for s in steps]
-    content = (f"Opening a release PR to promote {image_str} to {env}…"
-               if STEP_RELEASE_PR in steps
-               else "Applying the manifest update and dispatching the workflow…")
+    content = (
+        f"Opening a release PR to promote {image_str} to {env}…"
+        if STEP_RELEASE_PR in steps
+        else "Applying the manifest update and dispatching the workflow…"
+    )
     ai = AIMessage(content=content, tool_calls=calls)  # type: ignore[arg-type]
     return {
         "messages": [ai],
@@ -852,32 +1012,51 @@ def rerun(state: ReleaseState) -> Command[Literal["apply_tools", "respond"]]:
     steps = state.rerun_steps or []
 
     if not req.get("images"):
-        return Command(goto="respond", update={
-            "rerun_steps": None,
-            "messages": [AIMessage(content=(
-                "There's no prior release in this thread to re-run. "
-                "Start with a promote, e.g. `promote payments-api:2.0.33 to prod`."
-            ))],
-        })
+        return Command(
+            goto="respond",
+            update={
+                "rerun_steps": None,
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "There's no prior release in this thread to re-run. "
+                            "Start with a promote, e.g. `promote payments-api:2.0.33 to prod`."
+                        )
+                    )
+                ],
+            },
+        )
 
     valid = _steps_for_request(req)
     if not steps:
         names = ", ".join(f"`{s}`" for s in valid)
-        return Command(goto="respond", update={
-            "rerun_steps": None,
-            "messages": [AIMessage(content=(
-                f"Which step would you like to re-run? Available steps: {names}.\n"
-                f"Reply e.g. `re-run {valid[0]}`, `re-run all`, or `re-run failed`."
-            ))],
-        })
+        return Command(
+            goto="respond",
+            update={
+                "rerun_steps": None,
+                "messages": [
+                    AIMessage(
+                        content=(
+                            f"Which step would you like to re-run? Available steps: {names}.\n"
+                            f"Reply e.g. `re-run {valid[0]}`, `re-run all`, or `re-run failed`."
+                        )
+                    )
+                ],
+            },
+        )
 
     token = state.confirmation_token or f"RERUN-{uuid.uuid4().hex[:4]}"
     calls = [_build_step_call(s, req, token) for s in steps if s in valid]
     if not calls:
-        return Command(goto="respond", update={
-            "rerun_steps": None,
-            "messages": [AIMessage(content=f"No matching step to re-run. Available: {', '.join(valid)}.")],
-        })
+        return Command(
+            goto="respond",
+            update={
+                "rerun_steps": None,
+                "messages": [
+                    AIMessage(content=f"No matching step to re-run. Available: {', '.join(valid)}.")
+                ],
+            },
+        )
     ai = AIMessage(content=f"Re-running step(s): {', '.join(steps)}…", tool_calls=calls)  # type: ignore[arg-type]
     return Command(goto="apply_tools", update={"messages": [ai], "rerun_steps": None})
 
@@ -933,7 +1112,7 @@ def finalize(state: ReleaseState) -> dict:
 
     # Steps to report: this batch's steps (in order) merged with any persisted.
     order: list[str] = list(dict.fromkeys(id_to_step.values()))
-    for s in (state.steps or []):
+    for s in state.steps or []:
         if s["name"] not in order:
             order.append(s["name"])
     if not order:
@@ -946,7 +1125,11 @@ def finalize(state: ReleaseState) -> dict:
         if content.startswith("ERROR"):
             steps[name] = {"name": name, "status": "error", "detail": content[:280]}
         else:
-            steps[name] = {"name": name, "status": "ok", "detail": _summarize_step_result(name, content)}
+            steps[name] = {
+                "name": name,
+                "status": "ok",
+                "detail": _summarize_step_result(name, content),
+            }
     steps_list = [steps[n] for n in order]
 
     icon = {"ok": "✅", "error": "❌", "pending": "⏳"}
@@ -1004,7 +1187,9 @@ def track_pr(state: ReleaseState) -> dict:
     pr = None
     # ~36s budget: the dispatched workflow needs to queue, run, and open the PR.
     for _ in range(12):
-        new_prs = [p for p in _find_prs_for_images(image_str, limit=20) if p["number"] not in seen_before]
+        new_prs = [
+            p for p in _find_prs_for_images(image_str, limit=20) if p["number"] not in seen_before
+        ]
         if new_prs:
             pr = max(new_prs, key=lambda p: p["number"])  # the just-opened one
             break
@@ -1046,10 +1231,16 @@ def respond(state: ReleaseState) -> dict:
     last = state.messages[-1] if state.messages else None
     if isinstance(last, AIMessage) and last.content:
         return {}
-    return {"messages": [AIMessage(content=(
-        "Tell me the image:tag pairs you'd like to promote, e.g. "
-        "`promote payments-api:2.0.33 to prod`."
-    ))]}
+    return {
+        "messages": [
+            AIMessage(
+                content=(
+                    "Tell me the image:tag pairs you'd like to promote, e.g. "
+                    "`promote payments-api:2.0.33 to prod`."
+                )
+            )
+        ]
+    }
 
 
 def react_giveup(state: ReleaseState) -> dict:
@@ -1058,17 +1249,21 @@ def react_giveup(state: ReleaseState) -> dict:
     helpful message instead of looping to the recursion limit and crashing."""
     last = state.messages[-1] if state.messages else None
     tool_msgs = []
-    for tc in (getattr(last, "tool_calls", None) or []):
+    for tc in getattr(last, "tool_calls", None) or []:
         tcid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
         if tcid:
-            tool_msgs.append(ToolMessage(
-                content="Skipped: reached the tool-call limit for this request.",
-                tool_call_id=tcid,
-            ))
-    msg = AIMessage(content=(
-        "I've run several lookups without converging on an answer. Could you narrow "
-        "the request — e.g. a specific `image:tag` or PR number — and I'll dig in directly?"
-    ))
+            tool_msgs.append(
+                ToolMessage(
+                    content="Skipped: reached the tool-call limit for this request.",
+                    tool_call_id=tcid,
+                )
+            )
+    msg = AIMessage(
+        content=(
+            "I've run several lookups without converging on an answer. Could you narrow "
+            "the request — e.g. a specific `image:tag` or PR number — and I'll dig in directly?"
+        )
+    )
     return {"messages": tool_msgs + [msg]}
 
 
@@ -1098,18 +1293,26 @@ def build_graph(checkpointer=None):
                 estimated_output_tokens=800,
             )
         except BudgetInterrupt as be:
-            user_response = interrupt({
-                "type": "budget_confirmation",
-                "message": str(be) + f"\n\nCurrent budget status: {get_budget_status()}",
-                "action": "Continue with this LLM call? (yes/no)",
-            })
+            user_response = interrupt(
+                {
+                    "type": "budget_confirmation",
+                    "message": str(be) + f"\n\nCurrent budget status: {get_budget_status()}",
+                    "action": "Continue with this LLM call? (yes/no)",
+                }
+            )
             if not confirm_budget_continue(str(user_response)):
                 # User declined → stop this turn gracefully (no hard process kill,
                 # which would take down a shared server worker).
-                return {"messages": [AIMessage(content=(
-                    "🛑 Stopped to protect the budget — no LLM call was made. "
-                    f"{get_budget_status()}"
-                ))]}
+                return {
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                "🛑 Stopped to protect the budget — no LLM call was made. "
+                                f"{get_budget_status()}"
+                            )
+                        )
+                    ]
+                }
 
         resp = get_llm().invoke(messages)
 
@@ -1133,7 +1336,7 @@ def build_graph(checkpointer=None):
         last = state.messages[-1] if state.messages else None
         if getattr(last, "tool_calls", None):
             if (state.llm_tool_turns or 0) >= settings.react_max_tool_turns:
-                return "giveup"   # cap reached → stop gracefully
+                return "giveup"  # cap reached → stop gracefully
             return "llm_tools"
         return END
 
@@ -1146,12 +1349,18 @@ def build_graph(checkpointer=None):
         if isinstance(exc, (ConnectionError, TimeoutError)):
             return True
         if type(exc).__name__ in {
-            "ServiceUnavailable", "DeadlineExceeded", "ResourceExhausted",
-            "InternalServerError", "TooManyRequests", "Aborted", "GatewayTimeout",
+            "ServiceUnavailable",
+            "DeadlineExceeded",
+            "ResourceExhausted",
+            "InternalServerError",
+            "TooManyRequests",
+            "Aborted",
+            "GatewayTimeout",
         }:
             return True
         try:
             import requests
+
             if isinstance(exc, requests.exceptions.RequestException):
                 return True
         except Exception:
@@ -1159,8 +1368,13 @@ def build_graph(checkpointer=None):
         status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
         return isinstance(status, int) and (status == 429 or status >= 500)
 
-    retry = RetryPolicy(max_attempts=3, initial_interval=0.5, backoff_factor=2.0,
-                        jitter=True, retry_on=_is_transient_error)
+    retry = RetryPolicy(
+        max_attempts=3,
+        initial_interval=0.5,
+        backoff_factor=2.0,
+        jitter=True,
+        retry_on=_is_transient_error,
+    )
 
     # One ToolNode implementation, registered under three deterministic names so
     # each graph node has exactly one outgoing edge.
@@ -1185,7 +1399,8 @@ def build_graph(checkpointer=None):
     # Entry + branch: re-run request, concrete image:tag pairs, or free-form chat.
     graph.add_edge(START, "parse")
     graph.add_conditional_edges(
-        "parse", _route_after_parse,
+        "parse",
+        _route_after_parse,
         {"propose": "propose", "llm": "llm", "rerun": "rerun"},
     )
 
@@ -1194,7 +1409,8 @@ def build_graph(checkpointer=None):
     graph.add_edge("apply", "apply_tools")
     graph.add_edge("apply_tools", "finalize")
     graph.add_conditional_edges(
-        "finalize", _route_after_finalize,
+        "finalize",
+        _route_after_finalize,
         {"track_pr": "track_pr", END: END},
     )
     graph.add_edge("track_pr", END)
@@ -1202,7 +1418,8 @@ def build_graph(checkpointer=None):
 
     # Free-form ReAct path (with a tool-call cap that exits via react_giveup).
     graph.add_conditional_edges(
-        "llm", route_after_llm,
+        "llm",
+        route_after_llm,
         {"llm_tools": "llm_tools", "giveup": "react_giveup", END: END},
     )
     graph.add_edge("llm_tools", "llm")
@@ -1214,5 +1431,6 @@ def build_graph(checkpointer=None):
 # Convenience for CLI / apps
 def get_compiled_graph():
     from langgraph.checkpoint.memory import MemorySaver
+
     checkpointer = MemorySaver()
     return build_graph(checkpointer=checkpointer)
