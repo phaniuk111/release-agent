@@ -11,7 +11,6 @@ Features:
 import argparse
 import json
 import os
-import sys
 import uuid
 from dotenv import load_dotenv
 from rich.console import Console
@@ -30,26 +29,30 @@ console = Console()
 
 def run_cli(thread_id: str | None = None, repo: str | None = None):
     from .config import settings
+
     if repo:
         # settings and gh_tools module globals were resolved at import time, so
         # updating only the env var here would be ignored — patch the live values.
-        os.environ["RELEASE_AGENT_TARGET_REPO"] = repo
+        os.environ["BUILD_REPO"] = repo
         from .tools import gh_tools as _gh
-        settings.target_repo = repo
-        _gh.TARGET_REPO = repo
+
+        settings.build_repo = repo
+        _gh.BUILD_REPO = repo
 
     graph = get_compiled_graph()
     thread_id = thread_id or f"cli-{uuid.uuid4().hex[:8]}"
     config = {"configurable": {"thread_id": thread_id}}
 
-    console.print(Panel.fit(
-        f"[bold cyan]Release Copilot[/]  •  repo=[bold]{settings.target_repo}[/]\n"
-        "Type your request (image:tag pairs). Use /quit to exit. Use /status for recent runs.",
-        title="LangGraph + gh CLI"
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold cyan]Release Copilot[/]  •  repo=[bold]{settings.build_repo}[/]\n"
+            "Type your request (image:tag pairs). Use /quit to exit. Use /status for recent runs.",
+            title="LangGraph + gh CLI",
+        )
+    )
 
-    pending = False       # True when the graph is paused at an interrupt (awaiting resume)
-    auto_input = None     # if set, use as the next message without prompting the user
+    pending = False  # True when the graph is paused at an interrupt (awaiting resume)
+    auto_input = None  # if set, use as the next message without prompting the user
 
     while True:
         if auto_input is not None:
@@ -89,12 +92,18 @@ def run_cli(thread_id: str | None = None, repo: str | None = None):
                 if itype == "budget_confirmation":
                     msg = interrupt_payload.get("message", "Budget warning")
                     action = interrupt_payload.get("action", "Continue? (yes/no)")
-                    console.print(Panel(
-                        Markdown(f"**BUDGET WARNING**\n\n{msg}\n\n**{action}**\n\nCurrent: {get_budget_status()}"),
-                        title="[red]Budget Protection — £10 limit[/]",
-                        border_style="red"
-                    ))
-                    response = ask_user_with_timeout("Do you want to continue? (yes/no)", timeout=45)
+                    console.print(
+                        Panel(
+                            Markdown(
+                                f"**BUDGET WARNING**\n\n{msg}\n\n**{action}**\n\nCurrent: {get_budget_status()}"
+                            ),
+                            title="[red]Budget Protection — £10 limit[/]",
+                            border_style="red",
+                        )
+                    )
+                    response = ask_user_with_timeout(
+                        "Do you want to continue? (yes/no)", timeout=45
+                    )
                     if response is None:
                         console.print("[red]No response — stopping to protect budget.[/red]")
                         break
@@ -105,15 +114,17 @@ def run_cli(thread_id: str | None = None, repo: str | None = None):
                 # Normal release confirmation gate.
                 token = interrupt_payload.get("token", "CONFIRM-???")
                 proposed = json.dumps(interrupt_payload.get("proposed", {}), indent=2)
-                console.print(Panel(
-                    Markdown(
-                        f"**Action required**\n\n{interrupt_payload.get('message', '')}\n\n"
-                        f"Proposed:\n```json\n{proposed}\n```"
-                    ),
-                    title=f"[yellow]Confirmation needed — {token}[/]",
-                    border_style="yellow"
-                ))
-                console.print(f"[dim]Type the token to confirm, or anything else to cancel.[/dim]")
+                console.print(
+                    Panel(
+                        Markdown(
+                            f"**Action required**\n\n{interrupt_payload.get('message', '')}\n\n"
+                            f"Proposed:\n```json\n{proposed}\n```"
+                        ),
+                        title=f"[yellow]Confirmation needed — {token}[/]",
+                        border_style="yellow",
+                    )
+                )
+                console.print("[dim]Type the token to confirm, or anything else to cancel.[/dim]")
                 continue
 
             # Normal completion — print the last assistant (AIMessage) content.
@@ -140,7 +151,7 @@ def run_cli(thread_id: str | None = None, repo: str | None = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--thread-id", default=None, help="Resume or label a conversation thread")
-    parser.add_argument("--repo", default=None, help="Override RELEASE_AGENT_TARGET_REPO (e.g. phaniuk111/devops)")
+    parser.add_argument("--repo", default=None, help="Override BUILD_REPO (e.g. phaniuk111/devops)")
     args = parser.parse_args()
 
     run_cli(thread_id=args.thread_id, repo=args.repo)

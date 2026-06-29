@@ -1,18 +1,15 @@
 """Quick smoke test of the gh tools (requires gh auth + network to the repo)."""
 
 import os
-import json
 from src.release_agent.tools.gh_tools import (
     list_allowed_images,
     get_current_manifest,
     propose_update,
-    apply_json_update,
-    dispatch_workflow,
     get_recent_runs,
 )
 
 if __name__ == "__main__":
-    repo = os.getenv("RELEASE_AGENT_TARGET_REPO", "phaniuk111/devops")
+    repo = os.getenv("BUILD_REPO", "phaniuk111/devops")
     print(f"Testing against {repo}...")
 
     print("\n1. list_allowed_images")

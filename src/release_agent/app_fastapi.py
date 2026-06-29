@@ -20,7 +20,7 @@ import uuid
 from typing import AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -40,9 +40,9 @@ logger = logging.getLogger("release_copilot")
 # Use shared Pydantic settings
 settings = app_settings
 
-# Ensure target_repo is set (for health endpoint etc.)
-if not settings.target_repo:
-    settings.target_repo = "phaniuk111/devops"
+# Ensure build_repo is set (for health endpoint etc.)
+if not settings.build_repo:
+    settings.build_repo = "phaniuk111/devops"
 
 app = FastAPI(title=settings.app_title, version="0.2.0")
 
@@ -596,9 +596,11 @@ async def chat_endpoint(req: ChatRequest):
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-        except Exception as e:
+        except Exception:
             logger.exception(f"Error in chat stream | thread={thread_id}")
-            error_payload = json.dumps({"type": "error", "content": "Internal error processing request"})
+            error_payload = json.dumps(
+                {"type": "error", "content": "Internal error processing request"}
+            )
             yield f"data: {error_payload}\n\n"
 
     return StreamingResponse(
@@ -607,8 +609,8 @@ async def chat_endpoint(req: ChatRequest):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",   # critical when behind nginx
-        }
+            "X-Accel-Buffering": "no",  # critical when behind nginx
+        },
     )
 
 
@@ -617,6 +619,7 @@ async def release_status_endpoint():
     """Today's PRD release window — read live from GitHub so every session/developer
     sees the same answer (the PRD PR is the shared source of truth)."""
     from .tools.gh_tools import get_release_status
+
     try:
         return get_release_status()
     except Exception as e:
@@ -630,12 +633,13 @@ async def health():
     return {
         "status": "ok",
         "service": "release-copilot-fastapi",
-        "target_repo": settings.target_repo,
+        "build_repo": settings.build_repo,
     }
 
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.getenv("PORT", 8000))
     print(f"Starting Release Copilot FastAPI on http://localhost:{port}")
     uvicorn.run("src.release_agent.app_fastapi:app", host="0.0.0.0", port=port, reload=True)

@@ -51,7 +51,7 @@ gcloud iam service-accounts add-iam-policy-binding \
 | `image.repository` / `image.tag` | `ghcr.io/phaniuk111/release-copilot` / appVersion | container image |
 | `config.GOOGLE_CLOUD_PROJECT` | `""` | **required** for Vertex AI |
 | `config.GEMINI_MODEL` | `gemini-2.5-flash` | Vertex model id |
-| `config.RELEASE_AGENT_TARGET_REPO` / `config.DEPLOY_REPO` | `phaniuk111/devops` / `phaniuk111/deployment-repo` | repos the agent operates on |
+| `config.BUILD_REPO` / `config.DEPLOY_REPO` | `phaniuk111/devops` / `phaniuk111/deployment-repo` | the two repos the agent operates on (code+build / GitOps) |
 | `githubToken.existingSecret` / `githubToken.value` | `""` | provide one; `existingSecret` preferred |
 | `serviceAccount.annotations` | `{}` | set `iam.gke.io/gcp-service-account` for WI |
 | `istioInjection` | `true` | adds `sidecar.istio.io/inject: "true"` |

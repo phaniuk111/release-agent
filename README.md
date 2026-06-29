@@ -21,7 +21,7 @@ To run the agent you need **GitHub auth**, **GCP / Vertex AI access**, and a few
 | **Vertex ADC** (auth) | **Yes** | local: `gcloud auth application-default login` · GKE: **Workload Identity** on the KSA | authenticate to Vertex AI |
 | `GOOGLE_CLOUD_LOCATION` | No — default `us-central1` | env var | Vertex region |
 | `GEMINI_MODEL` | No — default `gemini-2.5-flash` | env var | model id (`gemini-2.0-flash` is retired) |
-| `RELEASE_AGENT_TARGET_REPO` | No — default `phaniuk111/devops` | env var | manifest / source repo (also accepts `TARGET_REPO`) |
+| `BUILD_REPO` | No — default `phaniuk111/devops` | env var | code + config + build repo: image-workflows.json, tags, build runs, RLFT/RFTL controls (legacy `RELEASE_AGENT_TARGET_REPO` still accepted) |
 | `DEPLOY_REPO` | No — default = target repo | env var | repo where the deployment PR is opened |
 | `DEFAULT_WORKFLOW` | No — default `image-tag-step-report.yml` | env var | workflow dispatched on promote |
 | **`DEPLOY_PAT`** (repo **Secret**) | Only for the **cross-repo PR** | Actions secret on the **target** repo | lets the dispatched workflow open a PR in `DEPLOY_REPO` (GitHub's built-in `GITHUB_TOKEN` can't write across repos) |
@@ -58,7 +58,7 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 # (Project is taken from `gcloud config get-value project` if env not set)
 
 # 5. Use your phaniuk111 account for testing
-export RELEASE_AGENT_TARGET_REPO=phaniuk111/devops
+export BUILD_REPO=phaniuk111/devops
 
 # 6. Run
 
@@ -172,7 +172,7 @@ Recommended runtime:
 The container expects:
 - `GH_TOKEN` (or mounted GitHub App credentials) — least-privilege scopes
 - Vertex AI: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` (uses Application Default Credentials / Workload Identity)
-- `RELEASE_AGENT_TARGET_REPO`
+- `BUILD_REPO`
 - Optionally a shared Postgres for the checkpointer (for conversation persistence across restarts).
 
 ## Safety
@@ -200,7 +200,7 @@ Full testing guide is in [TESTING.md](./TESTING.md).
 
 ```bash
 source .venv/bin/activate
-export RELEASE_AGENT_TARGET_REPO=phaniuk111/devops
+export BUILD_REPO=phaniuk111/devops
 export GOOGLE_CLOUD_PROJECT=<your-gcp-project>   # for Vertex AI
 gh auth login                                    # repo + workflow scopes
 
