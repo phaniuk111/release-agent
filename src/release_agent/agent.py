@@ -1128,19 +1128,27 @@ def finalize(state: ReleaseState) -> dict:
         if content.startswith("ERROR"):
             steps[name] = {"name": name, "status": "error", "detail": content[:280]}
         else:
+            status = "ok"
+            try:
+                d = json.loads(content)
+                if isinstance(d, dict) and (d.get("action") == "pr_already_open" or d.get("ok") is False):
+                    status = "blocked"
+            except (json.JSONDecodeError, TypeError):
+                pass
             steps[name] = {
                 "name": name,
-                "status": "ok",
+                "status": status,
                 "detail": _summarize_step_result(name, content),
             }
     steps_list = [steps[n] for n in order]
 
-    icon = {"ok": "✅", "error": "❌", "pending": "⏳"}
+    icon = {"ok": "✅", "error": "❌", "pending": "⏳", "blocked": "⏸"}
     lines = ["**Release steps:**"]
     for s in steps_list:
         lines.append(f"{icon.get(s['status'], '•')} `{s['name']}` — {s['detail']}")
 
     failed = [s["name"] for s in steps_list if s["status"] == "error"]
+    blocked = [s["name"] for s in steps_list if s["status"] == "blocked"]
     example = steps_list[0]["name"] if steps_list else "all"
     lines.append("")
     if failed:
@@ -1148,6 +1156,11 @@ def finalize(state: ReleaseState) -> dict:
             f"⚠️ Failed: {', '.join(f'`{f}`' for f in failed)}. "
             f"Once the cause is resolved, reply `re-run {failed[0]}` "
             "(or `re-run failed` / `re-run all`) to retry just that step."
+        )
+    elif blocked:
+        lines.append(
+            "⏸ Nothing was applied — a promote PR is already open on the images config. "
+            f"Once it merges or is closed, reply `re-run {blocked[0]}` to retry."
         )
     else:
         lines.append(
