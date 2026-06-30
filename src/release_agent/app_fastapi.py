@@ -455,12 +455,13 @@ async def chat_page():
             const icon = isProd ? 'fa-shield-halved' : 'fa-flask';
             const heading = isProd ? 'Deploy to PROD' : 'Deploy to UAT';
 
-            // Pre-fill the full entry (constants + any name/version) from the backend.
-            let entry = { helm_chart_name: name || '', helm_chart_version: version || '' };
+            // Pre-fill the WHOLE deployment.json file ({"include":[...]}) from the
+            // backend — add more entries to deploy multiple charts at once.
+            let fileDoc = { include: [ { helm_chart_name: name || '', helm_chart_version: version || '' } ] };
             try {
                 const qs = new URLSearchParams({ env: env, name: name || '', version: version || '' });
                 const r = await fetch(API_BASE + '/api/deploy-template?' + qs.toString());
-                if (r.ok) { const d = await r.json(); entry = d.entry; }
+                if (r.ok) { const d = await r.json(); fileDoc = d.deployment; }
             } catch (e) {}
 
             const chat = document.getElementById('chat');
@@ -470,16 +471,16 @@ async def chat_page():
             const title = document.createElement('div');
             title.className = 'mb-2 font-semibold flex items-center gap-2 ' + accentT;
             title.innerHTML = '<i class="fa-solid ' + icon + '"></i> ' + heading +
-                ' <span class="text-slate-400 font-normal text-xs">— edit the deployment.json entry, then submit</span>';
+                ' <span class="text-slate-400 font-normal text-xs">— edit the deployment.json (add entries to include[] for multiple charts); submit OVERWRITES the file</span>';
             wrap.appendChild(title);
 
             const taId = 'deploy-json-' + env;
             const ta = document.createElement('textarea');
             ta.id = taId;
-            ta.rows = 8;
+            ta.rows = 12;
             ta.spellcheck = false;
             ta.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none mb-2';
-            ta.value = JSON.stringify(entry, null, 2);
+            ta.value = JSON.stringify(fileDoc, null, 2);
             wrap.appendChild(ta);
 
             const row = document.createElement('div');
@@ -495,9 +496,14 @@ async def chat_page():
                 let obj;
                 try { obj = JSON.parse(document.getElementById(taId).value); }
                 catch (e) { err.textContent = 'Invalid JSON: ' + e.message; return; }
-                if (!obj.helm_chart_name) { err.textContent = 'helm_chart_name is required.'; return; }
-                if (!obj.helm_chart_version) { err.textContent = 'helm_chart_version is required.'; return; }
-                const payload = JSON.stringify(Object.assign({ environment: env }, obj));
+                const include = Array.isArray(obj) ? obj : (obj.include || []);
+                if (!include.length) { err.textContent = 'Add at least one chart in include[].'; return; }
+                for (const it of include) {
+                    if (!it || !it.helm_chart_name || !it.helm_chart_version) {
+                        err.textContent = 'Each entry needs helm_chart_name + helm_chart_version.'; return;
+                    }
+                }
+                const payload = JSON.stringify({ environment: env, include: include });
                 sendMessage(payload);
             });
             row.appendChild(submit);
@@ -688,7 +694,9 @@ async def deploy_template_endpoint(env: str = "uat", name: str = "", version: st
 
     e = "prod" if str(env).lower() in ("prod", "prd", "production") else "uat"
     entry = assemble_entry(name or "", version or "", e)
-    return {"environment": e, "entry": entry}
+    # Return the FULL file the editor shows ({"include":[...]}); add more entries to
+    # deploy multiple charts at once. Submit OVERRIDES the file with this content.
+    return {"environment": e, "deployment": {"include": [entry]}}
 
 
 @app.get("/health")

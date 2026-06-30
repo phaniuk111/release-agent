@@ -17,6 +17,7 @@ from .controls import (  # noqa: F401
 )
 from .promotion import (  # noqa: F401
     _apply_via_pr_chain, _merge_pr, assemble_entry, _upsert_entry, _remove_entry,
+    plan_deploy, _normalize_entry, _entries_for_deploy,
 )
 from .release_window import get_release_status  # noqa: F401
 

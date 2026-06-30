@@ -31,18 +31,24 @@ from ._common import (
 
 
 # --- env helpers + entry assembly -------------------------------------------
+def _env_key(env: str) -> str:
+    """Canonical file-model env: prod/prd/production -> 'prd', everything else 'uat'.
+    The deployment files/paths/values/namespace all key on 'prd' (not 'prod')."""
+    return "prd" if str(env).lower() in ("prod", "prd", "production") else "uat"
+
+
 def _deployment_path(env: str) -> str:
-    return settings.deployment_path_pattern.format(env=env)
+    return settings.deployment_path_pattern.format(env=_env_key(env))
 
 
 def _values_file(env: str) -> str:
-    return settings.helm_values_pattern.format(env=env)
+    return settings.helm_values_pattern.format(env=_env_key(env))
 
 
 def _namespace_for(env: str, override: str = "") -> str:
     if override and override.strip():
         return override.strip()
-    return settings.prd_namespace if env == "prd" else settings.uat_namespace
+    return settings.prd_namespace if _env_key(env) == "prd" else settings.uat_namespace
 
 
 def assemble_entry(
@@ -321,11 +327,68 @@ def _blocked_pr_result(res: dict):
     )
 
 
+# --- deploy planning (OVERRIDE, not upsert) --------------------------------
+def _normalize_entry(e: dict, env: str) -> dict:
+    """Coerce a (possibly partial) entry into a full deployment.json entry, filling
+    any missing constant from config (env-appropriate)."""
+    return {
+        "helm_chart_name": e.get("helm_chart_name"),
+        "helm_chart_version": e.get("helm_chart_version"),
+        "helm_chart_dir": e.get("helm_chart_dir") or settings.helm_chart_dir,
+        "helm_values_file_name": e.get("helm_values_file_name") or _values_file(env),
+        "gke_namespace": e.get("gke_namespace") or _namespace_for(env),
+    }
+
+
+def _entries_for_deploy(env, image_tags, deployment_json, namespace, chart_dir, values_file) -> list:
+    """Build the target-env entry list from either a full deployment.json paste (the UI
+    editor: {"include":[...]}) or <chart>:<version> pairs (NL / CLI)."""
+    if deployment_json and deployment_json.strip():
+        try:
+            doc = json.loads(deployment_json)
+        except Exception:
+            return []
+        inc = doc.get("include") if isinstance(doc, dict) else (doc if isinstance(doc, list) else [])
+        return [
+            _normalize_entry(e, env)
+            for e in (inc or [])
+            if isinstance(e, dict) and e.get("helm_chart_name") and e.get("helm_chart_version")
+        ]
+    return [assemble_entry(n, v, env, namespace, chart_dir, values_file) for n, v in _parse_pairs(image_tags)]
+
+
+def plan_deploy(env: str, entries: list) -> dict:
+    """Map the target-env entries to the deployment-file writes for an OVERRIDE deploy.
+    uat  -> {uat/deployment.json: entries}.
+    prod -> {prd/deployment.json: entries, uat/deployment.json: same entries with the
+             uat values-file} so a prod deploy lands declaratively on both files."""
+    uat_path, prd_path = _deployment_path("uat"), _deployment_path("prd")
+    if _env_key(env) == "uat":
+        return {uat_path: entries}
+    uat_copy = [{**e, "helm_values_file_name": _values_file("uat")} for e in entries]
+    return {prd_path: entries, uat_path: uat_copy}
+
+
+def _replace_with(entries: list):
+    """mutate_fn for _apply_via_pr_chain that OVERRIDES include[] with `entries`
+    (complete replace, no upsert). Returns True if the list changed."""
+    def _mut(include):
+        old = list(include)
+        include.clear()
+        include.extend(entries)
+        return include != old
+    return _mut
+
+
 # --- tools ------------------------------------------------------------------
 class DeployInput(BaseModel):
     environment: str = Field(..., description="Target environment: uat or prod")
     image_tags: str = Field(
-        ..., description="Comma-separated <helm_chart_name>:<version> (one or more charts)"
+        default="", description="Comma-separated <helm_chart_name>:<version> (one or more charts)"
+    )
+    deployment_json: str = Field(
+        default="",
+        description='Full {"include":[...]} file content to write (OVERRIDE). Takes precedence over image_tags.',
     )
     namespace: str = Field(
         default="", description="GKE namespace (optional; defaults per environment)"
@@ -340,17 +403,23 @@ class DeployInput(BaseModel):
 
 @tool(args_schema=DeployInput)
 def open_release_pr(
-    environment: str, image_tags: str, namespace: str = "", chart_dir: str = "", values_file: str = ""
+    environment: str,
+    image_tags: str = "",
+    deployment_json: str = "",
+    namespace: str = "",
+    chart_dir: str = "",
+    values_file: str = "",
 ) -> str:
-    """Deploy Helm chart(s) by upserting their entry into the deployment JSON via the
-    protected-branch PR chain.
+    """Deploy Helm chart(s) by OVERRIDING the deployment JSON (complete replace, no
+    upsert) via the protected-branch PR chain. The submitted include[] becomes the
+    entire file.
 
-      uat : upsert into uat/deployment.json (working->SIT->UAT).
-      prod: upsert into BOTH uat/deployment.json and prd/deployment.json
-            (working->SIT->UAT->PRD), each with its env-specific values file + namespace.
+      uat : overrides uat/deployment.json (working->SIT->UAT).
+      prod: overrides BOTH prd/deployment.json and uat/deployment.json
+            (working->SIT->UAT->PRD), each with its env-specific values file.
 
-    Input is <chart_name>:<version> pairs; the helm_chart_dir constant and the
-    env-specific values file + namespace are filled in automatically."""
+    Accepts a full {"include":[...]} payload (the UI editor — supports multiple charts)
+    or <chart_name>:<version> pairs (NL/CLI); constants are filled from config."""
     raw = (environment or "").strip().lower()
     if raw == "uat":
         env = "uat"
@@ -360,57 +429,36 @@ def open_release_pr(
         return f"ERROR deploying: unsupported environment '{environment}' (use uat or prod)."
 
     try:
-        pairs = _parse_pairs(image_tags)
+        entries = _entries_for_deploy(env, image_tags, deployment_json, namespace, chart_dir, values_file)
     except ValueError as e:
         return f"ERROR deploying: {e}"
-    if not pairs:
-        return "ERROR deploying: no <chart_name>:<version> pairs provided."
-    chart_str = ", ".join(f"{n}:{v}" for n, v in pairs)
+    if not entries:
+        return "ERROR deploying: no charts provided (need a {\"include\":[...]} or <chart>:<version>)."
+    chart_str = ", ".join(f"{e['helm_chart_name']}:{e['helm_chart_version']}" for e in entries)
 
     try:
         repo = _get_github_client().get_repo(settings.deploy_repo)
     except Exception as e:
         return f"ERROR deploying: {e}"
 
-    uat_path = _deployment_path("uat")
-    summary = f"Deploy {chart_str} to {env}"
-
-    def _mutator(entries):
-        def _mut(include):
-            changed = False
-            for e in entries:
-                changed = _upsert_entry(include, e) or changed
-            return changed
-        return _mut
-
-    if env == "uat":
-        uat_entries = [assemble_entry(n, v, "uat", namespace, chart_dir, values_file) for n, v in pairs]
-        file_mutations = [(uat_path, _mutator(uat_entries))]
-        to_prd = False
-    else:  # prod -> write BOTH files. The edited entry is the PRD entry; the UAT copy
-        # inherits the chart_dir but derives the uat values-file + uat namespace.
-        prd_path = _deployment_path("prd")
-        uat_entries = [assemble_entry(n, v, "uat", "", chart_dir, "") for n, v in pairs]
-        prd_entries = [assemble_entry(n, v, "prd", namespace, chart_dir, values_file) for n, v in pairs]
-        file_mutations = [(uat_path, _mutator(uat_entries)), (prd_path, _mutator(prd_entries))]
-        to_prd = True
-
-    res = _apply_via_pr_chain(repo, file_mutations, summary, to_prd=to_prd)
+    plan = plan_deploy(env, entries)
+    file_mutations = [(path, _replace_with(ents)) for path, ents in plan.items()]
+    res = _apply_via_pr_chain(repo, file_mutations, f"Deploy {chart_str} to {env}", to_prd=(env == "prod"))
     blocked = _blocked_pr_result(res)
     if blocked:
         return blocked
     if not res["changed"]:
         return json.dumps(
             {"ok": True, "action": "no_change", "environment": env, "image_tags": chart_str,
-             "note": f"No change — {chart_str} already deployed to {env} with that version."},
+             "note": f"No change — {env} deployment.json already matches the submitted charts."},
             indent=2,
         )
 
-    uat_now = _read_include(repo, settings.uat_branch, uat_path)
-    written = ["uat/deployment.json"] + (["prd/deployment.json"] if env == "prod" else [])
+    uat_now = _read_include(repo, settings.uat_branch, _deployment_path("uat"))
+    written = list(plan.keys())
     note = (
-        f"Deployed {chart_str} to {env} via PR chain. {_pr_chain_note(res['prs'])} "
-        f"Updated {', '.join(written)}. {len(uat_now)} chart(s) on UAT." + _deploy_run_note(res)
+        f"Deployed {chart_str} to {env} via PR chain (override). {_pr_chain_note(res['prs'])} "
+        f"Replaced {', '.join(written)}. {len(uat_now)} chart(s) on UAT." + _deploy_run_note(res)
     )
     return json.dumps(
         {
