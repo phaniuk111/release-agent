@@ -7,10 +7,9 @@ Why this exists
 The promote/apply path is deterministic (parse → propose → HITL gate → apply) and
 the LLM is never on it. Free-form questions ("which PR has my CHG?", "verify this
 tag", "remove my image") used to fall into a single ReAct loop bound to the ENTIRE
-tool set — including the high-impact mutations apply_json_update,
-dispatch_workflow, open_release_pr and raise_prod_release. A confused or
-prompt-injected model could therefore trigger a production release from a chat
-question.
+tool set — including the high-impact mutations apply_json_update, dispatch_workflow
+and open_release_pr. A confused or prompt-injected model could therefore trigger a
+production release from a chat question.
 
 This module replaces that one loop with a supervisor + five specialists, each a
 ``langchain.agents.create_agent`` (the LangGraph V1 prebuilt agent):
@@ -21,7 +20,7 @@ This module replaces that one loop with a supervisor + five specialists, each a
                 ├─▶ ops_agent         (remove/unstage an image, retrigger a deploy)  SCOPED MUTATE
                 └─▶ general_agent     (mixed / ambiguous read-only)                  READ-ONLY
 
-The four release-defining mutations are bound to NONE of these agents — they remain
+The three release-defining mutations are bound to NONE of these agents — they remain
 exclusively in the deterministic pipeline behind the human-confirmation gate. The
 only mutating tools reachable from free-form chat are remove_from_release and
 retrigger_deployment_workflow, isolated in the single ``ops_agent`` (and both were
@@ -59,8 +58,8 @@ from .tools.gh_tools import (
 
 # --- Scoped tool sets -------------------------------------------------------
 # Each specialist sees only what its job needs. Disjoint where it matters: the
-# four release-defining mutations (apply_json_update, dispatch_workflow,
-# open_release_pr, raise_prod_release) appear in NONE of these lists.
+# three release-defining mutations (apply_json_update, dispatch_workflow,
+# open_release_pr) appear in NONE of these lists.
 STATUS_TOOLS = [
     check_release_window,
     list_allowed_images,

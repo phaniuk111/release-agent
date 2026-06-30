@@ -1,4 +1,19 @@
-"""SIT->UAT->PRD promotion: stage/remove/raise via the protected-branch PR chain."""
+"""SIT->UAT->PRD promotion of Helm-chart entries via the protected-branch PR chain.
+
+The deploy repo carries an env-pathed deployment JSON per environment
+(uat/deployment.json, prd/deployment.json), each shaped {"include": [entry, ...]}
+where an entry is a Helm chart:
+    {helm_chart_name, helm_chart_version, helm_chart_dir, helm_values_file_name, gke_namespace}
+
+The dev supplies only chart_name:version (+ optional namespace); the constants and the
+env-specific values-file + namespace are filled from config.
+
+- UAT deploy  : upsert the chart into uat/deployment.json (chain working->SIT->UAT).
+- PROD deploy : upsert the chart into BOTH uat/deployment.json and prd/deployment.json
+               (chain working->SIT->UAT->PRD), each with its env-specific values file
+               + namespace.
+Entries are keyed by helm_chart_name (one entry per chart per env file).
+"""
 
 from ._common import (
     settings,
@@ -13,19 +28,67 @@ from ._common import (
     _upsert_json_file,
     _parse_pairs,
 )
-from .release_window import get_release_status  # noqa: F401
-from .controls import _find_build_run, _controls_report, _build_repo_full  # noqa: F401
 
 
-class OpenReleasePRInput(BaseModel):
-    environment: str = Field(..., description="Target environment: uat or prod")
-    image_tags: str = Field(..., description="Comma-separated image:tag pairs (supports multiple)")
-    change_request_json: str = Field(
-        default="",
-        description="JSON object of the change_request block (required for prod) — drives the auto-created CHG.",
-    )
+# --- env helpers + entry assembly -------------------------------------------
+def _deployment_path(env: str) -> str:
+    return settings.deployment_path_pattern.format(env=env)
 
 
+def _values_file(env: str) -> str:
+    return settings.helm_values_pattern.format(env=env)
+
+
+def _namespace_for(env: str, override: str = "") -> str:
+    if override and override.strip():
+        return override.strip()
+    return settings.prd_namespace if env == "prd" else settings.uat_namespace
+
+
+def assemble_entry(name: str, version: str, env: str, namespace: str = "") -> dict:
+    """Build a full deployment.json entry. The dev gives name + version; the
+    helm_chart_dir constant and the env-specific values-file + namespace come from
+    config (namespace may be overridden per request)."""
+    return {
+        "helm_chart_name": name,
+        "helm_chart_version": version,
+        "helm_chart_dir": settings.helm_chart_dir,
+        "helm_values_file_name": _values_file(env),
+        "gke_namespace": _namespace_for(env, namespace),
+    }
+
+
+# --- include[] list ops (keyed by helm_chart_name) --------------------------
+def _upsert_entry(include: list, entry: dict) -> bool:
+    """Replace-or-append by helm_chart_name. Returns True if the list changed."""
+    name = entry["helm_chart_name"]
+    for i, e in enumerate(include):
+        if e.get("helm_chart_name") == name:
+            if e == entry:
+                return False
+            include[i] = entry
+            return True
+    include.append(entry)
+    return True
+
+
+def _remove_entry(include: list, name: str) -> bool:
+    """Drop the entry with this helm_chart_name. Returns True if one was removed."""
+    for i, e in enumerate(include):
+        if e.get("helm_chart_name") == name:
+            del include[i]
+            return True
+    return False
+
+
+def _read_include(repo, branch: str, path: str) -> list:
+    """Read the include[] list from a deployment JSON on a branch (empty if absent)."""
+    doc = _read_json_file(repo, branch, path)
+    inc = doc.get("include") if isinstance(doc, dict) else None
+    return inc if isinstance(inc, list) else []
+
+
+# --- PR plumbing ------------------------------------------------------------
 def _merge_pr(pr, method: str = "squash"):
     """Merge a PR once GitHub has computed mergeability. Returns (merged, detail).
     On protected branches that require review, the merge is refused — we report it
@@ -51,7 +114,7 @@ def _merge_pr(pr, method: str = "squash"):
 
 def _open_pr_on_file(repo, base_branch: str, path: str):
     """Return the first OPEN PR into base_branch that changes `path`, or None.
-    Lets a promote say 'a PR is already open' instead of stacking a duplicate — the
+    Lets a deploy say 'a PR is already open' instead of stacking a duplicate — the
     same guard Dependabot/Renovate use to avoid concurrent writes to one file."""
     try:
         prs = repo.get_pulls(state="open", base=base_branch, sort="created", direction="desc")
@@ -66,21 +129,20 @@ def _open_pr_on_file(repo, base_branch: str, path: str):
     return None
 
 
-def _find_deploy_run(repo, head_sha: str, tries: int = 4, delay: float = 1.5):
-    """Find the workflow run that the UAT merge triggered, by the merge commit sha.
-    Polls briefly because GitHub Actions takes a few seconds to register the run."""
+def _find_deploy_run(repo, head_sha: str, branch: str = "", tries: int = 4, delay: float = 1.5):
+    """Find the workflow run a merge triggered, by the merge commit sha. Polls briefly
+    because GitHub Actions takes a few seconds to register the run."""
     import time
 
-    uat = settings.uat_branch
+    branch = branch or settings.uat_branch
     for i in range(tries):
         runs = []
         try:
             runs = list(itertools.islice(repo.get_workflow_runs(head_sha=head_sha), 5))
         except TypeError:
-            # older PyGithub without the head_sha kwarg → filter recent UAT runs
             try:
                 runs = [
-                    r for r in itertools.islice(repo.get_workflow_runs(branch=uat), 15)
+                    r for r in itertools.islice(repo.get_workflow_runs(branch=branch), 15)
                     if r.head_sha == head_sha
                 ]
             except Exception:
@@ -101,55 +163,59 @@ def _find_deploy_run(repo, head_sha: str, tries: int = 4, delay: float = 1.5):
     return None
 
 
-def _apply_via_pr_chain(repo, mutate_fn, summary: str) -> dict:
-    """Branches are protected — never commit to them directly. Apply a change to the
-    images config via PRs along the chain: a fresh working branch -> SIT -> UAT.
-    Each step is a PR (merged when protection allows). mutate_fn(images: dict) -> bool
-    mutates the images map in place and returns True if it changed anything."""
-    sit, uat = settings.sit_branch, settings.uat_branch
-    images_path = settings.env_config_path
+def _apply_via_pr_chain(repo, file_mutations: list, summary: str, to_prd: bool = False) -> dict:
+    """Apply per-file mutations along the protected-branch chain (never commit directly).
+
+    file_mutations is a list of (path, mutate_fn); mutate_fn(include_list) mutates the
+    include[] list in place and returns True if it changed anything. The chain runs
+    working -> SIT -> UAT, and on to -> PRD when to_prd. Returns
+    {changed, prs, deploy_run, blocked_pr?}."""
+    sit, uat, prd = settings.sit_branch, settings.uat_branch, settings.prd_branch
     prs: list = []
 
-    # Guard: if a promote PR touching this file is already open, don't open another —
-    # report it so the caller can tell the user to wait for it to merge.
-    existing = _open_pr_on_file(repo, sit, images_path)
-    if existing is not None:
-        return {
-            "changed": False,
-            "prs": [],
-            "blocked_pr": {"number": existing.number, "url": existing.html_url},
-        }
+    # Guard: if a PR touching any target file is already open into SIT, don't stack another.
+    for path, _ in file_mutations:
+        existing = _open_pr_on_file(repo, sit, path)
+        if existing is not None:
+            return {
+                "changed": False,
+                "prs": [],
+                "blocked_pr": {"number": existing.number, "url": existing.html_url, "path": path},
+            }
 
     sit_ref = repo.get_git_ref(f"heads/{sit}")
     work = f"change/sit/{uuid.uuid4().hex[:8]}"
     repo.create_git_ref(f"refs/heads/{work}", sit_ref.object.sha)
-    cfg = _read_json_file(repo, work, images_path)
-    if not isinstance(cfg, dict):
-        cfg = {}
-    cfg.setdefault("images", {})
-    changed = mutate_fn(cfg["images"])
-    if not changed:
+
+    changed_any = False
+    for path, mutate_fn in file_mutations:
+        doc = _read_json_file(repo, work, path)
+        if not isinstance(doc, dict):
+            doc = {}
+        include = doc.get("include")
+        if not isinstance(include, list):
+            include = []
+        if mutate_fn(include):
+            doc["include"] = include
+            doc["updated_by"] = "release-copilot"
+            _upsert_json_file(repo, work, path, doc)
+            changed_any = True
+
+    if not changed_any:
         try:
             repo.get_git_ref(f"heads/{work}").delete()
         except Exception:
             pass
         return {"changed": False, "prs": []}
-    cfg["updated_by"] = "release-copilot"
-    _upsert_json_file(repo, work, images_path, cfg)
 
     # 1) working branch -> SIT
     pr_sit = repo.create_pull(title=f"{summary} (→ {sit})", body=summary, head=work, base=sit)
     ok, detail = _merge_pr(pr_sit, "squash")
     prs.append(
-        {
-            "stage": f"→{sit}",
-            "number": pr_sit.number,
-            "url": pr_sit.html_url,
-            "merged": ok,
-            "detail": detail,
-        }
+        {"stage": f"→{sit}", "number": pr_sit.number, "url": pr_sit.html_url, "merged": ok, "detail": detail}
     )
-    # 2) SIT -> UAT (promote) — only if SIT actually advanced
+
+    # 2) SIT -> UAT
     if ok:
         try:
             pr_uat = repo.create_pull(
@@ -163,21 +229,46 @@ def _apply_via_pr_chain(repo, mutate_fn, summary: str) -> dict:
                 "merged": ok2,
                 "detail": detail2,
             }
-            # On a successful UAT merge, capture the deploy workflow run it triggered.
             if ok2:
                 try:
                     pr_uat.update()
                     msha = pr_uat.merge_commit_sha
-                    run = _find_deploy_run(repo, msha) if msha else None
+                    run = _find_deploy_run(repo, msha, uat) if msha else None
                     if run:
                         entry["deploy_run"] = run
                 except Exception:
                     pass
             prs.append(entry)
+
+            # 3) UAT -> PRD (prod deploys only)
+            if to_prd and ok2:
+                pr_prd = repo.create_pull(
+                    title=f"Promote {uat} → {prd}: {summary}", body=summary, head=uat, base=prd
+                )
+                ok3, detail3 = _merge_pr(pr_prd, "merge")
+                pentry = {
+                    "stage": f"{uat}→{prd}",
+                    "number": pr_prd.number,
+                    "url": pr_prd.html_url,
+                    "merged": ok3,
+                    "detail": detail3,
+                }
+                if ok3:
+                    try:
+                        pr_prd.update()
+                        msha = pr_prd.merge_commit_sha
+                        run = _find_deploy_run(repo, msha, prd) if msha else None
+                        if run:
+                            pentry["deploy_run_prd"] = run
+                    except Exception:
+                        pass
+                prs.append(pentry)
         except Exception as e:
             prs.append({"stage": f"{sit}→{uat}", "error": str(e)})
+
     deploy_run = next((p.get("deploy_run") for p in prs if p.get("deploy_run")), None)
-    return {"changed": True, "prs": prs, "deploy_run": deploy_run}
+    deploy_run_prd = next((p.get("deploy_run_prd") for p in prs if p.get("deploy_run_prd")), None)
+    return {"changed": True, "prs": prs, "deploy_run": deploy_run, "deploy_run_prd": deploy_run_prd}
 
 
 def _pr_chain_note(prs: list) -> str:
@@ -195,16 +286,19 @@ def _pr_chain_note(prs: list) -> str:
     return "; ".join(bits) + "."
 
 
-def _deploy_run_note(dr) -> str:
-    """One-line note pointing at the UAT deploy workflow run, if captured."""
-    if not dr:
-        return ""
-    return f" UAT deploy run #{dr['id']} ({dr['url']})."
+def _deploy_run_note(res: dict) -> str:
+    """Note pointing at the deploy workflow run(s) captured by the chain."""
+    bits = []
+    if res.get("deploy_run"):
+        bits.append(f"UAT deploy run #{res['deploy_run']['id']} ({res['deploy_run']['url']})")
+    if res.get("deploy_run_prd"):
+        bits.append(f"PRD deploy run #{res['deploy_run_prd']['id']} ({res['deploy_run_prd']['url']})")
+    return (" " + "; ".join(bits) + ".") if bits else ""
 
 
 def _blocked_pr_result(res: dict):
-    """If the PR chain was blocked because a promote PR is already open on the file,
-    return a user-facing JSON string; otherwise None."""
+    """If the chain was blocked by an already-open PR on a target file, return a
+    user-facing JSON string; otherwise None."""
     b = res.get("blocked_pr")
     if not b:
         return None
@@ -215,413 +309,181 @@ def _blocked_pr_result(res: dict):
             "pr_number": b["number"],
             "pr_url": b["url"],
             "note": (
-                f"A promote PR is already open — #{b['number']} ({b['url']}) — touching the images "
-                "config. Merge or close it first, then retry. (One promote at a time per file.)"
+                f"A deploy PR is already open — #{b['number']} ({b['url']}) — touching "
+                f"`{b.get('path', 'the deployment config')}`. Merge or close it first, then retry. "
+                "(One deploy at a time per file.)"
             ),
         },
         indent=2,
     )
 
 
-def _add_images_to_uat(repo, pairs: list) -> dict:
-    """Stage image:tag pairs for the day's release via the protected-branch PR chain
-    (working -> SIT -> UAT). Returns {uat_images, prs, changed}."""
-    image_map = {i: t for i, t in pairs}
-
-    def _mut(images):
-        before = dict(images)
-        images.update(image_map)
-        return images != before
-
-    summary = "Add " + ",".join(f"{i}:{t}" for i, t in pairs) + " to release"
-    res = _apply_via_pr_chain(repo, _mut, summary)
-    uat_images = (_read_json_file(repo, settings.uat_branch, settings.env_config_path) or {}).get(
-        "images", {}
-    ) or {}
-    return {"uat_images": uat_images, "prs": res["prs"], "changed": res["changed"],
-            "blocked_pr": res.get("blocked_pr"), "deploy_run": res.get("deploy_run")}
-
-
-def _remove_images_via_chain(repo, names: list) -> dict:
-    """Remove image(s) from the release via the protected-branch PR chain
-    (working -> SIT, then promote SIT -> UAT), merging both so the removal reaches
-    UAT: revert each image to PRD's current tag, or drop it if it's new."""
-    prd_images = (_read_json_file(repo, settings.prd_branch, settings.env_config_path) or {}).get(
-        "images", {}
-    ) or {}
-    reverted, removed, not_found = [], [], []
-
-    def _mut(images):
-        for n in names:
-            if n not in images:
-                not_found.append(n)
-            elif n in prd_images:
-                images[n] = prd_images[n]
-                reverted.append(f"{n}→{prd_images[n]} (PRD)")
-            else:
-                del images[n]
-                removed.append(n)
-        return bool(reverted or removed)
-
-    res = _apply_via_pr_chain(repo, _mut, "Remove " + ",".join(names) + " from release")
-    return {
-        "reverted": reverted,
-        "removed": removed,
-        "not_found": not_found,
-        "prs": res["prs"],
-        "changed": res["changed"],
-        "blocked_pr": res.get("blocked_pr"),
-    }
-
-
-class RemoveFromReleaseInput(BaseModel):
-    image_names: str = Field(
-        ...,
-        description="Comma-separated image names to remove from today's release. Tags are "
-        "optional/ignored (e.g. 'orders-api' or 'orders-api:v1.1.0').",
+# --- tools ------------------------------------------------------------------
+class DeployInput(BaseModel):
+    environment: str = Field(..., description="Target environment: uat or prod")
+    image_tags: str = Field(
+        ..., description="Comma-separated <helm_chart_name>:<version> (one or more charts)"
+    )
+    namespace: str = Field(
+        default="", description="GKE namespace (optional; defaults per environment)"
     )
 
 
-@tool(args_schema=RemoveFromReleaseInput)
-def remove_from_release(image_names: str) -> str:
-    """Remove image(s) from the release via the protected-branch PR chain: open a PR
-    from a working branch into SIT that drops the image, then a PR promoting SIT->UAT,
-    merging both so the removal reaches UAT (it flows on to PRD with the release).
-    Each image is reverted to PRD's current tag, or dropped if it's new. Branches are
-    never edited directly."""
-    names = []
-    for tok in image_names.replace(",", " ").split():
-        tok = tok.strip()
-        if tok:
-            names.append(tok.split(":", 1)[0])
-    if not names:
-        return "ERROR: no image names provided to remove."
-    try:
-        repo = _get_github_client().get_repo(settings.deploy_repo)
-    except Exception as e:
-        return f"ERROR removing from release: {e}"
+@tool(args_schema=DeployInput)
+def open_release_pr(environment: str, image_tags: str, namespace: str = "") -> str:
+    """Deploy Helm chart(s) by upserting their entry into the deployment JSON via the
+    protected-branch PR chain.
 
-    res = _remove_images_via_chain(repo, names)
-    blocked = _blocked_pr_result(res)
-    if blocked:
-        return blocked
-    if not res["changed"]:
-        return (
-            f"No change — {', '.join(res['not_found']) or ','.join(names)} not found in the release "
-            "config; nothing to remove."
-        )
-    parts = []
-    if res["reverted"]:
-        parts.append("reverted to PRD: " + ", ".join(res["reverted"]))
-    if res["removed"]:
-        parts.append("dropped (was new): " + ", ".join(res["removed"]))
-    if res["not_found"]:
-        parts.append("not in release: " + ", ".join(res["not_found"]))
-    note = "Removed from the release — " + "; ".join(parts) + ". Via " + _pr_chain_note(res["prs"])
-    return json.dumps({"ok": True, "action": "removed", **res, "note": note}, indent=2)
+      uat : upsert into uat/deployment.json (working->SIT->UAT).
+      prod: upsert into BOTH uat/deployment.json and prd/deployment.json
+            (working->SIT->UAT->PRD), each with its env-specific values file + namespace.
 
-
-def _lead_time_ok(cr: dict):
-    """Production changes need lead time: the change request's start_date must be at
-    least `prd_lead_time_days` ahead (default 1 -> tomorrow or later).
-    Returns (ok: bool, message: str)."""
-    from datetime import datetime, timezone, timedelta
-
-    raw = str(cr.get("start_date") or "").strip()
-    lead = settings.prd_lead_time_days
-    if not raw:
-        return False, (
-            "the change request needs a start_date — production releases need lead time, so "
-            f"the start date must be at least {lead} day(s) out."
-        )
-    dt = None
-    for candidate in (raw, raw[:10]):  # accept 'YYYY-MM-DDThh:mm' or 'YYYY-MM-DD'
-        try:
-            dt = datetime.fromisoformat(candidate)
-            break
-        except Exception:
-            continue
-    if dt is None:
-        return False, f"could not parse start_date '{raw}' (use YYYY-MM-DD or YYYY-MM-DDThh:mm)."
-    earliest = datetime.now(timezone.utc).date() + timedelta(days=lead)
-    if dt.date() < earliest:
-        return False, (
-            f"start_date {dt.date().isoformat()} is too soon — production changes need "
-            f"{lead} day(s) lead time, so the start date must be {earliest.isoformat()} "
-            "(tomorrow) or later."
-        )
-    return True, ""
-
-
-def _raise_uat_to_prd_pr(repo, cr: dict) -> str:
-    """Post-cutoff: raise the single UAT->PRD release PR with everything accumulated
-    on UAT, auto-creating the CHG/RMG. Raising it locks the day. The change's
-    start_date must satisfy the production lead time."""
-    uat, prd = settings.uat_branch, settings.prd_branch
-    images_path, cr_path = settings.env_config_path, settings.change_request_path
-    try:
-        uat_cfg = _read_json_file(repo, uat, images_path)
-        uat_images = uat_cfg.get("images", {}) if isinstance(uat_cfg, dict) else {}
-        prd_cfg = _read_json_file(repo, prd, images_path)
-        prd_images = prd_cfg.get("images", {}) if isinstance(prd_cfg, dict) else {}
-        # Only the images that actually differ from PRD get promoted. If nothing
-        # changed (a quiet day), do NOT raise an empty release PR.
-        pending = {i: t for i, t in uat_images.items() if prd_images.get(i) != t}
-        if not pending:
-            return (
-                "NOTE: nothing to release — UAT already matches PRD (no new images staged). "
-                "No UAT→PRD PR was raised."
-            )
-        ok, msg = _lead_time_ok(cr)
-        if not ok:
-            return f"ERROR raising release: {msg}"
-        image_str = ",".join(f"{i}:{t}" for i, t in pending.items())
-        try:
-            source_ref = repo.get_git_ref(f"heads/{uat}")
-        except Exception:
-            return f"ERROR raising release: UAT branch '{uat}' not found in {settings.deploy_repo}."
-
-        branch = f"release/prod/{uuid.uuid4().hex[:8]}"
-        repo.create_git_ref(f"refs/heads/{branch}", source_ref.object.sha)
-        cr_doc = {
-            "environment": "prod",
-            "images": pending,
-            "promoting_to_state": uat_images,
-            "change_request": cr,
-            "status": "pending-chg",
-        }
-        _upsert_json_file(repo, branch, cr_path, cr_doc)
-
-        title = f"Release UAT → PRD: {image_str}"
-        body = (
-            f"Daily production release — promote **{uat}** → **{prd}**.\n\n"
-            f"- Images: `{image_str}`\n- Change request: `{cr_path}`\n\n"
-            "CHG/RMG auto-created from the change request (see comments)."
-        )
-        pr = repo.create_pull(title=title, body=body, head=branch, base=prd)
-
-        from datetime import datetime, timezone
-
-        ym = datetime.now(timezone.utc).strftime("%Y%m")
-        seq = f"{uuid.uuid4().int % 100000:05d}"
-        chg, rmg = f"CHG-{ym}-{seq}", f"RMG-{ym}-{seq}"
-        sd = cr.get("short_description") or cr.get("summary") or image_str
-        window = ""
-        if cr.get("start_date") or cr.get("end_date"):
-            window = f"\n- **Window:** {cr.get('start_date', '?')} → {cr.get('end_date', '?')}"
-        pr.create_issue_comment(
-            "\n".join(
-                [
-                    "📋 **Change management & release controls** (auto-created from the change request)",
-                    "",
-                    f"- **CHG:** {chg}",
-                    f"- **RMG:** {rmg}",
-                    f"- **Summary:** {sd}",
-                    f"- **Images:** {image_str}{window}",
-                    "",
-                    "**Control gates (RLFT):**",
-                    "- RLFT approval gate: open",
-                    "- RLFT deploy control: open",
-                ]
-            )
-        )
-        return json.dumps(
-            {
-                "ok": True,
-                "environment": "prod",
-                "action": "raised_uat_to_prd",
-                "image_tags": image_str,
-                "branch": branch,
-                "base_branch": prd,
-                "source_branch": uat,
-                "pr_number": pr.number,
-                "pr_url": pr.html_url,
-                "change_request_template": cr_path,
-                "chg": chg,
-                "rmg": rmg,
-                "note": (
-                    f"Daily UAT→PRD release PR #{pr.number} raised promoting {len(pending)} image(s); "
-                    f"CHG {chg} / RMG {rmg} created. The day is now locked."
-                ),
-            },
-            indent=2,
-        )
-    except Exception as e:
-        return f"ERROR raising release: {e}"
-
-
-def _prod_controls_failures(pairs: list) -> list:
-    """Return human-readable failure strings for any requested image whose build
-    controls FAILED (empty list = none failed or unverifiable)."""
-    if not settings.prd_require_controls:
-        return []
-    try:
-        brepo = _get_github_client().get_repo(_build_repo_full())
-    except Exception:
-        return []
-    failures = []
-    for image, tag in pairs:
-        run, _err = _find_build_run(brepo, image, tag)
-        if run is None:
-            continue  # unverifiable here; the chat flow asks for the run id
-        rep = _controls_report(_build_repo_full(), image, tag, run)
-        if rep["summary"]["failed"]:
-            failures.append(
-                f"{image}:{tag} → FAILED controls: {', '.join(rep['summary']['failed'])} "
-                f"(build run {rep['run']['url']})"
-            )
-    return failures
-
-
-@tool(args_schema=OpenReleasePRInput)
-def open_release_pr(environment: str, image_tags: str, change_request_json: str = "") -> str:
-    """
-    SIT -> UAT -> PRD promotion in the deploy repo.
-      - uat : stage image:tag(s) onto the UAT branch (the day's release accumulates).
-      - prod: BEFORE the daily cutoff this also just stages onto UAT (the UAT->PRD PR
-        is NOT raised yet, so more images can keep being added). AFTER the cutoff it
-        stages onto UAT and raises the single UAT->PRD release PR (change_request
-        required) which auto-creates the CHG/RMG and LOCKS the day.
-    Supports multiple image:tag pairs.
-    """
+    Input is <chart_name>:<version> pairs; the helm_chart_dir constant and the
+    env-specific values file + namespace are filled in automatically."""
     raw = (environment or "").strip().lower()
     if raw == "uat":
         env = "uat"
     elif raw in ("prod", "prd", "production"):
         env = "prod"
     else:
-        return (
-            f"ERROR opening release PR: unsupported environment '{environment}' (use uat or prod)."
-        )
+        return f"ERROR deploying: unsupported environment '{environment}' (use uat or prod)."
 
     try:
         pairs = _parse_pairs(image_tags)
     except ValueError as e:
-        return f"ERROR opening release PR: {e}"
+        return f"ERROR deploying: {e}"
     if not pairs:
-        return "ERROR opening release PR: no image:tag pairs provided."
-    image_str = ",".join(f"{i}:{t}" for i, t in pairs)
+        return "ERROR deploying: no <chart_name>:<version> pairs provided."
+    chart_str = ", ".join(f"{n}:{v}" for n, v in pairs)
 
-    cr: dict = {}
-    if change_request_json.strip():
-        try:
-            cr = json.loads(change_request_json)
-        except Exception:
-            return "ERROR opening release PR: change_request_json is not valid JSON."
-
-    g = _get_github_client()
-    try:
-        repo = g.get_repo(settings.deploy_repo)
-    except Exception as e:
-        return f"ERROR opening release PR: {e}"
-
-    # --- UAT: stage onto UAT via the protected-branch PR chain (working->SIT->UAT) ---
-    if env == "uat":
-        res = _add_images_to_uat(repo, pairs)
-        blocked = _blocked_pr_result(res)
-        if blocked:
-            return blocked
-        imgs = res["uat_images"]
-        return json.dumps(
-            {
-                "ok": True,
-                "environment": "uat",
-                "action": "staged_to_uat",
-                "image_tags": image_str,
-                "uat_images": imgs,
-                "prs": res["prs"],
-                "deploy_run": res.get("deploy_run"),
-                "note": f"Staged {image_str} via PR chain (working→SIT→UAT). {_pr_chain_note(res['prs'])} "
-                f"{len(imgs)} image(s) on UAT." + _deploy_run_note(res.get("deploy_run")),
-            },
-            indent=2,
-        )
-
-    # --- PROD path ---
-    status = get_release_status()
-    if status.get("locked"):
-        p = status.get("prd_pr_today") or {}
-        return (
-            f"ERROR: today's UAT→PRD release PR #{p.get('number')} is already raised — the day is "
-            f"locked, no more images can be added. {p.get('url', '')}"
-        )
-
-    # Build-control gate (fail-closed) for the requested images.
-    failures = _prod_controls_failures(pairs)
-    if failures:
-        return "ERROR: build controls failed — cannot stage for PRD release.\n" + "\n".join(
-            failures
-        )
-
-    # Stage the requested images for today's release via the PR chain (working->SIT->UAT).
-    res = _add_images_to_uat(repo, pairs)
-    blocked = _blocked_pr_result(res)
-    if blocked:
-        return blocked
-    imgs = res["uat_images"]
-
-    if not status.get("cutoff_passed"):
-        cutoff = settings.prd_cutoff_hour_utc
-        return json.dumps(
-            {
-                "ok": True,
-                "environment": "prod",
-                "action": "staged_to_uat",
-                "image_tags": image_str,
-                "uat_images": imgs,
-                "prs": res["prs"],
-                "deploy_run": res.get("deploy_run"),
-                "note": (
-                    f"Staged {image_str} for today's release via PR chain (working→SIT→UAT). "
-                    f"{_pr_chain_note(res['prs'])} {len(imgs)} image(s) on UAT." + _deploy_run_note(res.get("deploy_run"))
-                    + f" The single UAT→PRD PR is raised after {cutoff:02d}:00 UTC — until then more images can be added."
-                ),
-            },
-            indent=2,
-        )
-
-    # Cutoff passed → raise the day's UAT→PRD release PR.
-    if not cr:
-        return (
-            "ERROR: the cutoff has passed — raising the UAT→PRD release requires a change_request "
-            "block (drives the CHG)."
-        )
-    return _raise_uat_to_prd_pr(repo, cr)
-
-
-class RaiseReleaseInput(BaseModel):
-    change_request_json: str = Field(
-        default="", description="change_request block (required) the CHG is created from."
-    )
-
-
-@tool(args_schema=RaiseReleaseInput)
-def raise_prod_release(change_request_json: str = "") -> str:
-    """Raise today's single UAT->PRD production release PR with everything currently
-    staged on UAT. Allowed ONLY after the daily cutoff (raising it locks the day).
-    Requires a change_request block to drive the CHG/RMG."""
-    status = get_release_status()
-    if status.get("locked"):
-        p = status.get("prd_pr_today") or {}
-        return f"ERROR: today's release PR #{p.get('number')} is already raised — locked. {p.get('url', '')}"
-    if not status.get("cutoff_passed"):
-        return (
-            f"ERROR: the UAT→PRD release can only be raised after {status.get('cutoff_utc')} UTC. "
-            "Until then images keep accumulating on UAT."
-        )
-    cr: dict = {}
-    if change_request_json.strip():
-        try:
-            cr = json.loads(change_request_json)
-        except Exception:
-            return "ERROR: change_request_json is not valid JSON."
-    if not cr:
-        return "ERROR: raising the release requires a change_request block (drives the CHG)."
     try:
         repo = _get_github_client().get_repo(settings.deploy_repo)
     except Exception as e:
-        return f"ERROR raising release: {e}"
-    return _raise_uat_to_prd_pr(repo, cr)
+        return f"ERROR deploying: {e}"
+
+    uat_path = _deployment_path("uat")
+    summary = f"Deploy {chart_str} to {env}"
+
+    def _mutator(entries):
+        def _mut(include):
+            changed = False
+            for e in entries:
+                changed = _upsert_entry(include, e) or changed
+            return changed
+        return _mut
+
+    if env == "uat":
+        uat_entries = [assemble_entry(n, v, "uat", namespace) for n, v in pairs]
+        file_mutations = [(uat_path, _mutator(uat_entries))]
+        to_prd = False
+    else:  # prod -> write BOTH files (uat default ns; namespace override applies to prd)
+        prd_path = _deployment_path("prd")
+        uat_entries = [assemble_entry(n, v, "uat") for n, v in pairs]
+        prd_entries = [assemble_entry(n, v, "prd", namespace) for n, v in pairs]
+        file_mutations = [(uat_path, _mutator(uat_entries)), (prd_path, _mutator(prd_entries))]
+        to_prd = True
+
+    res = _apply_via_pr_chain(repo, file_mutations, summary, to_prd=to_prd)
+    blocked = _blocked_pr_result(res)
+    if blocked:
+        return blocked
+    if not res["changed"]:
+        return json.dumps(
+            {"ok": True, "action": "no_change", "environment": env, "image_tags": chart_str,
+             "note": f"No change — {chart_str} already deployed to {env} with that version."},
+            indent=2,
+        )
+
+    uat_now = _read_include(repo, settings.uat_branch, uat_path)
+    written = ["uat/deployment.json"] + (["prd/deployment.json"] if env == "prod" else [])
+    note = (
+        f"Deployed {chart_str} to {env} via PR chain. {_pr_chain_note(res['prs'])} "
+        f"Updated {', '.join(written)}. {len(uat_now)} chart(s) on UAT." + _deploy_run_note(res)
+    )
+    return json.dumps(
+        {
+            "ok": True,
+            "environment": env,
+            "action": "deployed",
+            "image_tags": chart_str,
+            "files_updated": written,
+            "uat_charts": uat_now,
+            "prs": res["prs"],
+            "deploy_run": res.get("deploy_run"),
+            "deploy_run_prd": res.get("deploy_run_prd"),
+            "note": note,
+        },
+        indent=2,
+    )
 
 
-# Export all tools for the agent
+class RemoveFromReleaseInput(BaseModel):
+    image_names: str = Field(
+        ...,
+        description="Comma-separated helm chart names to remove (version optional/ignored, "
+        "e.g. 'abc-client-api-svc').",
+    )
+    environment: str = Field(
+        default="uat", description="Which env to remove from: uat (default) or prod (both files)."
+    )
+
+
+@tool(args_schema=RemoveFromReleaseInput)
+def remove_from_release(image_names: str, environment: str = "uat") -> str:
+    """Remove chart(s) from the deployment JSON by helm_chart_name, via the protected-
+    branch PR chain. environment=uat drops them from uat/deployment.json (unstage);
+    environment=prod drops them from BOTH uat and prd/deployment.json."""
+    names = []
+    for tok in image_names.replace(",", " ").split():
+        tok = tok.strip()
+        if tok:
+            names.append(tok.split(":", 1)[0])
+    if not names:
+        return "ERROR: no chart names provided to remove."
+
+    raw = (environment or "uat").strip().lower()
+    env = "prod" if raw in ("prod", "prd", "production") else "uat"
+
+    try:
+        repo = _get_github_client().get_repo(settings.deploy_repo)
+    except Exception as e:
+        return f"ERROR removing from release: {e}"
+
+    removed: list = []
+
+    def _mut(include):
+        changed = False
+        for n in names:
+            if _remove_entry(include, n):
+                if n not in removed:
+                    removed.append(n)
+                changed = True
+        return changed
+
+    uat_path = _deployment_path("uat")
+    if env == "prod":
+        file_mutations = [(uat_path, _mut), (_deployment_path("prd"), _mut)]
+        to_prd = True
+    else:
+        file_mutations = [(uat_path, _mut)]
+        to_prd = False
+
+    res = _apply_via_pr_chain(repo, file_mutations, "Remove " + ",".join(names) + f" from {env}", to_prd=to_prd)
+    blocked = _blocked_pr_result(res)
+    if blocked:
+        return blocked
+    if not res["changed"]:
+        return json.dumps(
+            {"ok": True, "action": "no_change", "environment": env,
+             "note": f"No change — {', '.join(names)} not deployed to {env}; nothing to remove."},
+            indent=2,
+        )
+    note = (
+        f"Removed {', '.join(removed)} from {env} via PR chain. {_pr_chain_note(res['prs'])}"
+        + _deploy_run_note(res)
+    )
+    return json.dumps(
+        {"ok": True, "action": "removed", "environment": env, "removed": removed,
+         "prs": res["prs"], "note": note},
+        indent=2,
+    )

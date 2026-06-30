@@ -241,9 +241,11 @@ def _extract_change_fields(text: str) -> dict:
 
 
 def _try_parse_json_payload(text: str) -> Optional[dict]:
-    """If the message contains a JSON object with an 'images' field, parse it into a
-    release_request. Supports images as a {name: tag} map or a [{image, tag}] list,
-    plus an optional 'change_request' block (the data the CHG is created from)."""
+    """Parse a pasted JSON deploy payload into a release_request. Accepts:
+      - the deploy form entry: {"helm_chart_name", "helm_chart_version", "gke_namespace"}
+      - an include list: {"include": [{helm_chart_name, helm_chart_version, gke_namespace}, ...]}
+      - legacy: {"images": {name: tag}} or {"images": [{image|name, tag}]}
+    Returns {images: [{name, tag}], environment, namespace, raw} or None."""
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return None
@@ -253,27 +255,40 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
         return None
     if not isinstance(data, dict):
         return None
-    images = data.get("images")
+
     pairs: list[dict] = []
-    if isinstance(images, dict):
-        pairs = [{"name": str(k), "tag": str(v)} for k, v in images.items()]
-    elif isinstance(images, list):
-        for it in images:
-            if isinstance(it, dict):
-                name, tag = it.get("image") or it.get("name"), it.get("tag")
-                if name and tag:
-                    pairs.append({"name": str(name), "tag": str(tag)})
+    namespace = ""
+
+    def _add(e):
+        nonlocal namespace
+        if not isinstance(e, dict):
+            return
+        n = e.get("helm_chart_name") or e.get("name") or e.get("image")
+        v = e.get("helm_chart_version") or e.get("tag") or e.get("version")
+        if n and v:
+            pairs.append({"name": str(n), "tag": str(v)})
+            if not namespace and e.get("gke_namespace"):
+                namespace = str(e["gke_namespace"])
+
+    if isinstance(data.get("include"), list):
+        for e in data["include"]:
+            _add(e)
+    elif data.get("helm_chart_name"):
+        _add(data)
+    else:
+        images = data.get("images")
+        if isinstance(images, dict):
+            pairs = [{"name": str(k), "tag": str(v)} for k, v in images.items()]
+        elif isinstance(images, list):
+            for it in images:
+                _add(it)
+
     if not pairs:
         return None
-    env = str(data.get("environment") or "prod").lower()
-    if env in ("prd", "production"):
-        env = "prod"
-    return {
-        "images": pairs,
-        "environment": env,
-        "change_request": data.get("change_request") or {},
-        "raw": "json-paste",
-    }
+    namespace = namespace or str(data.get("gke_namespace") or data.get("namespace") or "")
+    env = str(data.get("environment") or "uat").lower()
+    env = "prod" if env in ("prod", "prd", "production") else "uat"
+    return {"images": pairs, "environment": env, "namespace": namespace, "raw": "json-paste"}
 
 
 def _detect_rerun(text: str, current_steps: Optional[list]) -> Optional[list[str]]:

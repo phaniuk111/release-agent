@@ -42,7 +42,6 @@ _MUTATING = {
     "apply_json_update",
     "dispatch_workflow",
     "remove_from_release",
-    "raise_prod_release",
     "retrigger_deployment_workflow",
 }
 
