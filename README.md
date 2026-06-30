@@ -219,6 +219,32 @@ Example message to test the full flow:
 
 See `scripts/test_gh_tools.py` for a safe read-only smoke test.
 
+### No-LLM tool testing
+
+Exercise every tool directly — no Vertex/Gemini config needed. The runner imports
+only the PyGithub tool layer (never the LLM or the graph), so it works with just a
+GitHub token + the repo env vars:
+
+```bash
+export DEPLOY_REPO=phaniuk111/deployment-repo BUILD_REPO=phaniuk111/gh-image-tag-report-test
+# (GH_TOKEN or `gh auth login` — no GOOGLE_CLOUD_PROJECT required)
+
+PYTHONPATH=src python -m release_agent.tools_cli                       # list all tools + args
+PYTHONPATH=src python -m release_agent.tools_cli get_build_controls    # show one tool's schema
+PYTHONPATH=src python -m release_agent.tools_cli get_build_controls image=payments-api tag=v1.5.0
+PYTHONPATH=src python -m release_agent.tools_cli find_prs '{"search_term":"payments-api"}'
+```
+
+Read/query tools are safe to run. The mutating tools (`open_release_pr`,
+`apply_json_update`, `dispatch_workflow`, `remove_from_release`, `raise_prod_release`,
+`retrigger_deployment_workflow`) **execute for real** — this runner bypasses the
+human-confirmation gate by design. Add `--dry-run` to simulate them without executing
+(read-only tools still run), so you can sweep the whole toolset safely:
+
+```bash
+PYTHONPATH=src python -m release_agent.tools_cli --dry-run open_release_pr environment=uat image_tags=x:1
+```
+
 ## Extending for Real Releases
 
 Replace or augment the dispatch with a workflow that:

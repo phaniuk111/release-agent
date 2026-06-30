@@ -82,17 +82,46 @@ async def chat_page():
     <title>Release Copilot</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { background: #0f172a; }
-        .chat-container { max-height: calc(100vh - 140px); }
-        .message { max-width: 85%; }
-        .bot { background: #1e2937; }
-        .user { background: #3b82f6; }
-        .interrupt-box { 
-            background: #451a03; 
-            border: 1px solid #f59e0b;
+        * { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif; }
+        body {
+            color: #e5e7eb;
+            background:
+                radial-gradient(1100px 560px at 12% -8%, rgba(16,185,129,.12), transparent 60%),
+                radial-gradient(900px 520px at 100% 0%, rgba(45,212,191,.08), transparent 55%),
+                #080d1a;
+            min-height: 100vh;
         }
-        .streaming { opacity: 0.9; }
+        .glass {
+            background: rgba(15, 23, 42, .55);
+            backdrop-filter: blur(16px) saturate(140%);
+            -webkit-backdrop-filter: blur(16px) saturate(140%);
+            border: 1px solid rgba(148,163,184,.12);
+        }
+        .brand-grad { background: linear-gradient(135deg, #10b981, #2dd4bf); }
+        .chat-container { max-height: calc(100vh - 250px); scroll-behavior: smooth; }
+        .chat-container::-webkit-scrollbar { width: 8px; }
+        .chat-container::-webkit-scrollbar-thumb { background: rgba(148,163,184,.18); border-radius: 99px; }
+        .chat-container::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.30); }
+        .message { max-width: 84%; line-height: 1.6; animation: rise .28s cubic-bezier(.2,.8,.2,1); }
+        @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+        .bot { background: rgba(30,41,59,.6); border: 1px solid rgba(148,163,184,.10); }
+        .user { background: linear-gradient(135deg, #10b981, #2dd4bf); color: #04241c; font-weight: 500; }
+        .bot code { background: rgba(2,6,23,.55) !important; color: #6ee7b7 !important; }
+        .interrupt-box { background: rgba(60,24,4,.6); border: 1px solid rgba(245,158,11,.6); backdrop-filter: blur(10px); }
+        .streaming { opacity: .92; }
+        .dots span { display: inline-block; width: 6px; height: 6px; margin: 0 2px; border-radius: 99px; background: #64748b; animation: blink 1.2s infinite; }
+        .dots span:nth-child(2) { animation-delay: .2s; }
+        .dots span:nth-child(3) { animation-delay: .4s; }
+        @keyframes blink { 0%,80%,100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+        #input { transition: box-shadow .15s, border-color .15s; }
+        #input:focus { box-shadow: 0 0 0 3px rgba(16,185,129,.18); }
+        .send-btn { background: linear-gradient(135deg, #10b981, #2dd4bf); color: #04241c; transition: filter .15s, transform .1s; }
+        .send-btn:hover { filter: brightness(1.07); }
+        .send-btn:active { transform: scale(.97); }
+        .navbtn { transition: background .15s, border-color .15s; }
     </style>
 </head>
 <body class="text-white">
@@ -100,26 +129,26 @@ async def chat_page():
         <!-- Header -->
         <div class="flex items-center justify-between mb-6">
             <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center">
-                    <i class="fa-solid fa-rocket text-white text-xl"></i>
+                <div class="w-10 h-10 brand-grad rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                    <i class="fa-solid fa-rocket text-[#04241c] text-xl"></i>
                 </div>
                 <div>
-                    <h1 class="text-2xl font-semibold">Release Copilot</h1>
-                    <p class="text-sm text-slate-400">LangGraph + FastAPI • GitHub Actions</p>
+                    <h1 class="text-2xl font-semibold tracking-tight">Release Copilot</h1>
+                    <p class="text-xs text-slate-400 tracking-wide">LangGraph · FastAPI · GitHub Actions</p>
                 </div>
             </div>
             <div class="flex items-center gap-2 text-sm">
-                <div class="px-3 py-1 bg-slate-800 rounded-lg flex items-center gap-2">
+                <div class="px-3 py-1 glass rounded-lg flex items-center gap-2">
                     <i class="fa-solid fa-server text-emerald-400"></i>
                     <span id="thread-label" class="text-slate-300 font-mono text-xs"></span>
                 </div>
                 <button onclick="showCapabilities()"
-                        class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs flex items-center gap-2">
+                        class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
                     <i class="fa-solid fa-wand-magic-sparkles text-emerald-400"></i>
                     <span>What can I do?</span>
                 </button>
                 <button onclick="newThread()"
-                        class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs flex items-center gap-2">
+                        class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
                     <i class="fa-solid fa-plus"></i>
                     <span>New Thread</span>
                 </button>
@@ -144,7 +173,7 @@ async def chat_page():
 
         <!-- Chat Area -->
         <div id="chat"
-             class="chat-container overflow-y-auto bg-slate-900 border border-slate-700 rounded-2xl p-4 mb-4 space-y-4">
+             class="chat-container overflow-y-auto glass rounded-2xl p-5 mb-4 space-y-4">
             <!-- Messages injected here -->
         </div>
 
@@ -153,9 +182,9 @@ async def chat_page():
             <input id="input" 
                    type="text" 
                    placeholder="e.g. promote <image>:<tag> to uat"
-                   class="flex-1 bg-slate-800 border border-slate-600 rounded-2xl px-5 py-3 text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500">
+                   class="flex-1 glass rounded-2xl px-5 py-3.5 text-white placeholder-slate-500 focus:outline-none">
             <button onclick="sendMessage()" 
-                    class="bg-emerald-600 hover:bg-emerald-500 px-8 rounded-2xl font-medium flex items-center gap-2">
+                    class="send-btn px-8 rounded-2xl font-semibold flex items-center gap-2">
                 <span>Send</span>
                 <i class="fa-solid fa-paper-plane"></i>
             </button>
@@ -251,7 +280,7 @@ async def chat_page():
             addMessage('user', message);
             if (typeof overrideText !== 'string') input.value = '';
 
-            const botMsg = addMessage('bot', 'Thinking...', true);
+            const botMsg = addMessage('bot', '<span class="dots"><span></span><span></span><span></span></span>', true);
 
             try {
                 const res = await fetch(API_BASE + '/api/chat', {
