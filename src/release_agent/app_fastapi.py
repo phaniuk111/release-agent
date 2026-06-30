@@ -130,7 +130,7 @@ async def chat_page():
                 </div>
                 <div>
                     <h1 class="text-2xl font-semibold tracking-tight">Release Copilot</h1>
-                    <p class="text-xs text-slate-400 tracking-wide">LangGraph · FastAPI · GitHub Actions</p>
+                    <p class="text-xs text-slate-400 tracking-wide">Deploy &amp; release management</p>
                 </div>
             </div>
             <div class="flex items-center gap-2 text-sm">
@@ -272,6 +272,19 @@ async def chat_page():
             // text input strips newlines, which breaks the PROD change-ticket form).
             const message = (typeof overrideText === 'string' ? overrideText : input.value).trim();
             if (!message) return;
+
+            // A deploy command typed in the chat box opens the editable JSON instead
+            // of going straight to the agent (the JSON payload from the editor, which
+            // starts with '{', is sent normally).
+            if (!message.startsWith('{')) {
+                const di = parseDeployIntent(message);
+                if (di) {
+                    if (typeof overrideText !== 'string') input.value = '';
+                    addMessage('user', message);
+                    showDeployForm(di.env, di.name, di.version);
+                    return;
+                }
+            }
 
             addMessage('user', message);
             if (typeof overrideText !== 'string') input.value = '';
@@ -419,7 +432,7 @@ async def chat_page():
 
             const note = document.createElement('div');
             note.className = 'text-[10px] text-slate-500 mt-2';
-            note.textContent = 'Highlighted actions run immediately; the rest pre-fill the box so you can edit the image:tag, then Send.';
+            note.textContent = 'Deploy opens an editable JSON entry; some actions run immediately; others pre-fill the box so you can edit, then Send.';
             wrap.appendChild(note);
 
             chat.appendChild(wrap);
@@ -431,48 +444,43 @@ async def chat_page():
         // The backend parses the JSON, assembles the Helm entry, previews it,
         // and replies with a CONFIRM-XXXXXX token; the existing interrupt UI
         // then handles the confirmation step unchanged.
-        function showDeployForm(env) {
+        // Deploy editor — shows the FULL deployment.json entry as editable JSON
+        // (pre-filled from /api/deploy-template: constants from config, name/version
+        // from the dev). On submit it sends {environment, ...entry} through /api/chat;
+        // the backend previews the exact JSON it will write and asks to confirm.
+        async function showDeployForm(env, name, version) {
             const isProd = env === 'prod';
             const accentT = isProd ? 'text-amber-300' : 'text-emerald-300';
-            const accentB = isProd ? 'border-amber-700' : 'border-emerald-700';
             const accentBtn = isProd ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500';
             const icon = isProd ? 'fa-shield-halved' : 'fa-flask';
             const heading = isProd ? 'Deploy to PROD' : 'Deploy to UAT';
+
+            // Pre-fill the full entry (constants + any name/version) from the backend.
+            let entry = { helm_chart_name: name || '', helm_chart_version: version || '' };
+            try {
+                const qs = new URLSearchParams({ env: env, name: name || '', version: version || '' });
+                const r = await fetch(API_BASE + '/api/deploy-template?' + qs.toString());
+                if (r.ok) { const d = await r.json(); entry = d.entry; }
+            } catch (e) {}
 
             const chat = document.getElementById('chat');
             const wrap = document.createElement('div');
             wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm';
 
             const title = document.createElement('div');
-            title.className = 'mb-3 font-semibold flex items-center gap-2 ' + accentT;
-            title.innerHTML = '<i class="fa-solid ' + icon + '"></i> ' + heading;
+            title.className = 'mb-2 font-semibold flex items-center gap-2 ' + accentT;
+            title.innerHTML = '<i class="fa-solid ' + icon + '"></i> ' + heading +
+                ' <span class="text-slate-400 font-normal text-xs">— edit the deployment.json entry, then submit</span>';
             wrap.appendChild(title);
 
-            function makeField(labelText, inputId, placeholder, defaultVal) {
-                const label = document.createElement('label');
-                label.className = 'block text-xs text-slate-400 mb-1';
-                label.textContent = labelText;
-                label.htmlFor = inputId;
-                const inp = document.createElement('input');
-                inp.type = 'text';
-                inp.id = inputId;
-                inp.placeholder = placeholder;
-                inp.value = defaultVal || '';
-                inp.spellcheck = false;
-                inp.className = 'w-full bg-slate-900 border ' + accentB + ' rounded-lg px-3 py-1.5 text-xs font-mono mb-3 text-white placeholder-slate-600 focus:outline-none';
-                const wrapper = document.createElement('div');
-                wrapper.appendChild(label);
-                wrapper.appendChild(inp);
-                return wrapper;
-            }
-
-            const nsId = 'df-ns-' + env;
-            const chartId = 'df-chart-' + env;
-            const verId = 'df-ver-' + env;
-
-            wrap.appendChild(makeField('Helm chart name', chartId, 'e.g. my-service', ''));
-            wrap.appendChild(makeField('Helm chart version', verId, 'e.g. 1.2.3', ''));
-            wrap.appendChild(makeField('GKE namespace', nsId, 'e.g. eod1', 'eod1'));
+            const taId = 'deploy-json-' + env;
+            const ta = document.createElement('textarea');
+            ta.id = taId;
+            ta.rows = 8;
+            ta.spellcheck = false;
+            ta.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none mb-2';
+            ta.value = JSON.stringify(entry, null, 2);
+            wrap.appendChild(ta);
 
             const row = document.createElement('div');
             row.className = 'flex items-center gap-3 mt-1';
@@ -484,18 +492,12 @@ async def chat_page():
 
             submit.addEventListener('click', () => {
                 err.textContent = '';
-                const chartName = document.getElementById(chartId).value.trim();
-                const chartVer  = document.getElementById(verId).value.trim();
-                const ns        = document.getElementById(nsId).value.trim();
-                if (!chartName) { err.textContent = 'helm_chart_name is required.'; return; }
-                if (!chartVer)  { err.textContent = 'helm_chart_version is required.'; return; }
-                if (!ns)        { err.textContent = 'gke_namespace is required.'; return; }
-                const payload = JSON.stringify({
-                    environment: env,
-                    helm_chart_name: chartName,
-                    helm_chart_version: chartVer,
-                    gke_namespace: ns
-                });
+                let obj;
+                try { obj = JSON.parse(document.getElementById(taId).value); }
+                catch (e) { err.textContent = 'Invalid JSON: ' + e.message; return; }
+                if (!obj.helm_chart_name) { err.textContent = 'helm_chart_name is required.'; return; }
+                if (!obj.helm_chart_version) { err.textContent = 'helm_chart_version is required.'; return; }
+                const payload = JSON.stringify(Object.assign({ environment: env }, obj));
                 sendMessage(payload);
             });
             row.appendChild(submit);
@@ -504,6 +506,19 @@ async def chat_page():
 
             chat.appendChild(wrap);
             chat.scrollTop = chat.scrollHeight;
+        }
+
+        // Detect a deploy command typed in the chat box so we can pop the editable
+        // JSON instead of sending it straight to the agent. Needs a deploy verb, a
+        // target env, and a <name>:<version> token.
+        function parseDeployIntent(text) {
+            const t = text.toLowerCase();
+            if (!/\\b(deploy|promote|ship|rollout|roll out)\\b/.test(t)) return null;
+            const env = /\\b(prod|prd|production)\\b/.test(t) ? 'prod' : (/\\buat\\b/.test(t) ? 'uat' : null);
+            if (!env) return null;
+            const m = text.match(/([A-Za-z][\\w.\\-]*)\\s*[:=]\\s*([\\w][\\w.\\-]*)/);
+            if (!m) return null;
+            return { env: env, name: m[1], version: m[2] };
         }
 
         // Release status panel — reads the new Helm-chart-based API shape:
@@ -662,6 +677,18 @@ async def release_status_endpoint():
     except Exception as e:
         logger.exception("Error computing release status")
         return {"error": str(e)}
+
+
+@app.get("/api/deploy-template")
+async def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""):
+    """Return the full deployment.json entry to pre-fill the UI's editable JSON box.
+    Constants (helm_chart_dir, env values-file, namespace) come from config; the dev
+    fills helm_chart_name / helm_chart_version (passed through if provided)."""
+    from .tools.gh_tools import assemble_entry
+
+    e = "prod" if str(env).lower() in ("prod", "prd", "production") else "uat"
+    entry = assemble_entry(name or "", version or "", e)
+    return {"environment": e, "entry": entry}
 
 
 @app.get("/health")

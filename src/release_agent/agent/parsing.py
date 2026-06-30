@@ -258,9 +258,11 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
 
     pairs: list[dict] = []
     namespace = ""
+    chart_dir = ""
+    values_file = ""
 
     def _add(e):
-        nonlocal namespace
+        nonlocal namespace, chart_dir, values_file
         if not isinstance(e, dict):
             return
         n = e.get("helm_chart_name") or e.get("name") or e.get("image")
@@ -269,6 +271,10 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
             pairs.append({"name": str(n), "tag": str(v)})
             if not namespace and e.get("gke_namespace"):
                 namespace = str(e["gke_namespace"])
+            if not chart_dir and e.get("helm_chart_dir"):
+                chart_dir = str(e["helm_chart_dir"])
+            if not values_file and e.get("helm_values_file_name"):
+                values_file = str(e["helm_values_file_name"])
 
     if isinstance(data.get("include"), list):
         for e in data["include"]:
@@ -286,9 +292,18 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
     if not pairs:
         return None
     namespace = namespace or str(data.get("gke_namespace") or data.get("namespace") or "")
+    chart_dir = chart_dir or str(data.get("helm_chart_dir") or "")
+    values_file = values_file or str(data.get("helm_values_file_name") or "")
     env = str(data.get("environment") or "uat").lower()
     env = "prod" if env in ("prod", "prd", "production") else "uat"
-    return {"images": pairs, "environment": env, "namespace": namespace, "raw": "json-paste"}
+    return {
+        "images": pairs,
+        "environment": env,
+        "namespace": namespace,
+        "chart_dir": chart_dir,
+        "values_file": values_file,
+        "raw": "json-paste",
+    }
 
 
 def _detect_rerun(text: str, current_steps: Optional[list]) -> Optional[list[str]]:
