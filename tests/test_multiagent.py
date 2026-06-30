@@ -38,13 +38,15 @@ def test_no_release_mutation_reachable_from_any_specialist():
 
 
 def test_scoped_mutations_are_ops_only():
-    for mut in ("remove_from_release", "retrigger_deployment_workflow"):
+    for mut in ("remove_from_release", "retrigger_deployment_workflow", "merge_prod_release"):
         holders = [lbl for lbl, tools in SPECIALIST_TOOLSETS.items() if mut in _names(tools)]
         assert holders == ["ops"], f"{mut} must be ops-only, found in {holders}"
 
 
 def test_read_only_specialists_have_no_mutations_at_all():
-    mutating = RELEASE_MUTATIONS | {"remove_from_release", "retrigger_deployment_workflow"}
+    mutating = RELEASE_MUTATIONS | {
+        "remove_from_release", "retrigger_deployment_workflow", "merge_prod_release",
+    }
     for label in ("status", "pr", "controls", "general"):
         assert not (mutating & _names(SPECIALIST_TOOLSETS[label])), f"{label} should be read-only"
 

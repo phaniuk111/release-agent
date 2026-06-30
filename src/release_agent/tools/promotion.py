@@ -8,10 +8,10 @@ where an entry is a Helm chart:
 The dev supplies only chart_name:version (+ optional namespace); the constants and the
 env-specific values-file + namespace are filled from config.
 
-- UAT deploy  : upsert the chart into uat/deployment.json (chain working->SIT->UAT).
-- PROD deploy : upsert the chart into BOTH uat/deployment.json and prd/deployment.json
-               (chain working->SIT->UAT->PRD), each with its env-specific values file
-               + namespace.
+- UAT deploy  : OVERRIDE uat/deployment.json (chain working->SIT->UAT).
+- PROD deploy : accumulate the chart into today's PRD release PR (a day-long PR on a
+               release/prd/<date> branch holding BOTH uat & prd deployment.json), merged
+               to PRD after the cutoff via merge_prod_release.
 Entries are keyed by helm_chart_name (one entry per chart per env file).
 """
 
@@ -28,6 +28,7 @@ from ._common import (
     _upsert_json_file,
     _parse_pairs,
 )
+from .release_window import _today_prd_pr, _prd_release_branch  # noqa: F401
 
 
 # --- env helpers + entry assembly -------------------------------------------
@@ -380,6 +381,65 @@ def _replace_with(entries: list):
     return _mut
 
 
+# --- PRD release PR (accumulate through the day, merge at cutoff) ------------
+# _today_prd_pr / _prd_release_branch live in release_window (the lower module) so both
+# this module and the status reader share one definition without a circular import.
+def _accumulate_into_prd_pr(repo, entries: list):
+    """Upsert chart(s) into today's PRD release branch — BOTH uat/deployment.json and
+    prd/deployment.json (each with its env values file) — and ensure the open PR exists.
+    Accumulates (upsert by helm_chart_name) so charts pile up through the day. Returns
+    (pr, branch, created, changed_paths)."""
+    prd, branch = settings.prd_branch, _prd_release_branch()
+    pr = _today_prd_pr(repo)
+
+    # Ensure the day's branch exists (cut from PRD's current state).
+    if pr is None:
+        try:
+            repo.get_git_ref(f"heads/{branch}")
+        except Exception:
+            prd_ref = repo.get_git_ref(f"heads/{prd}")
+            repo.create_git_ref(f"refs/heads/{branch}", prd_ref.object.sha)
+
+    # Accumulate into both files on the branch (commit before creating the PR so there's a diff).
+    plan = plan_deploy("prd", entries)  # {prd_path: prd_entries, uat_path: uat_entries}
+    changed = []
+    for path, ents in plan.items():
+        doc = _read_json_file(repo, branch, path)
+        if not isinstance(doc, dict):
+            doc = {}
+        include = doc.get("include") if isinstance(doc.get("include"), list) else []
+        ch = False
+        for e in ents:
+            ch = _upsert_entry(include, e) or ch
+        if ch:
+            doc["include"] = include
+            doc["updated_by"] = "release-copilot"
+            _upsert_json_file(repo, branch, path, doc)
+            changed.append(path)
+
+    created = False
+    if pr is None:
+        if not changed:
+            return None, branch, False, []  # nothing to release (already matches PRD)
+        date = branch.rsplit("/", 1)[-1]
+        pr = repo.create_pull(
+            title=f"PRD release {date}",
+            body=(
+                "Daily PRD release — charts accumulate here through the day and this PR is "
+                f"merged to **{prd}** after the cutoff (`release prod`)."
+            ),
+            head=branch,
+            base=prd,
+        )
+        created = True
+    else:
+        try:
+            pr.update()
+        except Exception:
+            pass
+    return pr, branch, created, changed
+
+
 # --- tools ------------------------------------------------------------------
 class DeployInput(BaseModel):
     environment: str = Field(..., description="Target environment: uat or prod")
@@ -410,13 +470,13 @@ def open_release_pr(
     chart_dir: str = "",
     values_file: str = "",
 ) -> str:
-    """Deploy Helm chart(s) by OVERRIDING the deployment JSON (complete replace, no
-    upsert) via the protected-branch PR chain. The submitted include[] becomes the
-    entire file.
+    """Deploy Helm chart(s) into the deployment JSON.
 
-      uat : overrides uat/deployment.json (working->SIT->UAT).
-      prod: overrides BOTH prd/deployment.json and uat/deployment.json
-            (working->SIT->UAT->PRD), each with its env-specific values file.
+      uat : OVERRIDE uat/deployment.json (complete replace) via working->SIT->UAT.
+      prod: ADD the chart(s) to today's PRD release PR — a single day-long PR that
+            accumulates (upsert by chart name) BOTH uat/deployment.json and
+            prd/deployment.json on a release/prd/<date> branch. It stays OPEN and is
+            merged to PRD after the cutoff via merge_prod_release ("release prod").
 
     Accepts a full {"include":[...]} payload (the UI editor — supports multiple charts)
     or <chart_name>:<version> pairs (NL/CLI); constants are filled from config."""
@@ -441,38 +501,117 @@ def open_release_pr(
     except Exception as e:
         return f"ERROR deploying: {e}"
 
-    plan = plan_deploy(env, entries)
-    file_mutations = [(path, _replace_with(ents)) for path, ents in plan.items()]
-    res = _apply_via_pr_chain(repo, file_mutations, f"Deploy {chart_str} to {env}", to_prd=(env == "prod"))
+    # --- PROD: accumulate into today's PRD release PR (merged later at the cutoff) ---
+    if env == "prod":
+        pr, branch, created, changed = _accumulate_into_prd_pr(repo, entries)
+        if pr is None:
+            return json.dumps(
+                {"ok": True, "action": "no_change", "environment": "prod", "image_tags": chart_str,
+                 "note": f"No change — {chart_str} already matches PRD; nothing to add to the release."},
+                indent=2,
+            )
+        cutoff = settings.prd_cutoff_hour_utc
+        in_release = _read_include(repo, branch, _deployment_path("prd"))
+        note = (
+            f"Added {chart_str} to today's PRD release PR #{pr.number} ({pr.html_url}). "
+            f"It now holds {len(in_release)} chart(s) and stays open — say 'release prod' to merge it "
+            f"after {cutoff:02d}:00 UTC."
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "environment": "prod",
+                "action": "staged_to_prd_pr",
+                "image_tags": chart_str,
+                "pr_number": pr.number,
+                "pr_url": pr.html_url,
+                "pr_created": created,
+                "files_updated": changed,
+                "charts_in_release": in_release,
+                "cutoff_utc": f"{cutoff:02d}:00",
+                "note": note,
+            },
+            indent=2,
+        )
+
+    # --- UAT: OVERRIDE uat/deployment.json via working -> SIT -> UAT ---
+    uat_path = _deployment_path("uat")
+    res = _apply_via_pr_chain(repo, [(uat_path, _replace_with(entries))], f"Deploy {chart_str} to uat")
     blocked = _blocked_pr_result(res)
     if blocked:
         return blocked
     if not res["changed"]:
         return json.dumps(
-            {"ok": True, "action": "no_change", "environment": env, "image_tags": chart_str,
-             "note": f"No change — {env} deployment.json already matches the submitted charts."},
+            {"ok": True, "action": "no_change", "environment": "uat", "image_tags": chart_str,
+             "note": f"No change — uat/deployment.json already matches {chart_str}."},
             indent=2,
         )
-
-    uat_now = _read_include(repo, settings.uat_branch, _deployment_path("uat"))
-    written = list(plan.keys())
+    uat_now = _read_include(repo, settings.uat_branch, uat_path)
     note = (
-        f"Deployed {chart_str} to {env} via PR chain (override). {_pr_chain_note(res['prs'])} "
-        f"Replaced {', '.join(written)}. {len(uat_now)} chart(s) on UAT." + _deploy_run_note(res)
+        f"Deployed {chart_str} to UAT (override). {_pr_chain_note(res['prs'])} "
+        f"Replaced uat/deployment.json. {len(uat_now)} chart(s) on UAT." + _deploy_run_note(res)
     )
     return json.dumps(
         {
             "ok": True,
-            "environment": env,
+            "environment": "uat",
             "action": "deployed",
             "image_tags": chart_str,
-            "files_updated": written,
+            "files_updated": ["uat/deployment.json"],
             "uat_charts": uat_now,
             "prs": res["prs"],
             "deploy_run": res.get("deploy_run"),
-            "deploy_run_prd": res.get("deploy_run_prd"),
             "note": note,
         },
+        indent=2,
+    )
+
+
+@tool
+def merge_prod_release() -> str:
+    """Merge today's accumulated PRD release PR into the PRD branch, releasing everything
+    staged for prod today. Allowed ONLY after the daily cutoff (PRD_CUTOFF_HOUR_UTC).
+    Use when a developer says 'release prod' / 'merge the prod release'."""
+    from datetime import datetime, timezone
+
+    try:
+        repo = _get_github_client().get_repo(settings.deploy_repo)
+    except Exception as e:
+        return f"ERROR releasing prod: {e}"
+
+    pr = _today_prd_pr(repo)
+    if pr is None:
+        return "No PRD release PR is open today — nothing to release. Deploy chart(s) to prod first."
+
+    now = datetime.now(timezone.utc)
+    cutoff = settings.prd_cutoff_hour_utc
+    if now.hour < cutoff:
+        return (
+            f"ERROR: today's PRD release can only be merged after {cutoff:02d}:00 UTC "
+            f"(now {now.strftime('%H:%M')} UTC). Release PR #{pr.number} stays open until then: {pr.html_url}"
+        )
+
+    ok, detail = _merge_pr(pr, "merge")
+    if not ok:
+        return json.dumps(
+            {"ok": False, "action": "merge_blocked", "pr_number": pr.number, "pr_url": pr.html_url,
+             "note": f"Could not merge PRD release PR #{pr.number}: {detail}. {pr.html_url}"},
+            indent=2,
+        )
+    run = None
+    try:
+        pr.update()
+        msha = pr.merge_commit_sha
+        run = _find_deploy_run(repo, msha, settings.prd_branch) if msha else None
+    except Exception:
+        pass
+    note = (
+        f"Released to PROD — merged PR #{pr.number} → {settings.prd_branch}. Production deploy triggered."
+        + (f" PRD deploy run #{run['id']} ({run['url']})." if run else "")
+    )
+    return json.dumps(
+        {"ok": True, "action": "prod_released", "pr_number": pr.number, "pr_url": pr.html_url,
+         "deploy_run_prd": run, "note": note},
         indent=2,
     )
 

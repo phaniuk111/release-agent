@@ -197,8 +197,9 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         const CAPABILITIES = [
             {icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
             {icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
-            {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from today's release"},
-            {icon:'fa-calendar-day',      label:'Sync status',           desc:'are UAT and PRD in sync?',                    send:true,  text:'what is the current UAT vs PRD sync status?'},
+            {icon:'fa-shield-heart',      label:'Release to PROD',      desc:"merge today's PRD release PR (after cutoff)",  send:true,  text:'release prod'},
+            {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
+            {icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
             {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
             {icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RLFT/RFTL gates for a tag',         send:false, text:'check build controls for <image>:<tag> before a PRD release'},
             {icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
@@ -418,8 +419,13 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             return entries.length ? { include: entries, recovered: true } : null;
         }
 
-        // Release status panel — reads the new Helm-chart-based API shape:
-        // { date_utc, now_utc, uat_charts, prd_charts, pending, in_sync, reason }
+        // Release status panel — reads the PRD-release-PR API shape:
+        // { date_utc, now_utc, cutoff_utc, cutoff_passed, uat_charts, prd_charts,
+        //   prd_release_pr: {number,url,charts,can_merge_now}, pending_to_prod, reason }
+        function _chartList(arr) {
+            return (arr || []).map(function(c){ return c.helm_chart_name + ':' + c.helm_chart_version; })
+                .join(' &nbsp;│&nbsp; ');
+        }
         async function loadReleaseStatus() {
             const banner = document.getElementById('release-banner');
             const icon   = document.getElementById('rb-icon');
@@ -429,7 +435,6 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                 const res = await fetch(API_BASE + '/api/release-status');
                 const s = await res.json();
                 banner.classList.remove('hidden');
-                // reset classes; add colour below based on state
                 banner.className = 'mb-4 rounded-2xl border px-4 py-3 text-sm';
                 if (s.error) {
                     banner.classList.add('border-slate-700', 'bg-slate-900');
@@ -438,30 +443,37 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                     detail.textContent = s.error;
                     return;
                 }
-                const pending = Array.isArray(s.pending) ? s.pending : [];
-                const foot = `UTC ${s.now_utc} • ${s.date_utc}`;
-                if (s.in_sync) {
-                    banner.classList.add('border-emerald-600/50', 'bg-emerald-500/10');
-                    icon.className = 'fa-solid fa-circle-check text-emerald-400';
-                    title.textContent = '✅ UAT in sync with PRD';
-                    detail.textContent = (s.reason ? s.reason + ' • ' : '') + foot;
-                } else {
-                    const n = pending.length;
-                    banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
-                    icon.className = 'fa-solid fa-rocket text-amber-400';
-                    title.textContent = '🚀 ' + n + ' chart' + (n === 1 ? '' : 's') + ' pending to PRD';
-                    let detailHtml = (s.reason ? s.reason + ' • ' : '') + foot;
-                    if (n > 0) {
-                        detailHtml += '<br><span class="text-slate-400">';
-                        detailHtml += pending.map(function(p) {
-                            return p.helm_chart_name + ' ' + p.uat_version
-                                + ' → ' + (p.prd_version || 'not deployed');
-                        }).join(' &nbsp;│&nbsp; ');
-                        detailHtml += '</span>';
+                const foot = 'cutoff ' + s.cutoff_utc + ' UTC • now ' + s.now_utc + ' • ' + s.date_utc;
+                const pr = s.prd_release_pr;
+                if (pr) {
+                    const n = (s.pending_to_prod || []).length;
+                    const plural = n === 1 ? '' : 's';
+                    if (pr.can_merge_now) {
+                        banner.classList.add('border-emerald-600/50', 'bg-emerald-500/10');
+                        icon.className = 'fa-solid fa-circle-check text-emerald-400';
+                        title.textContent = '🟢 PRD release PR #' + pr.number + ' ready to merge (' + n + ' change' + plural + ')';
+                    } else {
+                        banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
+                        icon.className = 'fa-solid fa-rocket text-amber-400';
+                        title.textContent = '🚀 PRD release PR #' + pr.number + ' collecting (' + n + ' change' + plural + ')';
                     }
-                    detail.innerHTML = detailHtml;
-                    return;   // detail already set via innerHTML; skip the textContent line below
+                    let html = (s.reason ? s.reason + ' • ' : '') + foot;
+                    if ((pr.charts || []).length) {
+                        html += '<br><span class="text-slate-400">staged: ' + _chartList(pr.charts) + '</span>';
+                    }
+                    html += ' &nbsp;<a href="' + pr.url + '" target="_blank" class="underline text-emerald-400">open PR #' + pr.number + '</a>';
+                    detail.innerHTML = html;
+                    return;
                 }
+                // No PRD release PR open today.
+                banner.classList.add('border-slate-700', 'bg-slate-900');
+                icon.className = 'fa-solid fa-circle-check text-slate-400';
+                title.textContent = 'No PRD release open today';
+                let html = (s.reason ? s.reason + ' • ' : '') + foot;
+                if ((s.prd_charts || []).length) {
+                    html += '<br><span class="text-slate-400">live in PRD: ' + _chartList(s.prd_charts) + '</span>';
+                }
+                detail.innerHTML = html;
             } catch (e) {
                 banner.classList.remove('hidden');
                 icon.className = 'fa-solid fa-triangle-exclamation text-slate-400';
