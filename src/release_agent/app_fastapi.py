@@ -197,11 +197,15 @@ async def chat_page():
 
         // Base path so the UI works at "/" AND under a shared-domain path prefix
         // (e.g. /release-copilot). Derived from where this page is served.
-        const API_BASE = window.location.pathname.replace(/\\/+$/, '');
+        const API_BASE = (function () {        // strip trailing slashes (regex-free)
+            let p = window.location.pathname;
+            while (p.endsWith('/')) p = p.slice(0, -1);
+            return p;
+        })();
 
         // Minimal, safe markdown -> HTML for streamed assistant text.
         function renderMarkdown(t) {
-            t = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            t = t.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;');
             // [text](url) markdown links -> stash so the bare-URL linkifier below
             // doesn't double-wrap the URL inside the href attribute.
             const _links = [];
@@ -213,7 +217,7 @@ async def chat_page():
             t = t.replace(/LINKTOKEN(\\d+)ENDTOKEN/g, function(m, i) { return _links[+i]; });
             t = t.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
             t = t.replace(/`([^`]+)`/g, '<code class="bg-slate-800 px-1 rounded text-emerald-300">$1</code>');
-            t = t.replace(/\\n/g, '<br>');
+            t = t.split('\\n').join('<br>');
             return t;
         }
 
@@ -517,14 +521,52 @@ async def chat_page():
         // Detect a deploy command typed in the chat box so we can pop the editable
         // JSON instead of sending it straight to the agent. Needs a deploy verb, a
         // target env, and a <name>:<version> token.
+        // Regex-free tokenizers (mirror the Python no-regex parsing style).
+        function _isAlnum(ch) {
+            return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+        }
+        function _wordSet(text) {            // lowercased alphanumeric words
+            const words = new Set();
+            let cur = '';
+            for (const ch of text) {
+                if (_isAlnum(ch)) { cur += ch.toLowerCase(); }
+                else { if (cur) words.add(cur); cur = ''; }
+            }
+            if (cur) words.add(cur);
+            return words;
+        }
+        function _wsTokens(text) {           // whitespace-separated raw tokens
+            const out = [];
+            let cur = '';
+            for (const ch of text) {
+                if (ch === ' ' || ch === '\\t' || ch === '\\n' || ch === '\\r') { if (cur) out.push(cur); cur = ''; }
+                else { cur += ch; }
+            }
+            if (cur) out.push(cur);
+            return out;
+        }
         function parseDeployIntent(text) {
-            const t = text.toLowerCase();
-            if (!/\\b(deploy|promote|ship|rollout|roll out)\\b/.test(t)) return null;
-            const env = /\\b(prod|prd|production)\\b/.test(t) ? 'prod' : (/\\buat\\b/.test(t) ? 'uat' : null);
+            const w = _wordSet(text);
+            const hasVerb = w.has('deploy') || w.has('promote') || w.has('ship') ||
+                            w.has('rollout') || (w.has('roll') && w.has('out'));
+            if (!hasVerb) return null;
+            const env = (w.has('prod') || w.has('prd') || w.has('production')) ? 'prod'
+                      : (w.has('uat') ? 'uat' : null);
             if (!env) return null;
-            const m = text.match(/([A-Za-z][\\w.\\-]*)\\s*[:=]\\s*([\\w][\\w.\\-]*)/);
-            if (!m) return null;
-            return { env: env, name: m[1], version: m[2] };
+            // Find a <name>:<version> (or name=version) token without regex.
+            for (const tok of _wsTokens(text)) {
+                let i = tok.indexOf(':');
+                if (i === -1) i = tok.indexOf('=');
+                if (i <= 0) continue;
+                const name = tok.slice(0, i);
+                let version = tok.slice(i + 1);
+                while (version && '.,;:)'.indexOf(version[version.length - 1]) !== -1) version = version.slice(0, -1);
+                const c = name[0];
+                if (((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) && version) {
+                    return { env: env, name: name, version: version };
+                }
+            }
+            return null;
         }
 
         // Release status panel — reads the new Helm-chart-based API shape:
