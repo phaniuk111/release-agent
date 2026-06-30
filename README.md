@@ -6,7 +6,7 @@ Chat with a LangGraph agent to drive your release process:
 - It reads/updates JSON configs in your GitHub repo
 - Confirms before doing anything dangerous
 - Triggers GitHub Actions workflows (real `workflow_dispatch`)
-- Works locally with your `gh` auth and can target any repo under https://github.com/phaniuk111 (for testing we use phaniuk111/devops)
+- Works locally with your `gh` auth; the build & deploy repos come from configuration (`.env` or env vars / Helm), never hardcoded in the source
 
 Designed to run as a chatbot-style app in Kubernetes.
 
@@ -21,8 +21,8 @@ To run the agent you need **GitHub auth**, **GCP / Vertex AI access**, and a few
 | **Vertex ADC** (auth) | **Yes** | local: `gcloud auth application-default login` · GKE: **Workload Identity** on the KSA | authenticate to Vertex AI |
 | `GOOGLE_CLOUD_LOCATION` | No — default `us-central1` | env var | Vertex region |
 | `GEMINI_MODEL` | No — default `gemini-2.5-flash` | env var | model id (`gemini-2.0-flash` is retired) |
-| `BUILD_REPO` | No — default `phaniuk111/devops` | env var | code + config + build repo: image-workflows.json, tags, build runs, RLFT/RFTL controls (legacy `RELEASE_AGENT_TARGET_REPO` still accepted) |
-| `DEPLOY_REPO` | No — default = target repo | env var | repo where the deployment PR is opened |
+| `BUILD_REPO` | **Yes** — no hardcoded default | `.env`, env var, or Helm ConfigMap | code + image catalog (`image-workflows.json`), tags, build runs, RLFT/RFTL controls (legacy `RELEASE_AGENT_TARGET_REPO` still accepted) |
+| `DEPLOY_REPO` | **Yes** — no hardcoded default | `.env`, env var, or Helm ConfigMap | deploy repo: SIT/UAT/PRD protected branches + `configs/images.json` the promote PR chain edits |
 | `DEFAULT_WORKFLOW` | No — default `image-tag-step-report.yml` | env var | workflow dispatched on promote |
 | **`DEPLOY_PAT`** (repo **Secret**) | Only for the **cross-repo PR** | Actions secret on the **target** repo | lets the dispatched workflow open a PR in `DEPLOY_REPO` (GitHub's built-in `GITHUB_TOKEN` can't write across repos) |
 
@@ -49,16 +49,15 @@ gh auth login          # or export GH_TOKEN=ghp_...
 # 3. Activate the local venv
 source .venv/bin/activate
 
-# 4. Vertex AI Gen AI SDK configuration
-# The code auto-detects project from GOOGLE_CLOUD_PROJECT or your gcloud config.
-# The project name is **never hardcoded** in the source code.
-export GOOGLE_CLOUD_LOCATION=us-central1
-# Make sure gcloud ADC is active:
-# gcloud auth application-default login
-# (Project is taken from `gcloud config get-value project` if env not set)
+# 4. Configuration — copy the template and fill in your values.
+#    Nothing is hardcoded in the source; config is read from .env (gitignored),
+#    real env vars, or (in-cluster) the Helm ConfigMap, in that precedence.
+cp .env.example .env
+#    Edit .env: set BUILD_REPO, DEPLOY_REPO, and GOOGLE_CLOUD_PROJECT.
 
-# 5. Use your phaniuk111 account for testing
-export BUILD_REPO=phaniuk111/devops
+# 5. Auth (locally): gcloud ADC for Vertex + gh login for the GitHub token
+gcloud auth application-default login
+gh auth login            # or set GH_TOKEN in .env
 
 # 6. Run
 
@@ -94,7 +93,7 @@ RFTL0002: FAILED*. A PRD release is **fail-closed**: if any control failed, it's
 - **Auto-discovery:** the tag is resolved to its commit and the build-workflow run at that commit is found automatically.
 - **Run id fallback:** if the run can't be located from the tag, the agent **asks the developer for the GitHub Actions run id** that generated the tag, then fetches controls from `get_build_controls(run_id=…)`.
 - **Server-side enforcement:** `open_release_pr` re-checks controls for prod and refuses to open the PR if any failed (so the UI JSON-paste path is gated too).
-- **Config:** `BUILD_REPO` (where build pipelines run; defaults to the target repo), `CONTROL_PREFIXES` (default `RLFT,RFTL`), `PRD_REQUIRE_CONTROLS` (default `true`).
+- **Config:** `BUILD_REPO` (where build pipelines run), `CONTROL_PREFIXES` (default `RLFT,RFTL`), `PRD_REQUIRE_CONTROLS` (default `true`).
 
 Controls are GitHub Actions **steps** in the build job whose name starts with a
 control prefix; pass/fail comes from each step's conclusion. The standalone
@@ -140,20 +139,58 @@ every developer without a separate database.
 
 ## What It Does Today (PoV)
 
-- Uses existing `devops/image-workflows.json` to know valid images.
-- Updates (or creates) `release-manifest.json` in the target repo with your image:tag values.
-- Dispatches the `image-tag-step-report.yml` (or any workflow you configure) with the tags.
-- All gh calls are via a tightly controlled tool layer — no arbitrary shell.
+- Uses `BUILD_REPO`'s `image-workflows.json` to know valid images.
+- Updates (or creates) `release-manifest.json` in the build repo with your image:tag values.
+- Drives the SIT → UAT → PRD promotion as protected-branch PR chains in `DEPLOY_REPO`.
+- All GitHub calls go through a tightly controlled **PyGithub** tool layer — no arbitrary shell.
 
-## Architecture Highlights
+## Architecture
 
-- Pure LangGraph `StateGraph` with explicit nodes + `interrupt()` for confirmation.
-- **Transient-failure resilience:** a LangGraph `RetryPolicy` on the tool/LLM nodes (retries only network blips, 5xx, and rate limits — never 404/422/auth), plus HTTP-level retry on the PyGithub client (idempotent methods only, so PR creation is never double-fired).
-- **ReAct loop guard:** the free-form chat lane is capped at `REACT_MAX_TOOL_TURNS` tool turns (default 8); on hitting it the agent stops gracefully with a "narrow the request" message instead of running to the recursion limit and crashing.
-- Tools are thin, validated wrappers around `gh` (subprocess, list args only).
-- **FastAPI** as the main interface (chosen for production readiness).
-- Streaming support (SSE) so the chat feels responsive.
-- Threaded conversations (MemorySaver for PoV → Postgres checkpointer recommended for prod).
+Two clearly separated lanes share one LangGraph `StateGraph`:
+
+1. **Deterministic promote pipeline — the LLM is never on the mutation path.**
+   `parse → propose → confirmation gate (HITL interrupt) → apply → finalize → track_pr`.
+   Promote intent is parsed deterministically; a real mutation happens only after the
+   user replies with the exact `CONFIRM-xxxx` token shown in the thread.
+
+2. **Supervisor multi-agent lane for free-form chat.** A supervisor classifies each
+   question and delegates to **one scoped specialist** sub-agent
+   (`langchain.agents.create_agent`):
+   - `status` / `pr` / `controls` / `general` — **read-only**
+   - `ops` — limited to `remove_from_release` + `retrigger_deployment_workflow`
+
+   The four release-defining mutations (`apply_json_update`, `dispatch_workflow`,
+   `open_release_pr`, `raise_prod_release`) are bound to **no** specialist — so a
+   confused or prompt-injected model *structurally* cannot trigger a release from a
+   chat question. Each specialist runs a bounded ReAct loop (`REACT_MAX_TOOL_TURNS`)
+   and degrades gracefully (a "narrow the request" message) if it can't converge.
+
+- **PyGithub** for all GitHub operations — no `gh` subprocess in the tool layer; the
+  token is resolved from `GH_TOKEN`/`GITHUB_TOKEN`, falling back to `gh auth token`.
+- **Transient-failure resilience:** a LangGraph `RetryPolicy` on the nodes (retries only
+  network blips, 5xx, and rate limits — never 404/422/auth), plus HTTP-level retry on the
+  PyGithub client (idempotent methods only, so PR creation is never double-fired).
+- **FastAPI** single interface with SSE streaming; threaded conversations via a
+  MemorySaver checkpointer (Postgres recommended for prod).
+- **Config-driven:** repos, GCP project, branches, paths, cutoff, etc. come from `.env` /
+  env vars / the Helm ConfigMap — nothing org-specific is hardcoded in the source.
+
+### Project structure
+
+```
+src/release_agent/
+  agent/            # the graph, split into focused modules
+    state.py        #   ReleaseState + re-runnable step vocabulary
+    llm.py          #   Vertex model construction + message helpers
+    parsing.py      #   pure NL intent parsing (no graph/LLM state)
+    nodes.py        #   deterministic promote-pipeline nodes
+    graph.py        #   build_graph + supervisor + get_compiled_graph
+  multiagent.py     # supervisor + the 5 scoped specialist sub-agents
+  tools/            # GitHub tool layer (PyGithub), split by domain behind a facade
+    _common.py  manifest.py  pull_requests.py  controls.py  release_window.py  promotion.py
+    gh_tools.py     #   re-export facade that assembles GH_TOOLS
+  config.py  app_fastapi.py  cli.py  tools_cli.py  budget.py
+```
 
 **Production note**: FastAPI is the single interface — async, scalable, easy to instrument, and the standard choice for Python services running in Kubernetes.
 
@@ -171,10 +208,10 @@ Recommended runtime:
 - The FastAPI app exposes `/health` for liveness/readiness probes.
 - Port 8000 by default.
 
-The container expects:
+The container expects (all via the Helm `config:` block → ConfigMap, plus a Secret for the token):
 - `GH_TOKEN` (or mounted GitHub App credentials) — least-privilege scopes
 - Vertex AI: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` (uses Application Default Credentials / Workload Identity)
-- `BUILD_REPO`
+- `BUILD_REPO` and `DEPLOY_REPO`
 - Optionally a shared Postgres for the checkpointer (for conversation persistence across restarts).
 
 ## Safety
@@ -202,9 +239,8 @@ Full testing guide is in [TESTING.md](./TESTING.md).
 
 ```bash
 source .venv/bin/activate
-export BUILD_REPO=phaniuk111/devops
-export GOOGLE_CLOUD_PROJECT=<your-gcp-project>   # for Vertex AI
-gh auth login                                    # repo + workflow scopes
+cp .env.example .env     # set BUILD_REPO, DEPLOY_REPO, GOOGLE_CLOUD_PROJECT
+gh auth login            # repo + workflow scopes (or put GH_TOKEN in .env)
 
 # CLI test
 python -m src.release_agent.cli
@@ -228,8 +264,8 @@ only the PyGithub tool layer (never the LLM or the graph), so it works with just
 GitHub token + the repo env vars:
 
 ```bash
-export DEPLOY_REPO=phaniuk111/deployment-repo BUILD_REPO=phaniuk111/gh-image-tag-report-test
-# (GH_TOKEN or `gh auth login` — no GOOGLE_CLOUD_PROJECT required)
+# BUILD_REPO + DEPLOY_REPO from your .env (or export them); GH_TOKEN or `gh auth login`.
+# No GOOGLE_CLOUD_PROJECT required — this runner never touches the LLM.
 
 PYTHONPATH=src python -m release_agent.tools_cli                       # list all tools + args
 PYTHONPATH=src python -m release_agent.tools_cli get_build_controls    # show one tool's schema
