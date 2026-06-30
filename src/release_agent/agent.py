@@ -1,21 +1,26 @@
 """
-LangGraph Release Copilot agent.
+LangGraph Release Copilot agent — supervisor multi-agent.
 
-Stateful graph:
-- understands release requests from chat
-- proposes a manifest diff (no mutation)
-- interrupts for human confirmation (HITL)
-- on confirmation, applies the JSON update + dispatches the workflow
-- otherwise falls back to a normal ReAct LLM loop for free-form questions
+Two clearly separated lanes:
 
-The graph has THREE distinct, deterministic paths (no parallel fan-out):
+1. DETERMINISTIC promote pipeline (the LLM is never on it). A concrete
+   "promote image:tag" request is parsed, a diff is proposed (no mutation), the
+   graph interrupts for human confirmation (HITL), and only on the exact token
+   does it apply the change / raise the protected-branch PR chain.
 
-    parse ─┬─(images found)─▶ propose ▶ propose_tools ▶ gate ─┬─▶ apply ▶ apply_tools ▶ finalize ▶ END
-           │                                                  └─▶ respond ▶ END   (not confirmed)
-           └─(no images)────▶ llm ⇄ llm_tools  (ReAct loop) ──▶ END
+2. SUPERVISOR multi-agent lane for free-form chat. A supervisor classifies the
+   question and delegates to ONE scoped specialist sub-agent
+   (``langchain.agents.create_agent``); the four release-defining mutations are bound to
+   none of them (see multiagent.py).
 
-Every node has exactly one routing decision, so ToolNode always sees a fresh
-AIMessage with tool_calls as its most recent AIMessage.
+    parse ─┬─(images)──▶ propose ▶ propose_tools ▶ gate ─┬─▶ apply ▶ apply_tools ▶ finalize ▶ END
+           │                                             └─▶ respond ▶ END      (not confirmed)
+           ├─(re-run)──▶ rerun ▶ apply_tools ▶ finalize ▶ END
+           └─(chat)────▶ supervisor ─▶ {status|pr|controls|ops|general}_agent ▶ END
+
+Every deterministic node has exactly one routing decision, so ToolNode always
+sees a fresh AIMessage with tool_calls as its most recent AIMessage. Each
+specialist is a compiled sub-graph that runs its own bounded ReAct loop.
 """
 
 from __future__ import annotations
@@ -28,10 +33,12 @@ from typing import Annotated, Any, List, Literal, Optional
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
+    HumanMessage,
     SystemMessage,
     ToolMessage,
 )
 from langchain_core.runnables import RunnableConfig
+from langgraph.errors import GraphRecursionError
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -40,6 +47,12 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .tools.gh_tools import BUILD_REPO, DEPLOY_REPO, GH_TOOLS, _find_prs_for_images
+from .multiagent import (
+    build_specialists,
+    ROUTE_TO_NODE,
+    Route,
+    SUPERVISOR_PROMPT,
+)
 from .budget import (
     get_budget_tracker,
     check_budget_before_call,
@@ -81,8 +94,6 @@ class ReleaseState(BaseModel):
     steps: Optional[List[dict]] = None
     # Set by parse when the user asks to re-run step(s); routes to the rerun node.
     rerun_steps: Optional[List[str]] = None
-    # Tool-call turns taken in the free-form ReAct lane this user turn (loop guard).
-    llm_tool_turns: int = 0
     repo: str = Field(default=BUILD_REPO)
     deploy_repo: str = Field(default=DEPLOY_REPO)
 
@@ -113,109 +124,6 @@ _STEP_ALIASES = {
 
 # Change-ticket fields required when promoting to prod.
 _CHG_FIELDS = ("chg_name", "chg_summary", "start_date", "end_date")
-
-
-SYSTEM_PROMPT = f"""You are Release Copilot, an expert release assistant for GitHub-based deployments.
-
-Your job:
-- Help users promote container images to production by updating JSON configs and triggering workflows.
-- The triggered workflow typically creates a PR in the deployment repo (DEPLOY_REPO).
-- You can track that PR, read its comments, and summarize:
-  - CHG (change) and RMG (release management) ticket creation and approval status
-  - Release control states (e.g. RLFT approval gate / deploy control — open or closed)
-  - Overall PR readiness
-
-Deployment governance glossary (these appear in deployment-repo PR comments):
-- CHG = a Change ticket that authorizes the change (id looks like CHG-<yyyymm>-<digits>).
-- RMG = a Release Management ticket/approval for the release (id looks like RMG-<yyyymm>-<digits>).
-- RLFT = release control gates ("RLFT approval gate", "RLFT deploy control") that must be
-  closed/approved before a production deployment proceeds.
-
-CRITICAL — never fabricate values. Actual CHG/RMG ticket numbers, PR numbers, and RLFT gate states
-live ONLY in the PR comments; they are NOT in these instructions (the formats above are templates,
-not real values). Whenever a user asks about a specific release/PR's CHG ticket, RMG ticket, RLFT
-gates, approvals, controls, or readiness, you MUST call the tools — find_prs to locate the PR (if you
-don't already have its number), then get_pr_comments or summarize_pr_controls — and report EXACTLY
-the ticket numbers and statuses found in the comments. Never guess a PR number or ticket id. If you
-cannot find the PR or comments, say so plainly. Only give a generic definition when no specific
-release/PR is in context.
-
-Always work against the build/source repo (BUILD_REPO): {BUILD_REPO}
-PRs and controls are usually in the deployment repo: {DEPLOY_REPO} (use the PR tools)
-
-Valid images come from image-workflows.json (use the list_allowed_images tool).
-
-Before promoting a real (non-test) image:tag, you can VERIFY it was actually built correctly with
-verify_image_tag_build(image, tag): it resolves the git tag to its commit, finds the image's build
-workflow run, confirms the tag-generation step succeeded and the job log contains the TAG_GENERATED
-marker, and reports the RLFT release-control steps. Offer this check and report verified true/false
-plus the RLFT controls; warn the user if a promote is requested for an unverified tag.
-
-PROMOTION MODEL — SIT → UAT → PRD (important):
-- The env branches (SIT, UAT, PRD) are PROTECTED — never edited directly; every change is a PR. A
-  "promote to prod / add image" request opens a PR chain (working branch → SIT → UAT) so the image
-  lands on UAT, where the day's release accumulates. The single UAT → PRD release PR is raised ONLY
-  after the daily cutoff (raising it LOCKS the day, so it must not happen earlier or no more images
-  could be added).
-- Before the cutoff: a prod request stages onto UAT (no change request needed yet).
-- After the cutoff: the prod request (or raise_prod_release) raises the one UAT → PRD PR with the full
-  UAT set; this requires a change request (drives the CHG/RMG) and locks the day.
-- LEAD TIME: the change request's start_date must be at least one day out (tomorrow or later) — a prod
-  release can't be raised for a same-day start. If start_date is today/past, refuse and ask for a later date.
-- NOTHING TO RELEASE: if UAT has no changes vs PRD, do not raise a PR — say there is nothing to release.
-- REMOVE / UNSTAGE: to pull an image back out of the release, call
-  remove_from_release(image_names="<name>[,<name>...]"). Like add, it goes through the protected-branch
-  PR chain — a PR from a working branch into SIT dropping the image, then a PR promoting SIT → UAT,
-  both merged so the removal reaches UAT. Each image is reverted to PRD's current tag (or dropped if
-  new). Branches are never edited directly. Report the PR links.
-- Once the day is locked (today's UAT → PRD PR exists), refuse further adds and point to that PR.
-
-PRD RELEASE CONTROL GATE (mandatory): when a developer wants a PRD/prod release and gives an
-image:tag, you MUST first call get_build_controls(image, tag) to fetch the release CONTROLS
-(RLFT/RFTL gates) recorded in that tag's build pipeline run, and report each one as PASSED or
-FAILED (e.g. "RFTL0001: FAILED, RFTL0002: PASSED"). Rules:
-- The tool finds the build run from the tag automatically. If it returns need_run_id (the run can't
-  be located from image+tag), ASK the developer for the GitHub Actions run id that generated the
-  tag, then call get_build_controls(run_id=<that id>).
-- If ANY control FAILED (gate != PASS), do NOT stage it for the PRD release — tell the developer which
-  controls failed and that they must be resolved/re-run first.
-- Only when ALL controls PASSED should you continue (open_release_pr stages onto UAT, and after the
-  cutoff raises the UAT → PRD PR). open_release_pr enforces this gate server-side too.
-
-You MUST propose changes first.
-You MUST get an explicit confirmation token from the user before calling apply_json_update or dispatch_workflow.
-
-After dispatch, the workflow opens a PR in the deployment repo asynchronously; proactively find and
-track it using find_prs / summarize_pr_controls.
-
-NEVER ask the user for a PR number. If they ask about a PR, its comments, CHG/RMG tickets, or RLFT
-gates without giving a number, derive the image:tag from the most recent promote in this conversation
-and call find_prs(search_term="<image:tag>") to locate the PR yourself, then read its comments. Only
-ask for clarification if no release has been discussed in this thread at all.
-
-If find_prs returns MULTIPLE matching PRs, default to the most recent one (highest PR number /
-newest createdAt) for the summary, but tell the user the others exist (list their numbers) so they
-can pick a different one. If the user names a specific PR number, use exactly that one.
-
-From the chat (UI or CLI) you can ask to retrigger/re-run the deployment workflow in the DEPLOY_REPO using retrigger_deployment_workflow (e.g. "retrigger deployment workflow for PR 42 after closing controls"). This will re-execute it and post fresh comments reflecting the current control state.
-
-Be concise, precise, and always show the GitHub URLs you produce.
-After any mutation or PR update, tell the user the exact outcome and links.
-
-Safety rules (never break):
-1. Never call apply_json_update or dispatch_workflow without a matching confirmation token shown to the user in this thread.
-2. Only operate on allowed images.
-3. When the user gives image names and tags, parse them, propose, then wait for confirmation.
-
-Confirmation flow:
-- Call propose_update first.
-- Show the user a unique token like CONFIRM-abc123
-- Only after they reply with that exact token, proceed to apply + dispatch.
-
-Current build/source repo: {BUILD_REPO}
-Deployment / PR repo: {DEPLOY_REPO}
-"""
-
 
 def message_text(msg) -> str:
     """Extract human-readable text from a message.
@@ -588,10 +496,11 @@ def parse_intent(state: ReleaseState) -> dict:
         last = " ".join(str(x) for x in last)
     last = str(last)
 
-    # NOTE: do not inject the SystemMessage here. add_messages would APPEND it
-    # after the user's HumanMessage, and Gemini only honors a *leading* system
-    # instruction — so the prompt would be ignored. call_llm prepends it instead.
-    out: dict[str, Any] = {"llm_tool_turns": 0}  # reset the ReAct loop guard each turn
+    # NOTE: do not inject a SystemMessage into state here. add_messages would APPEND
+    # it after the user's HumanMessage, and Gemini only honors a *leading* system
+    # instruction. The supervisor and each specialist supply their own system prompt
+    # at call time (create_agent's `system_prompt=`), so state stays prompt-free.
+    out: dict[str, Any] = {}
 
     # A re-run request reuses the prior release_request/steps — don't re-parse images.
     rerun = _detect_rerun(last, state.steps)
@@ -1264,109 +1173,45 @@ def respond(state: ReleaseState) -> dict:
         ]
     }
 
+def _last_human_text(messages: list) -> str:
+    """Text of the most recent human turn — what the supervisor routes on."""
+    for m in reversed(messages or []):
+        if isinstance(m, HumanMessage):
+            return message_text(m)
+    return message_text(messages[-1]) if messages else ""
 
-def react_giveup(state: ReleaseState) -> dict:
-    """Stop the ReAct lane gracefully when it hits the tool-call cap. Answers the
-    last (unexecuted) tool_calls so the message history stays valid, then returns a
-    helpful message instead of looping to the recursion limit and crashing."""
-    last = state.messages[-1] if state.messages else None
-    tool_msgs = []
-    for tc in getattr(last, "tool_calls", None) or []:
-        tcid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-        if tcid:
-            tool_msgs.append(
-                ToolMessage(
-                    content="Skipped: reached the tool-call limit for this request.",
-                    tool_call_id=tcid,
-                )
-            )
-    msg = AIMessage(
-        content=(
-            "I've run several lookups without converging on an answer. Could you narrow "
-            "the request — e.g. a specific `image:tag` or PR number — and I'll dig in directly?"
-        )
-    )
-    return {"messages": tool_msgs + [msg]}
+
+def _is_retrigger(text: str) -> bool:
+    """True when the user asks to RE-TRIGGER the deployment workflow (an ops action),
+    as opposed to re-running a promote step (handled earlier in parse_intent)."""
+    low = text.lower()
+    if "retrigger" in low or "re trigger" in low:
+        return True
+    words = set(_norm_words(text))
+    mentions_deploy = bool(words & {"deployment", "deploy", "workflow"})
+    asks_run = bool(words & {"rerun", "retrigger", "trigger"}) or "re run" in low
+    return mentions_deploy and asks_run
 
 
 def build_graph(checkpointer=None):
-    """Build and return the compiled graph.
-    LLM is created lazily to avoid import-time credential requirements.
+    """Build and compile the supervisor multi-agent graph.
+
+    The deterministic promote pipeline and the specialist sub-agents share one
+    ReleaseState graph. The model is resolved once here (network-free when
+    DEFAULT_MODEL is set) because each specialist is a compiled graph node.
     """
-    _llm = None
-
-    def get_llm():
-        nonlocal _llm
-        if _llm is None:
-            _llm = _get_llm().bind_tools(GH_TOOLS)
-        return _llm
-
-    def call_llm(state: ReleaseState):
-        # Always place exactly one system prompt FIRST. State may hold none, a
-        # mis-ordered one, or duplicates — Gemini only honors a leading system
-        # instruction, so rebuild the list deterministically.
-        non_system = [m for m in state.messages if not isinstance(m, SystemMessage)]
-        messages = [SystemMessage(content=SYSTEM_PROMPT)] + non_system
-
-        # === Budget protection (Vertex AI via ADC) ===
-        try:
-            check_budget_before_call(
-                estimated_input_tokens=2500,
-                estimated_output_tokens=800,
-            )
-        except BudgetInterrupt as be:
-            user_response = interrupt(
-                {
-                    "type": "budget_confirmation",
-                    "message": str(be) + f"\n\nCurrent budget status: {get_budget_status()}",
-                    "action": "Continue with this LLM call? (yes/no)",
-                }
-            )
-            if not confirm_budget_continue(str(user_response)):
-                # User declined → stop this turn gracefully (no hard process kill,
-                # which would take down a shared server worker).
-                return {
-                    "messages": [
-                        AIMessage(
-                            content=(
-                                "🛑 Stopped to protect the budget — no LLM call was made. "
-                                f"{get_budget_status()}"
-                            )
-                        )
-                    ]
-                }
-
-        resp = get_llm().invoke(messages)
-
-        # Record actual usage if available from the response.
-        try:
-            usage = getattr(resp, "usage_metadata", None) or {}
-            input_t = usage.get("input_tokens", 0) or 0
-            output_t = usage.get("output_tokens", 0) or 0
-            if input_t or output_t:
-                get_budget_tracker().add_usage(input_t, output_t)
-        except Exception:
-            pass
-
-        update = {"messages": [resp]}
-        # Count a ReAct tool turn each time the model asks to call tools.
-        if getattr(resp, "tool_calls", None):
-            update["llm_tool_turns"] = (state.llm_tool_turns or 0) + 1
-        return update
-
-    def route_after_llm(state: ReleaseState) -> Literal["llm_tools", "giveup", "__end__"]:
-        last = state.messages[-1] if state.messages else None
-        if getattr(last, "tool_calls", None):
-            if (state.llm_tool_turns or 0) >= settings.react_max_tool_turns:
-                return "giveup"  # cap reached → stop gracefully
-            return "llm_tools"
-        return END
+    # Resolve the LLM once. If none is configured the graph still compiles and the
+    # free-form lane degrades to the deterministic "promote ..." responder.
+    try:
+        model = _get_llm()
+    except Exception:
+        model = None
 
     # Retry only TRANSIENT failures (network blips, 5xx, rate limits) — never
-    # deterministic ones (404/422/auth), which won't fix on retry. Mainly catches
-    # Vertex/LLM hiccups in the `llm` node and any tool exception that escapes
-    # ToolNode's own error handling. (GitHub API blips are also retried lower down,
-    # at the HTTP layer in _get_github_client.)
+    # deterministic ones (404/422/auth), which won't fix on retry. Catches Vertex/LLM
+    # hiccups in the supervisor + any tool exception that escapes ToolNode's own error
+    # handling. (GitHub API blips are also retried lower down, at the HTTP layer in
+    # _get_github_client.)
     def _is_transient_error(exc: Exception) -> bool:
         if isinstance(exc, (ConnectionError, TimeoutError)):
             return True
@@ -1398,8 +1243,8 @@ def build_graph(checkpointer=None):
         retry_on=_is_transient_error,
     )
 
-    # One ToolNode implementation, registered under three deterministic names so
-    # each graph node has exactly one outgoing edge.
+    # One ToolNode for the deterministic mutation lane, registered under two names
+    # (propose_tools / apply_tools) so each node has exactly one outgoing edge.
     tool_node = ToolNode(GH_TOOLS)
 
     graph = StateGraph(ReleaseState)
@@ -1414,16 +1259,121 @@ def build_graph(checkpointer=None):
     graph.add_node("finalize", finalize)
     graph.add_node("track_pr", track_pr, retry_policy=retry)
     graph.add_node("respond", respond)
-    graph.add_node("llm", call_llm, retry_policy=retry)
-    graph.add_node("llm_tools", tool_node, retry_policy=retry)
-    graph.add_node("react_giveup", react_giveup)
+
+    # --- Free-form lane: supervisor → scoped specialist sub-agents -------------
+    # Each specialist is a compiled create_agent (see multiagent.py). It runs
+    # as a graph node via a thin wrapper that (a) bounds its ReAct loop, (b) returns
+    # only its final answer to keep parent history clean, and (c) degrades
+    # gracefully if it can't converge. Falls back to `respond` when no LLM exists.
+    free_form_entry = "respond"
+    if model is not None:
+        specialists = build_specialists(model)
+        router = model.with_structured_output(Route, include_raw=True)
+        # Bound each specialist's loop: ~2 graph steps (model + tools) per tool turn.
+        specialist_recursion = max(8, settings.react_max_tool_turns * 2 + 3)
+
+        def supervisor(state: ReleaseState) -> Command:
+            """Classify the free-form turn and delegate to ONE specialist.
+
+            Budget-gated once per turn (covers the routing call + the specialist's
+            own loop). The unambiguous mutating asks (remove / retrigger) take a
+            deterministic fast-path to the ops specialist; everything else is
+            classified by the router LLM, defaulting to the read-only general agent.
+            """
+            last = _last_human_text(state.messages)
+
+            # Budget protection (Vertex AI via ADC) — one gate per free-form turn.
+            try:
+                check_budget_before_call(
+                    estimated_input_tokens=3000, estimated_output_tokens=1500
+                )
+            except BudgetInterrupt as be:
+                user_response = interrupt(
+                    {
+                        "type": "budget_confirmation",
+                        "message": str(be) + f"\n\nCurrent budget status: {get_budget_status()}",
+                        "action": "Continue with this LLM call? (yes/no)",
+                    }
+                )
+                if not confirm_budget_continue(str(user_response)):
+                    return Command(
+                        goto="respond",
+                        update={
+                            "messages": [
+                                AIMessage(
+                                    content=(
+                                        "🛑 Stopped to protect the budget — no LLM call was made. "
+                                        f"{get_budget_status()}"
+                                    )
+                                )
+                            ]
+                        },
+                    )
+
+            # Deterministic fast-path for the clear mutating asks (no routing call).
+            if _is_removal(last) or _is_retrigger(last):
+                return Command(goto="ops_agent")
+
+            # LLM routing — default to the read-only general agent on any failure.
+            route = "general"
+            try:
+                out = router.invoke(
+                    [SystemMessage(content=SUPERVISOR_PROMPT), HumanMessage(content=last)]
+                )
+                raw = out.get("raw") if isinstance(out, dict) else None
+                parsed = out.get("parsed") if isinstance(out, dict) else out
+                usage = getattr(raw, "usage_metadata", None) or {}
+                input_t = usage.get("input_tokens", 0) or 0
+                output_t = usage.get("output_tokens", 0) or 0
+                if input_t or output_t:
+                    get_budget_tracker().add_usage(input_t, output_t)
+                if parsed is not None:
+                    route = parsed.route
+            except Exception:
+                route = "general"
+            return Command(goto=ROUTE_TO_NODE.get(route, "general_agent"))
+
+        def _make_specialist_node(sub):
+            def specialist_node(state: ReleaseState) -> dict:
+                prior = len(state.messages)
+                try:
+                    result = sub.invoke(
+                        {"messages": state.messages},
+                        {"recursion_limit": specialist_recursion},
+                    )
+                except GraphRecursionError:
+                    return {
+                        "messages": [
+                            AIMessage(
+                                content=(
+                                    "I ran several lookups without converging on an answer. "
+                                    "Could you narrow the request — e.g. a specific `image:tag` "
+                                    "or PR number — and I'll dig in directly?"
+                                )
+                            )
+                        ]
+                    }
+                msgs = result.get("messages", []) if isinstance(result, dict) else []
+                # Persist only the specialist's final answer: the parent history stays
+                # clean and the app streams one assistant message, not the whole turn.
+                if msgs and len(msgs) > prior:
+                    return {"messages": [msgs[-1]]}
+                return {}
+
+            return specialist_node
+
+        graph.add_node("supervisor", supervisor)
+        for node_name, sub in specialists.items():
+            graph.add_node(node_name, _make_specialist_node(sub))
+            graph.add_edge(node_name, END)
+        free_form_entry = "supervisor"
 
     # Entry + branch: re-run request, concrete image:tag pairs, or free-form chat.
     graph.add_edge(START, "parse")
     graph.add_conditional_edges(
         "parse",
         _route_after_parse,
-        {"propose": "propose", "llm": "llm", "rerun": "rerun"},
+        {"propose": "propose", "llm": free_form_entry, "rerun": "rerun"},
     )
 
     # Propose → confirm → apply path (propose & gate route via Command).
@@ -1437,15 +1387,6 @@ def build_graph(checkpointer=None):
     )
     graph.add_edge("track_pr", END)
     graph.add_edge("respond", END)
-
-    # Free-form ReAct path (with a tool-call cap that exits via react_giveup).
-    graph.add_conditional_edges(
-        "llm",
-        route_after_llm,
-        {"llm_tools": "llm_tools", "giveup": "react_giveup", END: END},
-    )
-    graph.add_edge("llm_tools", "llm")
-    graph.add_edge("react_giveup", END)
 
     return graph.compile(checkpointer=checkpointer)
 
