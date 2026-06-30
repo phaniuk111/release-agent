@@ -1083,7 +1083,13 @@ def _summarize_step_result(step: str, content: str) -> str:
                     "merge or close it first, then retry")
         if action == "staged_to_uat":
             imgs = data.get("uat_images") or {}
-            return f"staged on UAT ({len(imgs)} image(s) total) — UAT→PRD PR is raised after the cutoff"
+            base = f"staged on UAT ({len(imgs)} image(s) total)"
+            dr = data.get("deploy_run")
+            if dr:
+                base += f" — UAT deploy run [#{dr['id']}]({dr['url']}) ({dr.get('status') or 'queued'})"
+            else:
+                base += " — UAT→PRD PR is raised after the cutoff"
+            return base
         num, url = data.get("pr_number"), data.get("pr_url") or ""
         base = f"raised UAT→PRD release PR #{num} — {url}" if num else "release updated"
         if data.get("chg"):

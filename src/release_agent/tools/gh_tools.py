@@ -1273,6 +1273,41 @@ def _open_pr_on_file(repo, base_branch: str, path: str):
     return None
 
 
+def _find_deploy_run(repo, head_sha: str, tries: int = 4, delay: float = 1.5):
+    """Find the workflow run that the UAT merge triggered, by the merge commit sha.
+    Polls briefly because GitHub Actions takes a few seconds to register the run."""
+    import time
+
+    uat = settings.uat_branch
+    for i in range(tries):
+        runs = []
+        try:
+            runs = list(itertools.islice(repo.get_workflow_runs(head_sha=head_sha), 5))
+        except TypeError:
+            # older PyGithub without the head_sha kwarg → filter recent UAT runs
+            try:
+                runs = [
+                    r for r in itertools.islice(repo.get_workflow_runs(branch=uat), 15)
+                    if r.head_sha == head_sha
+                ]
+            except Exception:
+                runs = []
+        except Exception:
+            runs = []
+        if runs:
+            r = runs[0]
+            return {
+                "id": r.id,
+                "url": r.html_url,
+                "name": r.name,
+                "status": r.status,
+                "conclusion": r.conclusion,
+            }
+        if i < tries - 1:
+            time.sleep(delay)
+    return None
+
+
 def _apply_via_pr_chain(repo, mutate_fn, summary: str) -> dict:
     """Branches are protected — never commit to them directly. Apply a change to the
     images config via PRs along the chain: a fresh working branch -> SIT -> UAT.
@@ -1328,18 +1363,28 @@ def _apply_via_pr_chain(repo, mutate_fn, summary: str) -> dict:
                 title=f"Promote {sit} → {uat}: {summary}", body=summary, head=sit, base=uat
             )
             ok2, detail2 = _merge_pr(pr_uat, "merge")
-            prs.append(
-                {
-                    "stage": f"{sit}→{uat}",
-                    "number": pr_uat.number,
-                    "url": pr_uat.html_url,
-                    "merged": ok2,
-                    "detail": detail2,
-                }
-            )
+            entry = {
+                "stage": f"{sit}→{uat}",
+                "number": pr_uat.number,
+                "url": pr_uat.html_url,
+                "merged": ok2,
+                "detail": detail2,
+            }
+            # On a successful UAT merge, capture the deploy workflow run it triggered.
+            if ok2:
+                try:
+                    pr_uat.update()
+                    msha = pr_uat.merge_commit_sha
+                    run = _find_deploy_run(repo, msha) if msha else None
+                    if run:
+                        entry["deploy_run"] = run
+                except Exception:
+                    pass
+            prs.append(entry)
         except Exception as e:
             prs.append({"stage": f"{sit}→{uat}", "error": str(e)})
-    return {"changed": True, "prs": prs}
+    deploy_run = next((p.get("deploy_run") for p in prs if p.get("deploy_run")), None)
+    return {"changed": True, "prs": prs, "deploy_run": deploy_run}
 
 
 def _pr_chain_note(prs: list) -> str:
@@ -1355,6 +1400,13 @@ def _pr_chain_note(prs: list) -> str:
         elif p.get("error"):
             bits.append(f"{p['stage']} failed: {p['error']}")
     return "; ".join(bits) + "."
+
+
+def _deploy_run_note(dr) -> str:
+    """One-line note pointing at the UAT deploy workflow run, if captured."""
+    if not dr:
+        return ""
+    return f" UAT deploy run #{dr['id']} ({dr['url']})."
 
 
 def _blocked_pr_result(res: dict):
@@ -1394,7 +1446,7 @@ def _add_images_to_uat(repo, pairs: list) -> dict:
         "images", {}
     ) or {}
     return {"uat_images": uat_images, "prs": res["prs"], "changed": res["changed"],
-            "blocked_pr": res.get("blocked_pr")}
+            "blocked_pr": res.get("blocked_pr"), "deploy_run": res.get("deploy_run")}
 
 
 def _remove_images_via_chain(repo, names: list) -> dict:
@@ -1685,8 +1737,9 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
                 "image_tags": image_str,
                 "uat_images": imgs,
                 "prs": res["prs"],
+                "deploy_run": res.get("deploy_run"),
                 "note": f"Staged {image_str} via PR chain (working→SIT→UAT). {_pr_chain_note(res['prs'])} "
-                f"{len(imgs)} image(s) on UAT.",
+                f"{len(imgs)} image(s) on UAT." + _deploy_run_note(res.get("deploy_run")),
             },
             indent=2,
         )
@@ -1724,10 +1777,11 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
                 "image_tags": image_str,
                 "uat_images": imgs,
                 "prs": res["prs"],
+                "deploy_run": res.get("deploy_run"),
                 "note": (
                     f"Staged {image_str} for today's release via PR chain (working→SIT→UAT). "
-                    f"{_pr_chain_note(res['prs'])} {len(imgs)} image(s) on UAT. The single UAT→PRD PR "
-                    f"is raised after {cutoff:02d}:00 UTC — until then more images can be added."
+                    f"{_pr_chain_note(res['prs'])} {len(imgs)} image(s) on UAT." + _deploy_run_note(res.get("deploy_run"))
+                    + f" The single UAT→PRD PR is raised after {cutoff:02d}:00 UTC — until then more images can be added."
                 ),
             },
             indent=2,
