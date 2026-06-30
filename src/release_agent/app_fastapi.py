@@ -497,18 +497,21 @@ async def chat_page():
 
             submit.addEventListener('click', () => {
                 err.textContent = '';
-                let obj;
-                try { obj = JSON.parse(document.getElementById(taId).value); }
-                catch (e) { err.textContent = 'Invalid JSON: ' + e.message; return; }
-                const include = Array.isArray(obj) ? obj : (obj.include || []);
-                if (!include.length) { err.textContent = 'Add at least one chart in include[].'; return; }
-                for (const it of include) {
+                const parsed = parseDeployInclude(document.getElementById(taId).value);
+                if (!parsed || !parsed.include.length) {
+                    err.textContent = 'Could not find any chart entries — each needs helm_chart_name + helm_chart_version.';
+                    return;
+                }
+                for (const it of parsed.include) {
                     if (!it || !it.helm_chart_name || !it.helm_chart_version) {
-                        err.textContent = 'Each entry needs helm_chart_name + helm_chart_version.'; return;
+                        err.textContent = 'Each entry needs a non-empty helm_chart_name + helm_chart_version.';
+                        return;
                     }
                 }
-                const payload = JSON.stringify({ environment: env, include: include });
-                sendMessage(payload);
+                // Re-render the normalized JSON so the user sees exactly what we parsed
+                // (commas added / wrapped into include[] when they left them out).
+                document.getElementById(taId).value = JSON.stringify({ include: parsed.include }, null, 2);
+                sendMessage(JSON.stringify({ environment: env, include: parsed.include }));
             });
             row.appendChild(submit);
             row.appendChild(err);
@@ -567,6 +570,45 @@ async def chat_page():
                 }
             }
             return null;
+        }
+
+        // Tolerant deploy-JSON parser. Accepts a clean {"include":[...]}, a bare array,
+        // or a single entry; if strict JSON.parse fails (e.g. the user pasted objects
+        // with no commas and no include[] wrapper), it brace-scans every balanced {...}
+        // and keeps the chart-entry-shaped ones. Returns {include, recovered} or null.
+        function _extractJsonObjects(text) {
+            const out = [];
+            for (let i = 0; i < text.length; i++) {
+                if (text[i] !== '{') continue;
+                let depth = 0, inStr = false, esc = false, end = -1;
+                for (let j = i; j < text.length; j++) {
+                    const ch = text[j];
+                    if (inStr) { if (esc) esc = false; else if (ch === '\\\\') esc = true; else if (ch === '"') inStr = false; continue; }
+                    if (ch === '"') inStr = true;
+                    else if (ch === '{') depth++;
+                    else if (ch === '}') { depth--; if (depth === 0) { end = j; break; } }
+                }
+                if (end === -1) break;
+                try {
+                    const e = JSON.parse(text.slice(i, end + 1));
+                    if (e && typeof e === 'object' && !Array.isArray(e) &&
+                        (e.helm_chart_name !== undefined || e.helm_chart_version !== undefined)) {
+                        out.push(e);
+                    }
+                } catch (_) { /* this {...} isn't a standalone object — skip */ }
+            }
+            return out;
+        }
+        function parseDeployInclude(text) {
+            text = (text || '').trim();
+            try {
+                const doc = JSON.parse(text);
+                if (Array.isArray(doc)) return { include: doc, recovered: false };
+                if (doc && Array.isArray(doc.include)) return { include: doc.include, recovered: false };
+                if (doc && typeof doc === 'object' && doc.helm_chart_name !== undefined) return { include: [doc], recovered: false };
+            } catch (_) { /* fall through to lenient recovery */ }
+            const entries = _extractJsonObjects(text);
+            return entries.length ? { include: entries, recovered: true } : null;
         }
 
         // Release status panel — reads the new Helm-chart-based API shape:
