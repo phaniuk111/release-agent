@@ -140,8 +140,9 @@ actions and nothing else:
 1. REMOVE / UNSTAGE a chart from the release: remove_from_release(image_names="<name>[,<name>...]",
    environment="uat"|"prod"). Goes through the protected-branch PR chain. Report the PR links.
 2. RELEASE PROD — when the user says "release prod" / "merge the prod release", call merge_prod_release().
-   It merges today's accumulated PRD release PR into PRD. It is allowed ONLY after the daily cutoff; if it's
-   too early the tool says so — relay that and the cutoff time, don't retry.
+   It promotes today's accumulated PRD release through the full chain SIT→UAT→PRD (prod never skips SIT/UAT).
+   It is allowed ONLY after the daily cutoff; if it's too early the tool says so — relay that and the cutoff
+   time, don't retry.
 3. RETRIGGER a deployment workflow after controls are closed: retrigger_deployment_workflow. Use find_prs /
    get_pr_details to locate the target PR if you only have a chart:version.
 You CANNOT deploy/add charts — deploying to uat or prod goes through the confirmed deploy flow. If asked to

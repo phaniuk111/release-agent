@@ -201,7 +201,8 @@ def propose(state: ReleaseState) -> Command[Literal["gate", "respond"]]:
     if env == "prod":
         action = (
             "will be **added to today's PRD release PR** (a day-long PR holding both the uat & prd "
-            "entries below); it merges to PRD after the cutoff when you say *release prod*"
+            "entries below); after the cutoff, *release prod* promotes the staged charts through "
+            "SIT→UAT→PRD"
         )
     else:
         action = f"will **OVERRIDE** `{' + '.join(preview.keys())}` with"
@@ -382,8 +383,11 @@ def _summarize_step_result(step: str, content: str) -> str:
             n = len(data.get("charts_in_release") or [])
             return (
                 f"added to today's PRD release PR [#{data.get('pr_number')}]({data.get('pr_url','')}) — "
-                f"{n} chart(s) staged; merges to PRD after {data.get('cutoff_utc')} UTC (say *release prod*)"
+                f"{n} chart(s) staged; after {data.get('cutoff_utc')} UTC *release prod* promotes them "
+                f"through SIT→UAT→PRD"
             )
+        if action in ("prod_released", "release_pending_prd_merge", "nothing_to_release", "removed") and data.get("note"):
+            return data["note"]
         env = data.get("environment", "uat")
         files = ", ".join(data.get("files_updated") or [])
         base = f"deployed to {env.upper()} ({files})" if files else f"deployed to {env.upper()}"

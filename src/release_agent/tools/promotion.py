@@ -10,8 +10,9 @@ env-specific values-file + namespace are filled from config.
 
 - UAT deploy  : OVERRIDE uat/deployment.json (chain working->SIT->UAT).
 - PROD deploy : accumulate the chart into today's PRD release PR (a day-long PR on a
-               release/prd/<date> branch holding BOTH uat & prd deployment.json), merged
-               to PRD after the cutoff via merge_prod_release.
+               release/prd/<date> branch holding BOTH uat & prd deployment.json). At the
+               cutoff, `release prod` promotes the staged charts through the FULL chain
+               working->SIT->UAT->PRD (merge_prod_release) — prod never skips SIT/UAT.
 Entries are keyed by helm_chart_name (one entry per chart per env file).
 """
 
@@ -173,14 +174,15 @@ def _find_deploy_run(repo, head_sha: str, branch: str = "", tries: int = 4, dela
     return None
 
 
-def _apply_via_pr_chain(repo, file_mutations: list, summary: str, to_prd: bool = False) -> dict:
+def _apply_via_pr_chain(repo, file_mutations: list, summary: str) -> dict:
     """Apply per-file mutations along the protected-branch chain (never commit directly).
 
     file_mutations is a list of (path, mutate_fn); mutate_fn(include_list) mutates the
     include[] list in place and returns True if it changed anything. The chain runs
-    working -> SIT -> UAT, and on to -> PRD when to_prd. Returns
+    working -> SIT -> UAT (this is the UAT deploy path). Promotion on to PRD is done by
+    _promote_targeted, not by a whole-branch UAT->PRD merge. Returns
     {changed, prs, deploy_run, blocked_pr?}."""
-    sit, uat, prd = settings.sit_branch, settings.uat_branch, settings.prd_branch
+    sit, uat = settings.sit_branch, settings.uat_branch
     prs: list = []
 
     # Guard: if a PR touching any target file is already open into SIT, don't stack another.
@@ -249,36 +251,83 @@ def _apply_via_pr_chain(repo, file_mutations: list, summary: str, to_prd: bool =
                 except Exception:
                     pass
             prs.append(entry)
-
-            # 3) UAT -> PRD (prod deploys only)
-            if to_prd and ok2:
-                pr_prd = repo.create_pull(
-                    title=f"Promote {uat} → {prd}: {summary}", body=summary, head=uat, base=prd
-                )
-                ok3, detail3 = _merge_pr(pr_prd, "merge")
-                pentry = {
-                    "stage": f"{uat}→{prd}",
-                    "number": pr_prd.number,
-                    "url": pr_prd.html_url,
-                    "merged": ok3,
-                    "detail": detail3,
-                }
-                if ok3:
-                    try:
-                        pr_prd.update()
-                        msha = pr_prd.merge_commit_sha
-                        run = _find_deploy_run(repo, msha, prd) if msha else None
-                        if run:
-                            pentry["deploy_run_prd"] = run
-                    except Exception:
-                        pass
-                prs.append(pentry)
         except Exception as e:
             prs.append({"stage": f"{sit}→{uat}", "error": str(e)})
 
     deploy_run = next((p.get("deploy_run") for p in prs if p.get("deploy_run")), None)
-    deploy_run_prd = next((p.get("deploy_run_prd") for p in prs if p.get("deploy_run_prd")), None)
-    return {"changed": True, "prs": prs, "deploy_run": deploy_run, "deploy_run_prd": deploy_run_prd}
+    return {"changed": True, "prs": prs, "deploy_run": deploy_run, "deploy_run_prd": None}
+
+
+def _promote_targeted(repo, file_mutations: list, summary: str) -> dict:
+    """Promote a change to PRD through SIT -> UAT -> PRD by applying the SAME targeted
+    file mutation to each branch in order, each via its own working-branch PR.
+
+    Unlike _apply_via_pr_chain (which git-merges whole branches and so drags an env's
+    unrelated charts — e.g. UAT-only entries — into the next env and conflicts), this
+    edits only the include[] of the named files on each branch. uat/deployment.json keeps
+    its own per-env contents; only the promoted charts move. Returns
+    {changed, prs, deploy_run, deploy_run_prd, delivered}.
+
+    The chain stops if a hop's PR fails to merge (branch protection/review) so a change
+    can't reach a downstream env without clearing the upstream one."""
+    sit, uat, prd = settings.sit_branch, settings.uat_branch, settings.prd_branch
+    prs: list = []
+    deploy_run_uat = deploy_run_prd = None
+
+    for branch in (sit, uat, prd):
+        work = f"change/promote/{uuid.uuid4().hex[:8]}"
+        ref = repo.get_git_ref(f"heads/{branch}")
+        repo.create_git_ref(f"refs/heads/{work}", ref.object.sha)
+
+        changed = False
+        for path, mutate_fn in file_mutations:
+            doc = _read_json_file(repo, work, path)
+            if not isinstance(doc, dict):
+                doc = {}
+            include = doc.get("include") if isinstance(doc.get("include"), list) else []
+            if mutate_fn(include):
+                doc["include"] = include
+                doc["updated_by"] = "release-copilot"
+                _upsert_json_file(repo, work, path, doc)
+                changed = True
+
+        if not changed:
+            try:
+                repo.get_git_ref(f"heads/{work}").delete()
+            except Exception:
+                pass
+            prs.append({"stage": f"→{branch}", "skipped": "already in desired state"})
+            continue  # this env already matches; keep promoting to the next
+
+        pr = repo.create_pull(title=f"{summary} (→ {branch})", body=summary, head=work, base=branch)
+        ok, detail = _merge_pr(pr, "squash")
+        entry = {"stage": f"→{branch}", "number": pr.number, "url": pr.html_url, "merged": ok, "detail": detail}
+        if ok and branch in (uat, prd):
+            try:
+                pr.update()
+                msha = pr.merge_commit_sha
+                run = _find_deploy_run(repo, msha, branch) if msha else None
+                if run:
+                    entry["deploy_run"] = run
+                    if branch == uat:
+                        deploy_run_uat = run
+                    else:
+                        deploy_run_prd = run
+            except Exception:
+                pass
+        prs.append(entry)
+        if not ok:
+            break  # don't promote further until this env's PR is merged
+
+    delivered = any(p.get("stage") == f"→{prd}" and p.get("merged") for p in prs)
+    changed_any = any(p.get("number") for p in prs)
+    return {
+        "changed": changed_any,
+        "prs": prs,
+        "deploy_run": deploy_run_uat,
+        "deploy_run_prd": deploy_run_prd,
+        "delivered": delivered,
+    }
 
 
 def _pr_chain_note(prs: list) -> str:
@@ -381,6 +430,19 @@ def _replace_with(entries: list):
     return _mut
 
 
+def _upsert_each(entries: list):
+    """mutate_fn for _apply_via_pr_chain that UPSERTS each entry (by helm_chart_name),
+    preserving charts already present. Returns True if anything changed. Used by the
+    PRD release so promoting to current PRD/UAT adds today's charts without dropping
+    what's already live."""
+    def _mut(include):
+        changed = False
+        for e in entries:
+            changed = _upsert_entry(include, e) or changed
+        return changed
+    return _mut
+
+
 # --- PRD release PR (accumulate through the day, merge at cutoff) ------------
 # _today_prd_pr / _prd_release_branch live in release_window (the lower module) so both
 # this module and the status reader share one definition without a circular import.
@@ -425,8 +487,10 @@ def _accumulate_into_prd_pr(repo, entries: list):
         pr = repo.create_pull(
             title=f"PRD release {date}",
             body=(
-                "Daily PRD release — charts accumulate here through the day and this PR is "
-                f"merged to **{prd}** after the cutoff (`release prod`)."
+                "Daily PRD release — charts accumulate here through the day. After the cutoff, "
+                f"`release prod` promotes the staged charts through the chain "
+                f"**{settings.sit_branch} → {settings.uat_branch} → {prd}** (do not merge this PR "
+                "directly; it's the staging view and is retired once the release ships)."
             ),
             head=branch,
             base=prd,
@@ -475,8 +539,9 @@ def open_release_pr(
       uat : OVERRIDE uat/deployment.json (complete replace) via working->SIT->UAT.
       prod: ADD the chart(s) to today's PRD release PR — a single day-long PR that
             accumulates (upsert by chart name) BOTH uat/deployment.json and
-            prd/deployment.json on a release/prd/<date> branch. It stays OPEN and is
-            merged to PRD after the cutoff via merge_prod_release ("release prod").
+            prd/deployment.json on a release/prd/<date> branch. It stays OPEN; after the
+            cutoff merge_prod_release ("release prod") promotes the staged charts through
+            the chain SIT->UAT->PRD (prod never skips SIT/UAT).
 
     Accepts a full {"include":[...]} payload (the UI editor — supports multiple charts)
     or <chart_name>:<version> pairs (NL/CLI); constants are filled from config."""
@@ -567,11 +632,24 @@ def open_release_pr(
     )
 
 
+def _retire_staging_pr(repo, pr, branch: str) -> None:
+    """Close the day's staging PR and delete its branch once the release has shipped
+    through the chain (its diff vs PRD is now empty). Best-effort."""
+    try:
+        pr.edit(state="closed")
+    except Exception:
+        pass
+    try:
+        repo.get_git_ref(f"heads/{branch}").delete()
+    except Exception:
+        pass
+
+
 @tool
 def merge_prod_release() -> str:
-    """Merge today's accumulated PRD release PR into the PRD branch, releasing everything
-    staged for prod today. Allowed ONLY after the daily cutoff (PRD_CUTOFF_HOUR_UTC).
-    Use when a developer says 'release prod' / 'merge the prod release'."""
+    """Release today's accumulated PRD release to production by promoting the staged charts
+    through the FULL chain SIT -> UAT -> PRD (prod never skips SIT/UAT). Allowed ONLY after
+    the daily cutoff (PRD_CUTOFF_HOUR_UTC). Use when a developer says 'release prod'."""
     from datetime import datetime, timezone
 
     try:
@@ -587,31 +665,85 @@ def merge_prod_release() -> str:
     cutoff = settings.prd_cutoff_hour_utc
     if now.hour < cutoff:
         return (
-            f"ERROR: today's PRD release can only be merged after {cutoff:02d}:00 UTC "
+            f"ERROR: today's PRD release can only be released after {cutoff:02d}:00 UTC "
             f"(now {now.strftime('%H:%M')} UTC). Release PR #{pr.number} stays open until then: {pr.html_url}"
         )
 
-    ok, detail = _merge_pr(pr, "merge")
-    if not ok:
+    branch = pr.head.ref
+    uat_path, prd_path = _deployment_path("uat"), _deployment_path("prd")
+
+    # The accumulated final state staged on the release branch (cut from PRD + today's
+    # upserts). "Today's charts" = whatever differs from what's currently live in PRD.
+    staged_prd = _read_include(repo, branch, prd_path)
+    staged_uat = _read_include(repo, branch, uat_path)
+    prd_now = {
+        e.get("helm_chart_name"): e.get("helm_chart_version")
+        for e in _read_include(repo, settings.prd_branch, prd_path)
+    }
+    today_prd = [
+        e for e in staged_prd
+        if e.get("helm_chart_name") and prd_now.get(e.get("helm_chart_name")) != e.get("helm_chart_version")
+    ]
+    today_names = {e["helm_chart_name"] for e in today_prd}
+    today_uat = [e for e in staged_uat if e.get("helm_chart_name") in today_names]
+
+    if not today_prd:
+        _retire_staging_pr(repo, pr, branch)
         return json.dumps(
-            {"ok": False, "action": "merge_blocked", "pr_number": pr.number, "pr_url": pr.html_url,
-             "note": f"Could not merge PRD release PR #{pr.number}: {detail}. {pr.html_url}"},
+            {"ok": True, "action": "nothing_to_release", "pr_number": pr.number, "pr_url": pr.html_url,
+             "note": f"PRD release PR #{pr.number} had no changes vs PRD; retired it. Nothing to release."},
             indent=2,
         )
-    run = None
-    try:
-        pr.update()
-        msha = pr.merge_commit_sha
-        run = _find_deploy_run(repo, msha, settings.prd_branch) if msha else None
-    except Exception:
-        pass
-    note = (
-        f"Released to PROD — merged PR #{pr.number} → {settings.prd_branch}. Production deploy triggered."
-        + (f" PRD deploy run #{run['id']} ({run['url']})." if run else "")
+
+    chart_str = ", ".join(f"{e['helm_chart_name']}:{e['helm_chart_version']}" for e in today_prd)
+    date = branch.rsplit("/", 1)[-1]
+
+    # Promote the staged charts through SIT -> UAT -> PRD, upserting into BOTH the prd and
+    # uat deployment files on each branch (targeted edits — no whole-branch merge, so
+    # UAT-only charts never leak into PRD and there's nothing to conflict).
+    res = _promote_targeted(
+        repo,
+        [(prd_path, _upsert_each(today_prd)), (uat_path, _upsert_each(today_uat))],
+        f"PRD release {date}: {chart_str}",
     )
+    if not res["changed"]:
+        _retire_staging_pr(repo, pr, branch)
+        return json.dumps(
+            {"ok": True, "action": "nothing_to_release", "pr_number": pr.number, "pr_url": pr.html_url,
+             "note": "PRD already matches today's release; retired the staging PR."},
+            indent=2,
+        )
+
+    delivered = res["delivered"]
+    if delivered:
+        _retire_staging_pr(repo, pr, branch)
+        note = (
+            f"Released {chart_str} to PROD through {settings.sit_branch} → {settings.uat_branch} → "
+            f"{settings.prd_branch}. {_pr_chain_note(res['prs'])} Retired staging PR #{pr.number}."
+            + _deploy_run_note(res)
+        )
+        action = "prod_released"
+    else:
+        note = (
+            f"Promoting {chart_str} to PROD — raised the chain {settings.sit_branch} → "
+            f"{settings.uat_branch} → {settings.prd_branch}, but the final PRD merge is pending "
+            f"(review/branch protection). {_pr_chain_note(res['prs'])} Staging PR #{pr.number} stays "
+            f"open until PRD merges: {pr.html_url}" + _deploy_run_note(res)
+        )
+        action = "release_pending_prd_merge"
+
     return json.dumps(
-        {"ok": True, "action": "prod_released", "pr_number": pr.number, "pr_url": pr.html_url,
-         "deploy_run_prd": run, "note": note},
+        {
+            "ok": True,
+            "action": action,
+            "released": today_prd,
+            "staging_pr": pr.number,
+            "staging_pr_url": pr.html_url,
+            "prs": res["prs"],
+            "deploy_run_prd": res.get("deploy_run_prd"),
+            "deploy_run_uat": res.get("deploy_run"),
+            "note": note,
+        },
         indent=2,
     )
 
@@ -660,14 +792,12 @@ def remove_from_release(image_names: str, environment: str = "uat") -> str:
         return changed
 
     uat_path = _deployment_path("uat")
+    summary = "Remove " + ",".join(names) + f" from {env}"
     if env == "prod":
-        file_mutations = [(uat_path, _mut), (_deployment_path("prd"), _mut)]
-        to_prd = True
+        # Targeted SIT -> UAT -> PRD so the removal reaches PRD without a whole-branch merge.
+        res = _promote_targeted(repo, [(_deployment_path("prd"), _mut), (uat_path, _mut)], summary)
     else:
-        file_mutations = [(uat_path, _mut)]
-        to_prd = False
-
-    res = _apply_via_pr_chain(repo, file_mutations, "Remove " + ",".join(names) + f" from {env}", to_prd=to_prd)
+        res = _apply_via_pr_chain(repo, [(uat_path, _mut)], summary)
     blocked = _blocked_pr_result(res)
     if blocked:
         return blocked

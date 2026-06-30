@@ -288,16 +288,46 @@ async def release_status_endpoint():
 
 @app.get("/api/deploy-template")
 async def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""):
-    """Return the full deployment.json entry to pre-fill the UI's editable JSON box.
-    Constants (helm_chart_dir, env values-file, namespace) come from config; the dev
-    fills helm_chart_name / helm_chart_version (passed through if provided)."""
+    """Pre-fill the UI's editable JSON box with the ACTUAL current deployment.json for the
+    env — uat/deployment.json from the UAT branch, prd/deployment.json from PRD — so the dev
+    edits the real deployed set, not a blank template. If a chart name+version is supplied
+    (from a chat/CLI deploy command) it's upserted into that current set. Constants
+    (helm_chart_dir, env values-file, namespace) come from config."""
     from .tools.gh_tools import assemble_entry
+    from .tools._common import _get_github_client, settings, _read_json_file
 
     e = "prod" if str(env).lower() in ("prod", "prd", "production") else "uat"
-    entry = assemble_entry(name or "", version or "", e)
-    # Return the FULL file the editor shows ({"include":[...]}); add more entries to
-    # deploy multiple charts at once. Submit OVERRIDES the file with this content.
-    return {"environment": e, "deployment": {"include": [entry]}}
+    env_key = "prd" if e == "prod" else "uat"
+    path = settings.deployment_path_pattern.format(env=env_key)
+    branch = settings.prd_branch if e == "prod" else settings.uat_branch
+
+    include: list = []
+    from_repo = False
+    try:
+        repo = _get_github_client().get_repo(settings.deploy_repo)
+        doc = _read_json_file(repo, branch, path)
+        inc = doc.get("include") if isinstance(doc, dict) else None
+        if isinstance(inc, list):
+            include = [x for x in inc if isinstance(x, dict)]
+            from_repo = True
+    except Exception:
+        logger.exception("deploy-template: could not read current %s on %s", path, branch)
+
+    # Upsert the requested chart (from a chat command) into the current set, by chart name.
+    if name and version:
+        entry = assemble_entry(name, version, e)
+        for i, x in enumerate(include):
+            if x.get("helm_chart_name") == name:
+                include[i] = entry
+                break
+        else:
+            include.append(entry)
+
+    # Empty repo / very first deploy: fall back to a single (blank or requested) entry.
+    if not include:
+        include = [assemble_entry(name or "", version or "", e)]
+
+    return {"environment": e, "deployment": {"include": include}, "from_repo": from_repo}
 
 
 @app.get("/health")

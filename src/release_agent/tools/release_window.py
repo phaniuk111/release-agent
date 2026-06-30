@@ -96,12 +96,14 @@ def get_release_status() -> dict:
         if cutoff_passed:
             reason = (
                 f"PRD release PR #{prd_release_pr['number']} ({len(pending_to_prod)} change(s)) can be "
-                f"merged now — cutoff {cutoff:02d}:00 UTC has passed. Say 'release prod' to merge."
+                f"released now — cutoff {cutoff:02d}:00 UTC has passed. Say 'release prod' to promote it "
+                f"through {settings.sit_branch}→{settings.uat_branch}→{settings.prd_branch}."
             )
         else:
             reason = (
                 f"PRD release PR #{prd_release_pr['number']} is collecting {len(pending_to_prod)} "
-                f"change(s); it merges to PRD after {cutoff:02d}:00 UTC."
+                f"change(s); after {cutoff:02d}:00 UTC it promotes to PRD through "
+                f"{settings.sit_branch}→{settings.uat_branch}→{settings.prd_branch}."
             )
     elif prd:
         reason = "No PRD release open today. Live in PRD: " + ", ".join(

@@ -197,7 +197,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         const CAPABILITIES = [
             {icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
             {icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
-            {icon:'fa-shield-heart',      label:'Release to PROD',      desc:"merge today's PRD release PR (after cutoff)",  send:true,  text:'release prod'},
+            {icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (after cutoff)',  send:true,  text:'release prod'},
             {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
             {icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
             {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
@@ -256,10 +256,11 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         // The backend parses the JSON, assembles the Helm entry, previews it,
         // and replies with a CONFIRM-XXXXXX token; the existing interrupt UI
         // then handles the confirmation step unchanged.
-        // Deploy editor — shows the FULL deployment.json entry as editable JSON
-        // (pre-filled from /api/deploy-template: constants from config, name/version
-        // from the dev). On submit it sends {environment, ...entry} through /api/chat;
-        // the backend previews the exact JSON it will write and asks to confirm.
+        // Deploy editor — shows the ACTUAL current deployment.json as editable JSON
+        // (pre-filled from /api/deploy-template, which reads the live uat/ or prd file;
+        // a chart named from a chat command is upserted in). On submit it sends
+        // {environment, include} through /api/chat; the backend previews the exact JSON
+        // it will write and asks to confirm.
         async function showDeployForm(env, name, version) {
             const isProd = env === 'prod';
             const accentT = isProd ? 'text-amber-300' : 'text-emerald-300';
@@ -267,8 +268,9 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             const icon = isProd ? 'fa-shield-halved' : 'fa-flask';
             const heading = isProd ? 'Deploy to PROD' : 'Deploy to UAT';
 
-            // Pre-fill the WHOLE deployment.json file ({"include":[...]}) from the
-            // backend — add more entries to deploy multiple charts at once.
+            // Pre-fill the editor with the WHOLE current deployment.json ({"include":[...]})
+            // from the backend (the live uat/ or prd file) — edit entries, add more to deploy
+            // several charts at once. The fallback below is only used if the fetch fails.
             let fileDoc = { include: [ { helm_chart_name: name || '', helm_chart_version: version || '' } ] };
             try {
                 const qs = new URLSearchParams({ env: env, name: name || '', version: version || '' });
@@ -282,8 +284,11 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
 
             const title = document.createElement('div');
             title.className = 'mb-2 font-semibold flex items-center gap-2 ' + accentT;
+            const subText = isProd
+                ? '— current prd/deployment.json; edit it, then submit STAGES these charts into the PRD release (promotes via SIT→UAT→PRD at the cutoff)'
+                : '— current uat/deployment.json; edit (add/remove entries), then submit OVERRIDES the file with exactly what you see';
             title.innerHTML = '<i class="fa-solid ' + icon + '"></i> ' + heading +
-                ' <span class="text-slate-400 font-normal text-xs">— edit the deployment.json (add entries to include[] for multiple charts); submit OVERWRITES the file</span>';
+                ' <span class="text-slate-400 font-normal text-xs">' + subText + '</span>';
             wrap.appendChild(title);
 
             const taId = 'deploy-json-' + env;
@@ -451,7 +456,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                     if (pr.can_merge_now) {
                         banner.classList.add('border-emerald-600/50', 'bg-emerald-500/10');
                         icon.className = 'fa-solid fa-circle-check text-emerald-400';
-                        title.textContent = '🟢 PRD release PR #' + pr.number + ' ready to merge (' + n + ' change' + plural + ')';
+                        title.textContent = '🟢 PRD release PR #' + pr.number + ' ready to release (' + n + ' change' + plural + ')';
                     } else {
                         banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
                         icon.className = 'fa-solid fa-rocket text-amber-400';
