@@ -128,16 +128,21 @@ def _build_step_call(step: str, req: dict, token: str) -> dict:
         }
     if step == STEP_RELEASE_PR:
         env = (req.get("environment") or "uat").lower()
-        args = {"environment": env, "image_tags": image_str}
-        ns = (req.get("namespace") or "").strip()
-        if ns:
-            args["namespace"] = ns
-        cd = (req.get("chart_dir") or "").strip()
-        if cd:
-            args["chart_dir"] = cd
-        vf = (req.get("values_file") or "").strip()
-        if vf:
-            args["values_file"] = vf
+        entries = req.get("entries") or []
+        if entries:
+            # Full editor entries -> override the whole file (multi-chart, per-entry fields).
+            args = {"environment": env, "deployment_json": json.dumps({"include": entries})}
+        else:
+            args = {"environment": env, "image_tags": image_str}
+            ns = (req.get("namespace") or "").strip()
+            if ns:
+                args["namespace"] = ns
+            cd = (req.get("chart_dir") or "").strip()
+            if cd:
+                args["chart_dir"] = cd
+            vf = (req.get("values_file") or "").strip()
+            if vf:
+                args["values_file"] = vf
         return {
             "name": "open_release_pr",
             "args": args,
@@ -154,7 +159,7 @@ def propose(state: ReleaseState) -> Command[Literal["gate", "respond"]]:
     that the confirmed apply step will upsert. uat -> uat/deployment.json; prod ->
     BOTH uat/deployment.json and prd/deployment.json (each with its env values file
     + namespace)."""
-    from ..tools.gh_tools import assemble_entry
+    from ..tools.gh_tools import assemble_entry, plan_deploy, _normalize_entry
 
     req = state.release_request
     if not req or not req.get("images"):
@@ -178,34 +183,24 @@ def propose(state: ReleaseState) -> Command[Literal["gate", "respond"]]:
     chart_dir = (req.get("chart_dir") or "").strip()
     values_file = (req.get("values_file") or "").strip()
     pairs = req["images"]
+    entries = req.get("entries") or []
 
-    # Mirror open_release_pr exactly so the preview equals what apply will write:
-    # uat deploy -> uat file (overrides apply to uat); prod deploy -> BOTH files
-    # (the edited entry is the prd entry; the uat copy inherits chart_dir but derives
-    # the uat values-file + uat namespace).
-    if env == "uat":
-        preview: dict = {
-            "uat/deployment.json": [
-                assemble_entry(i["name"], i["tag"], "uat", namespace, chart_dir, values_file)
-                for i in pairs
-            ]
-        }
+    # Build the target-env entries: full entries from the UI editor (multi-chart,
+    # per-entry fields), else assembled from name:version pairs. plan_deploy then maps
+    # them to the OVERRIDE writes — so this preview equals exactly what apply will write.
+    if entries:
+        target_entries = [_normalize_entry(e, env) for e in entries]
     else:
-        preview = {
-            "uat/deployment.json": [
-                assemble_entry(i["name"], i["tag"], "uat", "", chart_dir, "") for i in pairs
-            ],
-            "prd/deployment.json": [
-                assemble_entry(i["name"], i["tag"], "prd", namespace, chart_dir, values_file)
-                for i in pairs
-            ],
-        }
+        target_entries = [
+            assemble_entry(i["name"], i["tag"], env, namespace, chart_dir, values_file) for i in pairs
+        ]
+    preview = plan_deploy(env, target_entries)  # {path: include[]} — what apply will OVERRIDE
 
-    chart_str = ", ".join(f"{i['name']}:{i['tag']}" for i in pairs)
+    chart_str = ", ".join(f"{e['helm_chart_name']}:{e['helm_chart_version']}" for e in target_entries)
     files = " + ".join(preview.keys())
     token = f"CONFIRM-{uuid.uuid4().hex[:6]}"
     msg = (
-        f"**Deploy {chart_str} to {env.upper()}** — will upsert into `{files}`:\n\n"
+        f"**Deploy {chart_str} to {env.upper()}** — will OVERRIDE `{files}` with:\n\n"
         "```json\n" + json.dumps(preview, indent=2) + "\n```\n\n"
         f"Reply `{token}` to confirm."
     )

@@ -257,6 +257,7 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
         return None
 
     pairs: list[dict] = []
+    entries: list[dict] = []  # full deployment.json entries (preserved for override + multi-chart)
     namespace = ""
     chart_dir = ""
     values_file = ""
@@ -269,6 +270,7 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
         v = e.get("helm_chart_version") or e.get("tag") or e.get("version")
         if n and v:
             pairs.append({"name": str(n), "tag": str(v)})
+            entries.append(dict(e))
             if not namespace and e.get("gke_namespace"):
                 namespace = str(e["gke_namespace"])
             if not chart_dir and e.get("helm_chart_dir"):
@@ -298,6 +300,7 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
     env = "prod" if env in ("prod", "prd", "production") else "uat"
     return {
         "images": pairs,
+        "entries": entries,
         "environment": env,
         "namespace": namespace,
         "chart_dir": chart_dir,

@@ -1,0 +1,62 @@
+"""Unit checks for the deployment.json model: full-entry parsing, multi-chart,
+complete-override planning, and the prd (not 'prod') file-path spelling. No network."""
+import json
+
+from release_agent.agent.parsing import _try_parse_json_payload
+from release_agent.tools.gh_tools import assemble_entry, plan_deploy, _entries_for_deploy
+from release_agent.tools.promotion import _replace_with
+
+
+def test_parse_preserves_full_multichart_entries():
+    payload = json.dumps(
+        {
+            "environment": "uat",
+            "include": [
+                {"helm_chart_name": "a", "helm_chart_version": "1", "gke_namespace": "ns-a"},
+                {"helm_chart_name": "b", "helm_chart_version": "2", "gke_namespace": "ns-b"},
+            ],
+        }
+    )
+    req = _try_parse_json_payload(payload)
+    assert len(req["entries"]) == 2
+    assert [e["gke_namespace"] for e in req["entries"]] == ["ns-a", "ns-b"]
+    assert req["environment"] == "uat"
+
+
+def test_prd_spelling_not_prod():
+    # The file model uses 'prd' everywhere, even though callers may pass 'prod'.
+    e = assemble_entry("svc", "1.0", "prod")
+    assert e["helm_values_file_name"] == "prd/values_prd.yaml"
+    e2 = assemble_entry("svc", "1.0", "prd")
+    assert e2["helm_values_file_name"] == "prd/values_prd.yaml"
+
+
+def test_uat_plan_is_single_file_override():
+    ents = _entries_for_deploy(
+        "uat", "", json.dumps({"include": [{"helm_chart_name": "x", "helm_chart_version": "1"}]}), "", "", ""
+    )
+    plan = plan_deploy("uat", ents)
+    assert list(plan.keys()) == ["uat/deployment.json"]
+    assert plan["uat/deployment.json"][0]["helm_values_file_name"] == "uat/values_uat.yaml"
+
+
+def test_prod_plan_writes_both_files_with_env_values():
+    ents = _entries_for_deploy(
+        "prod", "", json.dumps({"include": [{"helm_chart_name": "x", "helm_chart_version": "1"}]}), "", "", ""
+    )
+    plan = plan_deploy("prod", ents)
+    assert sorted(plan) == ["prd/deployment.json", "uat/deployment.json"]
+    assert plan["prd/deployment.json"][0]["helm_values_file_name"] == "prd/values_prd.yaml"
+    assert plan["uat/deployment.json"][0]["helm_values_file_name"] == "uat/values_uat.yaml"
+
+
+def test_replace_with_overrides_not_upserts():
+    include = [{"helm_chart_name": "old", "helm_chart_version": "1"}]
+    changed = _replace_with([{"helm_chart_name": "new", "helm_chart_version": "2"}])(include)
+    assert changed is True
+    assert [e["helm_chart_name"] for e in include] == ["new"]  # old one is gone
+
+
+def test_image_tags_path_still_works():
+    ents = _entries_for_deploy("uat", "a:1,b:2", "", "", "", "")
+    assert [e["helm_chart_name"] for e in ents] == ["a", "b"]
