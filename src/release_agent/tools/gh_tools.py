@@ -32,14 +32,10 @@ from .pull_requests import (  # noqa: F401
 )
 from .controls import verify_image_tag_build, get_build_controls  # noqa: F401
 from .release_window import check_release_window  # noqa: F401
-from .promotion import open_release_pr, remove_from_release  # noqa: F401
+from .promotion import open_release_pr, remove_from_release, merge_prod_release  # noqa: F401
 
 GH_TOOLS = [
     list_allowed_images,
-    get_current_manifest,
-    propose_update,
-    apply_json_update,
-    dispatch_workflow,
     get_recent_runs,
     get_workflow_status,
     find_prs,
@@ -51,5 +47,6 @@ GH_TOOLS = [
     get_build_controls,
     open_release_pr,
     remove_from_release,
+    merge_prod_release,
     check_release_window,
 ]

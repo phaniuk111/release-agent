@@ -106,10 +106,15 @@ directly; every change is a PR chain.**
 - **Deploy to UAT** OVERRIDES `uat/deployment.json` with the submitted `include[]` via
   the chain `working → SIT → UAT` — a complete file replace, **no upsert/merge**, so the
   file always reflects exactly the desired set.
-- **Deploy to PROD** OVERRIDES **both** files in one chain run
-  `working → SIT → UAT → PRD` — `uat/deployment.json` (uat values file + namespace)
-  **and** `prd/deployment.json` (prd values file + namespace). No cutoff, no waiting:
-  prod writes both immediately.
+- **Deploy to PROD** does NOT write PRD directly. It **adds the chart to today's PRD
+  release PR** — a single day-long PR on a `release/prd/<date>` branch that **accumulates**
+  (upsert by chart name) **both** `uat/deployment.json` and `prd/deployment.json`. Every
+  prod deploy through the day adds to the same open PR.
+- **Release to PROD (merge at cutoff).** The PRD release PR is merged to PRD only **after
+  the daily cutoff** (`PRD_CUTOFF_HOUR_UTC`, default 16:00 UTC), and only when asked —
+  say *"release prod"* (→ `merge_prod_release`, also a UI quick-action). Before the cutoff
+  the merge is refused and the PR stays open; after the cutoff it merges and the production
+  deploy runs.
 - **Editable JSON, multi-chart.** The UI "Deploy to UAT / PROD" buttons open the **whole
   `{"include":[...]}` file as an editable JSON box** — add entries to deploy several
   charts at once. Typing a deploy command in chat (e.g. `abc:1.2.3 promote to uat`) opens
@@ -127,14 +132,15 @@ directly; every change is a PR chain.**
   by `helm_chart_name` via the same PR chain — `uat` removes from `uat/deployment.json`;
   `prod` removes from **both** files.
 
-This is **shared across sessions** because the state lives in **GitHub itself** (the two
-deployment JSONs), not in any in-process memory. The side panel reads
-`GET /api/release-status` live and shows the charts on UAT vs PRD and which are pending
-(on UAT but not yet matching PRD), refreshed on load, after each turn, and every 60s.
-Ask in chat: *"what's deployed to prod?"* (`check_release_window`).
+This is **shared across sessions** because the state lives in **GitHub itself** (the
+deployment JSONs + the open PRD release PR), not in any in-process memory. The side panel
+reads `GET /api/release-status` live and shows what's live on UAT/PRD and **today's PRD
+release PR** (the charts staged for prod + whether it can be merged yet), refreshed on
+load, after each turn, and every 60s. Ask in chat: *"what's deployed to prod?"* or *"what's
+in today's PRD release PR?"* (`check_release_window`).
 
 - **Config:** `SIT_BRANCH`/`UAT_BRANCH`/`PRD_BRANCH`, `DEPLOYMENT_PATH_PATTERN`
-  (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`
+  (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`, `PRD_CUTOFF_HOUR_UTC`
   (`{env}/values_{env}.yaml`), `UAT_NAMESPACE`/`PRD_NAMESPACE`.
 
 The per-session LangGraph checkpointer is only for *conversation* memory; the deploy

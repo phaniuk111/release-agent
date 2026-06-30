@@ -194,13 +194,19 @@ def propose(state: ReleaseState) -> Command[Literal["gate", "respond"]]:
         target_entries = [
             assemble_entry(i["name"], i["tag"], env, namespace, chart_dir, values_file) for i in pairs
         ]
-    preview = plan_deploy(env, target_entries)  # {path: include[]} — what apply will OVERRIDE
+    preview = plan_deploy(env, target_entries)  # {path: include[]}
 
     chart_str = ", ".join(f"{e['helm_chart_name']}:{e['helm_chart_version']}" for e in target_entries)
-    files = " + ".join(preview.keys())
     token = f"CONFIRM-{uuid.uuid4().hex[:6]}"
+    if env == "prod":
+        action = (
+            "will be **added to today's PRD release PR** (a day-long PR holding both the uat & prd "
+            "entries below); it merges to PRD after the cutoff when you say *release prod*"
+        )
+    else:
+        action = f"will **OVERRIDE** `{' + '.join(preview.keys())}` with"
     msg = (
-        f"**Deploy {chart_str} to {env.upper()}** — will OVERRIDE `{files}` with:\n\n"
+        f"**Deploy {chart_str} to {env.upper()}** — {action}:\n\n"
         "```json\n" + json.dumps(preview, indent=2) + "\n```\n\n"
         f"Reply `{token}` to confirm."
     )
@@ -372,6 +378,12 @@ def _summarize_step_result(step: str, content: str) -> str:
                     "merge or close it first, then retry")
         if action == "no_change":
             return data.get("note", "no change — already deployed with that version")
+        if action == "staged_to_prd_pr":
+            n = len(data.get("charts_in_release") or [])
+            return (
+                f"added to today's PRD release PR [#{data.get('pr_number')}]({data.get('pr_url','')}) — "
+                f"{n} chart(s) staged; merges to PRD after {data.get('cutoff_utc')} UTC (say *release prod*)"
+            )
         env = data.get("environment", "uat")
         files = ", ".join(data.get("files_updated") or [])
         base = f"deployed to {env.upper()} ({files})" if files else f"deployed to {env.upper()}"

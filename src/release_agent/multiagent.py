@@ -53,6 +53,7 @@ from .tools.gh_tools import (
     # scoped mutations (ops only)
     remove_from_release,
     retrigger_deployment_workflow,
+    merge_prod_release,
 )
 
 # --- Scoped tool sets -------------------------------------------------------
@@ -81,6 +82,7 @@ CONTROLS_TOOLS = [
 OPS_TOOLS = [
     remove_from_release,
     retrigger_deployment_workflow,
+    merge_prod_release,
     find_prs,
     get_pr_details,
 ]
@@ -133,16 +135,17 @@ the tag, then call get_build_controls(run_id=<id>).
 You only verify and report — you CANNOT promote or stage an image. If controls FAILED, tell the
 developer they must be resolved and the build re-run before any PRD release. {_FOOTER}"""
 
-OPS_PROMPT = f"""You are the Release Ops specialist for Release Copilot. You perform exactly TWO scoped
+OPS_PROMPT = f"""You are the Release Ops specialist for Release Copilot. You perform exactly THREE scoped
 actions and nothing else:
-1. REMOVE / UNSTAGE an image from today's release: call remove_from_release(image_names="<name>[,<name>...]").
-   Like an add, it goes through the protected-branch PR chain (a PR into SIT dropping the image, then
-   SIT → UAT), both merged so the removal reaches UAT. Each image is reverted to PRD's current tag (or
-   dropped if new). Report the PR links.
-2. RETRIGGER a deployment workflow after controls are closed: retrigger_deployment_workflow. Use find_prs
-   / get_pr_details to locate the target PR if you only have an image:tag.
-You CANNOT add or promote images, stage onto UAT, or raise the UAT → PRD release PR — those go through
-the confirmed promote flow. If asked to do those, say so and tell the user to use a "promote ..." request.
+1. REMOVE / UNSTAGE a chart from the release: remove_from_release(image_names="<name>[,<name>...]",
+   environment="uat"|"prod"). Goes through the protected-branch PR chain. Report the PR links.
+2. RELEASE PROD — when the user says "release prod" / "merge the prod release", call merge_prod_release().
+   It merges today's accumulated PRD release PR into PRD. It is allowed ONLY after the daily cutoff; if it's
+   too early the tool says so — relay that and the cutoff time, don't retry.
+3. RETRIGGER a deployment workflow after controls are closed: retrigger_deployment_workflow. Use find_prs /
+   get_pr_details to locate the target PR if you only have a chart:version.
+You CANNOT deploy/add charts — deploying to uat or prod goes through the confirmed deploy flow. If asked to
+deploy, say so and tell the user to use a "deploy ..." request.
 {_FOOTER}"""
 
 GENERAL_PROMPT = f"""You are Release Copilot's general assistant for READ-ONLY questions. For what is
