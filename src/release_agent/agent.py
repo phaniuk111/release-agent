@@ -1078,6 +1078,9 @@ def _summarize_step_result(step: str, content: str) -> str:
         return f"dispatched `{wf}`" + (f" with {inp}" if inp else "")
     if step == STEP_RELEASE_PR:
         action = data.get("action")
+        if action == "pr_already_open":
+            return (f"⏸ a promote PR is already open (#{data.get('pr_number')} {data.get('pr_url','')}) — "
+                    "merge or close it first, then retry")
         if action == "staged_to_uat":
             imgs = data.get("uat_images") or {}
             return f"staged on UAT ({len(imgs)} image(s) total) — UAT→PRD PR is raised after the cutoff"

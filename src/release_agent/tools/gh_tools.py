@@ -1256,6 +1256,23 @@ def _merge_pr(pr, method: str = "squash"):
         return False, f"could not auto-merge (likely branch protection): {e}"
 
 
+def _open_pr_on_file(repo, base_branch: str, path: str):
+    """Return the first OPEN PR into base_branch that changes `path`, or None.
+    Lets a promote say 'a PR is already open' instead of stacking a duplicate — the
+    same guard Dependabot/Renovate use to avoid concurrent writes to one file."""
+    try:
+        prs = repo.get_pulls(state="open", base=base_branch, sort="created", direction="desc")
+    except Exception:
+        return None
+    for pr in itertools.islice(prs, 30):
+        try:
+            if any(f.filename == path for f in pr.get_files()):
+                return pr
+        except Exception:
+            continue
+    return None
+
+
 def _apply_via_pr_chain(repo, mutate_fn, summary: str) -> dict:
     """Branches are protected — never commit to them directly. Apply a change to the
     images config via PRs along the chain: a fresh working branch -> SIT -> UAT.
@@ -1264,6 +1281,16 @@ def _apply_via_pr_chain(repo, mutate_fn, summary: str) -> dict:
     sit, uat = settings.sit_branch, settings.uat_branch
     images_path = settings.env_config_path
     prs: list = []
+
+    # Guard: if a promote PR touching this file is already open, don't open another —
+    # report it so the caller can tell the user to wait for it to merge.
+    existing = _open_pr_on_file(repo, sit, images_path)
+    if existing is not None:
+        return {
+            "changed": False,
+            "prs": [],
+            "blocked_pr": {"number": existing.number, "url": existing.html_url},
+        }
 
     sit_ref = repo.get_git_ref(f"heads/{sit}")
     work = f"change/sit/{uuid.uuid4().hex[:8]}"
@@ -1330,6 +1357,27 @@ def _pr_chain_note(prs: list) -> str:
     return "; ".join(bits) + "."
 
 
+def _blocked_pr_result(res: dict):
+    """If the PR chain was blocked because a promote PR is already open on the file,
+    return a user-facing JSON string; otherwise None."""
+    b = res.get("blocked_pr")
+    if not b:
+        return None
+    return json.dumps(
+        {
+            "ok": False,
+            "action": "pr_already_open",
+            "pr_number": b["number"],
+            "pr_url": b["url"],
+            "note": (
+                f"A promote PR is already open — #{b['number']} ({b['url']}) — touching the images "
+                "config. Merge or close it first, then retry. (One promote at a time per file.)"
+            ),
+        },
+        indent=2,
+    )
+
+
 def _add_images_to_uat(repo, pairs: list) -> dict:
     """Stage image:tag pairs for the day's release via the protected-branch PR chain
     (working -> SIT -> UAT). Returns {uat_images, prs, changed}."""
@@ -1345,7 +1393,8 @@ def _add_images_to_uat(repo, pairs: list) -> dict:
     uat_images = (_read_json_file(repo, settings.uat_branch, settings.env_config_path) or {}).get(
         "images", {}
     ) or {}
-    return {"uat_images": uat_images, "prs": res["prs"], "changed": res["changed"]}
+    return {"uat_images": uat_images, "prs": res["prs"], "changed": res["changed"],
+            "blocked_pr": res.get("blocked_pr")}
 
 
 def _remove_images_via_chain(repo, names: list) -> dict:
@@ -1376,6 +1425,7 @@ def _remove_images_via_chain(repo, names: list) -> dict:
         "not_found": not_found,
         "prs": res["prs"],
         "changed": res["changed"],
+        "blocked_pr": res.get("blocked_pr"),
     }
 
 
@@ -1407,6 +1457,9 @@ def remove_from_release(image_names: str) -> str:
         return f"ERROR removing from release: {e}"
 
     res = _remove_images_via_chain(repo, names)
+    blocked = _blocked_pr_result(res)
+    if blocked:
+        return blocked
     if not res["changed"]:
         return (
             f"No change — {', '.join(res['not_found']) or ','.join(names)} not found in the release "
@@ -1620,6 +1673,9 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
     # --- UAT: stage onto UAT via the protected-branch PR chain (working->SIT->UAT) ---
     if env == "uat":
         res = _add_images_to_uat(repo, pairs)
+        blocked = _blocked_pr_result(res)
+        if blocked:
+            return blocked
         imgs = res["uat_images"]
         return json.dumps(
             {
@@ -1653,6 +1709,9 @@ def open_release_pr(environment: str, image_tags: str, change_request_json: str 
 
     # Stage the requested images for today's release via the PR chain (working->SIT->UAT).
     res = _add_images_to_uat(repo, pairs)
+    blocked = _blocked_pr_result(res)
+    if blocked:
+        return blocked
     imgs = res["uat_images"]
 
     if not status.get("cutoff_passed"):

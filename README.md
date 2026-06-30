@@ -116,6 +116,7 @@ it **locks the day**, so it must not happen earlier or no more images could be a
 > open for approval. Removal works the same way (a PR that drops the image).
 
 - **Before the cutoff:** promote-to-prod stages onto UAT via the PR chain (no change request needed yet). Multiple developers keep adding all day.
+- **Concurrent-promote guard:** before opening a promote PR the agent checks whether a PR touching the images config is **already open** — if so it refuses and reports that PR number instead of stacking a second, conflicting PR (the same approach Dependabot/Renovate use). One promote per file at a time; the next dev retries once it merges.
 - **After the cutoff:** the prod request (or the `raise_prod_release` tool) raises the one UAT → PRD PR with the full UAT set; this needs a change request (drives the auto-created **CHG/RMG**) and locks the day.
 - **Lead time:** the change request's `start_date` must be **tomorrow or later** (`PRD_LEAD_TIME_DAYS`, default 1) — a same-day production start is refused, no PR raised.
 - **Nothing to release:** if UAT has no changes vs PRD (a quiet day), no PR is raised — the tool reports there is nothing to release rather than opening an empty PR. The agent is request-driven, so nothing auto-raises either.
