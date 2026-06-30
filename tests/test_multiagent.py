@@ -6,7 +6,7 @@ deterministic routing. All dependency-free (no Vertex, no GitHub).
 """
 
 from release_agent import multiagent as M
-from release_agent.agent import _is_removal, _is_retrigger, _last_human_text
+from release_agent.agent import _is_question, _is_removal, _is_retrigger, _last_human_text
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -70,10 +70,29 @@ def test_fast_path_fires_only_for_remove_and_retrigger():
         "verify payments-api:2.0.33 was built",
         "summarize the controls on PR 42",
     ]
+    # the supervisor takes the fast-path only for a mutating COMMAND, not a question
+    def fast_paths(t):
+        return (_is_removal(t) or _is_retrigger(t)) and not _is_question(t)
+
     for t in ops_now:
-        assert _is_removal(t) or _is_retrigger(t), f"expected ops fast-path for: {t}"
+        assert fast_paths(t), f"expected ops fast-path for: {t}"
     for t in reads:
-        assert not (_is_removal(t) or _is_retrigger(t)), f"read query wrongly fast-pathed: {t}"
+        assert not fast_paths(t), f"read query wrongly fast-pathed: {t}"
+
+
+def test_question_form_remove_retrigger_does_not_fast_path():
+    # phrasings the security review flagged: they mention remove/retrigger but READ
+    # as questions, so they must NOT deterministically hit the mutating ops agent.
+    questions = [
+        "explain how to retrigger a deployment",
+        "can you re run the deployment workflow?",
+        "did anyone exclude orders-api?",
+        "how do I unstage an image?",
+        "what does retrigger do?",
+    ]
+    for t in questions:
+        fast = (_is_removal(t) or _is_retrigger(t)) and not _is_question(t)
+        assert not fast, f"question wrongly fast-pathed to ops: {t}"
 
 
 def test_last_human_text_picks_latest_human_turn():

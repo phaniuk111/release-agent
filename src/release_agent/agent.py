@@ -1193,6 +1193,23 @@ def _is_retrigger(text: str) -> bool:
     return mentions_deploy and asks_run
 
 
+# Interrogative leaders — a message that opens with one (or contains '?') reads as a
+# QUESTION, so it must not take the deterministic mutate fast-path (let the LLM route
+# it, which lands a pure question on a READ-ONLY specialist instead of ops).
+_QUESTION_LEADERS = {
+    "how", "what", "why", "when", "where", "which", "who", "whom", "whose",
+    "can", "could", "would", "should", "do", "does", "did", "is", "are",
+    "was", "were", "will", "explain", "tell", "describe",
+}
+
+
+def _is_question(text: str) -> bool:
+    if "?" in text:
+        return True
+    words = _norm_words(text)
+    return bool(words) and words[0] in _QUESTION_LEADERS
+
+
 def build_graph(checkpointer=None):
     """Build and compile the supervisor multi-agent graph.
 
@@ -1310,8 +1327,11 @@ def build_graph(checkpointer=None):
                         },
                     )
 
-            # Deterministic fast-path for the clear mutating asks (no routing call).
-            if _is_removal(last) or _is_retrigger(last):
+            # Deterministic fast-path for the clear mutating COMMANDS (no routing call).
+            # Question-form phrasings ("how do I retrigger?", "did anyone exclude X?")
+            # fall through to the LLM router so a pure question lands on a read-only
+            # specialist rather than the mutating ops agent.
+            if (_is_removal(last) or _is_retrigger(last)) and not _is_question(last):
                 return Command(goto="ops_agent")
 
             # LLM routing — default to the read-only general agent on any failure.
