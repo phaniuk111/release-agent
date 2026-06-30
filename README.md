@@ -2,10 +2,10 @@
 
 Chat with a LangGraph agent to drive your release process:
 
-- Tell it image names + tags in plain English
-- It reads/updates JSON configs in your GitHub repo
-- Confirms before doing anything dangerous
-- Triggers GitHub Actions workflows (real `workflow_dispatch`)
+- Tell it a Helm chart + version (or edit the deployment JSON directly) to deploy
+- It writes the env-pathed `deployment.json` in your GitHub deploy repo
+- Confirms before doing anything dangerous (HITL token gate)
+- Opens the protected-branch PR chain that deploys to UAT / PRD
 - Works locally with your `gh` auth; the build & deploy repos come from configuration (`.env` or env vars / Helm), never hardcoded in the source
 
 Designed to run as a chatbot-style app in Kubernetes.
@@ -22,7 +22,7 @@ To run the agent you need **GitHub auth**, **GCP / Vertex AI access**, and a few
 | `GOOGLE_CLOUD_LOCATION` | No — default `us-central1` | env var | Vertex region |
 | `GEMINI_MODEL` | No — default `gemini-2.5-flash` | env var | model id (`gemini-2.0-flash` is retired) |
 | `BUILD_REPO` | **Yes** — no hardcoded default | `.env`, env var, or Helm ConfigMap | code + image catalog (`image-workflows.json`), tags, build runs, RLFT/RFTL controls (legacy `RELEASE_AGENT_TARGET_REPO` still accepted) |
-| `DEPLOY_REPO` | **Yes** — no hardcoded default | `.env`, env var, or Helm ConfigMap | deploy repo: SIT/UAT/PRD protected branches + `configs/images.json` the promote PR chain edits |
+| `DEPLOY_REPO` | **Yes** — no hardcoded default | `.env`, env var, or Helm ConfigMap | deploy repo: SIT/UAT/PRD protected branches + `uat/deployment.json` & `prd/deployment.json` the deploy PR chain overrides |
 | `DEFAULT_WORKFLOW` | No — default `image-tag-step-report.yml` | env var | workflow dispatched on promote |
 | **`DEPLOY_PAT`** (repo **Secret**) | Only for the **cross-repo PR** | Actions secret on the **target** repo | lets the dispatched workflow open a PR in `DEPLOY_REPO` (GitHub's built-in `GITHUB_TOKEN` can't write across repos) |
 
@@ -73,7 +73,7 @@ Example chat (or use the **Deploy to UAT / PROD** form, which submits the same J
 
 ```
 You: deploy abc-client-api-svc:1.1.1230 to prod
-Agent: Deploy abc-client-api-svc:1.1.1230 to PROD — will upsert into
+Agent: Deploy abc-client-api-svc:1.1.1230 to PROD — will OVERRIDE
        `uat/deployment.json + prd/deployment.json`:
        { "uat/deployment.json": [ {helm_chart_name, helm_chart_version, helm_chart_dir,
          helm_values_file_name: "uat/values_uat.yaml", gke_namespace: "eod1"} ],
@@ -103,16 +103,19 @@ from config. Entries are keyed by `helm_chart_name` (one per chart per env file)
 **The env branches (SIT → UAT → PRD) are protected — the agent never commits to them
 directly; every change is a PR chain.**
 
-- **Deploy to UAT** upserts the chart into `uat/deployment.json` via the chain
-  `working → SIT → UAT`.
-- **Deploy to PROD** upserts the chart into **both** files in one chain run
+- **Deploy to UAT** OVERRIDES `uat/deployment.json` with the submitted `include[]` via
+  the chain `working → SIT → UAT` — a complete file replace, **no upsert/merge**, so the
+  file always reflects exactly the desired set.
+- **Deploy to PROD** OVERRIDES **both** files in one chain run
   `working → SIT → UAT → PRD` — `uat/deployment.json` (uat values file + namespace)
   **and** `prd/deployment.json` (prd values file + namespace). No cutoff, no waiting:
   prod writes both immediately.
-- **Structured input.** The UI "Deploy to UAT / PROD" buttons open a 3-field form
-  (chart name, version, namespace) that submits the assembled JSON entry — so the
-  deploy path is deterministic, with no LLM and no NL ambiguity. The graph previews
-  the exact entry, then a `CONFIRM-xxxxxx` token gates the write (HITL).
+- **Editable JSON, multi-chart.** The UI "Deploy to UAT / PROD" buttons open the **whole
+  `{"include":[...]}` file as an editable JSON box** — add entries to deploy several
+  charts at once. Typing a deploy command in chat (e.g. `abc:1.2.3 promote to uat`) opens
+  the **same editor pre-filled**. Submit is deterministic (no LLM, no NL ambiguity): the
+  graph previews the exact file it will write, then a `CONFIRM-xxxxxx` token gates the
+  write (HITL).
 - **Concurrent-deploy guard:** before opening a PR the agent checks whether a PR
   touching the deployment JSON is **already open** — if so it refuses and reports that
   PR number instead of stacking a conflicting one (Dependabot/Renovate-style).
@@ -140,8 +143,8 @@ developer without a separate database.
 
 ## What It Does Today (PoV)
 
-- Takes a Helm chart `name:version` (+ namespace) and upserts the full deployment entry
-  into `uat/deployment.json` (UAT) or **both** `uat/` + `prd/deployment.json` (PROD).
+- Takes Helm chart `name:version` entries (one or more) and OVERRIDES the full deployment
+  file — `uat/deployment.json` (UAT) or **both** `uat/` + `prd/deployment.json` (PROD).
 - Drives the SIT → UAT → PRD promotion as protected-branch PR chains in `DEPLOY_REPO`.
 - Surfaces the GitHub Actions deploy run each merge triggers.
 - All GitHub calls go through a tightly controlled **PyGithub** tool layer — no arbitrary shell.
