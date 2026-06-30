@@ -42,8 +42,11 @@ class Settings(BaseSettings):
     # git tags GitHub Actions create, build runs, and RLFT/RFTL control steps.
     # Legacy env spellings are accepted as backward-compatible aliases so
     # existing deployments don't silently misroute.
+    # Repos are environment-specific and MUST be supplied by configuration — the
+    # local .env file, real env vars, or the Helm ConfigMap (values.yaml -> config).
+    # No org/account default is hardcoded here.
     build_repo: str = Field(
-        default="phaniuk111/devops",
+        default="",  # code + image catalog + builds/tags + RLFT controls
         validation_alias=AliasChoices(
             "BUILD_REPO",
             "RELEASE_BUILD_REPO",
@@ -53,7 +56,9 @@ class Settings(BaseSettings):
         ),
     )
     deploy_repo: str = Field(
-        default="phaniuk111/devops",  # may differ if the workflow opens the PR elsewhere
+        # Holds the SIT/UAT/PRD protected branches + configs/images.json the promote
+        # PR chain edits — distinct from the build/source repo above.
+        default="",
         validation_alias=AliasChoices(
             "DEPLOY_REPO", "RELEASE_DEPLOY_REPO", "RELEASE_AGENT_DEPLOY_REPO"
         ),
@@ -213,6 +218,10 @@ class Settings(BaseSettings):
         populate_by_name=True,
         extra="ignore",
         case_sensitive=False,
+        # Local/dev config file (gitignored). In-cluster, the Helm ConfigMap supplies
+        # the same keys as real env vars, which take precedence over the file.
+        env_file=".env",
+        env_file_encoding="utf-8",
     )
 
 
