@@ -132,6 +132,12 @@ def _build_step_call(step: str, req: dict, token: str) -> dict:
         ns = (req.get("namespace") or "").strip()
         if ns:
             args["namespace"] = ns
+        cd = (req.get("chart_dir") or "").strip()
+        if cd:
+            args["chart_dir"] = cd
+        vf = (req.get("values_file") or "").strip()
+        if vf:
+            args["values_file"] = vf
         return {
             "name": "open_release_pr",
             "args": args,
@@ -169,20 +175,31 @@ def propose(state: ReleaseState) -> Command[Literal["gate", "respond"]]:
     env = (req.get("environment") or "uat").lower()
     env = "prod" if env in ("prod", "prd", "production") else "uat"
     namespace = (req.get("namespace") or "").strip()
+    chart_dir = (req.get("chart_dir") or "").strip()
+    values_file = (req.get("values_file") or "").strip()
     pairs = req["images"]
 
-    # Mirror open_release_pr exactly: uat deploy -> uat file (ns override on uat);
-    # prod deploy -> BOTH files (uat uses its default ns, the override applies to prd).
-    preview: dict = {
-        "uat/deployment.json": [
-            assemble_entry(i["name"], i["tag"], "uat", namespace if env == "uat" else "")
-            for i in pairs
-        ]
-    }
-    if env == "prod":
-        preview["prd/deployment.json"] = [
-            assemble_entry(i["name"], i["tag"], "prd", namespace) for i in pairs
-        ]
+    # Mirror open_release_pr exactly so the preview equals what apply will write:
+    # uat deploy -> uat file (overrides apply to uat); prod deploy -> BOTH files
+    # (the edited entry is the prd entry; the uat copy inherits chart_dir but derives
+    # the uat values-file + uat namespace).
+    if env == "uat":
+        preview: dict = {
+            "uat/deployment.json": [
+                assemble_entry(i["name"], i["tag"], "uat", namespace, chart_dir, values_file)
+                for i in pairs
+            ]
+        }
+    else:
+        preview = {
+            "uat/deployment.json": [
+                assemble_entry(i["name"], i["tag"], "uat", "", chart_dir, "") for i in pairs
+            ],
+            "prd/deployment.json": [
+                assemble_entry(i["name"], i["tag"], "prd", namespace, chart_dir, values_file)
+                for i in pairs
+            ],
+        }
 
     chart_str = ", ".join(f"{i['name']}:{i['tag']}" for i in pairs)
     files = " + ".join(preview.keys())

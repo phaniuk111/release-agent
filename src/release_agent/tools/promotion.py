@@ -45,15 +45,18 @@ def _namespace_for(env: str, override: str = "") -> str:
     return settings.prd_namespace if env == "prd" else settings.uat_namespace
 
 
-def assemble_entry(name: str, version: str, env: str, namespace: str = "") -> dict:
+def assemble_entry(
+    name: str, version: str, env: str, namespace: str = "", chart_dir: str = "", values_file: str = ""
+) -> dict:
     """Build a full deployment.json entry. The dev gives name + version; the
     helm_chart_dir constant and the env-specific values-file + namespace come from
-    config (namespace may be overridden per request)."""
+    config. Any of namespace / chart_dir / values_file may be overridden per request
+    (e.g. when the user edits the JSON in the UI)."""
     return {
         "helm_chart_name": name,
         "helm_chart_version": version,
-        "helm_chart_dir": settings.helm_chart_dir,
-        "helm_values_file_name": _values_file(env),
+        "helm_chart_dir": chart_dir.strip() if (chart_dir and chart_dir.strip()) else settings.helm_chart_dir,
+        "helm_values_file_name": values_file.strip() if (values_file and values_file.strip()) else _values_file(env),
         "gke_namespace": _namespace_for(env, namespace),
     }
 
@@ -327,10 +330,18 @@ class DeployInput(BaseModel):
     namespace: str = Field(
         default="", description="GKE namespace (optional; defaults per environment)"
     )
+    chart_dir: str = Field(
+        default="", description="helm_chart_dir override (optional; defaults from config)"
+    )
+    values_file: str = Field(
+        default="", description="helm_values_file_name override (optional; defaults per environment)"
+    )
 
 
 @tool(args_schema=DeployInput)
-def open_release_pr(environment: str, image_tags: str, namespace: str = "") -> str:
+def open_release_pr(
+    environment: str, image_tags: str, namespace: str = "", chart_dir: str = "", values_file: str = ""
+) -> str:
     """Deploy Helm chart(s) by upserting their entry into the deployment JSON via the
     protected-branch PR chain.
 
@@ -373,13 +384,14 @@ def open_release_pr(environment: str, image_tags: str, namespace: str = "") -> s
         return _mut
 
     if env == "uat":
-        uat_entries = [assemble_entry(n, v, "uat", namespace) for n, v in pairs]
+        uat_entries = [assemble_entry(n, v, "uat", namespace, chart_dir, values_file) for n, v in pairs]
         file_mutations = [(uat_path, _mutator(uat_entries))]
         to_prd = False
-    else:  # prod -> write BOTH files (uat default ns; namespace override applies to prd)
+    else:  # prod -> write BOTH files. The edited entry is the PRD entry; the UAT copy
+        # inherits the chart_dir but derives the uat values-file + uat namespace.
         prd_path = _deployment_path("prd")
-        uat_entries = [assemble_entry(n, v, "uat") for n, v in pairs]
-        prd_entries = [assemble_entry(n, v, "prd", namespace) for n, v in pairs]
+        uat_entries = [assemble_entry(n, v, "uat", "", chart_dir, "") for n, v in pairs]
+        prd_entries = [assemble_entry(n, v, "prd", namespace, chart_dir, values_file) for n, v in pairs]
         file_mutations = [(uat_path, _mutator(uat_entries)), (prd_path, _mutator(prd_entries))]
         to_prd = True
 
