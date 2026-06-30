@@ -109,12 +109,15 @@ directly; every change is a PR chain.**
 - **Deploy to PROD** does NOT write PRD directly. It **adds the chart to today's PRD
   release PR** — a single day-long PR on a `release/prd/<date>` branch that **accumulates**
   (upsert by chart name) **both** `uat/deployment.json` and `prd/deployment.json`. Every
-  prod deploy through the day adds to the same open PR.
-- **Release to PROD (merge at cutoff).** The PRD release PR is merged to PRD only **after
-  the daily cutoff** (`PRD_CUTOFF_HOUR_UTC`, default 16:00 UTC), and only when asked —
-  say *"release prod"* (→ `merge_prod_release`, also a UI quick-action). Before the cutoff
-  the merge is refused and the PR stays open; after the cutoff it merges and the production
-  deploy runs.
+  prod deploy through the day adds to the same open PR (the staging view).
+- **Release to PROD (promote at cutoff).** Production is **never written directly and never
+  skips SIT/UAT.** After the daily cutoff (`PRD_CUTOFF_HOUR_UTC`, default 16:00 UTC), and
+  only when asked — say *"release prod"* (→ `merge_prod_release`, also a UI quick-action) —
+  the staged charts are **promoted through the full chain `… → SIT → UAT → PRD`** (a fresh
+  branch cut from current SIT, upserted so existing prod charts are preserved — no
+  stale-merge conflict against intraday UAT deploys). Before the cutoff it's refused and
+  the PR stays open; if a protected hop needs review the staging PR stays open until PRD
+  merges.
 - **Editable JSON, multi-chart.** The UI "Deploy to UAT / PROD" buttons open the **whole
   `{"include":[...]}` file as an editable JSON box** — add entries to deploy several
   charts at once. Typing a deploy command in chat (e.g. `abc:1.2.3 promote to uat`) opens
