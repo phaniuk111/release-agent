@@ -151,7 +151,7 @@ def run_cli(thread_id: str | None = None, repo: str | None = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--thread-id", default=None, help="Resume or label a conversation thread")
-    parser.add_argument("--repo", default=None, help="Override BUILD_REPO (e.g. phaniuk111/devops)")
+    parser.add_argument("--repo", default=None, help="Override BUILD_REPO (e.g. org/repo)")
     args = parser.parse_args()
 
     run_cli(thread_id=args.thread_id, repo=args.repo)

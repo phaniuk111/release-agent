@@ -2,7 +2,8 @@
 
 The agent was simplified from three repo concepts to two: the separate
 `target_repo` was folded into `build_repo`. These tests pin that contract:
-- `build_repo` is the canonical code+config+build repo (default phaniuk111/devops),
+- `build_repo` is the canonical code+config+build repo (no hardcoded default — comes
+  from env / .env / Helm ConfigMap),
 - the legacy `RELEASE_AGENT_TARGET_REPO` env spelling still resolves (backward compat),
 - `target_repo` no longer exists, and the gh_tools module exposes BUILD_REPO not TARGET_REPO.
 
@@ -32,11 +33,15 @@ def _clean_repo_env(monkeypatch):
 def _fresh_settings():
     from release_agent.config import Settings
 
-    return Settings()
+    # _env_file=None so a developer's local .env never leaks into these default checks.
+    return Settings(_env_file=None)
 
 
-def test_build_repo_default_is_devops():
-    assert _fresh_settings().build_repo == "phaniuk111/devops"
+def test_repos_have_no_hardcoded_default():
+    # Repos must come from configuration (env / .env / Helm ConfigMap), never source.
+    s = _fresh_settings()
+    assert s.build_repo == ""
+    assert s.deploy_repo == ""
 
 
 def test_build_repo_canonical_env(monkeypatch):

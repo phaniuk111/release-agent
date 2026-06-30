@@ -37,12 +37,8 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("release_copilot")
 
-# Use shared Pydantic settings
+# Use shared Pydantic settings (repos come from env / .env / Helm ConfigMap).
 settings = app_settings
-
-# Ensure build_repo is set (for health endpoint etc.)
-if not settings.build_repo:
-    settings.build_repo = "phaniuk111/devops"
 
 app = FastAPI(title=settings.app_title, version="0.2.0")
 
