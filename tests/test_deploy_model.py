@@ -60,3 +60,29 @@ def test_replace_with_overrides_not_upserts():
 def test_image_tags_path_still_works():
     ents = _entries_for_deploy("uat", "a:1,b:2", "", "", "", "")
     assert [e["helm_chart_name"] for e in ents] == ["a", "b"]
+
+
+def test_lenient_parse_recovers_loose_objects():
+    from release_agent.agent.parsing import _try_parse_json_payload
+
+    # two entries, NO comma between them, NO include[] wrapper (the reported case)
+    loose = (
+        '{ "helm_chart_name":"svc-a","helm_chart_version":"1.0" }\n'
+        '{ "helm_chart_name":"svc-b","helm_chart_version":"2.0" }'
+    )
+    req = _try_parse_json_payload(loose)
+    assert [e["name"] for e in req["images"]] == ["svc-a", "svc-b"]
+    assert len(req["entries"]) == 2
+
+
+def test_lenient_parse_missing_comma_inside_include():
+    from release_agent.agent.parsing import _try_parse_json_payload
+
+    loose = '{"include":[{"helm_chart_name":"a","helm_chart_version":"1"}{"helm_chart_name":"b","helm_chart_version":"2"}]}'
+    assert [e["name"] for e in _try_parse_json_payload(loose)["images"]] == ["a", "b"]
+
+
+def test_non_json_returns_none():
+    from release_agent.agent.parsing import _try_parse_json_payload
+
+    assert _try_parse_json_payload("just deploy something please") is None

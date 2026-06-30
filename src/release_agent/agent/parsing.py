@@ -240,19 +240,69 @@ def _extract_change_fields(text: str) -> dict:
     return out
 
 
+def _extract_json_objects(text: str) -> list:
+    """Brace-scan for every balanced {...} substring and json.loads each independently
+    (string-aware, regex-free). Lets us recover chart entries from loose/concatenated
+    objects — e.g. two entries pasted with no comma and no include[] wrapper."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth, in_str, esc, end = 0, False, False, -1
+        for j in range(i, n):
+            ch = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+        if end == -1:
+            break
+        try:
+            obj = json.loads(text[i : end + 1])
+        except (json.JSONDecodeError, TypeError):
+            # This {...} isn't valid on its own (e.g. an outer wrapper with a missing
+            # inner comma) — descend one char so nested valid entry objects are found.
+            i += 1
+            continue
+        if isinstance(obj, dict) and ("helm_chart_name" in obj or "helm_chart_version" in obj):
+            out.append(obj)
+        i = end + 1
+    return out
+
+
 def _try_parse_json_payload(text: str) -> Optional[dict]:
     """Parse a pasted JSON deploy payload into a release_request. Accepts:
       - the deploy form entry: {"helm_chart_name", "helm_chart_version", "gke_namespace"}
       - an include list: {"include": [{helm_chart_name, helm_chart_version, gke_namespace}, ...]}
       - legacy: {"images": {name: tag}} or {"images": [{image|name, tag}]}
-    Returns {images: [{name, tag}], environment, namespace, raw} or None."""
+      - loose/concatenated entry objects (missing commas / no include[] wrapper) — recovered
+    Returns {images: [{name, tag}], entries, environment, namespace, ...} or None."""
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return None
     try:
         data = json.loads(text[start : end + 1])
     except (json.JSONDecodeError, TypeError):
-        return None
+        # Lenient recovery: brace-scan loose entry objects and wrap them in include[].
+        recovered = _extract_json_objects(text)
+        if not recovered:
+            return None
+        data = {"include": recovered}
     if not isinstance(data, dict):
         return None
 
