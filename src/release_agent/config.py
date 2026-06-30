@@ -87,10 +87,36 @@ class Settings(BaseSettings):
         default="PRD",
         validation_alias=AliasChoices("PRD_BRANCH", "PROD_BRANCH", "RELEASE_PRD_BRANCH"),
     )
-    # JSON config the promotion updates (same path on each env branch).
+    # JSON config the promotion updates (same path on each env branch). [legacy]
     env_config_path: str = Field(
         default="configs/images.json",
         validation_alias=AliasChoices("ENV_CONFIG_PATH", "RELEASE_ENV_CONFIG_PATH"),
+    )
+    # --- Helm-chart deployment model -------------------------------------------
+    # The deploy repo carries an env-pathed deployment JSON per environment, shaped
+    # {"include": [entry, ...]}. {env} is uat or prd -> uat/deployment.json, prd/deployment.json.
+    deployment_path_pattern: str = Field(
+        default="{env}/deployment.json",
+        validation_alias=AliasChoices("DEPLOYMENT_PATH_PATTERN", "RELEASE_DEPLOYMENT_PATH_PATTERN"),
+    )
+    # Constant filled into every entry's helm_chart_dir ("comes from the helm chart").
+    helm_chart_dir: str = Field(
+        default="hlm-all/com/db/eod-ds",
+        validation_alias=AliasChoices("HELM_CHART_DIR", "RELEASE_HELM_CHART_DIR"),
+    )
+    # Env-specific values file: {env} -> uat/values_uat.yaml, prd/values_prd.yaml.
+    helm_values_pattern: str = Field(
+        default="{env}/values_{env}.yaml",
+        validation_alias=AliasChoices("HELM_VALUES_PATTERN", "RELEASE_HELM_VALUES_PATTERN"),
+    )
+    # Default GKE namespace per environment (a deploy request may override).
+    uat_namespace: str = Field(
+        default="eod1",
+        validation_alias=AliasChoices("UAT_NAMESPACE", "RELEASE_UAT_NAMESPACE"),
+    )
+    prd_namespace: str = Field(
+        default="eod1",
+        validation_alias=AliasChoices("PRD_NAMESPACE", "PROD_NAMESPACE", "RELEASE_PRD_NAMESPACE"),
     )
     # Change-request template the pasted JSON updates; the CHG is created from it
     # when the UAT->PRD PR is raised.

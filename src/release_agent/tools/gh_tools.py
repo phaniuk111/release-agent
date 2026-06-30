@@ -15,7 +15,9 @@ from .pull_requests import _find_prs_for_images, _find_pr_for_images  # noqa: F4
 from .controls import (  # noqa: F401
     _build_repo_full, _find_build_run, _controls_report, _image_build_workflow,
 )
-from .promotion import _lead_time_ok, _apply_via_pr_chain, _merge_pr  # noqa: F401
+from .promotion import (  # noqa: F401
+    _apply_via_pr_chain, _merge_pr, assemble_entry, _upsert_entry, _remove_entry,
+)
 from .release_window import get_release_status  # noqa: F401
 
 # Tools assembled for the agent:
@@ -29,7 +31,7 @@ from .pull_requests import (  # noqa: F401
 )
 from .controls import verify_image_tag_build, get_build_controls  # noqa: F401
 from .release_window import check_release_window  # noqa: F401
-from .promotion import open_release_pr, raise_prod_release, remove_from_release  # noqa: F401
+from .promotion import open_release_pr, remove_from_release  # noqa: F401
 
 GH_TOOLS = [
     list_allowed_images,
@@ -47,7 +49,6 @@ GH_TOOLS = [
     verify_image_tag_build,
     get_build_controls,
     open_release_pr,
-    raise_prod_release,
     remove_from_release,
     check_release_window,
 ]

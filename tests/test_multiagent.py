@@ -16,7 +16,6 @@ RELEASE_MUTATIONS = {
     "apply_json_update",
     "dispatch_workflow",
     "open_release_pr",
-    "raise_prod_release",
 }
 
 SPECIALIST_TOOLSETS = {

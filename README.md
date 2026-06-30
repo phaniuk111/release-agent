@@ -69,79 +69,81 @@ uvicorn src.release_agent.app_fastapi:app --reload --port 8000
 python -m src.release_agent.cli
 ```
 
-Example chat:
+Example chat (or use the **Deploy to UAT / PROD** form, which submits the same JSON):
 
 ```
-You: promote payments-api:2.0.33 to prod please
-Agent: Parsed: payments-api → 2.0.33
-       Current release-manifest.json: ...
-       Proposed diff: ...
-       Reply exactly with: CONFIRM-7k9p2 to apply the JSON update and dispatch the workflow.
+You: deploy abc-client-api-svc:1.1.1230 to prod
+Agent: Deploy abc-client-api-svc:1.1.1230 to PROD — will upsert into
+       `uat/deployment.json + prd/deployment.json`:
+       { "uat/deployment.json": [ {helm_chart_name, helm_chart_version, helm_chart_dir,
+         helm_values_file_name: "uat/values_uat.yaml", gke_namespace: "eod1"} ],
+         "prd/deployment.json": [ {... helm_values_file_name: "prd/values_prd.yaml", ...} ] }
+       Reply CONFIRM-7k9p2 to confirm.
 You: CONFIRM-7k9p2
-Agent: ✅ Updated release-manifest.json (sha...)
-       🚀 Dispatched workflow run #4872 (this created PR #42 in deployment repo)
-       Ask me: "summarize PR 42" or "get controls status" to track CHG ticket and RLFT gates in the PR comments.
+Agent: ✅ deployed to PROD (uat/deployment.json, prd/deployment.json)
+       — UAT run #4872; PRD run #4873.  PRs: working→SIT (merged); SIT→UAT (merged); UAT→PRD (merged).
 ```
 
-## PRD build-control gate (RLFT/RFTL pass/fail)
+## Deploy flow — Helm charts to UAT / PRD
 
-Before a production release, the agent fetches the **release controls recorded in
-the tag's build pipeline** and reports each one PASS/FAIL — e.g. *RFTL0001: PASSED,
-RFTL0002: FAILED*. A PRD release is **fail-closed**: if any control failed, it's blocked.
+The unit of deploy is a **Helm-chart entry** written into an env-pathed deployment
+JSON in the deploy repo: `uat/deployment.json` and `prd/deployment.json`, each shaped
+`{"include": [entry, ...]}` where an entry is:
 
-- **Trigger:** ask for a PRD release with an image:tag ("promote payments-api:v1.1.0 to prod") — controls are shown up front before the change-request step.
-- **Auto-discovery:** the tag is resolved to its commit and the build-workflow run at that commit is found automatically.
-- **Run id fallback:** if the run can't be located from the tag, the agent **asks the developer for the GitHub Actions run id** that generated the tag, then fetches controls from `get_build_controls(run_id=…)`.
-- **Server-side enforcement:** `open_release_pr` re-checks controls for prod and refuses to open the PR if any failed (so the UI JSON-paste path is gated too).
-- **Config:** `BUILD_REPO` (where build pipelines run), `CONTROL_PREFIXES` (default `RLFT,RFTL`), `PRD_REQUIRE_CONTROLS` (default `true`).
+```json
+{ "helm_chart_name": "abc-client-api-svc", "helm_chart_version": "1.1.1230",
+  "helm_chart_dir": "hlm-all/com/db/eod-ds", "helm_values_file_name": "uat/values_uat.yaml",
+  "gke_namespace": "eod1" }
+```
 
-Controls are GitHub Actions **steps** in the build job whose name starts with a
-control prefix; pass/fail comes from each step's conclusion. The standalone
-`verify_image_tag_build` check (tag-gen step + log marker) still exists for
-build-authenticity verification.
+The dev supplies only **chart name + version** (+ namespace); the agent fills the
+constant `helm_chart_dir` and the env-specific `helm_values_file_name` + `gke_namespace`
+from config. Entries are keyed by `helm_chart_name` (one per chart per env file).
 
-## Daily release flow — SIT → UAT → PRD (accumulate, then cut at the cutoff)
+**The env branches (SIT → UAT → PRD) are protected — the agent never commits to them
+directly; every change is a PR chain.**
 
-The deploy repo has three branches: **SIT → UAT → PRD**. **They are protected — the
-agent never commits to them directly; every change is a PR.** A "promote to prod /
-add image" request opens a **PR chain (working branch → SIT → UAT)** so the image
-lands on UAT, where the day's release set accumulates. The single **UAT → PRD**
-release PR is raised **only after the daily cutoff** (default 16:00 UTC) — raising
-it **locks the day**, so it must not happen earlier or no more images could be added.
+- **Deploy to UAT** upserts the chart into `uat/deployment.json` via the chain
+  `working → SIT → UAT`.
+- **Deploy to PROD** upserts the chart into **both** files in one chain run
+  `working → SIT → UAT → PRD` — `uat/deployment.json` (uat values file + namespace)
+  **and** `prd/deployment.json` (prd values file + namespace). No cutoff, no waiting:
+  prod writes both immediately.
+- **Structured input.** The UI "Deploy to UAT / PROD" buttons open a 3-field form
+  (chart name, version, namespace) that submits the assembled JSON entry — so the
+  deploy path is deterministic, with no LLM and no NL ambiguity. The graph previews
+  the exact entry, then a `CONFIRM-xxxxxx` token gates the write (HITL).
+- **Concurrent-deploy guard:** before opening a PR the agent checks whether a PR
+  touching the deployment JSON is **already open** — if so it refuses and reports that
+  PR number instead of stacking a conflicting one (Dependabot/Renovate-style).
+- **Deploy run surfaced:** when a `SIT → UAT` (and `UAT → PRD`) PR merges, the agent
+  looks up the GitHub Actions run the merge triggered (by merge commit) and shows it as
+  a clickable link. Needs a workflow on a UAT/PRD push (e.g. `deploy-uat.yml`,
+  `on-merge-deploy.yml`); otherwise the run is simply omitted.
+- **Remove / unstage:** `remove_from_release(image_names, environment)` drops the chart
+  by `helm_chart_name` via the same PR chain — `uat` removes from `uat/deployment.json`;
+  `prod` removes from **both** files.
 
-> Auto-merge of the SIT/UAT PRs assumes the agent's token may merge those lower-env
-> branches (CI-gated). If your protection requires human review there, the agent
-> raises the PRs and they merge once approved; the PRD release PR is always left
-> open for approval. Removal works the same way (a PR that drops the image).
+This is **shared across sessions** because the state lives in **GitHub itself** (the two
+deployment JSONs), not in any in-process memory. The side panel reads
+`GET /api/release-status` live and shows the charts on UAT vs PRD and which are pending
+(on UAT but not yet matching PRD), refreshed on load, after each turn, and every 60s.
+Ask in chat: *"what's deployed to prod?"* (`check_release_window`).
 
-- **Before the cutoff:** promote-to-prod stages onto UAT via the PR chain (no change request needed yet). Multiple developers keep adding all day.
-- **Concurrent-promote guard:** before opening a promote PR the agent checks whether a PR touching the images config is **already open** — if so it refuses and reports that PR number instead of stacking a second, conflicting PR (the same approach Dependabot/Renovate use). One promote per file at a time; the next dev retries once it merges.
-- **Deploy run surfaced:** when the `SIT → UAT` PR merges, the agent looks up the **GitHub Actions run** that the merge triggered (by the merge commit) and shows it in the chat as a clickable link — e.g. `staged on UAT — UAT deploy run #28425044664`. This requires a workflow in the deploy repo that runs on a UAT push, e.g. `on: push: branches: [UAT]` (a sample `deploy-uat.yml` with a `concurrency: { group: deploy-uat }` serialization guard lives in the deploy repo). If no such workflow exists, the run is simply omitted.
-- **After the cutoff:** the prod request (or the `raise_prod_release` tool) raises the one UAT → PRD PR with the full UAT set; this needs a change request (drives the auto-created **CHG/RMG**) and locks the day.
-- **Lead time:** the change request's `start_date` must be **tomorrow or later** (`PRD_LEAD_TIME_DAYS`, default 1) — a same-day production start is refused, no PR raised.
-- **Nothing to release:** if UAT has no changes vs PRD (a quiet day), no PR is raised — the tool reports there is nothing to release rather than opening an empty PR. The agent is request-driven, so nothing auto-raises either.
-- **Remove / unstage:** "remove `<image>` from the release" (`remove_from_release`) goes through the same PR chain as add — a PR from a working branch into **SIT** dropping the image, then a **SIT → UAT** promotion PR, both merged so the removal reaches UAT. Each image is reverted to PRD's current tag (or dropped if it was new). Branches are never edited directly.
-- **Locked:** once today's UAT → PRD PR exists (open or merged), further adds are refused with a link to that PR.
-- **Build-control gate:** every staged image is checked first — a failed RLFT/RFTL control blocks it (see above).
+- **Config:** `SIT_BRANCH`/`UAT_BRANCH`/`PRD_BRANCH`, `DEPLOYMENT_PATH_PATTERN`
+  (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`
+  (`{env}/values_{env}.yaml`), `UAT_NAMESPACE`/`PRD_NAMESPACE`.
 
-This is **shared across sessions** because the state lives in **GitHub itself**
-(the UAT images config + the UAT→PRD PR), not in any in-process memory. The side
-panel reads `GET /api/release-status` live and shows one of: 🧺 *collecting on UAT
-(N images)* / ⏰ *cutoff passed — ready to raise* / 🔒 *raised & locked (PR #N)*,
-refreshed on load, after every turn, and every 60s. Ask in chat: *"is there a PRD
-release scheduled today?"* (`check_release_window`).
-
-- **Config:** `SIT_BRANCH`/`UAT_BRANCH`/`PRD_BRANCH`, `PRD_CUTOFF_HOUR_UTC` (default `16`).
-
-The per-session LangGraph checkpointer is only for *conversation* memory; the
-release state is durable in GitHub, so it survives restarts and is consistent for
-every developer without a separate database.
+The per-session LangGraph checkpointer is only for *conversation* memory; the deploy
+state is durable in GitHub, so it survives restarts and is consistent for every
+developer without a separate database.
 
 ## What It Does Today (PoV)
 
-- Uses `BUILD_REPO`'s `image-workflows.json` to know valid images.
-- Updates (or creates) `release-manifest.json` in the build repo with your image:tag values.
+- Takes a Helm chart `name:version` (+ namespace) and upserts the full deployment entry
+  into `uat/deployment.json` (UAT) or **both** `uat/` + `prd/deployment.json` (PROD).
 - Drives the SIT → UAT → PRD promotion as protected-branch PR chains in `DEPLOY_REPO`.
+- Surfaces the GitHub Actions deploy run each merge triggers.
 - All GitHub calls go through a tightly controlled **PyGithub** tool layer — no arbitrary shell.
 
 ## Architecture
@@ -159,10 +161,9 @@ Two clearly separated lanes share one LangGraph `StateGraph`:
    - `status` / `pr` / `controls` / `general` — **read-only**
    - `ops` — limited to `remove_from_release` + `retrigger_deployment_workflow`
 
-   The four release-defining mutations (`apply_json_update`, `dispatch_workflow`,
-   `open_release_pr`, `raise_prod_release`) are bound to **no** specialist — so a
-   confused or prompt-injected model *structurally* cannot trigger a release from a
-   chat question. Each specialist runs a bounded ReAct loop (`REACT_MAX_TOOL_TURNS`)
+   The three release-defining mutations (`apply_json_update`, `dispatch_workflow`,
+   `open_release_pr`) are bound to **no** specialist — so a confused or prompt-injected
+   model *structurally* cannot trigger a release from a chat question. Each specialist runs a bounded ReAct loop (`REACT_MAX_TOOL_TURNS`)
    and degrades gracefully (a "narrow the request" message) if it can't converge.
 
 - **PyGithub** for all GitHub operations — no `gh` subprocess in the tool layer; the
@@ -172,7 +173,7 @@ Two clearly separated lanes share one LangGraph `StateGraph`:
   PyGithub client (idempotent methods only, so PR creation is never double-fired).
 - **FastAPI** single interface with SSE streaming; threaded conversations via a
   MemorySaver checkpointer (Postgres recommended for prod).
-- **Config-driven:** repos, GCP project, branches, paths, cutoff, etc. come from `.env` /
+- **Config-driven:** repos, GCP project, branches, paths, namespaces, etc. come from `.env` /
   env vars / the Helm ConfigMap — nothing org-specific is hardcoded in the source.
 
 ### Project structure
@@ -251,8 +252,8 @@ uvicorn src.release_agent.app_fastapi:app --reload --port 8000
 ```
 
 Example message to test the full flow:
-- `promote payments-api:2.0.99-test`
-- Wait for proposal + token
+- `deploy abc-client-api-svc:1.1.1230 to uat` (or use the **Deploy to UAT** form)
+- Wait for the assembled-entry preview + token
 - Paste the `CONFIRM-...` token
 
 See `scripts/test_gh_tools.py` for a safe read-only smoke test.
@@ -274,7 +275,7 @@ PYTHONPATH=src python -m release_agent.tools_cli find_prs '{"search_term":"payme
 ```
 
 Read/query tools are safe to run. The mutating tools (`open_release_pr`,
-`apply_json_update`, `dispatch_workflow`, `remove_from_release`, `raise_prod_release`,
+`apply_json_update`, `dispatch_workflow`, `remove_from_release`,
 `retrigger_deployment_workflow`) **execute for real** — this runner bypasses the
 human-confirmation gate by design. Add `--dry-run` to simulate them without executing
 (read-only tools still run), so you can sweep the whole toolset safely:

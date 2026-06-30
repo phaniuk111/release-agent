@@ -177,7 +177,7 @@ async def chat_page():
         <div class="flex gap-2">
             <input id="input" 
                    type="text" 
-                   placeholder="e.g. promote <image>:<tag> to uat"
+                   placeholder="e.g. deploy my-chart 1.2.3 to uat"
                    class="flex-1 glass rounded-2xl px-5 py-3.5 text-white placeholder-slate-500 focus:outline-none">
             <button onclick="sendMessage()" 
                     class="send-btn px-8 rounded-2xl font-semibold flex items-center gap-2">
@@ -371,10 +371,10 @@ async def chat_page():
         // Quick actions — what the agent can do. mode 'send' runs immediately;
         // otherwise the text is pre-filled so the user edits the image:tag first.
         const CAPABILITIES = [
-            {icon:'fa-flask',             label:'Promote to UAT',       desc:'stage image(s) on the UAT branch',           form:'uat'},
-            {icon:'fa-shield-halved',     label:'Promote to PROD',      desc:'stage on UAT; UAT→PRD PR raised after cutoff', form:'prod'},
-            {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage an image before the cutoff',          send:false, text:"remove <image-name> from today's release"},
-            {icon:'fa-calendar-day',      label:"Today's release window", desc:'is a PRD release already scheduled today?',  send:true,  text:'is there a PRD release scheduled today?'},
+            {icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
+            {icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
+            {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from today's release"},
+            {icon:'fa-calendar-day',      label:'Sync status',           desc:'are UAT and PRD in sync?',                    send:true,  text:'what is the current UAT vs PRD sync status?'},
             {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
             {icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RLFT/RFTL gates for a tag',         send:false, text:'check build controls for <image>:<tag> before a PRD release'},
             {icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
@@ -412,7 +412,7 @@ async def chat_page():
                 btn.innerHTML = '<i class="fa-solid ' + c.icon + ' text-emerald-400 mt-1"></i>' +
                     '<span><span class="font-medium">' + c.label + '</span><br>' +
                     '<span class="text-[11px] text-slate-400">' + c.desc + '</span></span>';
-                btn.addEventListener('click', () => c.form ? showJsonPromote(c.form) : runQuick(c.text, c.send));
+                btn.addEventListener('click', () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send));
                 grid.appendChild(btn);
             });
             wrap.appendChild(grid);
@@ -426,68 +426,77 @@ async def chat_page():
             chat.scrollTop = chat.scrollHeight;
         }
 
-        // JSON-paste promote — a textarea prefilled with the env template. The user
-        // edits it (multiple images; for prod a change_request block) and submits the
-        // raw JSON; the agent parses it (the "environment" field routes uat vs prod).
-        function showJsonPromote(env) {
+        // Deploy form — three inputs: chart name, version, namespace.
+        // On submit sends a JSON string through the normal /api/chat SSE flow.
+        // The backend parses the JSON, assembles the Helm entry, previews it,
+        // and replies with a CONFIRM-XXXXXX token; the existing interrupt UI
+        // then handles the confirmation step unchanged.
+        function showDeployForm(env) {
             const isProd = env === 'prod';
-            const template = isProd ? {
-                environment: 'prod',
-                images: { '<image-name>': '<tag>', '<another-image>': '<tag>' },
-                change_request: {
-                    short_description: '<short description of the change>',
-                    description: '<detailed description>',
-                    assignment_group: '<assignment group>',
-                    implementation_plan: '<implementation plan>',
-                    backout_plan: '<backout plan>',
-                    risk: '<low|medium|high>',
-                    start_date: '<YYYY-MM-DDThh:mm>',
-                    end_date: '<YYYY-MM-DDThh:mm>'
-                }
-            } : {
-                environment: 'uat',
-                images: { '<image-name>': '<tag>', '<another-image>': '<tag>' }
-            };
+            const accentT = isProd ? 'text-amber-300' : 'text-emerald-300';
+            const accentB = isProd ? 'border-amber-700' : 'border-emerald-700';
+            const accentBtn = isProd ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500';
+            const icon = isProd ? 'fa-shield-halved' : 'fa-flask';
+            const heading = isProd ? 'Deploy to PROD' : 'Deploy to UAT';
 
             const chat = document.getElementById('chat');
             const wrap = document.createElement('div');
             wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm';
 
             const title = document.createElement('div');
-            title.className = 'mb-2 font-semibold flex items-center gap-2 ' + (isProd ? 'text-amber-300' : 'text-emerald-300');
-            title.innerHTML = '<i class="fa-solid ' + (isProd ? 'fa-shield-halved' : 'fa-flask') + '"></i> ' +
-                (isProd ? 'Promote to PROD (UAT → PRD) — edit the change-request JSON' : 'Promote to UAT — edit the images JSON');
+            title.className = 'mb-3 font-semibold flex items-center gap-2 ' + accentT;
+            title.innerHTML = '<i class="fa-solid ' + icon + '"></i> ' + heading;
             wrap.appendChild(title);
 
-            const ta = document.createElement('textarea');
-            ta.id = 'promote-json';
-            ta.rows = isProd ? 16 : 7;
-            ta.spellcheck = false;
-            ta.className = 'w-full bg-slate-900 border rounded-lg px-3 py-2 text-xs font-mono mb-2 ' + (isProd ? 'border-amber-700' : 'border-emerald-700');
-            ta.value = JSON.stringify(template, null, 2);
-            wrap.appendChild(ta);
+            function makeField(labelText, inputId, placeholder, defaultVal) {
+                const label = document.createElement('label');
+                label.className = 'block text-xs text-slate-400 mb-1';
+                label.textContent = labelText;
+                label.htmlFor = inputId;
+                const inp = document.createElement('input');
+                inp.type = 'text';
+                inp.id = inputId;
+                inp.placeholder = placeholder;
+                inp.value = defaultVal || '';
+                inp.spellcheck = false;
+                inp.className = 'w-full bg-slate-900 border ' + accentB + ' rounded-lg px-3 py-1.5 text-xs font-mono mb-3 text-white placeholder-slate-600 focus:outline-none';
+                const wrapper = document.createElement('div');
+                wrapper.appendChild(label);
+                wrapper.appendChild(inp);
+                return wrapper;
+            }
+
+            const nsId = 'df-ns-' + env;
+            const chartId = 'df-chart-' + env;
+            const verId = 'df-ver-' + env;
+
+            wrap.appendChild(makeField('Helm chart name', chartId, 'e.g. my-service', ''));
+            wrap.appendChild(makeField('Helm chart version', verId, 'e.g. 1.2.3', ''));
+            wrap.appendChild(makeField('GKE namespace', nsId, 'e.g. eod1', 'eod1'));
 
             const row = document.createElement('div');
-            row.className = 'flex items-center gap-3';
+            row.className = 'flex items-center gap-3 mt-1';
             const submit = document.createElement('button');
-            submit.className = (isProd ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500') + ' px-4 py-1.5 rounded-lg text-sm font-medium';
-            submit.textContent = isProd ? 'Propose UAT → PRD' : 'Propose UAT promote';
+            submit.className = accentBtn + ' px-4 py-1.5 rounded-lg text-sm font-medium';
+            submit.textContent = heading;
             const err = document.createElement('span');
             err.className = 'text-[11px] text-red-400';
+
             submit.addEventListener('click', () => {
                 err.textContent = '';
-                if (ta.value.indexOf('<') !== -1 || ta.value.indexOf('>') !== -1) {
-                    err.textContent = 'Replace the <…> placeholders with real values first.'; return;
-                }
-                let data;
-                try { data = JSON.parse(ta.value); }
-                catch (e) { err.textContent = 'Invalid JSON: ' + e.message; return; }
-                const imgCount = data.images ? Object.keys(data.images).length : 0;
-                if (!imgCount) { err.textContent = 'Provide at least one image in "images".'; return; }
-                if (isProd && (!data.change_request || Object.keys(data.change_request).length === 0)) {
-                    err.textContent = 'PROD requires a non-empty "change_request" block.'; return;
-                }
-                sendMessage(ta.value);   // send the raw JSON; the agent parses it
+                const chartName = document.getElementById(chartId).value.trim();
+                const chartVer  = document.getElementById(verId).value.trim();
+                const ns        = document.getElementById(nsId).value.trim();
+                if (!chartName) { err.textContent = 'helm_chart_name is required.'; return; }
+                if (!chartVer)  { err.textContent = 'helm_chart_version is required.'; return; }
+                if (!ns)        { err.textContent = 'gke_namespace is required.'; return; }
+                const payload = JSON.stringify({
+                    environment: env,
+                    helm_chart_name: chartName,
+                    helm_chart_version: chartVer,
+                    gke_namespace: ns
+                });
+                sendMessage(payload);
             });
             row.appendChild(submit);
             row.appendChild(err);
@@ -497,46 +506,49 @@ async def chat_page():
             chat.scrollTop = chat.scrollHeight;
         }
 
-        // Today's PRD release window — shared across ALL sessions/developers
-        // because it's read live from GitHub (the PRD PR is the source of truth).
+        // Release status panel — reads the new Helm-chart-based API shape:
+        // { date_utc, now_utc, uat_charts, prd_charts, pending, in_sync, reason }
         async function loadReleaseStatus() {
             const banner = document.getElementById('release-banner');
-            const icon = document.getElementById('rb-icon');
-            const title = document.getElementById('rb-title');
+            const icon   = document.getElementById('rb-icon');
+            const title  = document.getElementById('rb-title');
             const detail = document.getElementById('rb-detail');
             try {
                 const res = await fetch(API_BASE + '/api/release-status');
                 const s = await res.json();
                 banner.classList.remove('hidden');
-                // reset state classes
+                // reset classes; add colour below based on state
                 banner.className = 'mb-4 rounded-2xl border px-4 py-3 text-sm';
                 if (s.error) {
                     banner.classList.add('border-slate-700', 'bg-slate-900');
                     icon.className = 'fa-solid fa-triangle-exclamation text-slate-400';
-                    title.textContent = "Couldn't check today's release window";
+                    title.textContent = "Couldn't fetch release status";
                     detail.textContent = s.error;
                     return;
                 }
-                const n = Object.keys(s.uat_images || {}).length;
-                const foot = `${n} image(s) on UAT • UTC now ${s.now_utc} • cutoff ${s.cutoff_utc} • ${s.date_utc}`;
-                if (s.locked) {
-                    const p = s.prd_pr_today;
-                    banner.classList.add('border-rose-600/50', 'bg-rose-500/10');
-                    icon.className = 'fa-solid fa-lock text-rose-400';
-                    title.innerHTML = `🔒 Today's UAT→PRD release is raised — `
-                        + `<a href="${p.url}" target="_blank" class="underline text-rose-300">PR #${p.number}</a>`
-                        + ` <span class="text-xs font-normal text-rose-200/80">(${p.state}, by ${p.author || 'unknown'})</span>`;
-                    detail.textContent = `Day locked — no more images can be added. ${foot}`;
-                } else if (s.cutoff_passed) {
-                    banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
-                    icon.className = 'fa-solid fa-bell text-amber-400';
-                    title.textContent = '⏰ Cutoff passed — ready to raise the UAT→PRD release PR';
-                    detail.textContent = `Promote to prod now raises the day's release PR. ${foot}`;
-                } else {
+                const pending = Array.isArray(s.pending) ? s.pending : [];
+                const foot = `UTC ${s.now_utc} • ${s.date_utc}`;
+                if (s.in_sync) {
                     banner.classList.add('border-emerald-600/50', 'bg-emerald-500/10');
-                    icon.className = 'fa-solid fa-layer-group text-emerald-400';
-                    title.textContent = '🧺 Collecting images on UAT for the daily release';
-                    detail.textContent = `Promote to prod STAGES on UAT; the UAT→PRD PR opens after ${s.cutoff_utc} UTC. ${foot}`;
+                    icon.className = 'fa-solid fa-circle-check text-emerald-400';
+                    title.textContent = '✅ UAT in sync with PRD';
+                    detail.textContent = (s.reason ? s.reason + ' • ' : '') + foot;
+                } else {
+                    const n = pending.length;
+                    banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
+                    icon.className = 'fa-solid fa-rocket text-amber-400';
+                    title.textContent = '🚀 ' + n + ' chart' + (n === 1 ? '' : 's') + ' pending to PRD';
+                    let detailHtml = (s.reason ? s.reason + ' • ' : '') + foot;
+                    if (n > 0) {
+                        detailHtml += '<br><span class="text-slate-400">';
+                        detailHtml += pending.map(function(p) {
+                            return p.helm_chart_name + ' ' + p.uat_version
+                                + ' → ' + (p.prd_version || 'not deployed');
+                        }).join(' &nbsp;│&nbsp; ');
+                        detailHtml += '</span>';
+                    }
+                    detail.innerHTML = detailHtml;
+                    return;   // detail already set via innerHTML; skip the textContent line below
                 }
             } catch (e) {
                 banner.classList.remove('hidden');
@@ -550,7 +562,7 @@ async def chat_page():
         window.onload = () => {
             const chat = document.getElementById('chat');
             if (chat.children.length === 0) {
-                addMessage('bot', 'Hello! I can help you update image tags and trigger release workflows.');
+                addMessage('bot', 'Hello! I can help you deploy Helm charts and manage release workflows.');
                 showCapabilities();
             }
             loadReleaseStatus();

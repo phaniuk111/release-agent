@@ -85,15 +85,15 @@ def build_graph(checkpointer=None):
         retry_on=_is_transient_error,
     )
 
-    # One ToolNode for the deterministic mutation lane, registered under two names
-    # (propose_tools / apply_tools) so each node has exactly one outgoing edge.
+    # One ToolNode for the deterministic mutation lane (apply_tools runs the confirmed
+    # open_release_pr). propose no longer needs a tool call — it assembles the entry
+    # preview itself and goes straight to the gate.
     tool_node = ToolNode(GH_TOOLS)
 
     graph = StateGraph(ReleaseState)
 
     graph.add_node("parse", parse_intent)
     graph.add_node("propose", propose)
-    graph.add_node("propose_tools", tool_node, retry_policy=retry)
     graph.add_node("gate", confirmation_gate)
     graph.add_node("apply", build_apply_and_dispatch)
     graph.add_node("rerun", rerun)
@@ -222,7 +222,6 @@ def build_graph(checkpointer=None):
     )
 
     # Propose → confirm → apply path (propose & gate route via Command).
-    graph.add_edge("propose_tools", "gate")
     graph.add_edge("apply", "apply_tools")
     graph.add_edge("apply_tools", "finalize")
     graph.add_conditional_edges(

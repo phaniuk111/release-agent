@@ -16,9 +16,7 @@ from ..tools.gh_tools import _find_prs_for_images
 from .parsing import (
     _detect_environment,
     _detect_rerun,
-    _extract_change_fields,
     _extract_images_from_text,
-    _is_chg_line,
     _is_query_not_promote,
     _is_removal,
     _try_parse_json_payload,
@@ -70,26 +68,23 @@ def parse_intent(state: ReleaseState) -> dict:
         out["rerun_steps"] = None
         return out
 
-    # A pasted JSON payload (multi-image + change_request) is the preferred input.
+    # A pasted JSON payload (the deploy form's entry) is the preferred structured input.
     payload = _try_parse_json_payload(last)
     if payload is not None:
         out["release_request"] = payload
         out["rerun_steps"] = None
         return out
 
-    # Strip change-ticket lines first so their timestamps (e.g. 2026-07-01T18:00)
-    # aren't mis-parsed as image:tag pairs.
-    image_text = " ".join(ln for ln in last.splitlines() if not _is_chg_line(ln))
-    pairs = _extract_images_from_text(image_text)
-    # A message that names an image:tag but reads as a question (e.g. "find the
-    # PR for payments-api:2.0.1") is a lookup, not a promote — send it to the LLM.
+    pairs = _extract_images_from_text(last)
+    # A message that names a chart:version but reads as a question (e.g. "find the PR
+    # for payments-api:2.0.1") is a lookup, not a deploy — send it to the LLM.
     if pairs and _is_query_not_promote(last):
         pairs = []
     out["release_request"] = (
         {
             "images": pairs,
             "environment": _detect_environment(last),
-            "change_request": _extract_change_fields(last),
+            "namespace": "",
             "raw": last[:300],
         }
         if pairs
@@ -132,10 +127,11 @@ def _build_step_call(step: str, req: dict, token: str) -> dict:
             "id": f"call_{STEP_DISPATCH}_{uuid.uuid4().hex[:8]}",
         }
     if step == STEP_RELEASE_PR:
-        env = (req.get("environment") or "prod").lower()
+        env = (req.get("environment") or "uat").lower()
         args = {"environment": env, "image_tags": image_str}
-        if env == "prod":
-            args["change_request_json"] = json.dumps(req.get("change_request") or {})
+        ns = (req.get("namespace") or "").strip()
+        if ns:
+            args["namespace"] = ns
         return {
             "name": "open_release_pr",
             "args": args,
@@ -144,66 +140,16 @@ def _build_step_call(step: str, req: dict, token: str) -> dict:
     raise ValueError(f"unknown step {step}")
 
 
-def _prod_controls_summary(req: dict) -> tuple[str, bool, bool]:
-    """Fetch each image:tag's build-pipeline release controls (RLFT/RFTL) and return
-    (markdown summary, all_passed, all_located). Used to surface PASS/FAIL up front
-    on a PRD release and block when a control failed."""
-    from ..tools.gh_tools import (
-        _get_github_client,
-        _build_repo_full,
-        _find_build_run,
-        _controls_report,
-    )
+def propose(state: ReleaseState) -> Command[Literal["gate", "respond"]]:
+    """Assemble the deployment.json entry(ies) the deploy will write, show them for
+    confirmation, mint the (stable) token, and go to the human gate.
 
-    images = req.get("images") or []
-    repo_full = _build_repo_full()
-    try:
-        repo_obj = _get_github_client().get_repo(repo_full)
-    except Exception as e:
-        return (f"⚠️ Couldn't reach the build repo `{repo_full}`: {e}", False, False)
+    No mutation and no LLM here — this is a deterministic preview of the exact JSON
+    that the confirmed apply step will upsert. uat -> uat/deployment.json; prod ->
+    BOTH uat/deployment.json and prd/deployment.json (each with its env values file
+    + namespace)."""
+    from ..tools.gh_tools import assemble_entry
 
-    lines, all_passed, all_located = [], True, True
-    for im in images:
-        name, tag = im.get("name"), im.get("tag")
-        try:
-            run, err = _find_build_run(repo_obj, name, tag)
-            if run is None:
-                all_located = False
-                lines.append(
-                    f"• **{name}:{tag}** — ⚠️ build run not found ({err}); share the run id "
-                    "that generated this tag."
-                )
-                continue
-            rep = _controls_report(repo_full, name, tag, run)
-            ctrls = rep["controls"]
-            if not ctrls:
-                all_located = False
-                lines.append(
-                    f"• **{name}:{tag}** — ⚠️ no control steps in [this run]({rep['run']['url']})."
-                )
-                continue
-            marks = []
-            for c in ctrls:
-                m = "✅" if c["passed"] else ("❌" if c["failed"] else "⏳")
-                marks.append(f"{m} {c['control']}")
-            ok = rep["all_controls_passed"]
-            all_passed = all_passed and ok
-            lines.append(
-                f"• **{name}:{tag}** — controls {'PASS' if ok else 'FAIL'} "
-                f"([run]({rep['run']['url']})): " + " · ".join(marks)
-            )
-        except Exception as e:
-            all_located = False
-            lines.append(f"• **{name}:{tag}** — ⚠️ controls check error: {e}")
-    return ("**Build release controls (RLFT/RFTL):**\n" + "\n".join(lines), all_passed, all_located)
-
-
-def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]:
-    """Craft an AIMessage with a real tool_call so ToolNode can run propose_update.
-
-    Also mints the (stable) confirmation token here and persists it in state so
-    the gate node sees the SAME token before and after the interrupt resume.
-    """
     req = state.release_request
     if not req or not req.get("images"):
         return Command(
@@ -212,136 +158,43 @@ def propose(state: ReleaseState) -> Command[Literal["propose_tools", "respond"]]
                 "messages": [
                     AIMessage(
                         content=(
-                            "I didn't find any image:tag pairs. Try: "
-                            "`promote payments-api:2.0.33 and orders-api to v1.2.3`"
+                            "I didn't find any chart:version pairs. Try: "
+                            "`deploy abc-client-api-svc:1.1.1230 to uat`"
                         )
                     )
                 ]
             },
         )
 
-    # PROD promotions (SIT->UAT->PRD): controls gate, then honor the daily window.
-    # Before the cutoff, images are STAGED on UAT (no change request needed). After
-    # the cutoff, the single UAT->PRD release PR is raised (change request required).
-    env = (req.get("environment") or "prod").lower()
-    pre_msgs: list = []
-    if env == "prod":
-        summary, all_passed, all_located = _prod_controls_summary(req)
-        # Fail-closed: a located control that FAILED blocks the promotion.
-        if all_located and not all_passed:
-            return Command(
-                goto="respond",
-                update={
-                    "messages": [
-                        AIMessage(
-                            content=(
-                                summary
-                                + "\n\n❌ One or more build controls **FAILED** — I can't stage this for the "
-                                "PRD release until they're resolved and the build is re-run."
-                            )
-                        )
-                    ]
-                },
-            )
+    env = (req.get("environment") or "uat").lower()
+    env = "prod" if env in ("prod", "prd", "production") else "uat"
+    namespace = (req.get("namespace") or "").strip()
+    pairs = req["images"]
 
-        from ..tools.gh_tools import get_release_status
-
-        status = get_release_status()
-
-        if status.get("locked"):
-            p = status.get("prd_pr_today") or {}
-            return Command(
-                goto="respond",
-                update={
-                    "messages": [
-                        AIMessage(
-                            content=(
-                                summary
-                                + f"\n\n🔒 Today's UAT→PRD release **PR #{p.get('number')}** is already raised "
-                                f"({p.get('url', '')}) — the day is locked, no more images can be added."
-                            )
-                        )
-                    ]
-                },
-            )
-
-        if status.get("cutoff_passed"):
-            # Raise path — change request required.
-            cr = req.get("change_request") or {}
-            if not cr:
-                note = summary + "\n\n"
-                if not all_located:
-                    note += (
-                        "Some controls couldn't be auto-located — share the build **run id** that "
-                        "generated the tag and I'll verify them.\n\n"
-                    )
-                return Command(
-                    goto="respond",
-                    update={
-                        "messages": [
-                            AIMessage(
-                                content=(
-                                    note
-                                    + f"⏰ The {status.get('cutoff_utc')} UTC cutoff has passed. Raising today's "
-                                    "**UAT → PRD** release PR requires a change request (it drives the CHG). Use the "
-                                    "**Promote to PROD** action and paste the change-request JSON."
-                                )
-                            )
-                        ]
-                    },
-                )
-            # Production lead time: the change start_date must be tomorrow or later.
-            from ..tools.gh_tools import _lead_time_ok
-
-            lead_ok, lead_msg = _lead_time_ok(cr)
-            if not lead_ok:
-                return Command(
-                    goto="respond",
-                    update={
-                        "messages": [
-                            AIMessage(
-                                content=(
-                                    summary
-                                    + f"\n\n📅 Can't raise the release — {lead_msg} Update the change "
-                                    "request's `start_date` and resubmit."
-                                )
-                            )
-                        ]
-                    },
-                )
-            pre_msgs.append(
-                AIMessage(
-                    content=(
-                        summary
-                        + "\n\n⏰ Cutoff passed — I'll stage these on UAT and **raise today's UAT → PRD "
-                        "release PR** (CHG/RMG auto-created). Confirm to proceed."
-                    )
-                )
-            )
-        else:
-            # Staging path — no change request needed; release happens at the cutoff.
-            pre_msgs.append(
-                AIMessage(
-                    content=(
-                        summary
-                        + f"\n\n🧺 I'll **stage** these on the **UAT** branch for today's release. The single "
-                        f"UAT → PRD PR is raised after **{status.get('cutoff_utc')} UTC**, so more images can be "
-                        "added until then. Confirm to stage."
-                    )
-                )
-            )
-
-    image_str = ",".join(f"{i['name']}:{i['tag']}" for i in req["images"])
-    token = f"CONFIRM-{uuid.uuid4().hex[:6]}"
-    tool_call = {
-        "name": "propose_update",
-        "args": {"image_tags": image_str},
-        "id": f"call_propose_{uuid.uuid4().hex[:8]}",
+    # Mirror open_release_pr exactly: uat deploy -> uat file (ns override on uat);
+    # prod deploy -> BOTH files (uat uses its default ns, the override applies to prd).
+    preview: dict = {
+        "uat/deployment.json": [
+            assemble_entry(i["name"], i["tag"], "uat", namespace if env == "uat" else "")
+            for i in pairs
+        ]
     }
-    ai = AIMessage(content="", tool_calls=[tool_call])  # type: ignore[arg-type]
+    if env == "prod":
+        preview["prd/deployment.json"] = [
+            assemble_entry(i["name"], i["tag"], "prd", namespace) for i in pairs
+        ]
+
+    chart_str = ", ".join(f"{i['name']}:{i['tag']}" for i in pairs)
+    files = " + ".join(preview.keys())
+    token = f"CONFIRM-{uuid.uuid4().hex[:6]}"
+    msg = (
+        f"**Deploy {chart_str} to {env.upper()}** — will upsert into `{files}`:\n\n"
+        "```json\n" + json.dumps(preview, indent=2) + "\n```\n\n"
+        f"Reply `{token}` to confirm."
+    )
     return Command(
-        goto="propose_tools",
-        update={"messages": pre_msgs + [ai], "confirmation_token": token},
+        goto="gate",
+        update={"proposed": preview, "confirmation_token": token, "messages": [AIMessage(content=msg)]},
     )
 
 
@@ -363,59 +216,20 @@ def confirmation_gate(
     """
     token = state.confirmation_token or f"CONFIRM-{uuid.uuid4().hex[:6]}"
 
-    # Extract the proposal produced by propose_update (deterministic re-read).
+    # The assembled entries come from `propose` (in state) — deterministic on resume.
     proposed = state.proposed or {}
-    changes: list = []
-    tmsg = _last_tool_message(state.messages)
-    if tmsg is not None:
-        raw = str(tmsg.content)
-        if raw.startswith("ERROR"):
-            return Command(
-                goto="respond",
-                update={
-                    "messages": [
-                        AIMessage(
-                            content=(
-                                f"⚠️ Could not build a proposal: {raw}\n\n"
-                                "(If this is a GitHub error, make sure `GH_TOKEN` is set and "
-                                "the repo/manifest path exist.)"
-                            )
-                        )
-                    ]
-                },
-            )
-        try:
-            data = json.loads(raw)
-            proposed = data.get("proposed", proposed)
-            changes = data.get("changes", [])
-        except (json.JSONDecodeError, TypeError):
-            proposed = {"raw": raw[:500]}
-
     req = state.release_request or {}
-    env = (req.get("environment") or "prod").lower()
-    change = req.get("change_request") or {}
-    if env == "uat":
-        action = "stage these images on the **UAT** branch"
-    elif env == "prod":
-        # Stage on UAT (before cutoff) vs raise the day's UAT→PRD release PR (after).
-        from ..tools.gh_tools import get_release_status
-
-        status = get_release_status() or {}
-        if status.get("cutoff_passed"):
-            action = "**raise today's UAT → PRD release PR** (CHG/RMG auto-created from the change request)"
-        else:
-            action = f"**stage** these images on **UAT** (the UAT → PRD PR is raised after {status.get('cutoff_utc')} UTC)"
-    else:
-        action = "apply these changes and dispatch the workflow"
+    env = (req.get("environment") or "uat").lower()
+    env = "prod" if env in ("prod", "prd", "production") else "uat"
+    files = ", ".join(proposed.keys()) if isinstance(proposed, dict) and proposed else "the deployment config"
+    action = f"deploy these chart(s) to **{env.upper()}** (upserts `{files}`)"
 
     user_reply = interrupt(
         {
             "type": "confirmation",
             "token": token,
             "proposed": proposed,
-            "changes": changes,
             "environment": env,
-            "change_request": change if env == "prod" else {},
             "message": (
                 f"Reply with exactly `{token}` (or `yes {token.split('-', 1)[-1]}`) to {action}."
             ),
@@ -542,21 +356,22 @@ def _summarize_step_result(step: str, content: str) -> str:
     if step == STEP_RELEASE_PR:
         action = data.get("action")
         if action == "pr_already_open":
-            return (f"⏸ a promote PR is already open (#{data.get('pr_number')} {data.get('pr_url','')}) — "
+            return (f"⏸ a deploy PR is already open (#{data.get('pr_number')} {data.get('pr_url','')}) — "
                     "merge or close it first, then retry")
-        if action == "staged_to_uat":
-            imgs = data.get("uat_images") or {}
-            base = f"staged on UAT ({len(imgs)} image(s) total)"
-            dr = data.get("deploy_run")
-            if dr:
-                base += f" — UAT deploy run [#{dr['id']}]({dr['url']}) ({dr.get('status') or 'queued'})"
-            else:
-                base += " — UAT→PRD PR is raised after the cutoff"
-            return base
-        num, url = data.get("pr_number"), data.get("pr_url") or ""
-        base = f"raised UAT→PRD release PR #{num} — {url}" if num else "release updated"
-        if data.get("chg"):
-            base += f" (CHG {data['chg']}, RMG {data.get('rmg')})"
+        if action == "no_change":
+            return data.get("note", "no change — already deployed with that version")
+        env = data.get("environment", "uat")
+        files = ", ".join(data.get("files_updated") or [])
+        base = f"deployed to {env.upper()} ({files})" if files else f"deployed to {env.upper()}"
+        runs = []
+        if data.get("deploy_run"):
+            dr = data["deploy_run"]
+            runs.append(f"UAT run [#{dr['id']}]({dr['url']}) ({dr.get('status') or 'queued'})")
+        if data.get("deploy_run_prd"):
+            dr = data["deploy_run_prd"]
+            runs.append(f"PRD run [#{dr['id']}]({dr['url']}) ({dr.get('status') or 'queued'})")
+        if runs:
+            base += " — " + "; ".join(runs)
         return base
     return "ok"
 
