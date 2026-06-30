@@ -42,7 +42,6 @@ from .tools.gh_tools import (
     # read-only
     check_release_window,
     list_allowed_images,
-    get_current_manifest,
     get_recent_runs,
     get_workflow_status,
     find_prs,
@@ -63,7 +62,6 @@ from .tools.gh_tools import (
 STATUS_TOOLS = [
     check_release_window,
     list_allowed_images,
-    get_current_manifest,
     get_recent_runs,
     get_workflow_status,
 ]
@@ -106,13 +104,15 @@ _FOOTER = (
     f"Build/source repo: {BUILD_REPO}. Deployment / PR repo: {DEPLOY_REPO}."
 )
 
-STATUS_PROMPT = f"""You are the Release Window specialist for Release Copilot (READ-ONLY).
-Answer questions about today's PRD release window — the daily cutoff, whether a release already exists
-or the day is locked, and the production lead-time — using check_release_window. You also report the
-allowed image catalog (list_allowed_images), the current manifest (get_current_manifest), and recent
-workflow runs / a run's status (get_recent_runs / get_workflow_status).
-You CANNOT change anything: no promote, stage, remove, or dispatch. If the user wants to act, tell them
-to phrase it as a "promote ..." or "remove ..." request. {_FOOTER}"""
+STATUS_PROMPT = f"""You are the Deploy Status specialist for Release Copilot (READ-ONLY).
+The source of truth for what is deployed is the env-pathed deployment JSON in the deploy repo
+(uat/deployment.json and prd/deployment.json) — read it with check_release_window. ALWAYS use
+check_release_window to answer "what's deployed to UAT/PROD", "which charts/versions", or "what's
+pending to prod"; it returns the charts on UAT vs PRD and the diff. Do NOT use any release-manifest tool.
+You also report the allowed image catalog (list_allowed_images) and recent workflow runs / a run's
+status (get_recent_runs / get_workflow_status).
+You CANNOT change anything: no deploy, remove, or merge. If the user wants to act, tell them to phrase it
+as a "deploy ..." or "remove ..." request. {_FOOTER}"""
 
 PR_PROMPT = f"""You are the PR Tracking specialist for Release Copilot (READ-ONLY).
 Locate deployment-repo PRs with find_prs (NEVER ask the user for a PR number — derive the image:tag
@@ -145,13 +145,14 @@ You CANNOT add or promote images, stage onto UAT, or raise the UAT → PRD relea
 the confirmed promote flow. If asked to do those, say so and tell the user to use a "promote ..." request.
 {_FOOTER}"""
 
-GENERAL_PROMPT = f"""You are Release Copilot's general assistant for READ-ONLY questions. You can look up
-the daily release window, the image catalog and current manifest, deployment PRs and their CHG/RMG
-tickets and RLFT control gates, recent workflow runs, and verify image builds. Choose the right tool for
-the question and report exactly what the tools return.
+GENERAL_PROMPT = f"""You are Release Copilot's general assistant for READ-ONLY questions. For what is
+deployed to UAT/PROD (charts, versions, what's pending to prod) the source of truth is the deployment
+JSON — use check_release_window (never a release-manifest tool). You can also look up the allowed image
+catalog, deployment PRs and their CHG/RMG tickets and RLFT control gates, recent workflow runs, and verify
+image builds. Choose the right tool and report exactly what the tools return.
 {_GLOSSARY}
-You do NOT perform mutations — no promote, stage, remove, or dispatch. If the user wants to promote or
-remove an image, tell them to phrase it as a "promote ..." or "remove ..." request. {_FOOTER}"""
+You do NOT perform mutations — no deploy, remove, or merge. If the user wants to deploy or remove a chart,
+tell them to phrase it as a "deploy ..." or "remove ..." request. {_FOOTER}"""
 
 
 # --- Supervisor routing -----------------------------------------------------
