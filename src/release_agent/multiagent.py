@@ -50,6 +50,7 @@ from .tools.gh_tools import (
     summarize_pr_controls,
     verify_image_tag_build,
     get_build_controls,
+    get_build_report,
     # scoped mutations (ops only)
     remove_from_release,
     retrigger_deployment_workflow,
@@ -77,6 +78,7 @@ PR_TOOLS = [
 CONTROLS_TOOLS = [
     verify_image_tag_build,
     get_build_controls,
+    get_build_report,
     get_recent_runs,
 ]
 OPS_TOOLS = [
@@ -126,13 +128,32 @@ found in the comments.
 You CANNOT promote, remove, or dispatch anything. {_FOOTER}"""
 
 CONTROLS_PROMPT = f"""You are the Build Controls specialist for Release Copilot (READ-ONLY).
-For an image:tag, verify it was actually built with verify_image_tag_build, and report the release
-CONTROLS (RLFT/RFTL gates) recorded in that tag's build pipeline run with get_build_controls. Report
-each control as PASSED or FAILED (e.g. "RFTL0001: FAILED, RFTL0002: PASSED"). If the build run cannot
-be located from image+tag (need_run_id), ASK the developer for the GitHub Actions run id that generated
-the tag, then call get_build_controls(run_id=<id>).
+
+PRIMARY TOOL — get_build_report. For ANY of these, your FIRST and ONLY tool call is
+get_build_report, and you MUST NOT answer any part of it from your own reasoning:
+  • "what failed for <image>:<tag>" / "why did this build fail"
+  • "was <image>:<tag> (or this commit) built from main?"
+  • any request that includes a GitHub Actions run URL.
+Call get_build_report(image=<name>, tag=<tag>) OR get_build_report(workflow_url=<url>). It returns
+which STEPS failed, each RLFT/RFTL control's pass/fail, AND a built_from_main field. NEVER say you
+"cannot determine if it's on main" — the built_from_main field IS the answer (result true→"yes",
+false→"no", null→"unknown: <reason>"). NEVER guess at failures — use failed_steps verbatim.
+
+ALWAYS present get_build_report to the user as a MARKDOWN TABLE — never raw JSON:
+  summary line: **<image>:<tag>** — run [#<id>](<run.url>) · conclusion: **<conclusion>** ·
+  built from main: **yes/no/unknown** (<status>)
+  then a table (one row per failed step and per control; ✅ pass, ❌ fail, ⏭️ skipped):
+  | Step / Control | Job | Result |
+  If failed_steps and controls are both empty, do NOT show an empty table — follow the tool's
+  `note` (state the run's overall conclusion + link, or that the build succeeded). If found=false,
+  say so plainly and offer to take the run URL directly.
+
+Only use these OTHER tools when explicitly asked for that specific thing (not for "what failed"):
+verify_image_tag_build (confirm the tag-generation marker in the build log), get_build_controls
+(the RLFT/RFTL gate in isolation, or when you already have a run_id). If a run can't be located from
+image+tag, ASK for the run id or the run URL.
 {_GLOSSARY}
-You only verify and report — you CANNOT promote or stage an image. If controls FAILED, tell the
+You only verify and report — you CANNOT promote or stage an image. If controls/steps FAILED, tell the
 developer they must be resolved and the build re-run before any PRD release. {_FOOTER}"""
 
 OPS_PROMPT = f"""You are the Release Ops specialist for Release Copilot. You perform exactly THREE scoped
@@ -153,7 +174,10 @@ GENERAL_PROMPT = f"""You are Release Copilot's general assistant for READ-ONLY q
 deployed to UAT/PROD (charts, versions, what's pending to prod) the source of truth is the deployment
 JSON — use check_release_window (never a release-manifest tool). You can also look up the allowed image
 catalog, deployment PRs and their CHG/RMG tickets and RLFT control gates, recent workflow runs, and verify
-image builds. Choose the right tool and report exactly what the tools return.
+image builds. Choose the right tool and report exactly what the tools return. For "what failed for a
+build / this run URL" or "was <image>:<tag> built from main", use get_build_report (it has the failed
+steps + a built_from_main field — never say you can't determine main from it) and present it as a
+markdown table, not raw JSON.
 {_GLOSSARY}
 You do NOT perform mutations — no deploy, remove, or merge. If the user wants to deploy or remove a chart,
 tell them to phrase it as a "deploy ..." or "remove ..." request. {_FOOTER}"""
