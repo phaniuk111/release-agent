@@ -1,5 +1,7 @@
 """Build-pipeline verification + RLFT/RFTL release-control tools."""
 
+from urllib.parse import urlparse
+
 from ._common import (
     settings,
     tool,
@@ -108,7 +110,7 @@ def verify_image_tag_build(
 
     try:
         wf = repo_obj.get_workflow(workflow)
-        runs = [r for r in itertools.islice(wf.get_runs(), 100) if r.head_sha == commit]
+        runs = list(itertools.islice(wf.get_runs(head_sha=commit), 20))
     except Exception as e:
         return f"ERROR verifying build: {e}"
 
@@ -271,7 +273,8 @@ def _find_build_run(repo_obj, image: str, tag: str):
         return None, f"tag '{tag}' not found"
     try:
         wf = repo_obj.get_workflow(workflow)
-        runs = [r for r in itertools.islice(wf.get_runs(), 100) if r.head_sha == commit]
+        # Filter by head_sha server-side (GitHub) instead of scanning 100 runs client-side.
+        runs = list(itertools.islice(wf.get_runs(head_sha=commit), 20))
     except Exception as e:
         return None, str(e)
     if not runs:
@@ -368,6 +371,177 @@ def get_build_controls(image: str = "", tag: str = "", repo: str = "", run_id: i
     return json.dumps(report, indent=2)
 
 
-# ============ Environment promotion: update config JSON + open a PR (PyGithub) ============
+# ============ Build report: step failures + built-from-main (live, PyGithub) ============
 
+
+def _parse_run_url(url: str):
+    """Extract (owner/repo, run_id) from a GitHub Actions run URL, e.g.
+    https://github.com/<owner>/<repo>/actions/runs/<run_id>[/job/<id>|/attempts/<n>].
+    Returns (repo_full_or_None, run_id_or_None). No regex — plain path split."""
+    try:
+        parts = [p for p in urlparse(url).path.split("/") if p]
+        if "runs" in parts:
+            i = parts.index("runs")
+            run_id = int(parts[i + 1])
+            repo_full = f"{parts[0]}/{parts[1]}" if i >= 2 else ""
+            return (repo_full or None, run_id)
+    except Exception:
+        pass
+    return (None, None)
+
+
+def _check_built_from_main(repo_obj, commit: str) -> dict:
+    """Is `commit` reachable from the repo's default branch (i.e. built from main)?
+    Uses the compare API: comparing default_branch -> commit, status 'identical'/'behind'
+    means the commit is an ancestor of the default branch (built from main); 'ahead'/
+    'diverged' means it carries commits not on the default branch (not built from main)."""
+    default = repo_obj.default_branch
+    try:
+        status = repo_obj.compare(default, commit).status  # identical|behind|ahead|diverged
+        return {"result": status in ("identical", "behind"), "default_branch": default, "status": status}
+    except Exception as e:
+        return {"result": None, "default_branch": default, "reason": str(e)}
+
+
+def _failed_steps(run) -> list[dict]:
+    """Failed NON-control steps across the run's jobs. Control steps (RLFT/RFTL...) are
+    excluded here because they're reported separately in the `controls` array — this keeps
+    a failed control from showing up twice in the rendered table."""
+    out: list[dict] = []
+    try:
+        for job in run.jobs():
+            for step in getattr(job, "steps", None) or []:
+                name = getattr(step, "name", "") or ""
+                concl = getattr(step, "conclusion", None)
+                if concl in _FAIL_CONCLUSIONS and not _is_control_step(name):
+                    out.append(
+                        {
+                            "job": job.name,
+                            "name": name,
+                            "number": getattr(step, "number", None),
+                            "conclusion": concl,
+                        }
+                    )
+    except Exception:
+        pass
+    return out
+
+
+class BuildReportInput(BaseModel):
+    image: str = Field(
+        default="", description="Image name (resolves the tag's build run). Provide image+tag, OR workflow_url."
+    )
+    tag: str = Field(
+        default="", description="Git tag that was built, e.g. v1.2.3. Provide image+tag, OR workflow_url."
+    )
+    workflow_url: str = Field(
+        default="",
+        description="A GitHub Actions run URL (…/actions/runs/<id>) to inspect directly, instead of image+tag.",
+    )
+    repo: str = Field(
+        default="",
+        description="owner/repo where the build ran. Defaults to the build repo; auto-derived from workflow_url.",
+    )
+
+
+@tool(args_schema=BuildReportInput)
+def get_build_report(image: str = "", tag: str = "", workflow_url: str = "", repo: str = "") -> str:
+    """Report a build's outcome for an image:tag (or a GitHub Actions run URL): which STEPS failed,
+    which RLFT/RFTL controls passed/failed, and whether the tag was built from the build repo's
+    main/default branch. Read-only, resolved live from GitHub (tag -> commit -> run -> steps).
+
+    PRESENT THE RESULT TO THE USER AS A MARKDOWN TABLE — a summary line with the clickable run URL
+    + conclusion + built-from-main verdict, then a table of Step/Control | Job | Result rows with
+    ✅/❌ markers. Do NOT show the raw JSON to the user."""
+    repo_full = _build_repo_full(repo)
+
+    # 1) Resolve the run — directly from a URL, or by image+tag -> commit -> run.
+    if workflow_url.strip():
+        url_repo, run_id = _parse_run_url(workflow_url)
+        repo_full = repo or url_repo or repo_full
+        if not run_id:
+            return json.dumps(
+                {"found": False, "reason": f"could not parse a run id from '{workflow_url}'."}, indent=2
+            )
+        try:
+            repo_obj = _get_github_client().get_repo(repo_full)
+            run = repo_obj.get_workflow_run(int(run_id))
+        except Exception as e:
+            return json.dumps(
+                {"found": False, "repo": repo_full, "reason": f"run {run_id} not found in {repo_full}: {e}"},
+                indent=2,
+            )
+    else:
+        if not (image and tag):
+            return json.dumps(
+                {"found": False, "reason": "provide a workflow_url, or both image and tag."}, indent=2
+            )
+        try:
+            repo_obj = _get_github_client().get_repo(repo_full)
+        except Exception as e:
+            return f"ERROR building report: {e}"
+        run, err = _find_build_run(repo_obj, image, tag)
+        if run is None:
+            return json.dumps(
+                {
+                    "found": False,
+                    "image": image,
+                    "tag": tag,
+                    "repo": repo_full,
+                    "reason": err,
+                    "hint": "If you have the build's workflow run URL, pass it as workflow_url.",
+                },
+                indent=2,
+            )
+
+    # 2) Assemble the report from permanent run/step metadata (no log downloads).
+    commit = getattr(run, "head_sha", None)
+    controls = _collect_controls(run)
+    failed_controls = [c["control"] for c in controls if c["failed"]]
+    other = [c["control"] for c in controls if not c["passed"] and not c["failed"]]
+    gate = "PASS" if (controls and not failed_controls and not other) else ("FAIL" if failed_controls else "UNKNOWN")
+    failed_steps = _failed_steps(run)
+    run_succeeded = run.conclusion == "success"
+
+    if failed_steps or failed_controls:
+        note = (
+            "Render for the user as a markdown table — a summary line (run URL, conclusion, "
+            "built-from-main) then Step/Control | Job | Result rows with ✅/❌. Do not show JSON."
+        )
+    elif run_succeeded:
+        note = (
+            "The build SUCCEEDED — no failed steps. Give a one-line success summary with the run "
+            "link and the built-from-main verdict; a table isn't needed. Do not show JSON."
+        )
+    else:
+        note = (
+            f"The run's overall conclusion is '{run.conclusion}' but NO individual step or control "
+            "failure was recorded (e.g. a workflow-level / startup / config failure, or a job that "
+            "never ran). Tell the user the run failed at the workflow level with no per-step detail, "
+            "and link the run so they can inspect it. Do not show JSON."
+        )
+
+    report = {
+        "found": True,
+        "image": image or None,
+        "tag": tag or getattr(run, "head_branch", None),
+        "repo": repo_full,
+        "commit": commit,
+        "run": {
+            "id": run.id,
+            "url": run.html_url,
+            "name": run.name,
+            "status": run.status,
+            "conclusion": run.conclusion,
+        },
+        "run_succeeded": run_succeeded,
+        "failed_steps": failed_steps,
+        "controls": controls,
+        "gate": gate,
+        "built_from_main": (
+            _check_built_from_main(repo_obj, commit) if commit else {"result": None, "reason": "no commit on run"}
+        ),
+        "note": note,
+    }
+    return json.dumps(report, indent=2)
 

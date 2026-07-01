@@ -51,6 +51,14 @@ def test_read_only_specialists_have_no_mutations_at_all():
         assert not (mutating & _names(SPECIALIST_TOOLSETS[label])), f"{label} should be read-only"
 
 
+def test_get_build_report_is_read_only():
+    # The live build-report tool is a read-only lookup: available to the controls
+    # specialist (and the general read-only union), never to the mutating ops lane.
+    assert "get_build_report" in _names(M.CONTROLS_TOOLS)
+    assert "get_build_report" in _names(M.GENERAL_TOOLS)
+    assert "get_build_report" not in _names(M.OPS_TOOLS)
+
+
 def test_route_map_matches_route_schema():
     # Every Route literal has a node target, and vice-versa.
     schema_routes = set(M.Route.model_fields["route"].annotation.__args__)
