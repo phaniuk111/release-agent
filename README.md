@@ -1,6 +1,6 @@
-# release-agent — LangGraph GitHub Release Copilot (PoV)
+# release-agent — ADK GitHub Release Copilot (PoV)
 
-Chat with a LangGraph agent to drive your release process:
+Chat with an ADK agent to drive your release process:
 
 - Tell it a Helm chart + version (or edit the deployment JSON directly) to deploy
 - It writes the env-pathed `deployment.json` in your GitHub deploy repo
@@ -122,7 +122,7 @@ directly; every change is a PR chain.**
   `{"include":[...]}` file as an editable JSON box** — add entries to deploy several
   charts at once. Typing a deploy command in chat (e.g. `abc:1.2.3 promote to uat`) opens
   the **same editor pre-filled**. Submit is deterministic (no LLM, no NL ambiguity): the
-  graph previews the exact file it will write, then a `CONFIRM-xxxxxx` token gates the
+  ADK deploy flow previews the exact file it will write, then a `CONFIRM-xxxxxx` token gates the
   write (HITL).
 - **Concurrent-deploy guard:** before opening a PR the agent checks whether a PR
   touching the deployment JSON is **already open** — if so it refuses and reports that
@@ -146,9 +146,9 @@ in today's PRD release PR?"* (`check_release_window`).
   (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`, `PRD_CUTOFF_HOUR_UTC`
   (`{env}/values_{env}.yaml`), `UAT_NAMESPACE`/`PRD_NAMESPACE`.
 
-The per-session LangGraph checkpointer is only for *conversation* memory; the deploy
-state is durable in GitHub, so it survives restarts and is consistent for every
-developer without a separate database.
+The per-session ADK state is only for *conversation* memory; the deploy state is
+durable in GitHub, so it survives restarts and is consistent for every developer
+without a separate database.
 
 ## What It Does Today (PoV)
 
@@ -160,31 +160,30 @@ developer without a separate database.
 
 ## Architecture
 
-Two clearly separated lanes share one LangGraph `StateGraph`:
+Two clearly separated lanes share one ADK root agent:
 
-1. **Deterministic promote pipeline — the LLM is never on the mutation path.**
-   `parse → propose → confirmation gate (HITL interrupt) → apply → finalize → track_pr`.
+1. **Deterministic promote pipeline — the LLM is never trusted as the mutation gate.**
+   `prepare_deploy_preview → CONFIRM token → apply_confirmed_deploy`.
    Promote intent is parsed deterministically; a real mutation happens only after the
-   user replies with the exact `CONFIRM-xxxx` token shown in the thread.
+   user replies with the exact `CONFIRM-xxxx` token shown in the thread. The ADK deploy
+   agent also wraps the confirmed apply tool with ADK function confirmation.
 
-2. **Supervisor multi-agent lane for free-form chat.** A supervisor classifies each
-   question and delegates to **one scoped specialist** sub-agent
-   (`langchain.agents.create_agent`):
+2. **ADK specialist lane for free-form chat.** The root ADK agent delegates to scoped
+   specialist sub-agents:
    - `status` / `pr` / `controls` / `general` — **read-only**
    - `ops` — limited to `remove_from_release` + `retrigger_deployment_workflow`
+   - `deploy` — deterministic preview + confirmed apply only
 
-   The three release-defining mutations (`apply_json_update`, `dispatch_workflow`,
-   `open_release_pr`) are bound to **no** specialist — so a confused or prompt-injected
-   model *structurally* cannot trigger a release from a chat question. Each specialist runs a bounded ReAct loop (`REACT_MAX_TOOL_TURNS`)
-   and degrades gracefully (a "narrow the request" message) if it can't converge.
+   The low-level release-defining mutations (`apply_json_update`, `dispatch_workflow`,
+   `open_release_pr`) are not exposed directly as free-form ADK chat tools. The deploy
+   agent reaches release mutation only through the deterministic deploy facade.
 
 - **PyGithub** for all GitHub operations — no `gh` subprocess in the tool layer; the
   token is resolved from `GH_TOKEN`/`GITHUB_TOKEN`, falling back to `gh auth token`.
-- **Transient-failure resilience:** a LangGraph `RetryPolicy` on the nodes (retries only
-  network blips, 5xx, and rate limits — never 404/422/auth), plus HTTP-level retry on the
-  PyGithub client (idempotent methods only, so PR creation is never double-fired).
-- **FastAPI** single interface with SSE streaming; threaded conversations via a
-  MemorySaver checkpointer (Postgres recommended for prod).
+- **Transient-failure resilience:** HTTP-level retry on the PyGithub client (idempotent
+  methods only, so PR creation is never double-fired).
+- **FastAPI** single interface with SSE streaming; threaded conversations via ADK
+  in-memory session/artifact services for PoV (shared storage recommended for prod).
 - **Config-driven:** repos, GCP project, branches, paths, namespaces, etc. come from `.env` /
   env vars / the Helm ConfigMap — nothing org-specific is hardcoded in the source.
 
@@ -192,18 +191,42 @@ Two clearly separated lanes share one LangGraph `StateGraph`:
 
 ```
 src/release_agent/
-  agent/            # the graph, split into focused modules
-    state.py        #   ReleaseState + re-runnable step vocabulary
-    llm.py          #   Vertex model construction + message helpers
+  agent/
     parsing.py      #   pure NL intent parsing (no graph/LLM state)
-    nodes.py        #   deterministic promote-pipeline nodes
-    graph.py        #   build_graph + supervisor + get_compiled_graph
-  multiagent.py     # supervisor + the 5 scoped specialist sub-agents
   tools/            # GitHub tool layer (PyGithub), split by domain behind a facade
     _common.py  manifest.py  pull_requests.py  controls.py  release_window.py  promotion.py
     gh_tools.py     #   re-export facade that assembles GH_TOOLS
-  config.py  app_fastapi.py  cli.py  tools_cli.py  budget.py
+  config.py  adk_service.py  app_fastapi.py  cli.py  tools_cli.py
 ```
+
+### ADK runtime
+
+The runtime ADK app lives at `adk_release_agent/`:
+
+```
+adk_release_agent/
+  agent.py                  # ADK root_agent + specialist sub-agents
+  deploy.py                 # deterministic deploy preview/token/apply workflow
+  tools.py                  # ADK Function Tool wrappers over the existing GitHub tool layer
+  skills/*/SKILL.md         # ADK Skills for deploy, status, PRs, controls, and scoped ops
+```
+
+Install the ADK dependency and run it with:
+
+```bash
+PYTHONPATH=src:. adk run adk_release_agent
+```
+
+The FastAPI `/api/chat` route is backed by an ADK service adapter. The ADK root agent has specialists for status, PR tracking, controls, scoped ops, and
+deploy. The deploy specialist follows the safe release shape:
+`prepare_deploy_preview` parses the request and returns the exact deployment JSON plus
+a `CONFIRM-xxxxxx` token; `apply_confirmed_deploy` applies only a pending preview and is
+wrapped with ADK `FunctionTool(require_confirmation=True)`.
+
+The release-defining low-level mutations (`apply_json_update`, `dispatch_workflow`,
+`open_release_pr`) remain outside the free-form ADK chat toolset. ADK calls the existing
+GitHub tool layer through the deterministic deploy facade instead of exposing those
+mutations directly to the model.
 
 **Production note**: FastAPI is the single interface — async, scalable, easy to instrument, and the standard choice for Python services running in Kubernetes.
 
@@ -225,7 +248,7 @@ The container expects (all via the Helm `config:` block → ConfigMap, plus a Se
 - `GH_TOKEN` (or mounted GitHub App credentials) — least-privilege scopes
 - Vertex AI: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` (uses Application Default Credentials / Workload Identity)
 - `BUILD_REPO` and `DEPLOY_REPO`
-- Optionally a shared Postgres for the checkpointer (for conversation persistence across restarts).
+- Optionally shared ADK session/artifact storage for conversation persistence across restarts.
 
 ## Safety
 
@@ -235,12 +258,11 @@ The container expects (all via the Helm `config:` block → ConfigMap, plus a Se
 
 ## Budget Protection (Vertex AI)
 
-Hard limit: **£10**.
+The current ADK runtime does not yet enforce a spend gate around every ADK model call.
 
-- Before every LLM call, estimated cost is checked.
-- If approaching or exceeding £10, the agent will interrupt and ask you to confirm.
-- If you do not respond within ~45 seconds (CLI), the process will **self-terminate** to protect your budget.
-- Current spend is always shown in interrupts.
+- Keep using cheap Gemini Flash-class models for the ADK runtime.
+- Reintroduce an ADK plugin/middleware budget guard before production scale-out if a
+  strict spend cap is required.
 
 Project is resolved dynamically from GOOGLE_CLOUD_PROJECT env or your local gcloud config (no hardcoding in code).
 
@@ -273,7 +295,7 @@ See `scripts/test_gh_tools.py` for a safe read-only smoke test.
 ### No-LLM tool testing
 
 Exercise every tool directly — no Vertex/Gemini config needed. The runner imports
-only the PyGithub tool layer (never the LLM or the graph), so it works with just a
+only the PyGithub tool layer (never the LLM or ADK runner), so it works with just a
 GitHub token + the repo env vars:
 
 ```bash
@@ -299,9 +321,9 @@ PYTHONPATH=src python -m release_agent.tools_cli --dry-run open_release_pr envir
 ## Extending for Real Releases
 
 Replace or augment the dispatch with a workflow that:
-1. Reads the `release-manifest.json` you just wrote
+1. Reads the updated `uat/deployment.json` / `prd/deployment.json`
 2. Renders/updates Helm values, ArgoCD apps, Terraform, or other prod config files
-3. Creates the PR or applies the change + runs your RLFT gates
+3. Applies the change through your protected release workflow + runs your RLFT gates
 
 The chatbot stays the conversational "front door".
 
@@ -311,20 +333,6 @@ The chatbot stays the conversational "front door".
 - Support multiple target repos/environments
 - Chainlit UI variant
 - Real GitHub App auth + fine-grained permissions
-- Postgres checkpointer + history UI
-
-## End-to-End Testing Subagent
-
-A dedicated testing subagent lives at `src/release_agent/testing_agent.py`.
-
-It can drive the main copilot, handle confirmations, verify manifest changes, locate the PR created by the workflow, and inspect PR comments for CHG tickets + control states.
-
-Run it with:
-
-```bash
-python -m src.release_agent.testing_agent --image-tags "payments-api:2.0.99-test"
-```
-
-See `TESTING.md` for full documentation and how to use it programmatically as a sub-agent.
+- Shared ADK session storage + history UI
 
 **For realistic testing (separate deployment repo):** Follow `DEPLOYMENT_REPO_SETUP.md`. It creates a distinct repo where PRs land, and includes a workflow that posts comments with image names + simulated controls when merged to main.

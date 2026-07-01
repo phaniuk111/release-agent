@@ -10,7 +10,7 @@ spec:
   trafficPolicy:
     loadBalancer:
       # Session stickiness — keeps a client's chat thread on one pod, which matters
-      # while the checkpointer is in-memory (replicaCount>1).
+      # while ADK session/artifact services are in-memory (replicaCount>1).
       consistentHash:
         {{- toYaml .Values.destinationRule.consistentHash | nindent 8 }}
 {{- end }}

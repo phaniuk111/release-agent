@@ -42,7 +42,7 @@ gh auth login
 # - workflow
 ```
 
-## 2. Quick Smoke Test (Read-only + Propose - Safe)
+## 2. Quick Smoke Test (Read-only + Safe)
 
 ```bash
 source .venv/bin/activate
@@ -51,8 +51,8 @@ python scripts/test_gh_tools.py
 
 This exercises:
 - Reading allowed images from `image-workflows.json`
-- Reading the current manifest
-- `propose_update(...)` (no writes to GitHub)
+- Reading live release/deployment state
+- Read-only GitHub status and PR lookups
 
 ## 3. Test via CLI (Fast for iteration)
 
@@ -66,15 +66,15 @@ python -m src.release_agent.cli
 ```
 You: list allowed images
 
-You: promote payments-api:2.0.99-test and orders-api:v9.9.9
+You: deploy payments-api:2.0.99-test to uat
 
-# Agent shows proposal + token (e.g. CONFIRM-7k9p2)
-You: CONFIRM-7k9p2
+# Agent shows exact deployment JSON + token (e.g. CONFIRM-7K9P2)
+You: CONFIRM-7K9P2
 ```
 
 After confirmation the agent will:
-- Commit changes to the manifest repo
-- Dispatch a workflow (which creates a PR in the deployment repo)
+- Open the protected-branch release PR path in the deployment repo
+- Surface the PR/deploy-run links when available
 - Return direct links
 
 You can then continue chatting:
@@ -94,7 +94,7 @@ uvicorn src.release_agent.app_fastapi:app --reload --port 8000
 Open **http://localhost:8000**
 
 Test the full flow using messages like:
-- `promote payments-api:2.0.99-test`
+- `deploy payments-api:2.0.99-test to uat`
 
 The UI will stream and show a confirmation box with the token.
 
@@ -114,7 +114,7 @@ uvicorn src.release_agent.app_fastapi:app --reload --port 8000
 
 In the browser chat send:
 ```
-promote payments-api:2.0.99-test
+deploy payments-api:2.0.99-test to uat
 ```
 
 Paste the `CONFIRM-...` token when prompted.
@@ -122,32 +122,31 @@ Paste the `CONFIRM-...` token when prompted.
 ### Verify on your GitHub account
 
 - Repo: https://github.com/phaniuk111/devops
-- Look for the new commit on `release-manifest.json`
-- Check the **Actions** tab for the triggered run (image-tag-step-report.yml or similar)
+- Look for the release PR that updates `uat/deployment.json`
+- Check the **Actions** tab for the deployment workflow run, if configured
 
 CLI verification:
 
 ```bash
+gh pr list --repo phaniuk111/devops --limit 10
 gh run list --repo phaniuk111/devops --limit 5
-gh run view <RUN_ID> --repo phaniuk111/devops
 ```
 
 ## 6. Test Individual Components
 
-### Test the Graph without LLM (dry)
+### Test the tool layer without LLM/ADK (dry)
 
-You can temporarily comment out the LLM call or use mocks, but the easiest is to test the tool functions directly in Python:
+The easiest low-level check is to test the tool functions directly in Python:
 
 ```python
-from src.release_agent.tools.gh_tools import propose_update, get_current_manifest
+from adk_release_agent.deploy import prepare_deploy_preview
 
-print(get_current_manifest())
-print(propose_update("payments-api:2.0.99-test"))
+print(prepare_deploy_preview(image_tags="payments-api:2.0.99-test", environment="uat"))
 ```
 
 ### Test interrupt / confirmation logic
 
-The confirmation flow is exercised automatically when you send a real message that reaches the `gate` node.
+The confirmation flow is exercised automatically when you send a deploy message through the ADK-backed CLI or FastAPI app.
 
 To test resume behavior, just send the confirmation token as the next message in the same thread.
 
@@ -185,11 +184,11 @@ kubectl logs -l app=release-copilot -f
 
 - [ ] Reads allowed images correctly from your phaniuk111 repo
 - [ ] Parses image:tag from chat
-- [ ] Proposes without mutating
+- [ ] Previews exact deployment JSON without mutating
 - [ ] Shows clear `CONFIRM-xxx` token
 - [ ] Only mutates after you confirm
-- [ ] Updates files in https://github.com/phaniuk111/...
-- [ ] Dispatches workflow on phaniuk111
+- [ ] Opens/updates the expected release PR path in https://github.com/phaniuk111/...
+- [ ] Surfaces workflow/deploy-run links when configured
 - [ ] Returns commit + run links under phaniuk111
 - [ ] New threads work
 - [ ] Health check works
@@ -197,47 +196,9 @@ kubectl logs -l app=release-copilot -f
 ## Tips for Safe Testing (using phaniuk111)
 
 - Use fake tags like `2.0.99-test` first time
-- You can always revert `release-manifest.json` on GitHub after testing
+- You can always close the generated release PR or revert the deployment JSON change after testing
 - Monitor https://github.com/phaniuk111 directly while running tests
 - Start with the read-only `python scripts/test_gh_tools.py`
-
-## End-to-End Testing Subagent (Recommended for full validation)
-
-We now have a dedicated **testing subagent** (`src/release_agent/testing_agent.py`) that can drive the main Release Copilot end-to-end and automatically verify the side effects.
-
-### How to run it
-
-```bash
-source .venv/bin/activate
-export GOOGLE_CLOUD_PROJECT=your-project
-export GOOGLE_CLOUD_LOCATION=us-central1
-export RELEASE_AGENT_TARGET_REPO=phaniuk111/devops
-export DEPLOY_REPO=phaniuk111/devops   # or the repo where PRs land
-
-# Run a full scenario
-python -m src.release_agent.testing_agent --image-tags "payments-api:2.0.99-test" --scenario full-release-e2e
-```
-
-Or from Python:
-
-```python
-from release_agent.testing_agent import run_end_to_end_test
-report = run_end_to_end_test(
-    image_tags="payments-api:2.0.99-test,orders-api:v9.9.9-test",
-    scenario_name="full-release-e2e"
-)
-print(report.model_dump_json(indent=2))
-```
-
-The tester will:
-1. Send the release request to the copilot
-2. Simulate the user confirmation (HITL)
-3. Verify the manifest was updated
-4. Find the PR created by the workflow in the deployment repo
-5. Inspect PR comments for CHG tickets and RLFT control states (closed/opened)
-6. Return a structured `TestReport` with pass/fail + evidence
-
-You can also use the tester graph directly as a sub-agent if you want the main copilot to call it for self-testing.
 
 ## Debugging
 

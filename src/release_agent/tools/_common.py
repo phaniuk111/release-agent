@@ -1,4 +1,4 @@
-"""GitHub tools for the release LangGraph agent using PyGithub.
+"""GitHub tools for the release ADK agent using PyGithub.
 
 All operations are performed via the GitHub REST API (PyGithub library).
 Works great with a Personal Access Token (set via GH_TOKEN env var).
@@ -10,9 +10,10 @@ import json
 import os
 import subprocess
 import uuid
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from github import Github, Auth, GithubException
-from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 # Config - using Pydantic settings for consistency
@@ -27,6 +28,45 @@ MANIFEST_PATH = settings.manifest_path
 ALLOWED_WORKFLOWS = set(settings.allowed_workflows) | {settings.default_workflow}
 # Workflow used to (re)run the deployment simulation in DEPLOY_REPO.
 ON_MERGE_WORKFLOW = settings.on_merge_workflow
+
+
+@dataclass
+class ToolFunction:
+    """Small callable tool wrapper compatible with the repo's existing callers."""
+
+    func: Callable
+    args_schema: type[BaseModel] | None = None
+
+    def __post_init__(self) -> None:
+        self.name = self.func.__name__
+        self.__name__ = self.func.__name__
+        self.description = (self.func.__doc__ or "").strip()
+        self.args = self._schema_properties()
+
+    def _schema_properties(self) -> dict[str, Any]:
+        if self.args_schema is None:
+            return {}
+        try:
+            schema = self.args_schema.model_json_schema()
+        except Exception:
+            return {}
+        return dict(schema.get("properties") or {})
+
+    def invoke(self, payload: dict[str, Any] | None = None) -> Any:
+        kwargs = dict(payload or {})
+        if self.args_schema is not None:
+            kwargs = self.args_schema(**kwargs).model_dump()
+        return self.func(**kwargs)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self.func(*args, **kwargs)
+
+
+def tool(func: Callable | None = None, *, args_schema: type[BaseModel] | None = None):
+    def _decorate(target: Callable) -> ToolFunction:
+        return ToolFunction(target, args_schema=args_schema)
+
+    return _decorate if func is None else _decorate(func)
 
 
 

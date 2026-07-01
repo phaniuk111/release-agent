@@ -155,7 +155,7 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
 
 
 def _fetch_pr_details(pr_number: int) -> str:
-    """Plain helper (reusable without StructuredTool invocation)."""
+    """Plain helper reusable without tool-wrapper invocation."""
     try:
         g = _get_github_client()
         repo = g.get_repo(settings.deploy_repo)
@@ -186,7 +186,7 @@ def get_pr_details(pr_number: int) -> str:
 
 
 def _fetch_pr_comments(pr_number: int, limit: int = 100) -> str:
-    """Plain helper (reusable without StructuredTool invocation)."""
+    """Plain helper reusable without tool-wrapper invocation."""
     try:
         g = _get_github_client()
         repo = g.get_repo(settings.deploy_repo)
@@ -283,5 +283,4 @@ def retrigger_deployment_workflow(pr_number: int, simulate_closed_controls: str 
 
 
 # ============ Image-tag build verification (PyGithub refactor of gh-image-tag-steps.sh) ============
-
 
