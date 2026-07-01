@@ -19,20 +19,14 @@ import os
 import uuid
 from typing import AsyncGenerator
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.types import Command
-
-from .agent import get_compiled_graph, message_text
+from .adk_service import get_adk_chat_service
 from .config import settings as app_settings
-
-load_dotenv()
 
 # Production-oriented logging
 logging.basicConfig(level=logging.INFO)
@@ -57,8 +51,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Single graph instance. For multi-tenant or high scale, scope this per user/team.
-graph = get_compiled_graph()
+# Single ADK-backed chat service. For multi-tenant or high scale, back this with
+# persistent ADK session/artifact services instead of in-memory services.
+adk_chat_service = get_adk_chat_service()
 
 
 class ChatRequest(BaseModel):
@@ -192,7 +187,7 @@ async def chat_page():
             </button>
         </div>
         <p class="text-[10px] text-slate-500 mt-2 text-center">
-            Messages are sent to LangGraph. Confirmations are required before any release actions.
+            Messages are sent to ADK. Confirmations are required before any release actions.
         </p>
     </div>
 
@@ -209,51 +204,19 @@ async def chat_endpoint(req: ChatRequest):
 
     Production notes:
     - This endpoint streams tokens + special events (interrupt for confirmation).
-    - For high load, consider running with multiple workers + a persistent
-      checkpointer (Postgres) instead of in-memory.
+    - For high load, consider using persistent ADK session/artifact services
+      instead of in-memory services.
     """
     thread_id = get_or_create_thread_id(req.thread_id)
-    config = {"configurable": {"thread_id": thread_id}}
 
     logger.info(f"Chat request | thread={thread_id} | msg_len={len(req.message)}")
 
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
-            # Detect if we are resuming from an interrupt (HITL). Any pending
-            # interrupt (confirmation gate OR budget) means the user's message is
-            # a resume value, not a new turn.
-            snapshot = graph.get_state(config)
-            is_resuming = bool(getattr(snapshot, "interrupts", None))
-
-            if is_resuming:
-                input_data = Command(resume=req.message)
-                logger.info(f"Resuming from interrupt | thread={thread_id}")
-            else:
-                input_data = {"messages": [HumanMessage(content=req.message)]}
-
-            # Stream updates from the graph. Only assistant (AIMessage) text is
-            # surfaced to the UI — never the system prompt, internal HumanMessages,
-            # or raw ToolMessage JSON (which previously dumped the whole prompt).
-            async for chunk in graph.astream(input_data, config=config, stream_mode="updates"):
-                for node_name, update in chunk.items():
-                    if not isinstance(update, dict):
-                        continue
-                    for msg in update.get("messages", []) or []:
-                        if isinstance(msg, AIMessage):
-                            text = message_text(msg)
-                            if text:
-                                payload = json.dumps({"type": "token", "content": text})
-                                yield f"data: {payload}\n\n"
-
-            # After the turn, check for pending confirmation (interrupt)
-            snapshot = graph.get_state(config)
-            if snapshot.interrupts:
-                interrupt_data = snapshot.interrupts[0].value
-                payload = json.dumps({"type": "interrupt", "data": interrupt_data})
-                yield f"data: {payload}\n\n"
-                logger.info(f"Interrupt emitted | thread={thread_id}")
-
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            async for event in adk_chat_service.stream_chat(req.message, thread_id):
+                if event.get("type") == "interrupt":
+                    logger.info(f"Interrupt emitted | thread={thread_id}")
+                yield f"data: {json.dumps(event)}\n\n"
 
         except Exception:
             logger.exception(f"Error in chat stream | thread={thread_id}")
@@ -335,7 +298,7 @@ async def health():
     """Health check endpoint for Kubernetes liveness/readiness probes."""
     return {
         "status": "ok",
-        "service": "release-copilot-fastapi",
+        "service": "release-copilot-fastapi-adk",
         "build_repo": settings.build_repo,
     }
 

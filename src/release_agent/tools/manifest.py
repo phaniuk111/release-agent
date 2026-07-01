@@ -69,7 +69,7 @@ def list_allowed_images() -> str:
 
 def _fetch_current_manifest() -> str:
     """Plain helper so other tools can reuse manifest reading without invoking a
-    StructuredTool (which is not directly callable under langchain-core 1.x)."""
+    tool wrapper."""
     path = MANIFEST_PATH
     try:
         g = _get_github_client()
@@ -374,5 +374,4 @@ def get_workflow_status(run_id: str) -> str:
 
 
 # ==================== PR Tracking Tools (for deployment repo) ====================
-
 

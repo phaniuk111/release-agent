@@ -1,7 +1,7 @@
 """
 No-LLM tool runner — exercise every Release Copilot tool directly.
 
-This imports ONLY the tool layer (PyGithub), never the LangGraph agent or the
+This imports ONLY the tool layer (PyGithub), never the ADK runner or the
 Vertex/Gemini LLM, so it runs with zero model config. Use it to test or demo all
 tools without a chat model.
 

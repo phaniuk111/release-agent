@@ -5,7 +5,7 @@ Tracks approximate spend based on tokens.
 Hard limit: £10.
 
 If approaching limit:
-- Uses LangGraph interrupt to ask user for confirmation.
+- Raises a BudgetInterrupt for the caller to convert into user confirmation.
 - If no positive response within timeout (in CLI), it kills the process.
 
 This is conservative to ensure we never cross the budget.
@@ -30,8 +30,8 @@ class BudgetTracker:
     total_output_tokens: int = 0
     total_cost_gbp: float = 0.0
     confirmed_over_budget: bool = False
-    # The tracker is a process-global shared by all threads (one compiled graph
-    # per worker), so guard mutation against concurrent FastAPI requests.
+    # The tracker is a process-global shared by all threads, so guard mutation
+    # against concurrent FastAPI requests.
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def add_usage(self, input_tokens: int, output_tokens: int) -> float:
@@ -101,7 +101,7 @@ def check_budget_before_call(estimated_input_tokens: int = 2000, estimated_outpu
 
 
 class BudgetInterrupt(Exception):
-    """Special exception to trigger user confirmation via the agent's interrupt system."""
+    """Special exception to trigger user confirmation."""
     pass
 
 
