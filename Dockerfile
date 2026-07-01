@@ -53,6 +53,7 @@ WORKDIR /app
 # Bring over the prebuilt venv and the application source only (no build tools, no uv).
 COPY --from=builder /opt/venv /opt/venv
 COPY src/ ./src/
+COPY adk_release_agent/ ./adk_release_agent/
 COPY .env.example ./
 
 # Run as a non-root user.

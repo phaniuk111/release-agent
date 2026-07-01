@@ -5,7 +5,7 @@ metadata:
   labels:
     app: release-copilot
 spec:
-  replicas: 1   # Stateful chat threads - start with 1. Use shared Postgres checkpointer for >1
+  replicas: 1   # In-memory ADK chat state - start with 1. Use shared ADK storage for >1
   selector:
     matchLabels:
       app: release-copilot

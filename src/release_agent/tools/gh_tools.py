@@ -30,7 +30,7 @@ from .pull_requests import (  # noqa: F401
     find_prs, get_pr_details, get_pr_comments, summarize_pr_controls,
     retrigger_deployment_workflow,
 )
-from .controls import verify_image_tag_build, get_build_controls  # noqa: F401
+from .controls import verify_image_tag_build, get_build_controls, get_build_report  # noqa: F401
 from .release_window import check_release_window  # noqa: F401
 from .promotion import open_release_pr, remove_from_release, merge_prod_release  # noqa: F401
 
@@ -45,6 +45,7 @@ GH_TOOLS = [
     retrigger_deployment_workflow,
     verify_image_tag_build,
     get_build_controls,
+    get_build_report,
     open_release_pr,
     remove_from_release,
     merge_prod_release,

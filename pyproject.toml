@@ -1,16 +1,13 @@
 [project]
 name = "release-copilot"
 version = "0.2.0"
-description = "LangGraph + FastAPI agent that promotes container images via GitHub Actions (GKE/ASM)"
+description = "ADK + FastAPI release copilot that promotes container images via GitHub Actions (GKE/ASM)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    # Core agent framework (LangGraph / LangChain 1.x APIs)
-    "langgraph>=1.0,<2",
-    "langchain>=1.0,<2",
-    "langchain-core>=1.0,<2",
+    # Core agent framework
+    "google-adk>=1.25.0",
     # Vertex AI Gemini
-    "langchain-google-genai>=2.0",
     "google-genai>=1.0",
     # Web server (production UI)
     "fastapi>=0.115",
@@ -25,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["langgraph-checkpoint-postgres>=2.0", "psycopg[binary]>=3.2"]  # shared checkpointer
+postgres = ["psycopg[binary]>=3.2"]  # reserved for future shared ADK session storage
 tracing = ["langsmith>=0.3"]
 
 [dependency-groups]

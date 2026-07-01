@@ -1,6 +1,6 @@
 # release-copilot Helm chart
 
-Deploys the **Release Copilot** (LangGraph + FastAPI) to **GKE** behind **Anthos Service Mesh (ASM / Istio)**.
+Deploys the **Release Copilot** (ADK + FastAPI) to **GKE** behind **Anthos Service Mesh (ASM / Istio)**.
 
 Renders:
 - **Deployment** — runs the FastAPI UI (`uvicorn release_agent.app_fastapi:app` on `:8000`), `/health` probes, ASM sidecar injection, Workload-Identity ServiceAccount, `GH_TOKEN` from a Secret, config via ConfigMap.
@@ -87,8 +87,8 @@ under any prefix with no app config. Requirements:
   will shadow the others.
 
 ## Scaling note
-The agent keeps chat state in an **in-memory checkpointer**, so it's single-pod by default
-(`replicaCount: 1`). To scale out, add a shared Postgres checkpointer **and** enable
+The agent keeps chat state in **in-memory ADK session/artifact services**, so it's single-pod
+by default (`replicaCount: 1`). To scale out, add shared ADK storage **or** enable
 `destinationRule` (source-IP stickiness) so a client's thread stays on one pod.
 
 ## Verify locally before applying

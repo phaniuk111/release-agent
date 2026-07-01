@@ -4,12 +4,18 @@ Every function here is a deterministic text helper with no graph or LLM state.""
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any, Optional
 
-from langchain_core.messages import HumanMessage
 
-from .llm import message_text
-from .state import ALL_STEPS, _STEP_ALIASES
+STEP_APPLY = "apply_manifest"
+STEP_DISPATCH = "dispatch_workflow"
+STEP_RELEASE_PR = "release_pr"
+ALL_STEPS = [STEP_APPLY, STEP_DISPATCH]
+_STEP_ALIASES = {
+    STEP_APPLY: ["apply_manifest", "apply-manifest", "apply", "commit", "manifest"],
+    STEP_DISPATCH: ["dispatch_workflow", "dispatch-workflow", "dispatch", "workflow", "trigger"],
+    STEP_RELEASE_PR: ["release_pr", "release-pr", "pr", "open_pr", "open-pr", "raise_pr"],
+}
 
 
 # Change-ticket fields required when promoting to prod.
@@ -409,12 +415,34 @@ def _detect_rerun(text: str, current_steps: Optional[list]) -> Optional[list[str
             ordered.append(s)
     return ordered
 
+def _message_text(msg: Any) -> str:
+    content = getattr(msg, "content", msg)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(p for p in parts if p)
+    return str(content or "")
+
+
+def _is_human_message(msg: Any) -> bool:
+    role = getattr(msg, "role", None) or getattr(msg, "type", None)
+    if str(role).lower() in {"user", "human"}:
+        return True
+    return msg.__class__.__name__ == "HumanMessage"
+
+
 def _last_human_text(messages: list) -> str:
     """Text of the most recent human turn — what the supervisor routes on."""
     for m in reversed(messages or []):
-        if isinstance(m, HumanMessage):
-            return message_text(m)
-    return message_text(messages[-1]) if messages else ""
+        if _is_human_message(m):
+            return _message_text(m)
+    return _message_text(messages[-1]) if messages else ""
 
 
 def _is_retrigger(text: str) -> bool:
