@@ -113,7 +113,8 @@ def test_pending_call_and_interrupt_payload_from_confirmation_event():
 
     payload = adk_service._confirmation_interrupt_payload(pending)
     assert payload["type"] == "confirmation"
-    assert payload["message"] == "Confirm merge_prod_release?"
+    # merge_prod_release gets the release-finality warning, overriding the hint.
+    assert "no new charts can be added" in payload["message"]
     assert payload["function"] == "merge_prod_release"
 
 

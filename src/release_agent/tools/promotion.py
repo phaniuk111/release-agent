@@ -564,10 +564,12 @@ def _accumulate_into_prd_pr(repo, entries: list, change_request=None):
             return None, branch, False, []  # nothing to release (already matches PRD)
         date = branch.rsplit("/", 1)[-1]
         body = (
-            "Daily PRD release — charts accumulate here through the day. After the cutoff, "
+            "Daily PRD release — charts accumulate here until it's released. "
             f"`release prod` promotes the staged charts through the chain "
-            f"**{settings.sit_branch} → {settings.uat_branch} → {prd}** (do not merge this PR "
-            "directly; it's the staging view and is retired once the release ships)."
+            f"**{settings.sit_branch} → {settings.uat_branch} → {prd}** at any time (do not merge "
+            "this PR directly; it's the staging view and is retired once the release ships). "
+            "Once released, no new charts can be added to this release — later prod deploys "
+            "start a new release PR."
         )
         if cr_doc is not None:
             body += (
@@ -677,12 +679,11 @@ def open_release_pr(
                  "note": f"No change — {chart_str} already matches PRD; nothing to add to the release."},
                 indent=2,
             )
-        cutoff = settings.prd_cutoff_hour_utc
         in_release = _read_include(repo, branch, _deployment_path("prd"))
         note = (
             f"Added {chart_str} to today's PRD release PR #{pr.number} ({pr.html_url}). "
-            f"It now holds {len(in_release)} chart(s) and stays open — say 'release prod' to merge it "
-            f"after {cutoff:02d}:00 UTC."
+            f"It now holds {len(in_release)} chart(s) and stays open — say 'release prod' to ship it. "
+            f"Once released, no new charts can be added to this release (later prod deploys start a new one)."
         )
         return json.dumps(
             {
@@ -695,7 +696,6 @@ def open_release_pr(
                 "pr_created": created,
                 "files_updated": changed,
                 "charts_in_release": in_release,
-                "cutoff_utc": f"{cutoff:02d}:00",
                 "note": note,
             },
             indent=2,
@@ -807,13 +807,12 @@ def _unstage_from_prd_pr(repo, names: list) -> dict | None:
 @tool
 def merge_prod_release(deployment_repo: str = "") -> str:
     """Release today's accumulated PRD release to production by promoting the staged charts
-    through the FULL chain SIT -> UAT -> PRD (prod never skips SIT/UAT). Allowed ONLY after
-    the daily cutoff (PRD_CUTOFF_HOUR_UTC). Use when a developer says 'release prod'.
+    through the FULL chain SIT -> UAT -> PRD (prod never skips SIT/UAT). Can be run at any
+    time; releasing FINALIZES the release — no new charts can be added to it afterwards
+    (later prod deploys start a new release). Use when a developer says 'release prod'.
 
     deployment_repo (optional): the repo the release was staged in (owner/repo or GitHub
     URL) when the deploy targeted a non-default repo; empty = the configured default."""
-    from datetime import datetime, timezone
-
     from ..session_creds import _normalize_repo
 
     target_repo = _normalize_repo(deployment_repo) if deployment_repo else ""
@@ -827,14 +826,6 @@ def merge_prod_release(deployment_repo: str = "") -> str:
     pr = _today_prd_pr(repo)
     if pr is None:
         return "No PRD release PR is open today — nothing to release. Deploy chart(s) to prod first."
-
-    now = datetime.now(timezone.utc)
-    cutoff = settings.prd_cutoff_hour_utc
-    if now.hour < cutoff:
-        return (
-            f"ERROR: today's PRD release can only be released after {cutoff:02d}:00 UTC "
-            f"(now {now.strftime('%H:%M')} UTC). Release PR #{pr.number} stays open until then: {pr.html_url}"
-        )
 
     branch = pr.head.ref
     uat_path, prd_path = _deployment_path("uat"), _deployment_path("prd")

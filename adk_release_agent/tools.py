@@ -112,7 +112,8 @@ def retrigger_deployment_workflow(
 
 
 def merge_prod_release(deployment_repo: str = "") -> dict[str, Any]:
-    """Promote today's PRD release after the configured cutoff, if eligible.
+    """Release today's staged PRD release now (any time). Releasing finalizes it —
+    no new charts can be added afterwards; later prod deploys start a new release.
     deployment_repo (owner/repo) targets a non-default deployment repo — pass it
     only when the user names one (e.g. the repo their deploy was staged in)."""
     return _invoke_tool("merge_prod_release", {"deployment_repo": deployment_repo})
