@@ -266,7 +266,10 @@ def _doc_changed(existing: dict, new_doc: dict, ignore=("updated_at",)) -> bool:
     return _strip(existing) != _strip(new_doc)
 
 
-def _promote_targeted(repo, file_mutations: list, summary: str, extra_files: dict | None = None) -> dict:
+def _promote_targeted(
+    repo, file_mutations: list, summary: str, extra_files: dict | None = None,
+    branches: tuple | None = None,
+) -> dict:
     """Promote a change to PRD through SIT -> UAT -> PRD by applying the SAME targeted
     file mutation to each branch in order, each via its own working-branch PR.
 
@@ -280,13 +283,18 @@ def _promote_targeted(repo, file_mutations: list, summary: str, extra_files: dic
     (created if missing) — used to promote flat, non-include files like change-request.json
     alongside the deployment files, so the standard file set travels through the chain.
 
+    ``branches`` limits the hop list — e.g. (SIT, UAT) for a change that must stop at
+    UAT; the default is the full SIT -> UAT -> PRD chain. ``delivered`` means the LAST
+    hop in the list merged.
+
     The chain stops if a hop's PR fails to merge (branch protection/review) so a change
     can't reach a downstream env without clearing the upstream one."""
     sit, uat, prd = settings.sit_branch, settings.uat_branch, settings.prd_branch
+    chain = tuple(branches) if branches else (sit, uat, prd)
     prs: list = []
     deploy_run_uat = deploy_run_prd = None
 
-    for branch in (sit, uat, prd):
+    for branch in chain:
         work = f"change/promote/{uuid.uuid4().hex[:8]}"
         ref = repo.get_git_ref(f"heads/{branch}")
         repo.create_git_ref(f"refs/heads/{work}", ref.object.sha)
@@ -337,7 +345,7 @@ def _promote_targeted(repo, file_mutations: list, summary: str, extra_files: dic
         if not ok:
             break  # don't promote further until this env's PR is merged
 
-    delivered = any(p.get("stage") == f"→{prd}" and p.get("merged") for p in prs)
+    delivered = any(p.get("stage") == f"→{chain[-1]}" and p.get("merged") for p in prs)
     changed_any = any(p.get("number") for p in prs)
     return {
         "changed": changed_any,
@@ -719,6 +727,63 @@ def _retire_staging_pr(repo, pr, branch: str) -> None:
         pass
 
 
+def _staging_pending_vs_prd(repo, branch: str) -> list:
+    """Entries staged on the release branch whose version differs from live PRD —
+    i.e. what would actually ship at the cutoff."""
+    prd_path = _deployment_path("prd")
+    prd_now = {
+        e.get("helm_chart_name"): e.get("helm_chart_version")
+        for e in _read_include(repo, settings.prd_branch, prd_path)
+    }
+    return [
+        e for e in _read_include(repo, branch, prd_path)
+        if e.get("helm_chart_name") and prd_now.get(e.get("helm_chart_name")) != e.get("helm_chart_version")
+    ]
+
+
+def _unstage_from_prd_pr(repo, names: list) -> dict | None:
+    """Drop chart(s) by helm_chart_name from today's open PRD release PR — BOTH
+    uat/deployment.json and prd/deployment.json on the release/prd/<date> branch — so
+    they don't ship at the cutoff. Live env branches are NOT touched. If nothing left
+    on the branch differs from PRD, the staging PR is retired (same as after a release).
+    Returns None when no staging PR is open today; otherwise
+    {pr_number, pr_url, removed, retired, still_pending}."""
+    pr = _today_prd_pr(repo)
+    if pr is None:
+        return None
+    branch = pr.head.ref
+    removed: list = []
+    for path in (_deployment_path("prd"), _deployment_path("uat")):
+        doc = _read_json_file(repo, branch, path)
+        if not isinstance(doc, dict):
+            continue
+        include = doc.get("include") if isinstance(doc.get("include"), list) else []
+        changed = False
+        for n in names:
+            if _remove_entry(include, n):
+                changed = True
+                if n not in removed:
+                    removed.append(n)
+        if changed:
+            doc["include"] = include
+            doc["updated_by"] = "release-copilot"
+            _upsert_json_file(repo, branch, path, doc)
+    pending = _staging_pending_vs_prd(repo, branch)
+    retired = False
+    if removed and not pending:
+        _retire_staging_pr(repo, pr, branch)
+        retired = True
+    return {
+        "pr_number": pr.number,
+        "pr_url": pr.html_url,
+        "removed": removed,
+        "retired": retired,
+        "still_pending": [
+            f"{e.get('helm_chart_name')}:{e.get('helm_chart_version')}" for e in pending
+        ],
+    }
+
+
 @tool
 def merge_prod_release() -> str:
     """Release today's accumulated PRD release to production by promoting the staged charts
@@ -748,16 +813,8 @@ def merge_prod_release() -> str:
 
     # The accumulated final state staged on the release branch (cut from PRD + today's
     # upserts). "Today's charts" = whatever differs from what's currently live in PRD.
-    staged_prd = _read_include(repo, branch, prd_path)
     staged_uat = _read_include(repo, branch, uat_path)
-    prd_now = {
-        e.get("helm_chart_name"): e.get("helm_chart_version")
-        for e in _read_include(repo, settings.prd_branch, prd_path)
-    }
-    today_prd = [
-        e for e in staged_prd
-        if e.get("helm_chart_name") and prd_now.get(e.get("helm_chart_name")) != e.get("helm_chart_version")
-    ]
+    today_prd = _staging_pending_vs_prd(repo, branch)
     today_names = {e["helm_chart_name"] for e in today_prd}
     today_uat = [e for e in staged_uat if e.get("helm_chart_name") in today_names]
 
@@ -836,15 +893,30 @@ class RemoveFromReleaseInput(BaseModel):
         "e.g. 'abc-client-api-svc').",
     )
     environment: str = Field(
-        default="uat", description="Which env to remove from: uat (default) or prod (both files)."
+        default="staging",
+        description=(
+            "Where to remove from. 'staging' (default): unstage from today's PRD release "
+            "PR only — live environments are untouched. 'uat': also remove from the live "
+            "uat/deployment.json. 'prod': also remove from BOTH live files (uat + prd). "
+            "Use uat/prod ONLY when the user explicitly names that live environment."
+        ),
     )
 
 
 @tool(args_schema=RemoveFromReleaseInput)
-def remove_from_release(image_names: str, environment: str = "uat") -> str:
-    """Remove chart(s) from the deployment JSON by helm_chart_name, via the protected-
-    branch PR chain. environment=uat drops them from uat/deployment.json (unstage);
-    environment=prod drops them from BOTH uat and prd/deployment.json."""
+def remove_from_release(image_names: str, environment: str = "staging") -> str:
+    """Remove/unstage chart(s) by helm_chart_name.
+
+    environment='staging' (default): drop the chart(s) from today's PRD release PR
+      (release/prd/<date>, both deployment files) so they don't ship at the cutoff.
+      Live environments are NOT touched; if nothing else is left to release, the
+      staging PR is retired. Use this for "remove X from the release / unstage X".
+    environment='uat' : ALSO remove from the live uat/deployment.json via targeted
+      per-branch edits (working->SIT, working->UAT — no whole-branch merge).
+    environment='prod': ALSO remove from BOTH live deployment files through the
+      targeted chain SIT -> UAT -> PRD.
+    Live removals always unstage from today's release PR first, so a removed chart
+    can't ship again at the cutoff."""
     names = []
     for tok in image_names.replace(",", " ").split():
         tok = tok.strip()
@@ -853,13 +925,61 @@ def remove_from_release(image_names: str, environment: str = "uat") -> str:
     if not names:
         return "ERROR: no chart names provided to remove."
 
-    raw = (environment or "uat").strip().lower()
-    env = "prod" if raw in ("prod", "prd", "production") else "uat"
+    raw = (environment or "staging").strip().lower()
+    if raw in ("prod", "prd", "production"):
+        env = "prod"
+    elif raw == "uat":
+        env = "uat"
+    elif raw in ("", "staging", "stage", "release"):
+        env = "staging"
+    else:
+        return (
+            f"ERROR removing from release: unsupported environment '{environment}' "
+            "(use staging, uat or prod)."
+        )
 
     try:
         repo = _get_github_client().get_repo(settings.deploy_repo)
     except Exception as e:
         return f"ERROR removing from release: {e}"
+
+    # Whatever the target env, unstage from today's PRD release PR first — a chart left
+    # staged there would ship again at the cutoff.
+    staging = _unstage_from_prd_pr(repo, names)
+    staged_removed = staging["removed"] if staging else []
+    unstage_note = ""
+    if staged_removed:
+        unstage_note = (
+            f"Unstaged {', '.join(staged_removed)} from today's PRD release PR "
+            f"#{staging['pr_number']} ({staging['pr_url']})"
+        )
+        if staging["retired"]:
+            unstage_note += " — nothing left to release, so the staging PR was retired"
+        unstage_note += ". "
+
+    if env == "staging":
+        if not staged_removed:
+            if staging is None:
+                note = (
+                    f"No PRD release PR is open today — {', '.join(names)} is not staged for "
+                    "release. To remove from a live environment instead, say so explicitly "
+                    "(environment=uat or prod)."
+                )
+            else:
+                note = (
+                    f"No change — {', '.join(names)} is not staged in today's PRD release PR "
+                    f"#{staging['pr_number']} ({staging['pr_url']})."
+                )
+            return json.dumps(
+                {"ok": True, "action": "no_change", "environment": "staging", "note": note},
+                indent=2,
+            )
+        note = unstage_note + "Live environments were not touched."
+        return json.dumps(
+            {"ok": True, "action": "unstaged", "environment": "staging",
+             "removed": staged_removed, "staging_pr": staging, "note": note},
+            indent=2,
+        )
 
     removed: list = []
 
@@ -878,22 +998,33 @@ def remove_from_release(image_names: str, environment: str = "uat") -> str:
         # Targeted SIT -> UAT -> PRD so the removal reaches PRD without a whole-branch merge.
         res = _promote_targeted(repo, [(_deployment_path("prd"), _mut), (uat_path, _mut)], summary)
     else:
-        res = _apply_via_pr_chain(repo, [(uat_path, _mut)], summary)
-    blocked = _blocked_pr_result(res)
-    if blocked:
-        return blocked
+        # Targeted per-branch edits stopping at UAT — _apply_via_pr_chain's SIT->UAT
+        # whole-branch merge conflicts whenever UAT has moved independently of SIT.
+        res = _promote_targeted(
+            repo, [(uat_path, _mut)], summary,
+            branches=(settings.sit_branch, settings.uat_branch),
+        )
     if not res["changed"]:
+        if staged_removed:
+            note = unstage_note + f"{', '.join(names)} was not deployed to live {env}."
+            return json.dumps(
+                {"ok": True, "action": "unstaged", "environment": env,
+                 "removed": staged_removed, "staging_pr": staging, "note": note},
+                indent=2,
+            )
         return json.dumps(
             {"ok": True, "action": "no_change", "environment": env,
              "note": f"No change — {', '.join(names)} not deployed to {env}; nothing to remove."},
             indent=2,
         )
     note = (
-        f"Removed {', '.join(removed)} from {env} via PR chain. {_pr_chain_note(res['prs'])}"
+        unstage_note
+        + f"Removed {', '.join(removed)} from live {env} via PR chain. {_pr_chain_note(res['prs'])}"
         + _deploy_run_note(res)
     )
     return json.dumps(
-        {"ok": True, "action": "removed", "environment": env, "removed": removed,
+        {"ok": True, "action": "removed", "environment": env,
+         "removed": sorted(set(removed) | set(staged_removed)), "staging_pr": staging,
          "prs": res["prs"], "note": note},
         indent=2,
     )
