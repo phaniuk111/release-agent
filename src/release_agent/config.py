@@ -100,8 +100,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("DEPLOYMENT_PATH_PATTERN", "RELEASE_DEPLOYMENT_PATH_PATTERN"),
     )
     # Constant filled into every entry's helm_chart_dir ("comes from the helm chart").
+    # Generic default; set HELM_CHART_DIR (env / private .env / Helm) to your real path.
     helm_chart_dir: str = Field(
-        default="hlm-all/com/db/eod-ds",
+        default="charts",
         validation_alias=AliasChoices("HELM_CHART_DIR", "RELEASE_HELM_CHART_DIR"),
     )
     # Env-specific values file: {env} -> uat/values_uat.yaml, prd/values_prd.yaml.
@@ -110,12 +111,13 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("HELM_VALUES_PATTERN", "RELEASE_HELM_VALUES_PATTERN"),
     )
     # Default GKE namespace per environment (a deploy request may override).
+    # Generic default; set UAT_NAMESPACE / PRD_NAMESPACE to your real namespaces.
     uat_namespace: str = Field(
-        default="eod1",
+        default="default",
         validation_alias=AliasChoices("UAT_NAMESPACE", "RELEASE_UAT_NAMESPACE"),
     )
     prd_namespace: str = Field(
-        default="eod1",
+        default="default",
         validation_alias=AliasChoices("PRD_NAMESPACE", "PROD_NAMESPACE", "RELEASE_PRD_NAMESPACE"),
     )
     # Change-request template the pasted JSON updates; the CHG is created from it

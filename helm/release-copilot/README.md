@@ -66,27 +66,27 @@ gcloud iam service-accounts add-iam-policy-binding \
 
 ## Shared domain with a path prefix (multiple apps on one host)
 
-To serve several apps under one domain (e.g. `app-eod-uat.com`) by path, give each a
+To serve several apps under one domain (e.g. `app.example.com`) by path, give each a
 distinct `virtualService.pathPrefix` and point them all at the **same shared gateway**
 (don't create a per-app `gateway`):
 
 ```bash
 helm upgrade --install rc helm/release-copilot -n release \
   --set gateway.enabled=false \
-  --set virtualService.hosts="{app-eod-uat.com}" \
+  --set virtualService.hosts="{app.example.com}" \
   --set virtualService.gateways="{istio-ingress/asm-ingressgateway}" \
   --set virtualService.pathPrefix=/release-copilot \
   --set config.GOOGLE_CLOUD_PROJECT=<PROJECT_ID> \
   --set githubToken.existingSecret=release-copilot-secrets
 ```
 
-App is then served at **`https://app-eod-uat.com/release-copilot/`**. The VirtualService:
+App is then served at **`https://app.example.com/release-copilot/`**. The VirtualService:
 1. redirects bare `/release-copilot` → `/release-copilot/` (so relative URLs resolve), then
 2. strips the prefix (`rewrite.uri: /`) before forwarding to the pod.
 
 The UI is **prefix-relative** (its API calls derive the base from the page path), so it works
 under any prefix with no app config. Requirements:
-- The shared gateway must serve the host (`app-eod-uat.com`, or `*`).
+- The shared gateway must serve the host (`app.example.com`, or `*`).
 - Each app picks a **unique** prefix; avoid a root `/` catch-all VS on the shared host or it
   will shadow the others.
 

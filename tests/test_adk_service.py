@@ -71,7 +71,7 @@ def test_adk_service_accepts_ui_deploy_json_payload():
                 {
                     "helm_chart_name": "abc-client-api-svc",
                     "helm_chart_version": "1.1.1230",
-                    "gke_namespace": "eod1",
+                    "gke_namespace": "default",
                 }
             ],
         }

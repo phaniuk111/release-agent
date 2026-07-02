@@ -78,7 +78,7 @@ You: deploy abc-client-api-svc:1.1.1230 to prod
 Agent: Deploy abc-client-api-svc:1.1.1230 to PROD — will OVERRIDE
        `uat/deployment.json + prd/deployment.json`:
        { "uat/deployment.json": [ {helm_chart_name, helm_chart_version, helm_chart_dir,
-         helm_values_file_name: "uat/values_uat.yaml", gke_namespace: "eod1"} ],
+         helm_values_file_name: "uat/values_uat.yaml", gke_namespace: "default"} ],
          "prd/deployment.json": [ {... helm_values_file_name: "prd/values_prd.yaml", ...} ] }
        Reply CONFIRM-7k9p2 to confirm.
 You: CONFIRM-7k9p2
@@ -94,8 +94,8 @@ JSON in the deploy repo: `uat/deployment.json` and `prd/deployment.json`, each s
 
 ```json
 { "helm_chart_name": "abc-client-api-svc", "helm_chart_version": "1.1.1230",
-  "helm_chart_dir": "hlm-all/com/db/eod-ds", "helm_values_file_name": "uat/values_uat.yaml",
-  "gke_namespace": "eod1" }
+  "helm_chart_dir": "charts", "helm_values_file_name": "uat/values_uat.yaml",
+  "gke_namespace": "default" }
 ```
 
 The dev supplies only **chart name + version** (+ namespace); the agent fills the

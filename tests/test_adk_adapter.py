@@ -27,7 +27,7 @@ def test_deploy_preview_mints_token_and_exact_uat_plan():
     preview = deploy.prepare_deploy_preview(
         image_tags="abc-client-api-svc:1.1.1230",
         environment="uat",
-        namespace="eod1",
+        namespace="default",
     )
 
     assert preview["ok"] is True
@@ -38,7 +38,7 @@ def test_deploy_preview_mints_token_and_exact_uat_plan():
     entry = preview["proposed"]["uat/deployment.json"][0]
     assert entry["helm_chart_name"] == "abc-client-api-svc"
     assert entry["helm_chart_version"] == "1.1.1230"
-    assert entry["gke_namespace"] == "eod1"
+    assert entry["gke_namespace"] == "default"
     assert preview["token"] in deploy._PENDING_PREVIEWS
 
 
