@@ -611,6 +611,13 @@ class DeployInput(BaseModel):
             "end_date) written to change-request.json on the release PR. Ignored for uat."
         ),
     )
+    deployment_repo: str = Field(
+        default="",
+        description=(
+            "Target deployment repository (owner/repo or GitHub URL) for THIS deploy. "
+            "Empty = the configured/session default."
+        ),
+    )
 
 
 @tool(args_schema=DeployInput)
@@ -622,6 +629,7 @@ def open_release_pr(
     chart_dir: str = "",
     values_file: str = "",
     change_request: dict | None = None,
+    deployment_repo: str = "",
 ) -> str:
     """Deploy Helm chart(s) into the deployment JSON.
 
@@ -650,8 +658,13 @@ def open_release_pr(
         return "ERROR deploying: no charts provided (need a {\"include\":[...]} or <chart>:<version>)."
     chart_str = ", ".join(f"{e['helm_chart_name']}:{e['helm_chart_version']}" for e in entries)
 
+    # Per-deploy repo from the form payload wins; else the configured/session default.
+    from ..session_creds import _normalize_repo
+    target_repo = _normalize_repo(deployment_repo) if deployment_repo else ""
+    if deployment_repo and not target_repo:
+        return f"ERROR deploying: could not parse deployment_repo '{deployment_repo}' (use owner/repo)."
     try:
-        repo = _get_github_client().get_repo(active_deploy_repo())
+        repo = _get_github_client().get_repo(target_repo or active_deploy_repo())
     except Exception as e:
         return f"ERROR deploying: {e}"
 

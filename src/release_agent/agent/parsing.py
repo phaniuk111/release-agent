@@ -363,6 +363,8 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
         "values_file": values_file,
         # PROD deploy form: change-request details written to change-request.json.
         "change_request": data.get("change_request"),
+        # Deploy form: target deployment repo (owner/repo) for this deploy.
+        "deployment_repo": str(data.get("deployment_repo") or data.get("deploy_repo") or ""),
         "raw": "json-paste",
     }
 

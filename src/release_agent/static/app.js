@@ -366,10 +366,11 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             // from the backend (the live uat/ or prd file) — edit entries, add more to deploy
             // several charts at once. The fallback below is only used if the fetch fails.
             let fileDoc = { include: [ { helm_chart_name: name || '', helm_chart_version: version || '' } ] };
+            let defaultDeployRepo = '';
             try {
                 const qs = new URLSearchParams({ env: env, name: name || '', version: version || '' });
                 const r = await fetch(API_BASE + '/api/deploy-template?' + qs.toString());
-                if (r.ok) { const d = await r.json(); fileDoc = d.deployment; }
+                if (r.ok) { const d = await r.json(); fileDoc = d.deployment; defaultDeployRepo = d.deploy_repo || ''; }
             } catch (e) {}
 
             const chat = document.getElementById('chat');
@@ -393,6 +394,21 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             ta.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none mb-2';
             ta.value = JSON.stringify(fileDoc, null, 2);
             wrap.appendChild(ta);
+
+            // Target deployment repo — part of the deploy JSON payload.
+            const repoBox = document.createElement('div');
+            repoBox.className = 'mb-2';
+            const repoLabel = document.createElement('label');
+            repoLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
+            repoLabel.textContent = 'Deployment repo (owner/repo)';
+            const repoInput = document.createElement('input');
+            repoInput.id = 'deploy-repo-' + env;
+            repoInput.type = 'text';
+            repoInput.placeholder = 'e.g. my-org/deployment-repo';
+            repoInput.value = defaultDeployRepo;
+            repoInput.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+            repoBox.appendChild(repoLabel); repoBox.appendChild(repoInput);
+            wrap.appendChild(repoBox);
 
             // PROD requires a change request — feeds change-request.json in the release PR.
             if (isProd) {
@@ -441,7 +457,12 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                         return;
                     }
                 }
-                const payload = { environment: env, include: parsed.include };
+                const deployRepo = document.getElementById('deploy-repo-' + env).value.trim();
+                if (!deployRepo) {
+                    err.textContent = 'Deployment repo is required (owner/repo).';
+                    return;
+                }
+                const payload = { environment: env, include: parsed.include, deployment_repo: deployRepo };
                 if (isProd) {
                     const summary = document.getElementById('chg-summary-' + env).value.trim();
                     const description = document.getElementById('chg-desc-' + env).value.trim();
