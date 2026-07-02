@@ -104,3 +104,13 @@ sharing a single privileged token.
 - Unit: store set/get/clear, masking, contextvar activation/reset, token
   resolver precedence (session PAT beats env), repo resolver precedence.
 - API: connect → status (masked) → disconnect round-trip.
+
+## Update (2026-07-02): token-only connection
+
+Product decision: connection is **token-based, not repository-based**. The UI
+form ("Connect with GitHub") collects only the PAT; `/api/session/connect`
+takes `{thread_id, pat_token}`. All GitHub operations in the session run **as
+that user** against the **server-configured** repositories (`BUILD_REPO` /
+`DEPLOY_REPO`) — the per-session repo override plumbing
+(`SessionCredentials.repo` / `active_build_repo()` / `active_deploy_repo()`)
+remains in place but is not exposed in the UI.

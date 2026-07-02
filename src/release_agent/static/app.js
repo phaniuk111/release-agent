@@ -201,20 +201,21 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             showConnectForm();
         }
 
-        // ---- Repository + PAT connection (per session) -------------------------
-        // Non-secret repo/branch/project are cached in localStorage for convenience;
-        // the PAT is sent once to the server and never stored in the browser.
+        // ---- GitHub PAT connection (per session) -------------------------------
+        // The PAT is sent once to the server and never stored in the browser; all
+        // GitHub actions in this session then run as that user against the
+        // server-configured repositories.
         function renderConnectionStatus(s) {
             const icon = document.getElementById('repo-chip-icon');
             const label = document.getElementById('repo-chip-label');
             if (!icon || !label) return;
-            if (s && s.connected && s.repo) {
-                icon.className = 'fa-solid fa-link text-emerald-400';
-                label.textContent = s.repo + (s.branch ? ('@' + s.branch) : '');
+            if (s && s.connected) {
+                icon.className = 'fa-brands fa-github text-emerald-400';
+                label.textContent = 'GitHub connected' + (s.token_preview ? (' (' + s.token_preview + ')') : '');
                 label.className = 'text-emerald-300';
             } else {
-                icon.className = 'fa-solid fa-link-slash text-slate-400';
-                label.textContent = 'Connect repo';
+                icon.className = 'fa-brands fa-github text-slate-400';
+                label.textContent = 'Connect with GitHub';
                 label.className = 'text-slate-300';
             }
         }
@@ -228,34 +229,25 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
 
         function showConnectForm() {
             const chat = document.getElementById('chat');
-            const cached = JSON.parse(localStorage.getItem('repo_conn') || '{}');
             const wrap = document.createElement('div');
             wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm';
             wrap.innerHTML =
                 '<div class="mb-2 font-semibold flex items-center gap-2 text-emerald-300">' +
-                '<i class="fa-solid fa-plug"></i> Connect a repository</div>' +
-                '<div class="text-slate-400 text-xs mb-3">Provide the repo and a GitHub PAT to run against your own repository this session. ' +
+                '<i class="fa-brands fa-github"></i> Connect with GitHub</div>' +
+                '<div class="text-slate-400 text-xs mb-3">Provide your GitHub PAT — all GitHub actions this session run as you. ' +
                 'The token stays in memory on the server, is never logged, and is dropped when you start a new thread.</div>';
 
-            const grid = document.createElement('div');
-            grid.className = 'grid gap-2 mb-2';
-            const mk = (labelText, id, type, placeholder, value) => {
-                const l = document.createElement('label');
-                l.className = 'text-[11px] text-slate-400 block mb-0.5';
-                l.textContent = labelText;
-                const el = document.createElement('input');
-                el.id = id; el.type = type; el.placeholder = placeholder || '';
-                if (value) el.value = value;
-                el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
-                const box = document.createElement('div');
-                box.appendChild(l); box.appendChild(el);
-                grid.appendChild(box);
-            };
-            mk('Repository (owner/repo or URL)', 'conn-repo', 'text', 'e.g. octocat/hello-world', cached.repo);
-            mk('Branch name (optional)', 'conn-branch', 'text', 'e.g. main', cached.branch);
-            mk('PAT token', 'conn-pat', 'password', 'ghp_… (never stored in the browser)', '');
-            mk('Project name (optional)', 'conn-project', 'text', '', cached.project_name);
-            wrap.appendChild(grid);
+            const box = document.createElement('div');
+            box.className = 'mb-2';
+            const l = document.createElement('label');
+            l.className = 'text-[11px] text-slate-400 block mb-0.5';
+            l.textContent = 'PAT token';
+            const pat = document.createElement('input');
+            pat.id = 'conn-pat'; pat.type = 'password';
+            pat.placeholder = 'ghp_… (never stored in the browser)';
+            pat.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+            box.appendChild(l); box.appendChild(pat);
+            wrap.appendChild(box);
 
             const row = document.createElement('div');
             row.className = 'flex items-center gap-3 mt-1';
@@ -267,28 +259,21 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
 
             submit.addEventListener('click', async () => {
                 err.textContent = '';
-                const repo = document.getElementById('conn-repo').value.trim();
-                const branch = document.getElementById('conn-branch').value.trim();
-                const pat = document.getElementById('conn-pat').value.trim();
-                const project = document.getElementById('conn-project').value.trim();
-                if (!repo) { err.textContent = 'Repository is required.'; return; }
-                if (!pat) { err.textContent = 'PAT token is required.'; return; }
+                const token = document.getElementById('conn-pat').value.trim();
+                if (!token) { err.textContent = 'PAT token is required.'; return; }
                 submit.disabled = true; submit.textContent = 'Connecting…';
                 try {
                     const r = await fetch(API_BASE + '/api/session/connect', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ thread_id: threadId, repo, branch, pat_token: pat, project_name: project })
+                        body: JSON.stringify({ thread_id: threadId, pat_token: token })
                     });
                     const d = await r.json();
                     if (!d.ok) { err.textContent = d.error || 'Could not connect.'; return; }
-                    // Cache non-secret fields only (never the PAT).
-                    localStorage.setItem('repo_conn', JSON.stringify({ repo: d.repo, branch: d.branch, project_name: d.project_name }));
                     renderConnectionStatus(d);
                     wrap.remove();
-                    addMessage('bot', 'Connected to <code>' + d.repo + '</code>' +
-                        (d.branch ? (' on <code>' + d.branch + '</code>') : '') +
-                        ' (token ' + (d.token_preview || 'set') + '). I\'ll use this repository for GitHub actions this session.');
+                    addMessage('bot', 'Connected to GitHub (token ' + (d.token_preview || 'set') +
+                        '). GitHub actions this session will run with your token.');
                 } catch (e) {
                     err.textContent = 'Network error: ' + e.message;
                 } finally {
