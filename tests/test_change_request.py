@@ -205,6 +205,42 @@ class _FakeRepo:
         return _FakePR(self, head, base)
 
 
+def test_promote_targeted_dedupes_stale_duplicate_entries():
+    """A whole-branch SIT->UAT git merge can leave the same chart twice in include[]
+    (3-way merge artifact — both sides had it at different positions). A later targeted
+    promotion must self-heal: include[] starts with the duplicated chart and ends with
+    exactly one entry for it, at the promoted version."""
+    from release_agent.tools import promotion as P
+
+    def entry(version):
+        return {
+            "helm_chart_name": "targeted-svc",
+            "helm_chart_version": version,
+            "helm_chart_dir": "d",
+            "helm_values_file_name": "uat/values_uat.yaml",
+            "gke_namespace": "ns",
+        }
+
+    initial = {
+        "SIT": {"uat/deployment.json": {"include": [entry("1.1.0")]}},
+        # include[] starts with the duplicated chart: current 1.1.0 plus a stale 1.0.0.
+        "UAT": {"uat/deployment.json": {"include": [entry("1.1.0"), entry("1.0.0")]}},
+        "PRD": {"uat/deployment.json": {"include": []}},
+    }
+    repo = _FakeRepo(initial)
+    res = P._promote_targeted(
+        repo,
+        [("uat/deployment.json", P._upsert_each([entry("1.2.0")]))],
+        "promote targeted-svc",
+    )
+
+    assert res["delivered"] is True
+    for br in ("SIT", "UAT", "PRD"):
+        inc = json.loads(repo.files[br]["uat/deployment.json"])["include"]
+        versions = [e["helm_chart_version"] for e in inc if e["helm_chart_name"] == "targeted-svc"]
+        assert versions == ["1.2.0"], f"{br}: expected one deduped entry, got {versions}"
+
+
 def test_promote_targeted_promotes_change_request_to_all_branches():
     from release_agent.tools import promotion as P
 
