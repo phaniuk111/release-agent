@@ -1,7 +1,6 @@
 """Deployment-repo PR tracking + control-summary tools."""
 
 from ._common import (
-    settings,
     tool,
     BaseModel,
     Field,
