@@ -1,6 +1,11 @@
 ---
 name: release-controls
 description: "Verify image build provenance and release-control gates for image tags or workflow runs."
+metadata:
+  adk_additional_tools:
+    - verify_image_tag_build
+    - get_build_controls
+    - get_recent_runs
 ---
 
 Use this skill when the user asks whether an image tag was built, whether release controls passed, or what RLFT/RFTL gates are associated with a build.

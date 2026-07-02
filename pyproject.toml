@@ -3,10 +3,11 @@ name = "release-copilot"
 version = "0.2.0"
 description = "ADK + FastAPI release copilot that promotes container images via GitHub Actions (GKE/ASM)"
 readme = "README.md"
-requires-python = ">=3.10"
+# ADK Workflow graphs (google.adk.workflow) require Python >= 3.11.
+requires-python = ">=3.11"
 dependencies = [
-    # Core agent framework
-    "google-adk>=1.25.0",
+    # Core agent framework — 2.3+ for App, plugins, and the Workflow graph API.
+    "google-adk>=2.3",
     # Vertex AI Gemini
     "google-genai>=1.0",
     # Web server (production UI)

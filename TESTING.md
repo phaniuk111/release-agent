@@ -150,6 +150,22 @@ The confirmation flow is exercised automatically when you send a deploy message 
 
 To test resume behavior, just send the confirmation token as the next message in the same thread.
 
+### Automated test suite (no LLM / no GitHub needed)
+
+The ADK runtime is covered by `pytest` — including the deploy `Workflow` graph
+(preview → HITL confirm → apply | cancel) driven end-to-end through `InMemoryRunner`,
+the `MutationGuardPlugin`, the skills→tools wiring, and the ADK 2.x feature toggles:
+
+```bash
+PYTHONPATH=src:. python -m pytest -q
+# focused:
+PYTHONPATH=src:. python -m pytest tests/test_deploy_workflow.py tests/test_adk_features.py \
+                                  tests/test_safety_and_skills.py -q
+```
+
+These need neither Vertex/Gemini nor a GitHub token — the deploy Workflow nodes are pure
+Python and the confirmation plumbing is tested against synthetic ADK events.
+
 ## 7. Docker / Kubernetes Testing
 
 Build and run locally:

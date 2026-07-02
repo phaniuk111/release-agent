@@ -1,12 +1,22 @@
-"""ADK-backed chat service used by the FastAPI app.
+"""ADK-backed chat service used by the FastAPI app and CLI.
 
-This is the runtime bridge from the existing UI/API into the ADK refactor. It
-keeps deterministic deploy confirmation local and streams free-form requests
-through the ADK Runner/root_agent.
+This is the runtime bridge from the UI/API into the ADK refactor. Two ADK runtimes
+back it, both sharing in-memory session/artifact/memory services:
+
+* the **chat App** — a single skills-routed ``Agent`` wrapped in an ``App`` with the
+  ``MutationGuardPlugin`` safety plugin. It answers questions and runs scoped ops.
+* the **deploy Workflow** — a deterministic ``Workflow`` graph
+  (:mod:`adk_release_agent.deploy_workflow`) that previews, pauses on a
+  human-in-the-loop ``RequestInput`` confirmation, and applies only on the exact
+  ``CONFIRM-xxxxxx`` token. Deploy intent is routed here, never through the LLM.
+
+The external SSE contract is unchanged: ``token`` / ``interrupt`` / ``done`` events,
+with a ``confirmation`` interrupt carrying the ``CONFIRM-`` token.
 """
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
@@ -17,31 +27,102 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 
 from adk_release_agent import deploy as adk_deploy
-from adk_release_agent.agent import root_agent
+from adk_release_agent.agent import app as chat_app
+from adk_release_agent.deploy_workflow import build_deploy_app
 
+from .config import settings
 
+logger = logging.getLogger(__name__)
+
+_USER_ID = "fastapi-user"
+# name attached to the resume function-response; matches ADK's RequestInput tool.
+_REQUEST_INPUT_NAME = "adk_request_input"
+# ADK's tool-confirmation long-running function-call name (prod-ops confirmation).
 _REQUEST_CONFIRMATION = "adk_request_confirmation"
 
 
 @dataclass
 class PendingAdkCall:
+    """A paused chat-agent tool call awaiting the user's confirmation reply."""
+
     invocation_id: str
     function_call_id: str
     function_name: str
     args: dict[str, Any]
 
 
-def _is_positive_response(text: str) -> bool:
-    return text.strip().lower() in {"y", "yes", "true", "confirm", "confirmed", "ok", "proceed"}
-
-
 def _content_from_text(text: str) -> types.Content:
     return types.Content(role="user", parts=[types.Part.from_text(text=text)])
 
 
+def _confirmation_response(token: str, confirmed: bool) -> types.Content:
+    """Function-response message that resumes the paused deploy Workflow."""
+    return types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id=token,
+                    name=_REQUEST_INPUT_NAME,
+                    response={"confirmed": confirmed, "token": token},
+                )
+            )
+        ],
+    )
+
+
+def _text_from_event(event: Any) -> str:
+    content = getattr(event, "content", None)
+    if not content or not getattr(content, "parts", None):
+        return ""
+    return "".join(part.text for part in content.parts if getattr(part, "text", None))
+
+
+def _interrupt_token_from_event(event: Any) -> str | None:
+    """Return the interrupt id (== CONFIRM token) if this event is a HITL pause."""
+    long_running_ids = getattr(event, "long_running_tool_ids", None) or set()
+    if not long_running_ids:
+        return None
+    for function_call in event.get_function_calls() or []:
+        if function_call.id in long_running_ids:
+            return function_call.id
+    return None
+
+
+def _looks_like_deploy_request(message: str) -> bool:
+    """Detect a deploy/add/promote intent WITHOUT minting a preview token.
+
+    The deploy Workflow's gate node is the single place that mints the token; this
+    detector only decides whether to route the turn into that Workflow.
+    """
+    req = adk_deploy._request_from_inputs(message=message.strip())
+    return bool(req and req.get("images"))
+
+
+def _is_positive_response(text: str) -> bool:
+    return text.strip().lower() in {"y", "yes", "true", "confirm", "confirmed", "ok", "proceed"}
+
+
+def _pending_call_from_event(event: Any) -> PendingAdkCall | None:
+    """Return a pending tool-confirmation call if this chat event is a HITL pause."""
+    long_running_ids = getattr(event, "long_running_tool_ids", None) or set()
+    if not long_running_ids:
+        return None
+    for function_call in event.get_function_calls() or []:
+        if function_call.id in long_running_ids:
+            return PendingAdkCall(
+                invocation_id=getattr(event, "invocation_id", "") or "",
+                function_call_id=function_call.id,
+                function_name=function_call.name,
+                args=dict(function_call.args or {}),
+            )
+    return None
+
+
 def _content_from_pending_reply(text: str, pending: PendingAdkCall) -> types.Content:
+    """Build the function-response that resumes a paused tool confirmation."""
     if pending.function_name == _REQUEST_CONFIRMATION:
-        response = {"confirmed": _is_positive_response(text)}
+        response: Any = {"confirmed": _is_positive_response(text)}
     else:
         try:
             parsed = json.loads(text)
@@ -62,143 +143,148 @@ def _content_from_pending_reply(text: str, pending: PendingAdkCall) -> types.Con
     )
 
 
-def _text_from_event(event: Any) -> str:
-    content = getattr(event, "content", None)
-    if not content or not getattr(content, "parts", None):
-        return ""
-    parts = []
-    for part in content.parts:
-        text = getattr(part, "text", None)
-        if text:
-            parts.append(text)
-    return "".join(parts)
-
-
-def _pending_call_from_event(event: Any) -> PendingAdkCall | None:
-    long_running_ids = getattr(event, "long_running_tool_ids", None)
-    content = getattr(event, "content", None)
-    if not long_running_ids or not content or not getattr(content, "parts", None):
-        return None
-    for part in content.parts:
-        function_call = getattr(part, "function_call", None)
-        if function_call and function_call.id in long_running_ids:
-            return PendingAdkCall(
-                invocation_id=getattr(event, "invocation_id", "") or "",
-                function_call_id=function_call.id,
-                function_name=function_call.name,
-                args=dict(function_call.args or {}),
-            )
-    return None
-
-
-def _interrupt_payload(pending: PendingAdkCall) -> dict[str, Any]:
-    if pending.function_name == _REQUEST_CONFIRMATION:
-        confirmation = pending.args.get("toolConfirmation", {})
-        original = pending.args.get("originalFunctionCall", {})
-        hint = confirmation.get("hint") or f"Confirm {original.get('name', 'tool call')}?"
-        return {
-            "type": "adk_confirmation",
-            "message": hint,
-            "action": 'Type "yes" to confirm, anything else to reject.',
-            "function": original.get("name") or pending.function_name,
-            "args": original.get("args") or {},
-        }
+def _confirmation_interrupt_payload(pending: PendingAdkCall) -> dict[str, Any]:
+    """UI-facing interrupt describing a prod-ops confirmation request."""
+    confirmation = pending.args.get("toolConfirmation") or {}
+    original = pending.args.get("originalFunctionCall") or {}
+    hint = confirmation.get("hint") or f"Confirm {original.get('name', pending.function_name)}?"
     return {
-        "type": "adk_input",
-        "message": f"ADK is waiting for input for {pending.function_name}.",
-        "action": "Provide the requested value.",
-        "function": pending.function_name,
-        "args": pending.args,
+        "type": "confirmation",
+        "message": hint,
+        "action": 'Reply "yes" to approve, anything else to reject.',
+        "function": original.get("name") or pending.function_name,
+        "args": original.get("args") or {},
     }
 
 
-def _looks_like_deploy_request(message: str) -> bool:
-    stripped = message.strip()
-    preview = adk_deploy.prepare_deploy_preview(message=stripped)
-    if preview.get("ok"):
-        # Leave the pending preview in place; the caller will stream it.
-        return True
-    return False
-
-
 class AdkChatService:
-    """Small stateful adapter around an ADK Runner."""
+    """Stateful adapter around the chat App and the deterministic deploy Workflow."""
 
     def __init__(self):
-        if root_agent is None:
+        if chat_app is None:
             raise RuntimeError("google-adk is not installed; cannot start ADK chat service")
         self.session_service = InMemorySessionService()
         self.artifact_service = InMemoryArtifactService()
         self.memory_service = InMemoryMemoryService()
-        self.runner = Runner(
-            app_name="release_copilot_adk",
-            agent=root_agent,
+        self.chat_runner = Runner(
+            app=chat_app,
             artifact_service=self.artifact_service,
             session_service=self.session_service,
             memory_service=self.memory_service,
             auto_create_session=True,
         )
+        self.deploy_runner = Runner(
+            app=build_deploy_app(),
+            artifact_service=self.artifact_service,
+            session_service=self.session_service,
+            memory_service=self.memory_service,
+            auto_create_session=True,
+        )
+        # thread_id -> pending CONFIRM token awaiting resume of the deploy Workflow.
+        self._pending_deploy: dict[str, str] = {}
+        # thread_id -> paused chat-agent tool confirmation awaiting a yes/no reply.
         self._pending_adk_calls: dict[str, PendingAdkCall] = {}
 
     async def stream_chat(self, message: str, thread_id: str) -> AsyncGenerator[dict[str, Any], None]:
         """Yield UI-compatible SSE event payloads."""
-        pending = self._pending_adk_calls.pop(thread_id, None)
-        if pending:
-            async for event in self._stream_adk(
-                _content_from_pending_reply(message, pending),
+        # A paused prod-ops confirmation takes precedence: this reply approves/rejects it.
+        pending_call = self._pending_adk_calls.pop(thread_id, None)
+        if pending_call is not None:
+            async for event in self._run_chat_agent(
+                _content_from_pending_reply(message, pending_call),
                 thread_id,
-                invocation_id=pending.invocation_id,
+                invocation_id=pending_call.invocation_id,
             ):
                 yield event
             return
 
         token = adk_deploy._extract_confirmation_token(message)
         if token:
-            result = adk_deploy.apply_confirmed_deploy(message)
-            yield {"type": "token", "content": self._format_deploy_apply_result(result)}
-            yield {"type": "done"}
-            return
+            pending_token = self._pending_deploy.get(thread_id)
+            if pending_token:
+                # Resume the paused deploy Workflow: exact match confirms, else cancels.
+                async for event in self._stream_deploy_resume(
+                    thread_id, pending_token, confirmed=(token == pending_token)
+                ):
+                    yield event
+                return
+            if token in adk_deploy._PENDING_PREVIEWS:
+                # Stateless fallback (e.g. reconnect with no tracked invocation).
+                result = adk_deploy.apply_confirmed_deploy(message)
+                yield {"type": "token", "content": self._format_deploy_apply_result(result)}
+                yield {"type": "done"}
+                return
 
         if _looks_like_deploy_request(message):
-            # _looks_like_deploy_request already created the pending preview.
-            latest_token = next(reversed(adk_deploy._PENDING_PREVIEWS))
-            preview = adk_deploy._PENDING_PREVIEWS[latest_token]["preview"]
-            pending_preview = adk_deploy._PENDING_PREVIEWS[latest_token]["request"]
-            env = pending_preview.get("environment", "uat")
-            image_tags = adk_deploy._image_tags(pending_preview)
-            content = (
-                f"**Deploy {image_tags} to {str(env).upper()}**\n\n"
-                "```json\n"
-                + json.dumps(preview, indent=2)
-                + "\n```\n\n"
-                f"Reply `{latest_token}` to confirm."
-            )
-            yield {"type": "token", "content": content}
-            yield {
-                "type": "interrupt",
-                "data": {
-                    "type": "confirmation",
-                    "token": latest_token,
-                    "proposed": preview,
-                    "environment": env,
-                    "message": f"Reply with exactly `{latest_token}` to apply this deploy.",
-                },
-            }
-            yield {"type": "done"}
+            async for event in self._stream_deploy_preview(message, thread_id):
+                yield event
             return
 
-        async for event in self._stream_adk(_content_from_text(message), thread_id):
+        async for event in self._run_chat_agent(_content_from_text(message), thread_id):
             yield event
 
-    async def _stream_adk(
+    async def _stream_deploy_preview(
+        self, message: str, thread_id: str
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Run the deploy Workflow's preview turn and surface the confirmation interrupt."""
+        async for event in self.deploy_runner.run_async(
+            user_id=_USER_ID, session_id=thread_id, new_message=_content_from_text(message)
+        ):
+            text = _text_from_event(event)
+            if text:
+                yield {"type": "token", "content": text}
+            token = _interrupt_token_from_event(event)
+            if token:
+                pending = adk_deploy._PENDING_PREVIEWS.get(token, {})
+                request = pending.get("request", {})
+                environment = request.get("environment", "uat")
+                self._pending_deploy[thread_id] = token
+                yield {
+                    "type": "interrupt",
+                    "data": {
+                        "type": "confirmation",
+                        "token": token,
+                        "proposed": pending.get("preview", {}),
+                        "environment": environment,
+                        "message": f"Reply with exactly `{token}` to apply this deploy.",
+                    },
+                }
+                break
+        yield {"type": "done"}
+
+    async def _stream_deploy_resume(
+        self, thread_id: str, token: str, confirmed: bool
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Resume the paused deploy Workflow with the user's confirmation."""
+        self._pending_deploy.pop(thread_id, None)
+        result: dict[str, Any] | None = None
+        async for event in self.deploy_runner.run_async(
+            user_id=_USER_ID,
+            session_id=thread_id,
+            new_message=_confirmation_response(token, confirmed),
+        ):
+            output = getattr(event, "output", None)
+            if output is not None:
+                result = output
+        yield {"type": "token", "content": self._format_deploy_apply_result(result or {})}
+        yield {"type": "done"}
+
+    async def _run_chat_agent(
         self,
         content: types.Content,
         thread_id: str,
         invocation_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        user_id = "fastapi-user"
-        async for event in self.runner.run_async(
-            user_id=user_id,
+        """Stream a chat turn, surfacing prod-ops confirmations and persisting memory.
+
+        If the agent calls a confirmation-gated tool, the run pauses: the pending
+        call is stored and surfaced as a ``confirmation`` interrupt. Otherwise the
+        turn completes and — when memory is enabled — the session is saved to the
+        memory service so future turns can recall it.
+        """
+        interrupted = False
+        async for event in self.chat_runner.run_async(
+            user_id=_USER_ID,
             session_id=thread_id,
             invocation_id=invocation_id,
             new_message=content,
@@ -207,11 +293,26 @@ class AdkChatService:
             if text:
                 yield {"type": "token", "content": text}
             pending = _pending_call_from_event(event)
-            if pending:
+            if pending is not None:
                 self._pending_adk_calls[thread_id] = pending
-                yield {"type": "interrupt", "data": _interrupt_payload(pending)}
+                yield {"type": "interrupt", "data": _confirmation_interrupt_payload(pending)}
+                interrupted = True
                 break
+
+        if not interrupted and settings.adk_memory_enabled:
+            await self._persist_session_to_memory(thread_id)
         yield {"type": "done"}
+
+    async def _persist_session_to_memory(self, thread_id: str) -> None:
+        """Best-effort: add the finished chat session to the memory service."""
+        try:
+            session = await self.session_service.get_session(
+                app_name=chat_app.name, user_id=_USER_ID, session_id=thread_id
+            )
+            if session is not None:
+                await self.memory_service.add_session_to_memory(session)
+        except Exception:  # memory is best-effort; never break a chat turn
+            logger.debug("memory persistence failed for thread %s", thread_id, exc_info=True)
 
     @staticmethod
     def _format_deploy_apply_result(result: dict[str, Any]) -> str:

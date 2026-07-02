@@ -196,6 +196,52 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GEMINI_MODEL", "VERTEX_MODEL", "RELEASE_GEMINI_MODEL"),
     )
 
+    # --- ADK 2.x runtime features (all env-overridable, safe defaults) ----------
+    # Context caching: cache the large static prefix (root instruction + skill
+    # catalog) to cut latency/cost. Only caches context above min_tokens.
+    adk_context_cache: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ADK_CONTEXT_CACHE", "RELEASE_ADK_CONTEXT_CACHE"),
+    )
+    adk_context_cache_min_tokens: int = Field(
+        default=2048,
+        validation_alias=AliasChoices(
+            "ADK_CONTEXT_CACHE_MIN_TOKENS", "RELEASE_ADK_CONTEXT_CACHE_MIN_TOKENS"
+        ),
+    )
+    adk_context_cache_ttl_seconds: int = Field(
+        default=1800,
+        validation_alias=AliasChoices(
+            "ADK_CONTEXT_CACHE_TTL_SECONDS", "RELEASE_ADK_CONTEXT_CACHE_TTL_SECONDS"
+        ),
+    )
+    # Event compaction: summarize older events on long chat sessions to avoid
+    # context overflow. compaction_interval/overlap_size are required by ADK.
+    adk_event_compaction: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ADK_EVENT_COMPACTION", "RELEASE_ADK_EVENT_COMPACTION"),
+    )
+    adk_compaction_interval: int = Field(
+        default=20,
+        validation_alias=AliasChoices("ADK_COMPACTION_INTERVAL", "RELEASE_ADK_COMPACTION_INTERVAL"),
+    )
+    adk_compaction_overlap: int = Field(
+        default=3,
+        validation_alias=AliasChoices("ADK_COMPACTION_OVERLAP", "RELEASE_ADK_COMPACTION_OVERLAP"),
+    )
+    # Long-term memory: preload relevant memories each turn and persist finished
+    # chat sessions to the (in-memory) memory service.
+    adk_memory_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ADK_MEMORY_ENABLED", "RELEASE_ADK_MEMORY_ENABLED"),
+    )
+    # Require human confirmation before high-impact prod ops (prod remove / merge
+    # PRD release) via ADK tool confirmation.
+    adk_confirm_prod_ops: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ADK_CONFIRM_PROD_OPS", "RELEASE_ADK_CONFIRM_PROD_OPS"),
+    )
+
     # App metadata (used by FastAPI)
     app_title: str = "Release Copilot"
     # NoDecode: skip pydantic-settings' built-in JSON decoding so the validator

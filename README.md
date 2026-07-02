@@ -160,23 +160,30 @@ without a separate database.
 
 ## Architecture
 
-Two clearly separated lanes share one ADK root agent:
+Two clearly separated lanes run on **Google ADK 2.x**:
 
-1. **Deterministic promote pipeline — the LLM is never trusted as the mutation gate.**
-   `prepare_deploy_preview → CONFIRM token → apply_confirmed_deploy`.
-   Promote intent is parsed deterministically; a real mutation happens only after the
-   user replies with the exact `CONFIRM-xxxx` token shown in the thread. The ADK deploy
-   agent also wraps the confirmed apply tool with ADK function confirmation.
+1. **Deterministic deploy Workflow — the LLM is never the mutation gate.**
+   Deploy / add / promote intent is detected deterministically and routed into an ADK
+   `Workflow` graph (`adk_release_agent/deploy_workflow.py`):
+   `START → preview → (HITL confirm) → apply | cancel`. The confirm step is an ADK
+   `RequestInput` human-in-the-loop node — the graph **pauses** until the user replies
+   with the exact `CONFIRM-xxxx` token shown in the thread, then applies (or cancels).
+   The terminal output is validated by a typed `output_schema` (`DeployOutcome`). The
+   nodes are plain Python (no LLM), so the whole flow is deterministic and unit-testable.
 
-2. **ADK specialist lane for free-form chat.** The root ADK agent delegates to scoped
-   specialist sub-agents:
-   - `status` / `pr` / `controls` / `general` — **read-only**
-   - `ops` — limited to `remove_from_release` + `retrigger_deployment_workflow`
-   - `deploy` — deterministic preview + confirmed apply only
+2. **Skills-routed chat agent for everything else.** A single ADK `Agent` uses filesystem
+   **Skills** as the router: each `SKILL.md` declares its `adk_additional_tools`, so a
+   domain's tools are surfaced to the model **only when that skill activates**:
+   - `release-status` / `release-pr` / `release-controls` — **read-only**
+   - `release-ops` — scoped mutations only: `remove_from_release`,
+     `retrigger_deployment_workflow`, `merge_prod_release`
+   - `release-deploy` — **tool-less guard**; defers to the deterministic Workflow
 
-   The low-level release-defining mutations (`apply_json_update`, `dispatch_workflow`,
-   `open_release_pr`) are not exposed directly as free-form ADK chat tools. The deploy
-   agent reaches release mutation only through the deterministic deploy facade.
+   The agent is wrapped in an ADK `App` with a **`MutationGuardPlugin`** that blocks the
+   release-defining mutations (`open_release_pr`, `apply_json_update`, `dispatch_workflow`,
+   `apply_confirmed_deploy`) from the free-form chat path **in code** — not just by prompt.
+   High-impact prod ops (`merge_prod_release`, a **prod** `remove_from_release`) require an
+   ADK tool-confirmation before they run.
 
 - **PyGithub** for all GitHub operations — no `gh` subprocess in the tool layer; the
   token is resolved from `GH_TOKEN`/`GITHUB_TOKEN`, falling back to `gh auth token`.
@@ -201,14 +208,17 @@ src/release_agent/
 
 ### ADK runtime
 
-The runtime ADK app lives at `adk_release_agent/`:
+Requires **Python 3.11+** and **google-adk 2.3+**. The runtime ADK app lives at
+`adk_release_agent/`:
 
 ```
 adk_release_agent/
-  agent.py                  # ADK root_agent + specialist sub-agents
-  deploy.py                 # deterministic deploy preview/token/apply workflow
+  agent.py                  # skills-routed root Agent + App (safety plugin, caching, compaction, memory)
+  deploy_workflow.py        # deterministic deploy Workflow graph (preview → HITL confirm → apply | cancel)
+  deploy.py                 # deploy preview/token/apply helpers used by the Workflow nodes
+  safety.py                 # MutationGuardPlugin — blocks release-defining mutations in free-form chat
   tools.py                  # ADK Function Tool wrappers over the existing GitHub tool layer
-  skills/*/SKILL.md         # ADK Skills for deploy, status, PRs, controls, and scoped ops
+  skills/*/SKILL.md         # ADK Skills (status, pr, controls, ops, deploy) with adk_additional_tools
 ```
 
 Install the ADK dependency and run it with:
@@ -217,16 +227,27 @@ Install the ADK dependency and run it with:
 PYTHONPATH=src:. adk run adk_release_agent
 ```
 
-The FastAPI `/api/chat` route is backed by an ADK service adapter. The ADK root agent has specialists for status, PR tracking, controls, scoped ops, and
-deploy. The deploy specialist follows the safe release shape:
-`prepare_deploy_preview` parses the request and returns the exact deployment JSON plus
-a `CONFIRM-xxxxxx` token; `apply_confirmed_deploy` applies only a pending preview and is
-wrapped with ADK `FunctionTool(require_confirmation=True)`.
+The FastAPI `/api/chat` route is backed by an ADK service adapter
+(`src/release_agent/adk_service.py`) that drives two ADK runtimes sharing in-memory
+session/artifact/memory services: the **skills-routed chat `App`** for questions and
+scoped ops, and the **deploy `Workflow`** for the deterministic preview → confirm →
+apply sequence. Deploy intent never reaches the LLM.
 
-The release-defining low-level mutations (`apply_json_update`, `dispatch_workflow`,
-`open_release_pr`) remain outside the free-form ADK chat toolset. ADK calls the existing
-GitHub tool layer through the deterministic deploy facade instead of exposing those
-mutations directly to the model.
+#### ADK 2.x runtime features (all env-toggleable — see the `ADK_*` vars)
+
+| Feature | What it does |
+|---------|--------------|
+| **Skills as router** | `SKILL.md` `adk_additional_tools` surface a domain's tools only on skill activation (one agent, no sub-agent sprawl). |
+| **Deploy `Workflow` graph** | `RequestInput` HITL confirm node + typed `output_schema` (`DeployOutcome`); pure-function nodes, no LLM. |
+| **`App` + `MutationGuardPlugin`** | Release-defining mutations blocked from free-form chat in code (`before_tool_callback`). |
+| **Context caching** (`ContextCacheConfig`) | Caches the static prefix (root instruction + skill catalog) to cut latency/cost. `ADK_CONTEXT_CACHE`. |
+| **Event compaction** (`EventsCompactionConfig`) | Summarizes older events on long chats to avoid context overflow. `ADK_EVENT_COMPACTION`. |
+| **Memory** (`preload_memory` + `add_session_to_memory`) | Recalls relevant context each turn; persists finished sessions to the **in-memory** memory service. `ADK_MEMORY_ENABLED`. |
+| **Conditional confirmation** (`require_confirmation`) | `merge_prod_release` always confirms; `remove_from_release` confirms **only for prod**. `ADK_CONFIRM_PROD_OPS`. |
+
+Memory and sessions are **in-memory (per-pod, ephemeral)** by design — see the scaling
+note below. A PVC does not persist the in-memory memory service (it is pure RAM); durable
+storage would use ADK's `DatabaseSessionService` (SQLite/Postgres), not a PVC-mounted file.
 
 **Production note**: FastAPI is the single interface — async, scalable, easy to instrument, and the standard choice for Python services running in Kubernetes.
 
@@ -261,8 +282,10 @@ The container expects (all via the Helm `config:` block → ConfigMap, plus a Se
 The current ADK runtime does not yet enforce a spend gate around every ADK model call.
 
 - Keep using cheap Gemini Flash-class models for the ADK runtime.
-- Reintroduce an ADK plugin/middleware budget guard before production scale-out if a
-  strict spend cap is required.
+- The ADK `App` plugin hook is already in place (`MutationGuardPlugin` in
+  `adk_release_agent/safety.py`). A spend cap is a drop-in second plugin implementing
+  `before_model_callback` — add it before production scale-out if a strict cap is required.
+- Context caching (`ADK_CONTEXT_CACHE`) already trims repeated-prefix token cost.
 
 Project is resolved dynamically from GOOGLE_CLOUD_PROJECT env or your local gcloud config (no hardcoding in code).
 

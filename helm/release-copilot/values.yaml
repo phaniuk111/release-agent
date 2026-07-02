@@ -58,6 +58,16 @@ config:
   CONTROL_PREFIXES: "RLFT,RFTL"
   # Fail-closed: block a PRD release when any build control failed.
   PRD_REQUIRE_CONTROLS: "true"
+  # --- ADK 2.x runtime features (safe defaults; override per-env) ---
+  # Cache the static prompt prefix (root instruction + skill catalog).
+  ADK_CONTEXT_CACHE: "true"
+  # Summarize older events on long chat sessions to avoid context overflow.
+  ADK_EVENT_COMPACTION: "true"
+  # Preload relevant memories each turn + persist finished sessions. NOTE: the
+  # memory service is in-memory / per-pod / ephemeral (keep replicaCount: 1).
+  ADK_MEMORY_ENABLED: "true"
+  # Require confirmation before high-impact prod ops (merge PRD release / prod remove).
+  ADK_CONFIRM_PROD_OPS: "true"
 
 # Extra raw env entries appended to the container (list of {name,value|valueFrom}).
 extraEnv: []

@@ -1,6 +1,14 @@
 ---
 name: release-pr
 description: "Find deployment PRs and summarize CHG, RMG, RLFT, and RFTL evidence from PR comments and runs."
+metadata:
+  adk_additional_tools:
+    - find_prs
+    - get_pr_details
+    - get_pr_comments
+    - summarize_pr_controls
+    - get_recent_runs
+    - get_workflow_status
 ---
 
 Use this skill when the user asks to find, track, inspect, or summarize a deployment PR, release ticket, CHG/RMG approval, or RLFT/RFTL gate.

@@ -71,7 +71,7 @@ async def _print_adk_turn(service, user: str, thread_id: str) -> None:
     async for event in service.stream_chat(user, thread_id):
         etype = event.get("type")
         if etype == "token" and event.get("content"):
-            console.print(f"[bold blue]Copilot[/]:")
+            console.print("[bold blue]Copilot[/]:")
             console.print(Markdown(str(event["content"])))
         elif etype == "interrupt":
             data = event.get("data") or {}
