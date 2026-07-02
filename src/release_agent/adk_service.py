@@ -147,12 +147,21 @@ def _confirmation_interrupt_payload(pending: PendingAdkCall) -> dict[str, Any]:
     """UI-facing interrupt describing a prod-ops confirmation request."""
     confirmation = pending.args.get("toolConfirmation") or {}
     original = pending.args.get("originalFunctionCall") or {}
-    hint = confirmation.get("hint") or f"Confirm {original.get('name', pending.function_name)}?"
+    function = original.get("name") or pending.function_name
+    if function == "merge_prod_release":
+        # Post-click warning: releasing finalizes the day's release.
+        hint = (
+            "Release today's PRD release now? It promotes the staged charts through "
+            "SIT → UAT → PRD. **Once released, no new charts can be added to this "
+            "release** — later prod deploys start a new release."
+        )
+    else:
+        hint = confirmation.get("hint") or f"Confirm {function}?"
     return {
         "type": "confirmation",
         "message": hint,
         "action": 'Reply "yes" to approve, anything else to reject.',
-        "function": original.get("name") or pending.function_name,
+        "function": function,
         "args": original.get("args") or {},
     }
 

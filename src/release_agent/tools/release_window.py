@@ -53,7 +53,7 @@ def _today_prd_pr(repo):
 
 def get_release_status() -> dict:
     """Current deploy status (UTC): charts live on UAT and PRD, today's accumulating PRD
-    release PR (the charts staged for prod, merged at the cutoff), and the cutoff itself.
+    release PR (the charts staged for prod, shipped when someone releases).
     GitHub is the cross-session source of truth, so every session sees the same answer."""
     from datetime import datetime, timezone
 
@@ -90,22 +90,16 @@ def get_release_status() -> dict:
             "number": pr.number,
             "url": pr.html_url,
             "charts": [{"helm_chart_name": n, "helm_chart_version": v} for n, v in staged.items()],
-            "can_merge_now": cutoff_passed,
+            "can_merge_now": True,  # no cutoff gate — a release can ship at any time
         }
 
     if prd_release_pr:
-        if cutoff_passed:
-            reason = (
-                f"PRD release PR #{prd_release_pr['number']} ({len(pending_to_prod)} change(s)) can be "
-                f"released now — cutoff {cutoff:02d}:00 UTC has passed. Say 'release prod' to promote it "
-                f"through {settings.sit_branch}→{settings.uat_branch}→{settings.prd_branch}."
-            )
-        else:
-            reason = (
-                f"PRD release PR #{prd_release_pr['number']} is collecting {len(pending_to_prod)} "
-                f"change(s); after {cutoff:02d}:00 UTC it promotes to PRD through "
-                f"{settings.sit_branch}→{settings.uat_branch}→{settings.prd_branch}."
-            )
+        reason = (
+            f"PRD release PR #{prd_release_pr['number']} is collecting {len(pending_to_prod)} "
+            f"change(s) — say 'release prod' to promote it through "
+            f"{settings.sit_branch}→{settings.uat_branch}→{settings.prd_branch} at any time. "
+            "Once released, no new charts can be added to this release."
+        )
     else:
         reason = "No PRD release open today."
 
@@ -121,7 +115,7 @@ def get_release_status() -> dict:
 
 @tool
 def check_release_window() -> str:
-    """Report current deploy status (UTC): charts live on UAT vs PRD, today's PRD release
-    PR (charts staged for prod + whether it can be merged yet), and the cutoff. This is the
-    source of truth for 'what's deployed' and 'what's pending to prod'."""
+    """Report current deploy status (UTC): charts live on UAT vs PRD and today's PRD release
+    PR (charts staged for prod — releasable at any time). This is the source of truth for
+    'what's deployed' and 'what's pending to prod'."""
     return json.dumps(get_release_status(), indent=2)

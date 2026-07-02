@@ -319,7 +319,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         const CAPABILITIES = [
             {icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
             {icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
-            {icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (after cutoff)',  send:true,  text:'release prod'},
+            {icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (finalizes the release)',  send:true,  text:'release prod'},
             {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
             {icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
             {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
@@ -408,7 +408,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             const title = document.createElement('div');
             title.className = 'mb-2 font-semibold flex items-center gap-2 ' + accentT;
             const subText = isProd
-                ? '— current prd/deployment.json; edit it, then submit STAGES these charts into the PRD release (promotes via SIT→UAT→PRD at the cutoff)'
+                ? '— current prd/deployment.json; edit it, then submit STAGES these charts into the PRD release (promotes via SIT→UAT→PRD when released)'
                 : '— current uat/deployment.json; edit (add/remove entries), then submit OVERRIDES the file with exactly what you see';
             title.innerHTML = '<i class="fa-solid ' + icon + '"></i> ' + heading +
                 ' <span class="text-slate-400 font-normal text-xs">' + subText + '</span>';
@@ -640,7 +640,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                     detail.textContent = s.error;
                     return;
                 }
-                const foot = 'cutoff ' + s.cutoff_utc + ' UTC • now ' + s.now_utc + ' • ' + s.date_utc;
+                const foot = 'now ' + s.now_utc + ' UTC • ' + s.date_utc;
                 const pr = s.prd_release_pr;
                 if (pr) {
                     const n = (s.pending_to_prod || []).length;

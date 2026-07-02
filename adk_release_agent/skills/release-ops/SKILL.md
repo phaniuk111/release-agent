@@ -1,6 +1,6 @@
 ---
 name: release-ops
-description: "Perform tightly scoped release operations: remove or unstage charts, retrigger a deployment workflow, or release today's staged PRD batch after cutoff."
+description: "Perform tightly scoped release operations: remove or unstage charts, retrigger a deployment workflow, or release today's staged PRD batch."
 metadata:
   adk_additional_tools:
     - remove_from_release
@@ -15,7 +15,7 @@ Use this skill only when the user gives a direct operation command, not when the
 Allowed actions:
 - `remove_from_release` to unstage chart names from today's PRD release PR, or to remove them from a live environment.
 - `retrigger_deployment_workflow` to rerun deployment workflow for an existing PR.
-- `merge_prod_release` to release today's staged PRD batch after the configured cutoff.
+- `merge_prod_release` to release today's staged PRD batch — allowed at any time. Releasing finalizes the release: no new charts can be added to it afterwards (later prod deploys start a new release). The tool confirmation warns the user about this before anything ships.
 
 Choosing `remove_from_release`'s environment:
 - "remove X from the release" / "unstage X" / "don't ship X today" → `environment="staging"` (the default). This only edits today's PRD release PR; live environments are untouched.
