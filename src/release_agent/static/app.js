@@ -523,11 +523,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                 banner.classList.add('border-slate-700', 'bg-slate-900');
                 icon.className = 'fa-solid fa-circle-check text-slate-400';
                 title.textContent = 'No PRD release open today';
-                let html = (s.reason ? s.reason + ' • ' : '') + foot;
-                if ((s.prd_charts || []).length) {
-                    html += '<br><span class="text-slate-400">live in PRD: ' + _chartList(s.prd_charts) + '</span>';
-                }
-                detail.innerHTML = html;
+                detail.innerHTML = (s.reason ? s.reason + ' • ' : '') + foot;
             } catch (e) {
                 banner.classList.remove('hidden');
                 icon.className = 'fa-solid fa-triangle-exclamation text-slate-400';

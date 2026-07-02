@@ -105,12 +105,8 @@ def get_release_status() -> dict:
                 f"change(s); after {cutoff:02d}:00 UTC it promotes to PRD through "
                 f"{settings.sit_branch}→{settings.uat_branch}→{settings.prd_branch}."
             )
-    elif prd:
-        reason = "No PRD release open today. Live in PRD: " + ", ".join(
-            f"{n}:{v}" for n, v in prd.items()
-        ) + "."
     else:
-        reason = "No PRD release open today; nothing deployed to PRD yet."
+        reason = "No PRD release open today."
 
     return {
         **base,
