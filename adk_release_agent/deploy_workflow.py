@@ -63,12 +63,32 @@ _TOKEN_STATE_KEY = "deploy_confirm_token"
 DEPLOY_APP_NAME = "release_deploy_workflow"
 
 
-def _preview_text(preview: dict[str, Any], token: str, env: str, image_tags: str) -> str:
+def _change_request_preview(change_request: Any) -> str:
+    """Compact change-request block for the prod deploy preview (empty if none)."""
+    if not isinstance(change_request, dict) or not change_request:
+        return ""
+    cr = change_request
+    summary = cr.get("chg_summary") or cr.get("summary") or ""
+    description = cr.get("description") or cr.get("change_description") or ""
+    start = cr.get("start_date") or cr.get("start_time") or "?"
+    end = cr.get("end_date") or cr.get("end_time") or "?"
+    return (
+        "\n\n**Change request** (→ change-request.json):\n"
+        f"- Summary: {summary or '(none)'}\n"
+        f"- Window: {start} → {end}\n"
+        f"- Description: {description or '(none)'}"
+    )
+
+
+def _preview_text(
+    preview: dict[str, Any], token: str, env: str, image_tags: str, change_request: Any = None
+) -> str:
     """Human-readable preview shown to the user before confirmation."""
     return (
         f"**Deploy {image_tags} to {str(env).upper()}**\n\n"
-        "```json\n" + json.dumps(preview, indent=2) + "\n```\n\n"
-        f"Reply `{token}` to confirm."
+        "```json\n" + json.dumps(preview, indent=2) + "\n```"
+        + _change_request_preview(change_request)
+        + f"\n\nReply `{token}` to confirm."
     )
 
 
@@ -91,7 +111,11 @@ async def _deploy_gate(ctx: Any, node_input: str):
 
         token = result["token"]
         text = _preview_text(
-            result["proposed"], token, result["environment"], result["image_tags"]
+            result["proposed"],
+            token,
+            result["environment"],
+            result["image_tags"],
+            result.get("change_request"),
         )
         yield Event(
             content=types.Content(role="model", parts=[types.Part.from_text(text=text)]),
