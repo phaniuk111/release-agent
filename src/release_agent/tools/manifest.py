@@ -3,7 +3,6 @@
 from typing import Any
 
 from ._common import (
-    settings,
     tool,
     BaseModel,
     Field,
