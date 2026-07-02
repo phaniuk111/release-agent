@@ -8,6 +8,7 @@ from ._common import (
     json,
     _get_github_client,
     _read_json_file,
+    active_deploy_repo,
 )
 
 
@@ -66,7 +67,7 @@ def get_release_status() -> dict:
         "cutoff_passed": cutoff_passed,
     }
     try:
-        repo = _get_github_client().get_repo(settings.deploy_repo)
+        repo = _get_github_client().get_repo(active_deploy_repo())
         uat = _charts(repo, "uat")
         prd = _charts(repo, "prd")
         pr = _today_prd_pr(repo)

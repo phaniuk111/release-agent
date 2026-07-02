@@ -71,13 +71,20 @@ def tool(func: Callable | None = None, *, args_schema: type[BaseModel] | None = 
 
 
 def _resolve_github_token() -> str | None:
-    """Resolve a GitHub token from the environment, falling back to the `gh` CLI.
+    """Resolve a GitHub token for the current request.
 
-    Order: GH_TOKEN -> GITHUB_TOKEN -> `gh auth token` (keyring login).
-    The CLI fallback means a developer who is logged in via `gh auth login`
-    doesn't have to export a PAT manually (the previous behavior caused 404 /
-    auth failures whenever GH_TOKEN was unset).
+    Order: active session PAT (supplied by the end user for this chat thread)
+    -> GH_TOKEN -> GITHUB_TOKEN -> `gh auth token` (keyring login). The session
+    PAT wins so a connected session operates as that user; the env / CLI chain
+    is the server-wide fallback. The CLI fallback means a developer logged in
+    via `gh auth login` doesn't have to export a PAT manually (the previous
+    behavior caused 404 / auth failures whenever GH_TOKEN was unset).
     """
+    from ..session_creds import active_credentials
+
+    session = active_credentials()
+    if session and session.pat_token:
+        return session.pat_token
     token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")
     if token:
         return token.strip()
@@ -113,7 +120,27 @@ def _gh_retry():
         return None
 
 
-# Initialize PyGithub client (PAT via GH_TOKEN/GITHUB_TOKEN, or the gh CLI login)
+def active_build_repo() -> str:
+    """Repo for build/source operations: the session override, else config."""
+    from ..session_creds import active_credentials
+
+    session = active_credentials()
+    if session and session.build_repo:
+        return session.build_repo
+    return settings.build_repo
+
+
+def active_deploy_repo() -> str:
+    """Repo for deploy/promote operations: the session override, else config."""
+    from ..session_creds import active_credentials
+
+    session = active_credentials()
+    if session and session.deploy_repo:
+        return session.deploy_repo
+    return settings.deploy_repo
+
+
+# Initialize PyGithub client (PAT via session creds, GH_TOKEN/GITHUB_TOKEN, or the gh CLI login)
 def _get_github_client() -> Github:
     token = _resolve_github_token()
     retry = _gh_retry()
@@ -164,4 +191,4 @@ def _read_json_file(repo, branch: str, path: str) -> dict:
 
 
 
-__all__ = ['settings', 'tool', 'BaseModel', 'Field', 'json', 'base64', 'itertools', 'uuid', 'Github', 'Auth', 'GithubException', '_resolve_github_token', '_gh_retry', '_get_github_client', '_read_json_file', '_upsert_json_file', '_parse_pairs', 'CONFIG_PATH', 'MANIFEST_PATH', 'ALLOWED_WORKFLOWS', 'ON_MERGE_WORKFLOW', 'BUILD_REPO', 'DEPLOY_REPO']
+__all__ = ['settings', 'tool', 'BaseModel', 'Field', 'json', 'base64', 'itertools', 'uuid', 'Github', 'Auth', 'GithubException', '_resolve_github_token', '_gh_retry', '_get_github_client', '_read_json_file', '_upsert_json_file', '_parse_pairs', 'active_build_repo', 'active_deploy_repo', 'CONFIG_PATH', 'MANIFEST_PATH', 'ALLOWED_WORKFLOWS', 'ON_MERGE_WORKFLOW', 'BUILD_REPO', 'DEPLOY_REPO']

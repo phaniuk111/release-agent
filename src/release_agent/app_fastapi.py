@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from .adk_service import get_adk_chat_service
 from .config import settings as app_settings
+from .session_creds import SessionCredentials, get_store
 
 # Production-oriented logging
 logging.basicConfig(level=logging.INFO)
@@ -59,6 +60,21 @@ adk_chat_service = get_adk_chat_service()
 class ChatRequest(BaseModel):
     message: str
     thread_id: str | None = None
+
+
+class SessionConnectRequest(BaseModel):
+    thread_id: str
+    repo: str
+    pat_token: str
+    branch: str | None = None
+    project_name: str | None = None
+
+
+class SessionThreadRequest(BaseModel):
+    thread_id: str
+
+
+_session_store = get_store()
 
 
 def get_or_create_thread_id(thread_id: str | None) -> str:
@@ -139,6 +155,11 @@ async def chat_page():
                     <i class="fa-solid fa-server text-emerald-400"></i>
                     <span id="thread-label" class="text-slate-300 font-mono text-xs"></span>
                 </div>
+                <button id="repo-chip" onclick="showConnectForm()"
+                        class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
+                    <i id="repo-chip-icon" class="fa-solid fa-link-slash text-slate-400"></i>
+                    <span id="repo-chip-label" class="text-slate-300">Connect repo</span>
+                </button>
                 <button onclick="showCapabilities()"
                         class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
                     <i class="fa-solid fa-wand-magic-sparkles text-emerald-400"></i>
@@ -212,11 +233,15 @@ async def chat_endpoint(req: ChatRequest):
     logger.info(f"Chat request | thread={thread_id} | msg_len={len(req.message)}")
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        # Bind this thread's connected repo + PAT (if any) for the whole turn so
+        # every GitHub tool call resolves them; falls back to server config when
+        # the session isn't connected. contextvars propagate across await/threads.
         try:
-            async for event in adk_chat_service.stream_chat(req.message, thread_id):
-                if event.get("type") == "interrupt":
-                    logger.info(f"Interrupt emitted | thread={thread_id}")
-                yield f"data: {json.dumps(event)}\n\n"
+            with _session_store.activate(thread_id):
+                async for event in adk_chat_service.stream_chat(req.message, thread_id):
+                    if event.get("type") == "interrupt":
+                        logger.info(f"Interrupt emitted | thread={thread_id}")
+                    yield f"data: {json.dumps(event)}\n\n"
 
         except Exception:
             logger.exception(f"Error in chat stream | thread={thread_id}")
@@ -234,6 +259,59 @@ async def chat_endpoint(req: ChatRequest):
             "X-Accel-Buffering": "no",  # critical when behind nginx
         },
     )
+
+
+@app.post("/api/session/connect")
+async def session_connect_endpoint(req: SessionConnectRequest):
+    """Connect this chat thread to the user's repository + PAT token.
+
+    The repo/branch/project are non-secret; the PAT is held in memory only and
+    never logged or returned (the response carries a masked preview). All GitHub
+    operations in this thread then run against the supplied repo as this user.
+    """
+    thread_id = get_or_create_thread_id(req.thread_id)
+    creds = SessionCredentials(
+        repo=req.repo,
+        branch=req.branch or "",
+        pat_token=req.pat_token or "",
+        project_name=req.project_name or "",
+    )
+    if not creds.repo:
+        return {
+            "ok": False,
+            "error": "Could not parse a repository. Use owner/repo or a GitHub URL.",
+        }
+    if not creds.pat_token:
+        return {"ok": False, "error": "A PAT token is required to connect."}
+
+    _session_store.set(thread_id, creds)
+    logger.info(
+        "Session connected | thread=%s | repo=%s | branch=%s",  # never log the token
+        thread_id, creds.repo, creds.branch or "(default)",
+    )
+    return {"ok": True, "thread_id": thread_id, **creds.public_status()}
+
+
+@app.get("/api/session/status")
+async def session_status_endpoint(thread_id: str = ""):
+    """Return the (token-masked) connection status for a thread."""
+    creds = _session_store.get(thread_id) if thread_id else None
+    if creds is None:
+        return {
+            "connected": False,
+            "repo": "",
+            "branch": "",
+            "project_name": "",
+            "token_preview": "",
+        }
+    return creds.public_status()
+
+
+@app.post("/api/session/disconnect")
+async def session_disconnect_endpoint(req: SessionThreadRequest):
+    """Clear a thread's stored repo + PAT (called on New Thread / Disconnect)."""
+    _session_store.clear(req.thread_id)
+    return {"ok": True, "connected": False}
 
 
 @app.get("/api/release-status")
