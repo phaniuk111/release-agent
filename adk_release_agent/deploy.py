@@ -167,6 +167,7 @@ def prepare_deploy_preview(
         "token": token,
         "proposed": preview,
         "change_request": req.get("change_request"),
+        "deployment_repo": req.get("deployment_repo") or "",
         "message": f"Reply with exactly {token} to apply this deploy.",
     }
 
@@ -202,6 +203,9 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
     # PROD deploy form: carry change-request details into open_release_pr.
     if req.get("change_request"):
         args["change_request"] = req["change_request"]
+    # Deploy form: target deployment repo for this deploy (part of the JSON payload).
+    if req.get("deployment_repo"):
+        args["deployment_repo"] = req["deployment_repo"]
 
     result = _invoke_tool("open_release_pr", args)
     _PENDING_PREVIEWS.pop(token, None)

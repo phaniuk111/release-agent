@@ -118,3 +118,60 @@ def test_non_json_returns_none():
     from release_agent.agent.parsing import _try_parse_json_payload
 
     assert _try_parse_json_payload("just deploy something please") is None
+
+
+def test_parse_carries_deployment_repo():
+    # The deploy form's "Deployment repo" field travels in the JSON payload.
+    payload = json.dumps(
+        {
+            "environment": "prod",
+            "deployment_repo": "my-org/deployment-repo",
+            "include": [{"helm_chart_name": "a", "helm_chart_version": "1"}],
+        }
+    )
+    req = _try_parse_json_payload(payload)
+    assert req["deployment_repo"] == "my-org/deployment-repo"
+    # Absent field parses to empty string (server default applies downstream).
+    req2 = _try_parse_json_payload(
+        json.dumps({"environment": "uat", "include": [{"helm_chart_name": "a", "helm_chart_version": "1"}]})
+    )
+    assert req2["deployment_repo"] == ""
+
+
+def test_open_release_pr_rejects_unparseable_deployment_repo():
+    from release_agent.tools.promotion import open_release_pr
+
+    out = open_release_pr.invoke(
+        {
+            "environment": "uat",
+            "image_tags": "svc:1.0",
+            "deployment_repo": "not a repo at all",
+        }
+    )
+    assert "could not parse deployment_repo" in out
+
+
+def test_open_release_pr_targets_payload_repo(monkeypatch):
+    # The repo named in the deploy payload is the one fetched from GitHub.
+    from release_agent.tools import promotion as P
+
+    seen = {}
+
+    class _Boom(Exception):
+        pass
+
+    class _FakeGithub:
+        def get_repo(self, full):
+            seen["repo"] = full
+            raise _Boom("stop here")  # stop before any network-ish work
+
+    monkeypatch.setattr(P, "_get_github_client", lambda: _FakeGithub())
+    out = P.open_release_pr.invoke(
+        {
+            "environment": "uat",
+            "image_tags": "svc:1.0",
+            "deployment_repo": "https://github.com/my-org/custom-deploy.git",
+        }
+    )
+    assert seen["repo"] == "my-org/custom-deploy"  # normalized from the URL
+    assert "ERROR deploying" in out

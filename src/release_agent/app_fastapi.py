@@ -346,7 +346,14 @@ async def deploy_template_endpoint(env: str = "uat", name: str = "", version: st
     if not include:
         include = [assemble_entry(name or "", version or "", e)]
 
-    return {"environment": e, "deployment": {"include": include}, "from_repo": from_repo}
+    return {
+        "environment": e,
+        "deployment": {"include": include},
+        "from_repo": from_repo,
+        # Default target for the form's "Deployment repo" field (user-overridable;
+        # travels in the deploy JSON payload as deployment_repo).
+        "deploy_repo": settings.deploy_repo,
+    }
 
 
 @app.get("/health")

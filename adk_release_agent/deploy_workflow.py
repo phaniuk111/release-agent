@@ -81,12 +81,15 @@ def _change_request_preview(change_request: Any) -> str:
 
 
 def _preview_text(
-    preview: dict[str, Any], token: str, env: str, image_tags: str, change_request: Any = None
+    preview: dict[str, Any], token: str, env: str, image_tags: str, change_request: Any = None,
+    deployment_repo: str = "",
 ) -> str:
     """Human-readable preview shown to the user before confirmation."""
+    repo_line = f"\n\n**Deployment repo:** `{deployment_repo}`" if deployment_repo else ""
     return (
         f"**Deploy {image_tags} to {str(env).upper()}**\n\n"
         "```json\n" + json.dumps(preview, indent=2) + "\n```"
+        + repo_line
         + _change_request_preview(change_request)
         + f"\n\nReply `{token}` to confirm."
     )
@@ -116,6 +119,7 @@ async def _deploy_gate(ctx: Any, node_input: str):
             result["environment"],
             result["image_tags"],
             result.get("change_request"),
+            result.get("deployment_repo") or "",
         )
         yield Event(
             content=types.Content(role="model", parts=[types.Part.from_text(text=text)]),
