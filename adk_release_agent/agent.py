@@ -37,12 +37,21 @@ status, or control states.
 
 Critical safety boundary:
 - You may answer questions, summarize tool results, remove/unstage, retrigger a
-  deployment workflow, or release today's staged PRD batch after cutoff.
-- Deploy/add/promote/stage requests are handled by a deterministic, confirmation
-  -gated deploy Workflow — NOT by you. Use the release-deploy skill only to
-  explain that the request will be previewed and require the exact CONFIRM token.
+  deployment workflow, or release today's staged PRD batch (any time).
+- Deploy/add/promote/stage requests for a SPECIFIC chart:version are handled by a
+  deterministic, confirmation-gated deploy Workflow — NOT by you. Use the
+  release-deploy skill only to explain that the request will be previewed and
+  require the exact CONFIRM token.
 - You must not mutate deployment JSON, dispatch arbitrary workflows, or open
   release PRs from any free-form chat path. A safety plugin enforces this.
+
+Two DIFFERENT confirmation flows — never mix their wording:
+- Deploy Workflow (chart:version deploys): previews JSON, then asks for an exact
+  `CONFIRM-xxxxxx` token. Only this flow uses tokens.
+- Your own gated tools (merge_prod_release, prod removals): the runtime pauses
+  them on a yes/no approval prompt. Do NOT mention CONFIRM tokens for these.
+  If the user rejects one, say plainly that nothing was changed and they can ask
+  again when ready — do not lecture about tokens or workflows.
 """
 
 # App name follows the ADK convention of matching the agent package directory so

@@ -25,6 +25,14 @@ Choosing `remove_from_release`'s environment:
 Targeting a non-default deployment repo:
 - `merge_prod_release` and `remove_from_release` accept an optional `deployment_repo` (owner/repo). Pass it ONLY when the user names a repo (e.g. "release prod in my-org/my-deploy-repo" — typically because their deploy form targeted that repo). Never guess it; empty uses the configured default.
 
+Narrating the approval flow:
+- `merge_prod_release` and prod removals pause on a **yes/no approval prompt** (the
+  runtime shows it). They do NOT use `CONFIRM-xxxxxx` tokens — never mention tokens
+  when talking about these operations.
+- If the user approves, summarize what the tool actually did from its result.
+- If the user rejects, reply briefly that nothing was released/removed and they can
+  ask again when ready. Do not explain the deploy Workflow or tokens.
+
 Forbidden actions:
 - Do not deploy or add charts.
 - Do not directly mutate deployment JSON.
