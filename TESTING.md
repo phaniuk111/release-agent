@@ -88,7 +88,7 @@ Restart the CLI for a fresh thread.
 
 ```bash
 source .venv/bin/activate
-uvicorn src.release_agent.app_fastapi:app --reload --port 8000
+PYTHONPATH=src:. uvicorn release_agent.app_fastapi:app --reload --port 8000
 ```
 
 Open **http://localhost:8000**
@@ -109,7 +109,7 @@ Use safe tags like `2.0.99-test` the first time.
 ### Run it
 
 ```bash
-uvicorn src.release_agent.app_fastapi:app --reload --port 8000
+PYTHONPATH=src:. uvicorn release_agent.app_fastapi:app --reload --port 8000
 ```
 
 In the browser chat send:
@@ -175,6 +175,7 @@ docker build -t release-copilot .
 docker run -p 8000:8000 \
   -e GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT \
   -e GOOGLE_CLOUD_LOCATION=$GOOGLE_CLOUD_LOCATION \
+  -e GOOGLE_GENAI_USE_VERTEXAI=True \
   -e RELEASE_AGENT_TARGET_REPO=phaniuk111/devops \
   -e GH_TOKEN=$GH_TOKEN \
   release-copilot

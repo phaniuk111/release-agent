@@ -39,6 +39,9 @@ config:
   GOOGLE_CLOUD_PROJECT: ""
   GOOGLE_CLOUD_LOCATION: "us-central1"
   GEMINI_MODEL: "gemini-2.5-flash"
+  # Route google-genai to Vertex AI (uses Workload Identity / ADC + the project
+  # above). Without this it defaults to AI Studio and needs a GEMINI_API_KEY.
+  GOOGLE_GENAI_USE_VERTEXAI: "true"
   DEFAULT_WORKFLOW: "image-tag-step-report.yml"
   ON_MERGE_WORKFLOW: "on-merge-deploy.yml"
   # Comma-separated allow-list of workflows the agent may dispatch (enforced).
