@@ -71,25 +71,31 @@ def assemble_entry(
 
 # --- include[] list ops (keyed by helm_chart_name) --------------------------
 def _upsert_entry(include: list, entry: dict) -> bool:
-    """Replace-or-append by helm_chart_name. Returns True if the list changed."""
+    """Replace-or-append by helm_chart_name, keeping the file's one-entry-per-chart
+    invariant: the first match is replaced and any further entries with the same name
+    are dropped (stale duplicates left behind by earlier whole-branch git merges), so
+    a promotion self-heals a polluted include[]. Returns True if the list changed."""
     name = entry["helm_chart_name"]
-    for i, e in enumerate(include):
-        if e.get("helm_chart_name") == name:
-            if e == entry:
-                return False
-            include[i] = entry
-            return True
-    include.append(entry)
-    return True
+    matches = [i for i, e in enumerate(include) if e.get("helm_chart_name") == name]
+    if not matches:
+        include.append(entry)
+        return True
+    changed = len(matches) > 1
+    for i in reversed(matches[1:]):
+        del include[i]
+    if include[matches[0]] != entry:
+        include[matches[0]] = entry
+        changed = True
+    return changed
 
 
 def _remove_entry(include: list, name: str) -> bool:
-    """Drop the entry with this helm_chart_name. Returns True if one was removed."""
-    for i, e in enumerate(include):
-        if e.get("helm_chart_name") == name:
-            del include[i]
-            return True
-    return False
+    """Drop every entry with this helm_chart_name (duplicates included).
+    Returns True if any was removed."""
+    matches = [i for i, e in enumerate(include) if e.get("helm_chart_name") == name]
+    for i in reversed(matches):
+        del include[i]
+    return bool(matches)
 
 
 def _read_include(repo, branch: str, path: str) -> list:

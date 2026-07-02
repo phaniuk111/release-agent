@@ -57,6 +57,38 @@ def test_replace_with_overrides_not_upserts():
     assert [e["helm_chart_name"] for e in include] == ["new"]  # old one is gone
 
 
+def test_upsert_entry_drops_stale_duplicates():
+    # A whole-branch git merge can leave a chart twice in include[]; an upsert must
+    # replace the first match and drop the stragglers (self-heal), even when the
+    # first match already carries the target version.
+    from release_agent.tools.promotion import _upsert_entry
+
+    include = [
+        {"helm_chart_name": "svc", "helm_chart_version": "1.1.0"},
+        {"helm_chart_name": "svc", "helm_chart_version": "1.0.0"},
+        {"helm_chart_name": "other", "helm_chart_version": "2"},
+    ]
+    changed = _upsert_entry(include, {"helm_chart_name": "svc", "helm_chart_version": "1.1.0"})
+    assert changed is True  # dropping the stale duplicate counts as a change
+    assert include == [
+        {"helm_chart_name": "svc", "helm_chart_version": "1.1.0"},
+        {"helm_chart_name": "other", "helm_chart_version": "2"},
+    ]
+
+
+def test_remove_entry_removes_all_duplicates():
+    from release_agent.tools.promotion import _remove_entry
+
+    include = [
+        {"helm_chart_name": "svc", "helm_chart_version": "1"},
+        {"helm_chart_name": "keep", "helm_chart_version": "2"},
+        {"helm_chart_name": "svc", "helm_chart_version": "0"},
+    ]
+    assert _remove_entry(include, "svc") is True
+    assert include == [{"helm_chart_name": "keep", "helm_chart_version": "2"}]
+    assert _remove_entry(include, "svc") is False
+
+
 def test_image_tags_path_still_works():
     ents = _entries_for_deploy("uat", "a:1,b:2", "", "", "", "")
     assert [e["helm_chart_name"] for e in ents] == ["a", "b"]
