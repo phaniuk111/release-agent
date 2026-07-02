@@ -3,7 +3,12 @@ name: release-deploy
 description: "Explains how deploy/add/promote/stage/ship requests are handled. Deploys run through a deterministic, confirmation-gated Workflow — NOT through free-form chat tools."
 ---
 
-Use this skill when the user asks to deploy, promote, add, stage, ship, bump, or release a chart/image version to UAT or PROD.
+Use this skill when the user asks to deploy, promote, add, stage, ship, or bump a SPECIFIC chart/image version to UAT or PROD.
+
+Do NOT use this skill for releasing today's already-staged PRD release ("release prod",
+"ship the release", "release today's batch" — no chart:version named): that is the
+release-ops skill's `merge_prod_release`, which you should call (it has its own
+yes/no approval gate). Never answer those with an explanation of the deploy flow.
 
 This skill is intentionally tool-less. Deploy requests are NOT executed from free-form
 chat. They are routed to a deterministic ADK Workflow graph

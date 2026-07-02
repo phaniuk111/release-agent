@@ -8,13 +8,16 @@ back it, both sharing in-memory session/artifact/memory services:
 * the **deploy Workflow** — a deterministic ``Workflow`` graph
   (:mod:`adk_release_agent.deploy_workflow`) that previews, pauses on a
   human-in-the-loop ``RequestInput`` confirmation, and applies only on the exact
-  ``CONFIRM-xxxxxx`` token. Deploy intent is routed here, never through the LLM.
+  ``CONFIRM-xxxxxx`` token. Deploy intent routes here via the deterministic parser,
+  with a classify-only LLM fallback for free-form phrasings (routing only — the
+  Workflow's token gate is unchanged).
 
 The external SSE contract is unchanged: ``token`` / ``interrupt`` / ``done`` events,
 with a ``confirmation`` interrupt carrying the ``CONFIRM-`` token.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -27,6 +30,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 
 from adk_release_agent import deploy as adk_deploy
+from adk_release_agent import intent as adk_intent
 from adk_release_agent.agent import app as chat_app
 from adk_release_agent.deploy_workflow import build_deploy_app
 
@@ -226,6 +230,17 @@ class AdkChatService:
 
         if _looks_like_deploy_request(message):
             async for event in self._stream_deploy_preview(message, thread_id):
+                yield event
+            return
+
+        # Free-form English fallback: the deterministic parser missed, but the
+        # message sounds deploy-ish ("can you get payments-api:1.2.3 to prod").
+        # One classifier call; on a hit we route the SAME deterministic Workflow
+        # (preview + CONFIRM token + mutation guard) — routing only, never a
+        # new mutation path. On a miss/error the turn falls to the chat lane.
+        payload = await asyncio.to_thread(adk_intent.deploy_payload_from_freeform, message)
+        if payload:
+            async for event in self._stream_deploy_preview(payload, thread_id):
                 yield event
             return
 
