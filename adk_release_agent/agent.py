@@ -58,8 +58,8 @@ def _model_name() -> str:
 _PROD_ENV_WORDS = {"prod", "prd", "production"}
 
 
-def _remove_needs_confirmation(environment: str = "uat", **kwargs) -> bool:
-    """Confirm ``remove_from_release`` only when it targets the PRD release."""
+def _remove_needs_confirmation(environment: str = "staging", **kwargs) -> bool:
+    """Confirm ``remove_from_release`` only when it targets live PROD."""
     return str(environment).lower() in _PROD_ENV_WORDS
 
 

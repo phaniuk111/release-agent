@@ -88,8 +88,10 @@ def get_build_controls(
     )
 
 
-def remove_from_release(image_names: str, environment: str = "uat") -> dict[str, Any]:
-    """Remove or unstage chart names from UAT or today's PRD release."""
+def remove_from_release(image_names: str, environment: str = "staging") -> dict[str, Any]:
+    """Unstage chart names from today's PRD release PR (environment='staging', the
+    default) or remove them from a live environment ('uat' or 'prod' — only when the
+    user explicitly names it)."""
     return _invoke_tool(
         "remove_from_release",
         {"image_names": image_names, "environment": environment},
