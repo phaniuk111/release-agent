@@ -258,7 +258,15 @@ def _apply_via_pr_chain(repo, file_mutations: list, summary: str) -> dict:
     return {"changed": True, "prs": prs, "deploy_run": deploy_run, "deploy_run_prd": None}
 
 
-def _promote_targeted(repo, file_mutations: list, summary: str) -> dict:
+def _doc_changed(existing: dict, new_doc: dict, ignore=("updated_at",)) -> bool:
+    """True if new_doc differs from existing, ignoring volatile keys (e.g. updated_at)."""
+    def _strip(d):
+        return {k: v for k, v in (d or {}).items() if k not in ignore}
+
+    return _strip(existing) != _strip(new_doc)
+
+
+def _promote_targeted(repo, file_mutations: list, summary: str, extra_files: dict | None = None) -> dict:
     """Promote a change to PRD through SIT -> UAT -> PRD by applying the SAME targeted
     file mutation to each branch in order, each via its own working-branch PR.
 
@@ -267,6 +275,10 @@ def _promote_targeted(repo, file_mutations: list, summary: str) -> dict:
     edits only the include[] of the named files on each branch. uat/deployment.json keeps
     its own per-env contents; only the promoted charts move. Returns
     {changed, prs, deploy_run, deploy_run_prd, delivered}.
+
+    ``extra_files`` maps a path to a whole-file JSON doc written verbatim on each branch
+    (created if missing) — used to promote flat, non-include files like change-request.json
+    alongside the deployment files, so the standard file set travels through the chain.
 
     The chain stops if a hop's PR fails to merge (branch protection/review) so a change
     can't reach a downstream env without clearing the upstream one."""
@@ -288,6 +300,12 @@ def _promote_targeted(repo, file_mutations: list, summary: str) -> dict:
             if mutate_fn(include):
                 doc["include"] = include
                 doc["updated_by"] = "release-copilot"
+                _upsert_json_file(repo, work, path, doc)
+                changed = True
+
+        # Whole-file docs (e.g. change-request.json): write verbatim, created if missing.
+        for path, doc in (extra_files or {}).items():
+            if _doc_changed(_read_json_file(repo, work, path), doc):
                 _upsert_json_file(repo, work, path, doc)
                 changed = True
 
@@ -521,11 +539,7 @@ def _accumulate_into_prd_pr(repo, entries: list, change_request=None):
     cr_doc = change_request_doc(change_request, _utc_now_iso())
     if cr_doc is not None:
         cr_path = settings.change_request_path
-        existing = _read_json_file(repo, branch, cr_path)
-        # Ignore volatile updated_at when deciding whether a rewrite is needed.
-        if {k: v for k, v in (existing or {}).items() if k != "updated_at"} != {
-            k: v for k, v in cr_doc.items() if k != "updated_at"
-        }:
+        if _doc_changed(_read_json_file(repo, branch, cr_path), cr_doc):
             _upsert_json_file(repo, branch, cr_path, cr_doc)
             changed.append(cr_path)
 
@@ -758,13 +772,20 @@ def merge_prod_release() -> str:
     chart_str = ", ".join(f"{e['helm_chart_name']}:{e['helm_chart_version']}" for e in today_prd)
     date = branch.rsplit("/", 1)[-1]
 
+    # The day's change request (staged on the release branch) travels with the release so
+    # the live SIT/UAT/PRD branches carry it as part of the standard file set.
+    staged_cr = _read_json_file(repo, branch, settings.change_request_path)
+    extra_files = {settings.change_request_path: staged_cr} if staged_cr else None
+
     # Promote the staged charts through SIT -> UAT -> PRD, upserting into BOTH the prd and
     # uat deployment files on each branch (targeted edits — no whole-branch merge, so
-    # UAT-only charts never leak into PRD and there's nothing to conflict).
+    # UAT-only charts never leak into PRD and there's nothing to conflict). change-request.json
+    # is promoted verbatim alongside them.
     res = _promote_targeted(
         repo,
         [(prd_path, _upsert_each(today_prd)), (uat_path, _upsert_each(today_uat))],
         f"PRD release {date}: {chart_str}",
+        extra_files=extra_files,
     )
     if not res["changed"]:
         _retire_staging_pr(repo, pr, branch)

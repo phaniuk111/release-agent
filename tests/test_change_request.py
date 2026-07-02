@@ -132,3 +132,94 @@ def test_preview_text_includes_change_request_for_prod():
 def test_preview_text_omits_change_request_when_none():
     text = _preview_text({"uat/deployment.json": []}, "CONFIRM-Y", "uat", "svc:1", None)
     assert "Change request" not in text
+
+
+# --- cutoff promotion: change-request.json travels to all live branches ----------
+
+def test_doc_changed_ignores_updated_at():
+    from release_agent.tools.promotion import _doc_changed
+
+    a = {"chg_summary": "S", "updated_at": "t1"}
+    b = {"chg_summary": "S", "updated_at": "t2"}
+    assert _doc_changed(a, b) is False  # only updated_at differs
+    assert _doc_changed(a, {"chg_summary": "X", "updated_at": "t2"}) is True
+    assert _doc_changed({}, {"chg_summary": "S"}) is True
+
+
+class _FakeContent:
+    def __init__(self, text):
+        self.decoded_content = text.encode()
+        self.sha = "sha"
+
+
+class _FakeRef:
+    def __init__(self, sha):
+        self.object = type("O", (), {"sha": sha})()
+
+    def delete(self):
+        pass
+
+
+class _FakePR:
+    def __init__(self, repo, head, base):
+        self.repo, self.head_b, self.base_b = repo, head, base
+        repo._pr += 1
+        self.number = repo._pr
+        self.html_url = f"http://pr/{self.number}"
+        self.mergeable, self.mergeable_state, self.merge_commit_sha = True, "clean", "msha"
+
+    def update(self):
+        pass
+
+    def merge(self, merge_method="squash"):
+        self.repo.files.setdefault(self.base_b, {}).update(self.repo.files.get(self.head_b, {}))
+
+
+class _FakeRepo:
+    """Minimal PyGithub stand-in: files[branch][path] = json string."""
+
+    def __init__(self, initial):
+        self.files = {b: {p: json.dumps(d) for p, d in fs.items()} for b, fs in initial.items()}
+        self._pr = 0
+
+    def get_git_ref(self, name):
+        return _FakeRef(name.split("heads/", 1)[1])  # sha == branch name
+
+    def create_git_ref(self, ref, sha):
+        work = ref.split("heads/", 1)[1]
+        self.files[work] = dict(self.files.get(sha, {}))
+
+    def get_contents(self, path, ref=None):
+        fs = self.files.get(ref, {})
+        if path not in fs:
+            raise Exception("404")
+        return _FakeContent(fs[path])
+
+    def create_file(self, path, msg, content, branch=None):
+        self.files.setdefault(branch, {})[path] = content
+
+    def update_file(self, path, msg, content, sha, branch=None):
+        self.files.setdefault(branch, {})[path] = content
+
+    def create_pull(self, title, body, head, base):
+        return _FakePR(self, head, base)
+
+
+def test_promote_targeted_promotes_change_request_to_all_branches():
+    from release_agent.tools import promotion as P
+
+    cr = {
+        "chg_summary": "S", "description": "D", "start_date": "a", "end_date": "b",
+        "updated_by": "release-copilot", "updated_at": "t",
+    }
+    initial = {
+        b: {"prd/deployment.json": {"include": []}, "uat/deployment.json": {"include": []}}
+        for b in ("SIT", "UAT", "PRD")
+    }
+    repo = _FakeRepo(initial)
+    res = P._promote_targeted(repo, [], "test release", extra_files={"change-request.json": cr})
+
+    assert res["delivered"] is True
+    for br in ("SIT", "UAT", "PRD"):
+        assert "change-request.json" in repo.files[br], f"CHG missing on {br}"
+        assert json.loads(repo.files[br]["change-request.json"]) == cr
