@@ -36,19 +36,30 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                 // content may be the full interrupt object (preferred) or a bare string.
                 const intr = (content && typeof content === 'object') ? content : { message: content };
                 const isBudget = intr.type === 'budget_confirmation';
-                const header = isBudget ? 'Budget Confirmation' : 'Confirmation Required';
+                // A yes/no tool-approval (e.g. merge_prod_release): no CONFIRM token —
+                // identified by the function name / the 'Reply "yes"' instruction. Render
+                // Approve/Reject buttons; a pasted token here would otherwise reject it.
+                const isApproval = !intr.token && !isBudget &&
+                    (!!intr.function || ((intr.action || intr.message || '').toLowerCase().includes('"yes"')));
+                const header = isBudget ? 'Budget Confirmation'
+                    : (isApproval ? 'Approval Required' : 'Confirmation Required');
                 const bodyText = renderMarkdown(intr.message || 'Please confirm this action.')
-                    + (intr.action ? ('<br><br>' + renderMarkdown(intr.action)) : '');
+                    + (intr.action && !isApproval ? ('<br><br>' + renderMarkdown(intr.action)) : '');
                 const placeholder = isBudget
                     ? 'Type yes to continue, anything else to stop'
                     : 'Paste CONFIRM-XXXXXX here';
-                div.className = 'message mx-auto interrupt-box rounded-2xl p-4 text-sm';
-                div.innerHTML = `
-                    <div class="flex items-center gap-2 mb-2 text-amber-400">
-                        <i class="fa-solid fa-exclamation-triangle"></i>
-                        <span class="font-semibold">${header}</span>
+                const controls = isApproval ? `
+                    <div class="flex gap-2">
+                        <button onclick="sendApproval('yes')"
+                                class="bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 rounded-lg text-sm font-medium">
+                            <i class="fa-solid fa-check mr-1"></i>Approve
+                        </button>
+                        <button onclick="sendApproval('no')"
+                                class="bg-slate-700 hover:bg-slate-600 px-4 py-1.5 rounded-lg text-sm font-medium">
+                            <i class="fa-solid fa-xmark mr-1"></i>Reject
+                        </button>
                     </div>
-                    <div class="text-amber-200 mb-3">${bodyText}</div>
+                ` : `
                     <div class="flex gap-2">
                         <input id="confirm-input" type="text" placeholder="${placeholder}"
                                class="flex-1 bg-slate-900 border border-amber-600 rounded-lg px-3 py-1.5 text-sm">
@@ -57,6 +68,15 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                             Confirm
                         </button>
                     </div>
+                `;
+                div.className = 'message mx-auto interrupt-box rounded-2xl p-4 text-sm';
+                div.innerHTML = `
+                    <div class="flex items-center gap-2 mb-2 text-amber-400">
+                        <i class="fa-solid fa-exclamation-triangle"></i>
+                        <span class="font-semibold">${header}</span>
+                    </div>
+                    <div class="text-amber-200 mb-3">${bodyText}</div>
+                    ${controls}
                 `;
             } else {
                 div.className = `message ${role === 'user' ? 'ml-auto user' : 'bot'} rounded-2xl px-4 py-3 text-sm`;
@@ -163,6 +183,14 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             } catch (err) {
                 botMsg.querySelector('div').innerHTML = `<span class="text-red-400">Error: ${err.message}</span>`;
             }
+        }
+
+        function sendApproval(answer) {
+            // Yes/no tool-approval buttons: remove the interrupt box, send the reply.
+            const chat = document.getElementById('chat');
+            const last = chat.lastElementChild;
+            if (last) last.remove();
+            sendMessage(answer);
         }
 
         function sendConfirmation() {
