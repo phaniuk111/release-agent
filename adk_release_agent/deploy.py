@@ -166,6 +166,7 @@ def prepare_deploy_preview(
         "image_tags": _image_tags(req),
         "token": token,
         "proposed": preview,
+        "change_request": req.get("change_request"),
         "message": f"Reply with exactly {token} to apply this deploy.",
     }
 
@@ -197,6 +198,10 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
         for key in ("namespace", "chart_dir", "values_file"):
             if req.get(key):
                 args[key] = req[key]
+
+    # PROD deploy form: carry change-request details into open_release_pr.
+    if req.get("change_request"):
+        args["change_request"] = req["change_request"]
 
     result = _invoke_tool("open_release_pr", args)
     _PENDING_PREVIEWS.pop(token, None)

@@ -443,14 +443,51 @@ def _upsert_each(entries: list):
     return _mut
 
 
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def change_request_doc(change_request, now_iso: str) -> dict | None:
+    """Normalize a prod deploy's change_request into the change-request.json doc.
+
+    The stored file uses the canonical CHG keys (chg_summary / start_date / end_date)
+    plus a free-form ``description``. Accepts either those keys or the form's semantic
+    aliases (summary / start_time / end_time / change_description). Returns None when no
+    usable change-request content is supplied.
+    """
+    if isinstance(change_request, str):
+        try:
+            change_request = json.loads(change_request)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    if not isinstance(change_request, dict) or not change_request:
+        return None
+    cr = change_request
+    doc = {
+        "chg_summary": cr.get("chg_summary") or cr.get("summary") or "",
+        "description": cr.get("description") or cr.get("change_description") or "",
+        "start_date": cr.get("start_date") or cr.get("start_time") or "",
+        "end_date": cr.get("end_date") or cr.get("end_time") or "",
+        "updated_by": "release-copilot",
+        "updated_at": now_iso,
+    }
+    if not any(doc[k] for k in ("chg_summary", "description", "start_date", "end_date")):
+        return None
+    return doc
+
+
 # --- PRD release PR (accumulate through the day, merge at cutoff) ------------
 # _today_prd_pr / _prd_release_branch live in release_window (the lower module) so both
 # this module and the status reader share one definition without a circular import.
-def _accumulate_into_prd_pr(repo, entries: list):
+def _accumulate_into_prd_pr(repo, entries: list, change_request=None):
     """Upsert chart(s) into today's PRD release branch — BOTH uat/deployment.json and
     prd/deployment.json (each with its env values file) — and ensure the open PR exists.
-    Accumulates (upsert by helm_chart_name) so charts pile up through the day. Returns
-    (pr, branch, created, changed_paths)."""
+    Accumulates (upsert by helm_chart_name) so charts pile up through the day. When a prod
+    deploy carries a ``change_request`` (change summary/description + start/end time), the
+    day's change-request.json (settings.change_request_path) is written on the same branch.
+    Returns (pr, branch, created, changed_paths)."""
     prd, branch = settings.prd_branch, _prd_release_branch()
     pr = _today_prd_pr(repo)
 
@@ -479,22 +516,37 @@ def _accumulate_into_prd_pr(repo, entries: list):
             _upsert_json_file(repo, branch, path, doc)
             changed.append(path)
 
+    # Change request (prod only): write/update change-request.json on the release branch so
+    # the CHG travels in the same PR as the deployment changes.
+    cr_doc = change_request_doc(change_request, _utc_now_iso())
+    if cr_doc is not None:
+        cr_path = settings.change_request_path
+        existing = _read_json_file(repo, branch, cr_path)
+        # Ignore volatile updated_at when deciding whether a rewrite is needed.
+        if {k: v for k, v in (existing or {}).items() if k != "updated_at"} != {
+            k: v for k, v in cr_doc.items() if k != "updated_at"
+        }:
+            _upsert_json_file(repo, branch, cr_path, cr_doc)
+            changed.append(cr_path)
+
     created = False
     if pr is None:
         if not changed:
             return None, branch, False, []  # nothing to release (already matches PRD)
         date = branch.rsplit("/", 1)[-1]
-        pr = repo.create_pull(
-            title=f"PRD release {date}",
-            body=(
-                "Daily PRD release — charts accumulate here through the day. After the cutoff, "
-                f"`release prod` promotes the staged charts through the chain "
-                f"**{settings.sit_branch} → {settings.uat_branch} → {prd}** (do not merge this PR "
-                "directly; it's the staging view and is retired once the release ships)."
-            ),
-            head=branch,
-            base=prd,
+        body = (
+            "Daily PRD release — charts accumulate here through the day. After the cutoff, "
+            f"`release prod` promotes the staged charts through the chain "
+            f"**{settings.sit_branch} → {settings.uat_branch} → {prd}** (do not merge this PR "
+            "directly; it's the staging view and is retired once the release ships)."
         )
+        if cr_doc is not None:
+            body += (
+                f"\n\n**Change request:** {cr_doc['chg_summary'] or '(no summary)'}\n"
+                f"- Window: {cr_doc['start_date'] or '?'} → {cr_doc['end_date'] or '?'}\n"
+                f"- {cr_doc['description'] or ''}"
+            )
+        pr = repo.create_pull(title=f"PRD release {date}", body=body, head=branch, base=prd)
         created = True
     else:
         try:
@@ -523,6 +575,13 @@ class DeployInput(BaseModel):
     values_file: str = Field(
         default="", description="helm_values_file_name override (optional; defaults per environment)"
     )
+    change_request: dict | None = Field(
+        default=None,
+        description=(
+            "PROD only: change-request details (chg_summary, description, start_date, "
+            "end_date) written to change-request.json on the release PR. Ignored for uat."
+        ),
+    )
 
 
 @tool(args_schema=DeployInput)
@@ -533,6 +592,7 @@ def open_release_pr(
     namespace: str = "",
     chart_dir: str = "",
     values_file: str = "",
+    change_request: dict | None = None,
 ) -> str:
     """Deploy Helm chart(s) into the deployment JSON.
 
@@ -568,7 +628,7 @@ def open_release_pr(
 
     # --- PROD: accumulate into today's PRD release PR (merged later at the cutoff) ---
     if env == "prod":
-        pr, branch, created, changed = _accumulate_into_prd_pr(repo, entries)
+        pr, branch, created, changed = _accumulate_into_prd_pr(repo, entries, change_request)
         if pr is None:
             return json.dumps(
                 {"ok": True, "action": "no_change", "environment": "prod", "image_tags": chart_str,

@@ -300,6 +300,32 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             ta.value = JSON.stringify(fileDoc, null, 2);
             wrap.appendChild(ta);
 
+            // PROD requires a change request — feeds change-request.json in the release PR.
+            if (isProd) {
+                const hdr = document.createElement('div');
+                hdr.className = 'text-[11px] font-semibold text-amber-300 mt-1 mb-1';
+                hdr.textContent = 'Change request (required for PROD)';
+                wrap.appendChild(hdr);
+                const grid = document.createElement('div');
+                grid.className = 'grid gap-2 mb-2';
+                const field = (labelText, el, id, type) => {
+                    if (type) el.type = type;
+                    el.id = id;
+                    el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+                    const l = document.createElement('label');
+                    l.className = 'text-[11px] text-slate-400 block mb-0.5';
+                    l.textContent = labelText;
+                    const box = document.createElement('div');
+                    box.appendChild(l); box.appendChild(el);
+                    grid.appendChild(box);
+                };
+                field('Change summary', document.createElement('input'), 'chg-summary-' + env, 'text');
+                field('Change description', document.createElement('textarea'), 'chg-desc-' + env);
+                field('Start time', document.createElement('input'), 'chg-start-' + env, 'datetime-local');
+                field('End time', document.createElement('input'), 'chg-end-' + env, 'datetime-local');
+                wrap.appendChild(grid);
+            }
+
             const row = document.createElement('div');
             row.className = 'flex items-center gap-3 mt-1';
             const submit = document.createElement('button');
@@ -321,10 +347,33 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                         return;
                     }
                 }
+                const payload = { environment: env, include: parsed.include };
+                if (isProd) {
+                    const summary = document.getElementById('chg-summary-' + env).value.trim();
+                    const description = document.getElementById('chg-desc-' + env).value.trim();
+                    const startRaw = document.getElementById('chg-start-' + env).value;
+                    const endRaw = document.getElementById('chg-end-' + env).value;
+                    if (!summary || !description || !startRaw || !endRaw) {
+                        err.textContent = 'PROD requires change summary, description, start time, and end time.';
+                        return;
+                    }
+                    const start = new Date(startRaw), end = new Date(endRaw);
+                    if (!(end.getTime() > start.getTime())) {
+                        err.textContent = 'Change end time must be after the start time.';
+                        return;
+                    }
+                    // datetime-local is browser-local; store as ISO-8601 UTC.
+                    payload.change_request = {
+                        chg_summary: summary,
+                        description: description,
+                        start_date: start.toISOString(),
+                        end_date: end.toISOString(),
+                    };
+                }
                 // Re-render the normalized JSON so the user sees exactly what we parsed
                 // (commas added / wrapped into include[] when they left them out).
                 document.getElementById(taId).value = JSON.stringify({ include: parsed.include }, null, 2);
-                sendMessage(JSON.stringify({ environment: env, include: parsed.include }));
+                sendMessage(JSON.stringify(payload));
             });
             row.appendChild(submit);
             row.appendChild(err);

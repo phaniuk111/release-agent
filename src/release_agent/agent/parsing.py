@@ -361,6 +361,8 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
         "namespace": namespace,
         "chart_dir": chart_dir,
         "values_file": values_file,
+        # PROD deploy form: change-request details written to change-request.json.
+        "change_request": data.get("change_request"),
         "raw": "json-paste",
     }
 
