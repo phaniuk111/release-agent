@@ -1,6 +1,12 @@
 ---
 name: release-status
 description: "Answer questions about deployed UAT/PRD charts, today's PRD release window, allowed images, and recent workflow runs."
+metadata:
+  adk_additional_tools:
+    - check_release_window
+    - list_allowed_images
+    - get_recent_runs
+    - get_workflow_status
 ---
 
 Use this skill when the user asks what is deployed, what is pending, what can be released today, which charts or versions are live, which images are allowed, or what recent workflow runs exist.

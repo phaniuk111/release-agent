@@ -1,6 +1,13 @@
 ---
 name: release-ops
 description: "Perform tightly scoped release operations: remove or unstage charts, retrigger a deployment workflow, or release today's staged PRD batch after cutoff."
+metadata:
+  adk_additional_tools:
+    - remove_from_release
+    - retrigger_deployment_workflow
+    - merge_prod_release
+    - find_prs
+    - get_pr_details
 ---
 
 Use this skill only when the user gives a direct operation command, not when they ask a question about how an operation works.

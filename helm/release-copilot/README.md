@@ -59,6 +59,10 @@ gcloud iam service-accounts add-iam-policy-binding \
 | `virtualService.timeout` | `120s` | use `0s` to fully disable for SSE |
 | `gateway.enabled` | `false` | create a Gateway instead of reusing a shared one |
 | `destinationRule.enabled` | `false` | enable with `replicaCount>1` for sticky sessions |
+| `config.ADK_CONTEXT_CACHE` | `true` | cache the static prompt prefix (root instruction + skills) |
+| `config.ADK_EVENT_COMPACTION` | `true` | summarize old events on long chat sessions |
+| `config.ADK_MEMORY_ENABLED` | `true` | preload memories + persist sessions (in-memory / per-pod) |
+| `config.ADK_CONFIRM_PROD_OPS` | `true` | require confirmation before prod remove / PRD release |
 
 ## Shared domain with a path prefix (multiple apps on one host)
 
@@ -87,8 +91,11 @@ under any prefix with no app config. Requirements:
   will shadow the others.
 
 ## Scaling note
-The agent keeps chat state in **in-memory ADK session/artifact services**, so it's single-pod
-by default (`replicaCount: 1`). To scale out, add shared ADK storage **or** enable
+The agent keeps chat state, sessions, and long-term memory in **in-memory ADK services**
+(session / artifact / memory), so it's single-pod by default (`replicaCount: 1`). These are
+per-pod and ephemeral — a **PVC does not persist them** (the memory service is pure RAM).
+To scale out or survive restarts, use a shared/durable backend (ADK `DatabaseSessionService`
+with SQLite-on-PVC for a single replica, or Postgres for many) **or** enable
 `destinationRule` (source-IP stickiness) so a client's thread stays on one pod.
 
 ## Verify locally before applying
