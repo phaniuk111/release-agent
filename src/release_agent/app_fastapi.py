@@ -64,10 +64,7 @@ class ChatRequest(BaseModel):
 
 class SessionConnectRequest(BaseModel):
     thread_id: str
-    repo: str
     pat_token: str
-    branch: str | None = None
-    project_name: str | None = None
 
 
 class SessionThreadRequest(BaseModel):
@@ -157,8 +154,8 @@ async def chat_page():
                 </div>
                 <button id="repo-chip" onclick="showConnectForm()"
                         class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
-                    <i id="repo-chip-icon" class="fa-solid fa-link-slash text-slate-400"></i>
-                    <span id="repo-chip-label" class="text-slate-300">Connect repo</span>
+                    <i id="repo-chip-icon" class="fa-brands fa-github text-slate-400"></i>
+                    <span id="repo-chip-label" class="text-slate-300">Connect with GitHub</span>
                 </button>
                 <button onclick="showCapabilities()"
                         class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
@@ -263,32 +260,19 @@ async def chat_endpoint(req: ChatRequest):
 
 @app.post("/api/session/connect")
 async def session_connect_endpoint(req: SessionConnectRequest):
-    """Connect this chat thread to the user's repository + PAT token.
+    """Connect this chat thread to GitHub with the user's PAT token.
 
-    The repo/branch/project are non-secret; the PAT is held in memory only and
-    never logged or returned (the response carries a masked preview). All GitHub
-    operations in this thread then run against the supplied repo as this user.
+    The PAT is held in memory only and never logged or returned (the response
+    carries a masked preview). All GitHub operations in this thread then run as
+    this user against the server-configured repositories.
     """
     thread_id = get_or_create_thread_id(req.thread_id)
-    creds = SessionCredentials(
-        repo=req.repo,
-        branch=req.branch or "",
-        pat_token=req.pat_token or "",
-        project_name=req.project_name or "",
-    )
-    if not creds.repo:
-        return {
-            "ok": False,
-            "error": "Could not parse a repository. Use owner/repo or a GitHub URL.",
-        }
+    creds = SessionCredentials(pat_token=req.pat_token or "")
     if not creds.pat_token:
         return {"ok": False, "error": "A PAT token is required to connect."}
 
     _session_store.set(thread_id, creds)
-    logger.info(
-        "Session connected | thread=%s | repo=%s | branch=%s",  # never log the token
-        thread_id, creds.repo, creds.branch or "(default)",
-    )
+    logger.info("Session connected | thread=%s", thread_id)  # never log the token
     return {"ok": True, "thread_id": thread_id, **creds.public_status()}
 
 
@@ -297,13 +281,7 @@ async def session_status_endpoint(thread_id: str = ""):
     """Return the (token-masked) connection status for a thread."""
     creds = _session_store.get(thread_id) if thread_id else None
     if creds is None:
-        return {
-            "connected": False,
-            "repo": "",
-            "branch": "",
-            "project_name": "",
-            "token_preview": "",
-        }
+        return {"connected": False, "token_preview": ""}
     return creds.public_status()
 
 

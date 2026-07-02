@@ -1,9 +1,11 @@
-"""Per-session repository + PAT token credentials.
+"""Per-session GitHub PAT credentials.
 
-The end user connects a session to *their* repository with *their* GitHub PAT,
-so a single Release Copilot deployment can serve different repos/tokens per
-chat thread — instead of relying only on the server-wide ``RELEASE_BUILD_REPO``
-/ ``GH_TOKEN`` configuration.
+The end user connects a session with *their* GitHub PAT, so every GitHub
+operation in that chat thread runs as that user — against the server-configured
+repositories — instead of relying only on the server-wide ``GH_TOKEN``
+configuration. A per-session repo override is still supported at the dataclass
+level (``repo``/``build_repo``/``deploy_repo``) but the UI collects the token
+only; connection is token-based, not repository-based.
 
 State model (mirrors the existing in-memory ADK session/artifact/memory
 services):
@@ -105,7 +107,7 @@ class SessionCredentials:
     def public_status(self) -> dict:
         """Client-safe view — the raw token is replaced by a masked preview."""
         return {
-            "connected": bool(self.pat_token and self.repo),
+            "connected": bool(self.pat_token),
             "repo": self.repo,
             "branch": self.branch,
             "project_name": self.project_name,

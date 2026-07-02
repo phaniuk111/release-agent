@@ -63,6 +63,18 @@ def test_public_status_never_leaks_the_token():
     assert "pat_token" not in status
 
 
+def test_token_only_credentials_are_connected():
+    """Connection is token-based: no repo needed — GitHub calls run as the user
+    against the server-configured repositories."""
+    creds = SessionCredentials(pat_token="ghp_tokenonly1234567890")
+    status = creds.public_status()
+    assert status["connected"] is True
+    assert status["repo"] == ""
+    # And the repo resolvers fall back to server config (empty override).
+    assert creds.build_repo == ""
+    assert creds.deploy_repo == ""
+
+
 def test_store_set_get_clear():
     store = SessionCredentialStore()
     creds = SessionCredentials(repo="a/b", pat_token="ghp_x")
