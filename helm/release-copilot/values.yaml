@@ -61,6 +61,11 @@ config:
   CONTROL_PREFIXES: "RLFT,RFTL"
   # Fail-closed: block a PRD release when any build control failed.
   PRD_REQUIRE_CONTROLS: "true"
+  # Deploy-target specifics — code defaults are generic. Set your real GKE namespaces
+  # and helm chart dir here (or via --set / a private values file), not in source.
+  # UAT_NAMESPACE: "default"
+  # PRD_NAMESPACE: "default"
+  # HELM_CHART_DIR: "charts"
   # --- ADK 2.x runtime features (safe defaults; override per-env) ---
   # Cache the static prompt prefix (root instruction + skill catalog).
   ADK_CONTEXT_CACHE: "true"
