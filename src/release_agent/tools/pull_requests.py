@@ -8,6 +8,7 @@ from ._common import (
     json,
     itertools,
     _get_github_client,
+    active_deploy_repo,
     ON_MERGE_WORKFLOW,
 )
 
@@ -46,7 +47,7 @@ def _find_prs_for_images(image_tags: str, limit: int = 20) -> list[dict]:
     given image tags, newest first. Empty list on error or no match."""
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.deploy_repo)
+        repo = g.get_repo(active_deploy_repo())
         tokens = [t for t in image_tags.lower().replace(":", " ").replace(",", " ").split() if t]
         if not tokens:
             return []
@@ -97,7 +98,7 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
 
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.deploy_repo)
+        repo = g.get_repo(active_deploy_repo())
 
         if not search_term:
             pulls = list(
@@ -106,7 +107,7 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
                 )
             )
             return json.dumps(
-                {"repo": settings.deploy_repo, "search_term": "recent", "prs": [_pr_dict(p) for p in pulls]},
+                {"repo": active_deploy_repo(), "search_term": "recent", "prs": [_pr_dict(p) for p in pulls]},
                 indent=2,
             )
 
@@ -128,7 +129,7 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
         # CHG/RMG number) — best-effort, since the search index can lag.
         if len(results) < limit:
             try:
-                query = f"{search_term} repo:{settings.deploy_repo} is:pr"
+                query = f"{search_term} repo:{active_deploy_repo()} is:pr"
                 for issue in itertools.islice(g.search_issues(query), limit):
                     if issue.pull_request and issue.number not in results:
                         results[issue.number] = {
@@ -144,7 +145,7 @@ def find_prs(search_term: str = "", limit: int = 5) -> str:
 
         return json.dumps(
             {
-                "repo": settings.deploy_repo,
+                "repo": active_deploy_repo(),
                 "search_term": search_term,
                 "prs": list(results.values())[:limit],
             },
@@ -158,7 +159,7 @@ def _fetch_pr_details(pr_number: int) -> str:
     """Plain helper reusable without tool-wrapper invocation."""
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.deploy_repo)
+        repo = g.get_repo(active_deploy_repo())
         pr = repo.get_pull(pr_number)
         return json.dumps(
             {
@@ -189,7 +190,7 @@ def _fetch_pr_comments(pr_number: int, limit: int = 100) -> str:
     """Plain helper reusable without tool-wrapper invocation."""
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.deploy_repo)
+        repo = g.get_repo(active_deploy_repo())
         pr = repo.get_pull(pr_number)
         comments = list(itertools.islice(pr.get_issue_comments(), limit))
 
@@ -205,7 +206,7 @@ def _fetch_pr_comments(pr_number: int, limit: int = 100) -> str:
             )
         return json.dumps(
             {
-                "repo": settings.deploy_repo,
+                "repo": active_deploy_repo(),
                 "pr": pr_number,
                 "comment_count": len(simplified),
                 "comments": simplified,
@@ -253,13 +254,13 @@ def summarize_pr_controls(pr_number: int) -> str:
 @tool(args_schema=RetriggerDeploymentWorkflowInput)
 def retrigger_deployment_workflow(pr_number: int, simulate_closed_controls: str = "") -> str:
     """
-    Retrigger the deployment simulation workflow in the settings.deploy_repo.
+    Retrigger the deployment simulation workflow in the active_deploy_repo().
     This is useful when you have closed some controls manually (outside the automation)
     and want the deployment comments / status to be re-generated with the updated control state.
     """
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.deploy_repo)
+        repo = g.get_repo(active_deploy_repo())
         workflow = repo.get_workflow(ON_MERGE_WORKFLOW)
 
         inputs = {"pr_number": str(pr_number)}
@@ -271,7 +272,7 @@ def retrigger_deployment_workflow(pr_number: int, simulate_closed_controls: str 
         return json.dumps(
             {
                 "triggered": True,
-                "repo": settings.deploy_repo,
+                "repo": active_deploy_repo(),
                 "pr_number": pr_number,
                 "simulate_closed_controls": simulate_closed_controls,
                 "note": "Workflow retriggered. Use summarize_pr_controls or get_pr_comments to see the updated status.",

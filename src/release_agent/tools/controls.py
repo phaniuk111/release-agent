@@ -12,6 +12,7 @@ from ._common import (
     itertools,
     _resolve_github_token,
     _get_github_client,
+    active_build_repo,
     CONFIG_PATH,
 )
 
@@ -93,7 +94,7 @@ def verify_image_tag_build(
     '<tag_marker_prefix><tag>' marker, and reports the run's RLFT release-control steps.
     verified=true only when a matching successful run is found.
     """
-    repo_full = repo or settings.build_repo
+    repo_full = repo or active_build_repo()
     try:
         g = _get_github_client()
         repo_obj = g.get_repo(repo_full)
@@ -260,7 +261,7 @@ def _collect_controls(run) -> list[dict]:
 
 
 def _build_repo_full(repo: str = "") -> str:
-    return repo or settings.build_repo
+    return repo or active_build_repo()
 
 
 def _find_build_run(repo_obj, image: str, tag: str):

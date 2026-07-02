@@ -13,6 +13,7 @@ from ._common import (
     GithubException,
     _get_github_client,
     _parse_pairs,
+    active_build_repo,
     CONFIG_PATH,
     MANIFEST_PATH,
     ALLOWED_WORKFLOWS,
@@ -57,7 +58,7 @@ def list_allowed_images() -> str:
     """Return the list of known images and their build workflows from the config JSON."""
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.build_repo)
+        repo = g.get_repo(active_build_repo())
         content_file = repo.get_contents(CONFIG_PATH)
         content = base64.b64decode(content_file.content).decode()
         cfg = json.loads(content)
@@ -73,7 +74,7 @@ def _fetch_current_manifest() -> str:
     path = MANIFEST_PATH
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.build_repo)
+        repo = g.get_repo(active_build_repo())
         content_file = repo.get_contents(path)
         content = base64.b64decode(content_file.content).decode()
         return content
@@ -162,7 +163,7 @@ def apply_json_update(
 
     g = _get_github_client()
     try:
-        repo = g.get_repo(settings.build_repo)
+        repo = g.get_repo(active_build_repo())
     except Exception as e:
         return f"ERROR applying update: {e}"
 
@@ -220,7 +221,7 @@ def apply_json_update(
                             "ok": True,
                             "updated_file": MANIFEST_PATH,
                             "commit": None,
-                            "url": f"https://github.com/{settings.build_repo}/blob/main/{MANIFEST_PATH}",
+                            "url": f"https://github.com/{active_build_repo()}/blob/main/{MANIFEST_PATH}",
                             "new_manifest": applied,
                             "note": "Desired tags already present (409 conflict resolved idempotently).",
                         },
@@ -264,7 +265,7 @@ def dispatch_workflow(
 
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.build_repo)
+        repo = g.get_repo(active_build_repo())
         workflow_obj = repo.get_workflow(workflow)
         # Dispatch against the repo's actual default branch (not a hardcoded
         # "main") so repos on master/develop/etc. still fire — and so the ref
@@ -275,7 +276,7 @@ def dispatch_workflow(
             {
                 "dispatched": True,
                 "workflow": workflow,
-                "repo": settings.build_repo,
+                "repo": active_build_repo(),
                 "inputs": inputs,
                 "note": "Workflow dispatched. Use get_recent_runs or get_workflow_status to check progress.",
             },
@@ -290,7 +291,7 @@ def get_recent_runs(limit: int = 5) -> str:
     """List recent workflow runs for the repo (good for status after dispatch)."""
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.build_repo)
+        repo = g.get_repo(active_build_repo())
         # islice over the PaginatedList: lazy (only fetches the page(s) needed,
         # unlike list(...) which pulls the ENTIRE history) AND empty-safe (a bare
         # [:limit] slice raises IndexError on an empty PaginatedList in PyGithub).
@@ -322,7 +323,7 @@ def get_workflow_status(run_id: str) -> str:
     """
     try:
         g = _get_github_client()
-        repo = g.get_repo(settings.build_repo)
+        repo = g.get_repo(active_build_repo())
         run = repo.get_workflow_run(int(run_id))
 
         jobs_data = []

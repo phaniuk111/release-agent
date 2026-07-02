@@ -28,6 +28,7 @@ from ._common import (
     _read_json_file,
     _upsert_json_file,
     _parse_pairs,
+    active_deploy_repo,
 )
 from .release_window import _today_prd_pr, _prd_release_branch  # noqa: F401
 
@@ -650,7 +651,7 @@ def open_release_pr(
     chart_str = ", ".join(f"{e['helm_chart_name']}:{e['helm_chart_version']}" for e in entries)
 
     try:
-        repo = _get_github_client().get_repo(settings.deploy_repo)
+        repo = _get_github_client().get_repo(active_deploy_repo())
     except Exception as e:
         return f"ERROR deploying: {e}"
 
@@ -798,7 +799,7 @@ def merge_prod_release() -> str:
     from datetime import datetime, timezone
 
     try:
-        repo = _get_github_client().get_repo(settings.deploy_repo)
+        repo = _get_github_client().get_repo(active_deploy_repo())
     except Exception as e:
         return f"ERROR releasing prod: {e}"
 
@@ -945,7 +946,7 @@ def remove_from_release(image_names: str, environment: str = "staging") -> str:
         )
 
     try:
-        repo = _get_github_client().get_repo(settings.deploy_repo)
+        repo = _get_github_client().get_repo(active_deploy_repo())
     except Exception as e:
         return f"ERROR removing from release: {e}"
 

@@ -183,13 +183,122 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             sendMessage();
         }
 
-        function newThread() {
+        async function newThread() {
+            // Drop the old thread's stored repo + PAT on the server, then rotate.
+            try {
+                await fetch(API_BASE + '/api/session/disconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ thread_id: threadId })
+                });
+            } catch (e) {}
             threadId = 'fastapi-' + Math.random().toString(36).slice(2, 10);
             localStorage.setItem('thread_id', threadId);
             document.getElementById('thread-label').textContent = threadId;
             document.getElementById('chat').innerHTML = '';
+            renderConnectionStatus({ connected: false });
             addMessage('bot', 'New conversation started. How can I help with releases?');
-            showCapabilities();
+            showConnectForm();
+        }
+
+        // ---- Repository + PAT connection (per session) -------------------------
+        // Non-secret repo/branch/project are cached in localStorage for convenience;
+        // the PAT is sent once to the server and never stored in the browser.
+        function renderConnectionStatus(s) {
+            const icon = document.getElementById('repo-chip-icon');
+            const label = document.getElementById('repo-chip-label');
+            if (!icon || !label) return;
+            if (s && s.connected && s.repo) {
+                icon.className = 'fa-solid fa-link text-emerald-400';
+                label.textContent = s.repo + (s.branch ? ('@' + s.branch) : '');
+                label.className = 'text-emerald-300';
+            } else {
+                icon.className = 'fa-solid fa-link-slash text-slate-400';
+                label.textContent = 'Connect repo';
+                label.className = 'text-slate-300';
+            }
+        }
+
+        async function refreshConnectionStatus() {
+            try {
+                const r = await fetch(API_BASE + '/api/session/status?thread_id=' + encodeURIComponent(threadId));
+                if (r.ok) renderConnectionStatus(await r.json());
+            } catch (e) {}
+        }
+
+        function showConnectForm() {
+            const chat = document.getElementById('chat');
+            const cached = JSON.parse(localStorage.getItem('repo_conn') || '{}');
+            const wrap = document.createElement('div');
+            wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm';
+            wrap.innerHTML =
+                '<div class="mb-2 font-semibold flex items-center gap-2 text-emerald-300">' +
+                '<i class="fa-solid fa-plug"></i> Connect a repository</div>' +
+                '<div class="text-slate-400 text-xs mb-3">Provide the repo and a GitHub PAT to run against your own repository this session. ' +
+                'The token stays in memory on the server, is never logged, and is dropped when you start a new thread.</div>';
+
+            const grid = document.createElement('div');
+            grid.className = 'grid gap-2 mb-2';
+            const mk = (labelText, id, type, placeholder, value) => {
+                const l = document.createElement('label');
+                l.className = 'text-[11px] text-slate-400 block mb-0.5';
+                l.textContent = labelText;
+                const el = document.createElement('input');
+                el.id = id; el.type = type; el.placeholder = placeholder || '';
+                if (value) el.value = value;
+                el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+                const box = document.createElement('div');
+                box.appendChild(l); box.appendChild(el);
+                grid.appendChild(box);
+            };
+            mk('Repository (owner/repo or URL)', 'conn-repo', 'text', 'e.g. octocat/hello-world', cached.repo);
+            mk('Branch name (optional)', 'conn-branch', 'text', 'e.g. main', cached.branch);
+            mk('PAT token', 'conn-pat', 'password', 'ghp_… (never stored in the browser)', '');
+            mk('Project name (optional)', 'conn-project', 'text', '', cached.project_name);
+            wrap.appendChild(grid);
+
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-3 mt-1';
+            const submit = document.createElement('button');
+            submit.className = 'bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 rounded-lg text-sm font-medium';
+            submit.textContent = 'Connect';
+            const err = document.createElement('span');
+            err.className = 'text-[11px] text-red-400';
+
+            submit.addEventListener('click', async () => {
+                err.textContent = '';
+                const repo = document.getElementById('conn-repo').value.trim();
+                const branch = document.getElementById('conn-branch').value.trim();
+                const pat = document.getElementById('conn-pat').value.trim();
+                const project = document.getElementById('conn-project').value.trim();
+                if (!repo) { err.textContent = 'Repository is required.'; return; }
+                if (!pat) { err.textContent = 'PAT token is required.'; return; }
+                submit.disabled = true; submit.textContent = 'Connecting…';
+                try {
+                    const r = await fetch(API_BASE + '/api/session/connect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ thread_id: threadId, repo, branch, pat_token: pat, project_name: project })
+                    });
+                    const d = await r.json();
+                    if (!d.ok) { err.textContent = d.error || 'Could not connect.'; return; }
+                    // Cache non-secret fields only (never the PAT).
+                    localStorage.setItem('repo_conn', JSON.stringify({ repo: d.repo, branch: d.branch, project_name: d.project_name }));
+                    renderConnectionStatus(d);
+                    wrap.remove();
+                    addMessage('bot', 'Connected to <code>' + d.repo + '</code>' +
+                        (d.branch ? (' on <code>' + d.branch + '</code>') : '') +
+                        ' (token ' + (d.token_preview || 'set') + '). I\'ll use this repository for GitHub actions this session.');
+                } catch (e) {
+                    err.textContent = 'Network error: ' + e.message;
+                } finally {
+                    submit.disabled = false; submit.textContent = 'Connect';
+                }
+            });
+            row.appendChild(submit); row.appendChild(err);
+            wrap.appendChild(row);
+            chat.appendChild(wrap);
+            chat.scrollTop = chat.scrollHeight;
         }
 
         // Quick actions — what the agent can do. mode 'send' runs immediately;
@@ -539,6 +648,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
                 addMessage('bot', 'Hello! I can help you deploy Helm charts and manage release workflows.');
                 showCapabilities();
             }
+            refreshConnectionStatus();
             loadReleaseStatus();
             // Keep it fresh so a release raised in another session shows up here.
             setInterval(loadReleaseStatus, 60000);
