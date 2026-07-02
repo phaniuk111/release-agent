@@ -46,7 +46,12 @@ FROM ${BASE_IMAGE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:${PATH}"
+    PATH="/opt/venv/bin:${PATH}" \
+    # Both packages must import: release_agent (under /app/src) and the ADK app
+    # adk_release_agent (under /app). The bare `uvicorn` console script does not
+    # add cwd to sys.path, so set PYTHONPATH explicitly — this makes the CMD work
+    # under `docker run` as well as the Helm `python -m uvicorn` command.
+    PYTHONPATH="/app/src:/app"
 
 WORKDIR /app
 

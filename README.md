@@ -60,13 +60,15 @@ gcloud auth application-default login
 gh auth login            # or set GH_TOKEN in .env
 
 # 6. Run
+#    PYTHONPATH must include both `src` (release_agent) and `.` (adk_release_agent).
+#    Vertex is selected via GOOGLE_GENAI_USE_VERTEXAI=True (set in .env or exported).
 
 # FastAPI Web UI (recommended)
-uvicorn src.release_agent.app_fastapi:app --reload --port 8000
+PYTHONPATH=src:. uvicorn release_agent.app_fastapi:app --reload --port 8000
 # Open http://localhost:8000
 
 # or CLI
-python -m src.release_agent.cli
+PYTHONPATH=src:. python -m release_agent.cli
 ```
 
 Example chat (or use the **Deploy to UAT / PROD** form, which submits the same JSON):
@@ -301,10 +303,10 @@ cp .env.example .env     # set BUILD_REPO, DEPLOY_REPO, GOOGLE_CLOUD_PROJECT
 gh auth login            # repo + workflow scopes (or put GH_TOKEN in .env)
 
 # CLI test
-python -m src.release_agent.cli
+PYTHONPATH=src:. python -m release_agent.cli
 
 # Web UI test (recommended)
-uvicorn src.release_agent.app_fastapi:app --reload --port 8000
+PYTHONPATH=src:. uvicorn release_agent.app_fastapi:app --reload --port 8000
 # Open http://localhost:8000
 ```
 
