@@ -175,3 +175,40 @@ def test_open_release_pr_targets_payload_repo(monkeypatch):
     )
     assert seen["repo"] == "my-org/custom-deploy"  # normalized from the URL
     assert "ERROR deploying" in out
+
+
+def test_merge_prod_release_targets_payload_repo(monkeypatch):
+    from release_agent.tools import promotion as P
+
+    seen = {}
+
+    class _FakeGithub:
+        def get_repo(self, full):
+            seen["repo"] = full
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(P, "_get_github_client", lambda: _FakeGithub())
+    out = P.merge_prod_release.invoke({"deployment_repo": "my-org/custom-deploy"})
+    assert seen["repo"] == "my-org/custom-deploy"
+    assert "ERROR releasing prod" in out
+    # Unparseable repo is rejected before any GitHub call.
+    out2 = P.merge_prod_release.invoke({"deployment_repo": "nonsense"})
+    assert "could not parse deployment_repo" in out2
+
+
+def test_remove_from_release_targets_payload_repo(monkeypatch):
+    from release_agent.tools import promotion as P
+
+    seen = {}
+
+    class _FakeGithub:
+        def get_repo(self, full):
+            seen["repo"] = full
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(P, "_get_github_client", lambda: _FakeGithub())
+    out = P.remove_from_release.invoke(
+        {"image_names": "svc", "deployment_repo": "https://github.com/my-org/custom-deploy"}
+    )
+    assert seen["repo"] == "my-org/custom-deploy"
+    assert "ERROR removing from release" in out

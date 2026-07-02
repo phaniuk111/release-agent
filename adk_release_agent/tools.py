@@ -88,13 +88,16 @@ def get_build_controls(
     )
 
 
-def remove_from_release(image_names: str, environment: str = "staging") -> dict[str, Any]:
+def remove_from_release(
+    image_names: str, environment: str = "staging", deployment_repo: str = ""
+) -> dict[str, Any]:
     """Unstage chart names from today's PRD release PR (environment='staging', the
     default) or remove them from a live environment ('uat' or 'prod' — only when the
-    user explicitly names it)."""
+    user explicitly names it). deployment_repo (owner/repo) targets a non-default
+    deployment repo — pass it only when the user names one."""
     return _invoke_tool(
         "remove_from_release",
-        {"image_names": image_names, "environment": environment},
+        {"image_names": image_names, "environment": environment, "deployment_repo": deployment_repo},
     )
 
 
@@ -108,9 +111,11 @@ def retrigger_deployment_workflow(
     )
 
 
-def merge_prod_release() -> dict[str, Any]:
-    """Promote today's PRD release after the configured cutoff, if eligible."""
-    return _invoke_tool("merge_prod_release")
+def merge_prod_release(deployment_repo: str = "") -> dict[str, Any]:
+    """Promote today's PRD release after the configured cutoff, if eligible.
+    deployment_repo (owner/repo) targets a non-default deployment repo — pass it
+    only when the user names one (e.g. the repo their deploy was staged in)."""
+    return _invoke_tool("merge_prod_release", {"deployment_repo": deployment_repo})
 
 
 STATUS_TOOLS = [

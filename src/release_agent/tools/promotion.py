@@ -805,14 +805,22 @@ def _unstage_from_prd_pr(repo, names: list) -> dict | None:
 
 
 @tool
-def merge_prod_release() -> str:
+def merge_prod_release(deployment_repo: str = "") -> str:
     """Release today's accumulated PRD release to production by promoting the staged charts
     through the FULL chain SIT -> UAT -> PRD (prod never skips SIT/UAT). Allowed ONLY after
-    the daily cutoff (PRD_CUTOFF_HOUR_UTC). Use when a developer says 'release prod'."""
+    the daily cutoff (PRD_CUTOFF_HOUR_UTC). Use when a developer says 'release prod'.
+
+    deployment_repo (optional): the repo the release was staged in (owner/repo or GitHub
+    URL) when the deploy targeted a non-default repo; empty = the configured default."""
     from datetime import datetime, timezone
 
+    from ..session_creds import _normalize_repo
+
+    target_repo = _normalize_repo(deployment_repo) if deployment_repo else ""
+    if deployment_repo and not target_repo:
+        return f"ERROR releasing prod: could not parse deployment_repo '{deployment_repo}' (use owner/repo)."
     try:
-        repo = _get_github_client().get_repo(active_deploy_repo())
+        repo = _get_github_client().get_repo(target_repo or active_deploy_repo())
     except Exception as e:
         return f"ERROR releasing prod: {e}"
 
@@ -921,10 +929,17 @@ class RemoveFromReleaseInput(BaseModel):
             "Use uat/prod ONLY when the user explicitly names that live environment."
         ),
     )
+    deployment_repo: str = Field(
+        default="",
+        description=(
+            "Target deployment repository (owner/repo or GitHub URL) when the release was "
+            "staged in a non-default repo. Empty = the configured/session default."
+        ),
+    )
 
 
 @tool(args_schema=RemoveFromReleaseInput)
-def remove_from_release(image_names: str, environment: str = "staging") -> str:
+def remove_from_release(image_names: str, environment: str = "staging", deployment_repo: str = "") -> str:
     """Remove/unstage chart(s) by helm_chart_name.
 
     environment='staging' (default): drop the chart(s) from today's PRD release PR
@@ -958,8 +973,16 @@ def remove_from_release(image_names: str, environment: str = "staging") -> str:
             "(use staging, uat or prod)."
         )
 
+    from ..session_creds import _normalize_repo
+
+    target_repo = _normalize_repo(deployment_repo) if deployment_repo else ""
+    if deployment_repo and not target_repo:
+        return (
+            f"ERROR removing from release: could not parse deployment_repo "
+            f"'{deployment_repo}' (use owner/repo)."
+        )
     try:
-        repo = _get_github_client().get_repo(active_deploy_repo())
+        repo = _get_github_client().get_repo(target_repo or active_deploy_repo())
     except Exception as e:
         return f"ERROR removing from release: {e}"
 
