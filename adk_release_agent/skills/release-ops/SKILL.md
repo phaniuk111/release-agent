@@ -22,6 +22,9 @@ Choosing `remove_from_release`'s environment:
 - Pass `environment="uat"` or `environment="prod"` ONLY when the user explicitly names that live environment (e.g. "remove X from UAT"). These change what is actually deployed — never infer them from an unqualified "remove from the release".
 - If unsure which the user means, ask before calling the tool.
 
+Targeting a non-default deployment repo:
+- `merge_prod_release` and `remove_from_release` accept an optional `deployment_repo` (owner/repo). Pass it ONLY when the user names a repo (e.g. "release prod in my-org/my-deploy-repo" — typically because their deploy form targeted that repo). Never guess it; empty uses the configured default.
+
 Forbidden actions:
 - Do not deploy or add charts.
 - Do not directly mutate deployment JSON.
