@@ -1,25 +1,13 @@
-"""Pure natural-language intent parsing — image:tag extraction, environment and
-change-ticket detection, and re-run / removal / retrigger / question classification.
-Every function here is a deterministic text helper with no graph or LLM state."""
+"""Pure natural-language deploy parsing — image:tag extraction, environment
+detection, query-vs-promote veto, and the JSON deploy-payload parser used by the
+ADK deploy Workflow. Every function here is a deterministic text helper with no
+graph or LLM state. (The LangGraph-era intent classifiers — re-run, removal,
+retrigger, question — were deleted when the ADK skills router took over those
+intents.)"""
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
-
-
-STEP_APPLY = "apply_manifest"
-STEP_DISPATCH = "dispatch_workflow"
-STEP_RELEASE_PR = "release_pr"
-ALL_STEPS = [STEP_APPLY, STEP_DISPATCH]
-_STEP_ALIASES = {
-    STEP_APPLY: ["apply_manifest", "apply-manifest", "apply", "commit", "manifest"],
-    STEP_DISPATCH: ["dispatch_workflow", "dispatch-workflow", "dispatch", "workflow", "trigger"],
-    STEP_RELEASE_PR: ["release_pr", "release-pr", "pr", "open_pr", "open-pr", "raise_pr"],
-}
-
-
-# Change-ticket fields required when promoting to prod.
-_CHG_FIELDS = ("chg_name", "chg_summary", "start_date", "end_date")
+from typing import Optional
 
 
 # Words that are never image names and never tags (deployment environments + filler).
@@ -200,18 +188,6 @@ def _is_query_not_promote(text: str) -> bool:
     return is_query and not _has_promote_verb(words)
 
 
-_REMOVAL_WORDS = {"remove", "unstage", "drop", "exclude", "withdraw", "deselect", "unselect"}
-
-
-def _is_removal(text: str) -> bool:
-    """True when the user wants to remove/unstage an image from today's release."""
-    words = set(_norm_words(text))
-    if words & _REMOVAL_WORDS:
-        return True
-    low = text.lower()
-    return "back out" in low or "take out" in low
-
-
 def _detect_environment(text: str) -> str:
     low = text.lower()
     words = set(_norm_words(text))
@@ -224,26 +200,6 @@ def _detect_environment(text: str) -> str:
     if words & {"prod", "production", "prd"}:
         return "prod"
     return "prod"
-
-
-def _is_chg_line(line: str) -> bool:
-    sep = ":" if ":" in line else ("=" if "=" in line else None)
-    if not sep:
-        return False
-    return line.partition(sep)[0].strip().lower() in _CHG_FIELDS
-
-
-def _extract_change_fields(text: str) -> dict:
-    """Pull change-ticket fields from lines like 'chg_name: CHG0012345' (no regex)."""
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        if not _is_chg_line(line):
-            continue
-        sep = ":" if ":" in line else "="
-        key, _, val = line.partition(sep)
-        if val.strip():
-            out[key.strip().lower()] = val.strip()
-    return out
 
 
 def _extract_json_objects(text: str) -> list:
@@ -368,111 +324,3 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
         "raw": "json-paste",
     }
 
-
-def _detect_rerun(text: str, current_steps: Optional[list]) -> Optional[list[str]]:
-    """Detect a 're-run <step>' request and return the selected step labels.
-
-    Returns None when the message isn't a re-run request, or a (possibly empty)
-    list of step labels when it is. An empty list means "re-run intent but the
-    step is unspecified" — the rerun node will then list the available steps.
-    """
-    # space-padded normalized words, so " word " is a whole-word check (no regex)
-    norm = " " + " ".join(_norm_words(text)) + " "
-    rerun_phrases = (
-        " rerun ",
-        " re run ",
-        " retry ",
-        " re try ",
-        " reexecute ",
-        " re execute ",
-        " redo ",
-        " run again ",
-        " try again ",
-    )
-    if not any(p in norm for p in rerun_phrases):
-        return None
-
-    if any(w in norm for w in (" all ", " both ", " everything ", " entire ", " whole ")):
-        return [s["name"] for s in current_steps] if current_steps else list(ALL_STEPS)
-
-    if "fail" in text.lower() and current_steps:
-        failed = [s["name"] for s in current_steps if s.get("status") == "error"]
-        if failed:
-            return failed
-
-    requested: list[str] = []
-    # "step 1" / "step 2"
-    for canon, idx in zip(ALL_STEPS, ("1", "2")):
-        if f" step {idx} " in norm:
-            requested.append(canon)
-    # name aliases (whole-word match; aliases normalized the same way)
-    for canon, aliases in _STEP_ALIASES.items():
-        if canon in requested:
-            continue
-        if any(f" {' '.join(_norm_words(a))} " in norm for a in aliases):
-            requested.append(canon)
-
-    seen, ordered = set(), []
-    for s in requested:
-        if s not in seen:
-            seen.add(s)
-            ordered.append(s)
-    return ordered
-
-def _message_text(msg: Any) -> str:
-    content = getattr(msg, "content", msg)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-            elif isinstance(item, str):
-                parts.append(item)
-        return "\n".join(p for p in parts if p)
-    return str(content or "")
-
-
-def _is_human_message(msg: Any) -> bool:
-    role = getattr(msg, "role", None) or getattr(msg, "type", None)
-    if str(role).lower() in {"user", "human"}:
-        return True
-    return msg.__class__.__name__ == "HumanMessage"
-
-
-def _last_human_text(messages: list) -> str:
-    """Text of the most recent human turn — what the supervisor routes on."""
-    for m in reversed(messages or []):
-        if _is_human_message(m):
-            return _message_text(m)
-    return _message_text(messages[-1]) if messages else ""
-
-
-def _is_retrigger(text: str) -> bool:
-    """True when the user asks to RE-TRIGGER the deployment workflow (an ops action),
-    as opposed to re-running a promote step (handled earlier in parse_intent)."""
-    low = text.lower()
-    if "retrigger" in low or "re trigger" in low:
-        return True
-    words = set(_norm_words(text))
-    mentions_deploy = bool(words & {"deployment", "deploy", "workflow"})
-    asks_run = bool(words & {"rerun", "retrigger", "trigger"}) or "re run" in low
-    return mentions_deploy and asks_run
-
-
-# Interrogative leaders — a message that opens with one (or contains '?') reads as a
-# QUESTION, so it must not take the deterministic mutate fast-path (let the LLM route
-# it, which lands a pure question on a READ-ONLY specialist instead of ops).
-_QUESTION_LEADERS = {
-    "how", "what", "why", "when", "where", "which", "who", "whom", "whose",
-    "can", "could", "would", "should", "do", "does", "did", "is", "are",
-    "was", "were", "will", "explain", "tell", "describe",
-}
-
-
-def _is_question(text: str) -> bool:
-    if "?" in text:
-        return True
-    words = _norm_words(text)
-    return bool(words) and words[0] in _QUESTION_LEADERS
