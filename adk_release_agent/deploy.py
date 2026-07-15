@@ -212,6 +212,3 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
     result.setdefault("ok", True)
     result["confirmed_token"] = token
     return result
-
-
-ADK_DEPLOY_TOOLS = [prepare_deploy_preview, apply_confirmed_deploy]

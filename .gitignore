@@ -48,3 +48,4 @@ release-manifest.json.bak
 # Local tooling
 .claude/
 traces/
+.vscode/
