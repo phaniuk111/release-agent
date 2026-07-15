@@ -249,3 +249,42 @@ def test_unsupported_environment_is_rejected(make_repo):
 
 def test_input_schema_defaults_to_staging():
     assert P.RemoveFromReleaseInput(image_names="x").environment == "staging"
+
+
+# --- UAT deploy override via targeted per-branch edits ------------------------
+# (open_release_pr env=uat used whole-branch working->SIT->UAT merges, which
+# conflicted permanently once SIT/UAT histories diverged — deployment-repo PRs
+# #93/#96/#103. It now applies the same override to each branch independently.)
+
+def test_uat_deploy_overrides_both_branches_via_targeted_edits(monkeypatch):
+    def entry(name, version, values="uat/values_uat.yaml"):
+        return {
+            "helm_chart_name": name, "helm_chart_version": version,
+            "helm_chart_dir": "d", "helm_values_file_name": values, "gke_namespace": "ns",
+        }
+
+    # SIT and UAT deliberately start with DIFFERENT contents (diverged state):
+    # a whole-branch merge could not reconcile these; targeted edits don't care.
+    initial = {
+        "SIT": {UAT_PATH: {"include": [entry("old-svc", "0.1")]}},
+        "UAT": {UAT_PATH: {"include": [entry("other-svc", "7.7"), entry("old-svc", "0.2")]}},
+        "PRD": {UAT_PATH: {"include": []}, PRD_PATH: {"include": []}},
+    }
+    repo = _FakeRepo(initial)
+    monkeypatch.setattr(P, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
+
+    out = json.loads(P.open_release_pr.invoke({
+        "environment": "uat",
+        "deployment_json": json.dumps({"include": [entry("new-svc", "1.0")]}),
+    }))
+    assert out["ok"] is True and out["action"] == "deployed"
+
+    # Both branches end with EXACTLY the override — divergence self-healed.
+    for br in ("SIT", "UAT"):
+        inc = json.loads(repo.files[br][UAT_PATH])["include"]
+        assert [(e["helm_chart_name"], e["helm_chart_version"]) for e in inc] == [("new-svc", "1.0")], br
+    # PRD untouched by a UAT deploy.
+    assert json.loads(repo.files["PRD"][UAT_PATH])["include"] == []
+    # Two targeted PRs (one per branch), both merged — no SIT->UAT branch merge.
+    stages = [(p.get("stage"), p.get("merged")) for p in out["prs"] if p.get("number")]
+    assert stages == [("→SIT", True), ("→UAT", True)]

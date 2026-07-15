@@ -8,11 +8,11 @@ where an entry is a Helm chart:
 The dev supplies only chart_name:version (+ optional namespace); the constants and the
 env-specific values-file + namespace are filled from config.
 
-- UAT deploy  : OVERRIDE uat/deployment.json (chain working->SIT->UAT).
+- UAT deploy  : OVERRIDE uat/deployment.json via targeted per-branch edits (SIT, UAT).
 - PROD deploy : accumulate the chart into today's PRD release PR (a day-long PR on a
                release/prd/<date> branch holding BOTH uat & prd deployment.json). At the
-               cutoff, `release prod` promotes the staged charts through the FULL chain
-               working->SIT->UAT->PRD (merge_prod_release) — prod never skips SIT/UAT.
+               release, `release prod` promotes the staged charts through the FULL chain
+               SIT->UAT->PRD (merge_prod_release) — prod never skips SIT/UAT.
 Entries are keyed by helm_chart_name (one entry per chart per env file).
 """
 
@@ -181,90 +181,6 @@ def _find_deploy_run(repo, head_sha: str, branch: str = "", tries: int = 4, dela
     return None
 
 
-def _apply_via_pr_chain(repo, file_mutations: list, summary: str) -> dict:
-    """Apply per-file mutations along the protected-branch chain (never commit directly).
-
-    file_mutations is a list of (path, mutate_fn); mutate_fn(include_list) mutates the
-    include[] list in place and returns True if it changed anything. The chain runs
-    working -> SIT -> UAT (this is the UAT deploy path). Promotion on to PRD is done by
-    _promote_targeted, not by a whole-branch UAT->PRD merge. Returns
-    {changed, prs, deploy_run, blocked_pr?}."""
-    sit, uat = settings.sit_branch, settings.uat_branch
-    prs: list = []
-
-    # Guard: if a PR touching any target file is already open into SIT, don't stack another.
-    for path, _ in file_mutations:
-        existing = _open_pr_on_file(repo, sit, path)
-        if existing is not None:
-            return {
-                "changed": False,
-                "prs": [],
-                "blocked_pr": {"number": existing.number, "url": existing.html_url, "path": path},
-            }
-
-    sit_ref = repo.get_git_ref(f"heads/{sit}")
-    work = f"change/sit/{uuid.uuid4().hex[:8]}"
-    repo.create_git_ref(f"refs/heads/{work}", sit_ref.object.sha)
-
-    changed_any = False
-    for path, mutate_fn in file_mutations:
-        doc = _read_json_file(repo, work, path)
-        if not isinstance(doc, dict):
-            doc = {}
-        include = doc.get("include")
-        if not isinstance(include, list):
-            include = []
-        if mutate_fn(include):
-            doc["include"] = include
-            doc["updated_by"] = "release-copilot"
-            _upsert_json_file(repo, work, path, doc)
-            changed_any = True
-
-    if not changed_any:
-        try:
-            repo.get_git_ref(f"heads/{work}").delete()
-        except Exception:
-            pass
-        return {"changed": False, "prs": []}
-
-    # 1) working branch -> SIT
-    pr_sit = repo.create_pull(title=f"{summary} (→ {sit})", body=summary, head=work, base=sit)
-    ok, detail = _merge_pr(pr_sit, "squash")
-    prs.append(
-        {"stage": f"→{sit}", "number": pr_sit.number, "url": pr_sit.html_url, "merged": ok, "detail": detail}
-    )
-
-    # 2) SIT -> UAT
-    if ok:
-        try:
-            pr_uat = repo.create_pull(
-                title=f"Promote {sit} → {uat}: {summary}", body=summary, head=sit, base=uat
-            )
-            ok2, detail2 = _merge_pr(pr_uat, "merge")
-            entry = {
-                "stage": f"{sit}→{uat}",
-                "number": pr_uat.number,
-                "url": pr_uat.html_url,
-                "merged": ok2,
-                "detail": detail2,
-            }
-            if ok2:
-                try:
-                    pr_uat.update()
-                    msha = pr_uat.merge_commit_sha
-                    run = _find_deploy_run(repo, msha, uat) if msha else None
-                    if run:
-                        entry["deploy_run"] = run
-                except Exception:
-                    pass
-            prs.append(entry)
-        except Exception as e:
-            prs.append({"stage": f"{sit}→{uat}", "error": str(e)})
-
-    deploy_run = next((p.get("deploy_run") for p in prs if p.get("deploy_run")), None)
-    return {"changed": True, "prs": prs, "deploy_run": deploy_run, "deploy_run_prd": None}
-
-
 def _doc_changed(existing: dict, new_doc: dict, ignore=("updated_at",)) -> bool:
     """True if new_doc differs from existing, ignoring volatile keys (e.g. updated_at)."""
     def _strip(d):
@@ -280,9 +196,10 @@ def _promote_targeted(
     """Promote a change to PRD through SIT -> UAT -> PRD by applying the SAME targeted
     file mutation to each branch in order, each via its own working-branch PR.
 
-    Unlike _apply_via_pr_chain (which git-merges whole branches and so drags an env's
-    unrelated charts — e.g. UAT-only entries — into the next env and conflicts), this
-    edits only the include[] of the named files on each branch. uat/deployment.json keeps
+    Unlike a whole-branch git merge (which drags an env's unrelated charts — e.g.
+    UAT-only entries — into the next env, and conflicts permanently once branch
+    histories diverge), this edits only the include[] of the named files on each
+    branch. uat/deployment.json keeps
     its own per-env contents; only the promoted charts move. Returns
     {changed, prs, deploy_run, deploy_run_prd, delivered}.
 
@@ -364,7 +281,7 @@ def _promote_targeted(
 
 
 def _pr_chain_note(prs: list) -> str:
-    """One-line human summary of the PRs raised by _apply_via_pr_chain."""
+    """One-line human summary of the PRs raised by _promote_targeted."""
     if not prs:
         return "No change (already in that state)."
     bits = []
@@ -386,28 +303,6 @@ def _deploy_run_note(res: dict) -> str:
     if res.get("deploy_run_prd"):
         bits.append(f"PRD deploy run #{res['deploy_run_prd']['id']} ({res['deploy_run_prd']['url']})")
     return (" " + "; ".join(bits) + ".") if bits else ""
-
-
-def _blocked_pr_result(res: dict):
-    """If the chain was blocked by an already-open PR on a target file, return a
-    user-facing JSON string; otherwise None."""
-    b = res.get("blocked_pr")
-    if not b:
-        return None
-    return json.dumps(
-        {
-            "ok": False,
-            "action": "pr_already_open",
-            "pr_number": b["number"],
-            "pr_url": b["url"],
-            "note": (
-                f"A deploy PR is already open — #{b['number']} ({b['url']}) — touching "
-                f"`{b.get('path', 'the deployment config')}`. Merge or close it first, then retry. "
-                "(One deploy at a time per file.)"
-            ),
-        },
-        indent=2,
-    )
 
 
 # --- deploy planning (OVERRIDE, not upsert) --------------------------------
@@ -453,7 +348,7 @@ def plan_deploy(env: str, entries: list) -> dict:
 
 
 def _replace_with(entries: list):
-    """mutate_fn for _apply_via_pr_chain that OVERRIDES include[] with `entries`
+    """mutate_fn for _promote_targeted that OVERRIDES include[] with `entries`
     (complete replace, no upsert). Returns True if the list changed."""
     def _mut(include):
         old = list(include)
@@ -464,7 +359,7 @@ def _replace_with(entries: list):
 
 
 def _upsert_each(entries: list):
-    """mutate_fn for _apply_via_pr_chain that UPSERTS each entry (by helm_chart_name),
+    """mutate_fn for _promote_targeted that UPSERTS each entry (by helm_chart_name),
     preserving charts already present. Returns True if anything changed. Used by the
     PRD release so promoting to current PRD/UAT adds today's charts without dropping
     what's already live."""
@@ -701,12 +596,17 @@ def open_release_pr(
             indent=2,
         )
 
-    # --- UAT: OVERRIDE uat/deployment.json via working -> SIT -> UAT ---
+    # --- UAT: OVERRIDE uat/deployment.json via targeted per-branch edits ---
+    # (SIT then UAT, each via its own short-lived change branch. The old
+    # working->SIT->UAT whole-branch merge conflicted permanently once SIT/UAT
+    # histories diverged — observed live on deployment-repo PRs #93, #96, #103.)
     uat_path = _deployment_path("uat")
-    res = _apply_via_pr_chain(repo, [(uat_path, _replace_with(entries))], f"Deploy {chart_str} to uat")
-    blocked = _blocked_pr_result(res)
-    if blocked:
-        return blocked
+    res = _promote_targeted(
+        repo,
+        [(uat_path, _replace_with(entries))],
+        f"Deploy {chart_str} to uat",
+        branches=(settings.sit_branch, settings.uat_branch),
+    )
     if not res["changed"]:
         return json.dumps(
             {"ok": True, "action": "no_change", "environment": "uat", "image_tags": chart_str,
@@ -1032,8 +932,8 @@ def remove_from_release(image_names: str, environment: str = "staging", deployme
         # Targeted SIT -> UAT -> PRD so the removal reaches PRD without a whole-branch merge.
         res = _promote_targeted(repo, [(_deployment_path("prd"), _mut), (uat_path, _mut)], summary)
     else:
-        # Targeted per-branch edits stopping at UAT — _apply_via_pr_chain's SIT->UAT
-        # whole-branch merge conflicts whenever UAT has moved independently of SIT.
+        # Targeted per-branch edits stopping at UAT (whole-branch SIT->UAT merges
+        # conflict whenever UAT has moved independently of SIT).
         res = _promote_targeted(
             repo, [(uat_path, _mut)], summary,
             branches=(settings.sit_branch, settings.uat_branch),
