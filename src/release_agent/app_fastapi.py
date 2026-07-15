@@ -141,7 +141,8 @@ async def chat_page():
     </style>
 </head>
 <body class="text-white">
-    <div class="max-w-4xl mx-auto px-4 py-6">
+    <div class="max-w-6xl mx-auto px-4 py-6 flex gap-4 items-start">
+      <div class="flex-1 min-w-0">
         <!-- Header -->
         <div class="flex items-center justify-between mb-6">
             <div class="flex items-center gap-3">
@@ -173,6 +174,10 @@ async def chat_page():
                         class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
                     <i class="fa-solid fa-plus"></i>
                     <span>New Thread</span>
+                </button>
+                <button id="panel-toggle" onclick="toggleInsights()" title="Insights panel"
+                        class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
+                    <i class="fa-solid fa-chart-column text-emerald-400"></i>
                 </button>
             </div>
         </div>
@@ -213,6 +218,18 @@ async def chat_page():
         <p class="text-[10px] text-slate-500 mt-2 text-center">
             Messages are sent to ADK. Confirmations are required before any release actions.
         </p>
+      </div>
+
+      <!-- Insights drawer: collapsible report sections (rendered by app.js) -->
+      <aside id="insights-panel" class="hidden w-72 shrink-0 glass rounded-2xl p-3 sticky top-6">
+          <div class="flex items-center justify-between mb-2 px-1">
+              <span class="text-xs font-semibold text-slate-300">
+                  <i class="fa-solid fa-chart-column text-emerald-400 mr-1"></i>Insights</span>
+              <button onclick="toggleInsights()" class="text-slate-500 hover:text-slate-300 text-xs">
+                  <i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div id="insights-sections" class="space-y-2"></div>
+      </aside>
     </div>
 
     <script src="static/app.js?v={APP_STARTED}"></script>
