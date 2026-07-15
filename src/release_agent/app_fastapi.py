@@ -198,9 +198,6 @@ async def chat_page():
             <!-- Messages injected here -->
         </div>
 
-        <!-- Pinned golden paths + palette trigger -->
-        <div id="chips" class="flex gap-1.5 mb-2 flex-wrap"></div>
-
         <!-- Input -->
         <div class="flex gap-2">
             <input id="input" 

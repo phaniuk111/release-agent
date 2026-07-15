@@ -225,7 +225,8 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             document.getElementById('thread-label').textContent = threadId;
             document.getElementById('chat').innerHTML = '';
             renderConnectionStatus({ connected: false });
-            addMessage('bot', 'New conversation started — <code>⌘K</code> for everything I can do, or the GitHub chip above to connect your token.');
+            addMessage('bot', 'New conversation started. How can I help with releases?');
+            showCapabilities();
         }
 
         // ---- GitHub PAT connection (per session) -------------------------------
@@ -530,23 +531,31 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             if (_palette) _palette.classList.add('hidden');
             document.getElementById('input').focus();
         }
-        function showCapabilities() { openPalette(); }
+        function showCapabilities() {
+            const chat = document.getElementById('chat');
+            const wrap = document.createElement('div');
+            wrap.className = 'message bot rounded-2xl px-4 py-3 text-sm';
 
-        // Pinned golden paths above the composer.
-        function renderChips() {
-            const box = document.getElementById('chips');
-            if (!box) return;
-            const chip = (icon, label, onClick) => {
-                const b = document.createElement('button');
-                b.className = 'border border-slate-700 hover:border-emerald-400/40 hover:text-slate-200 rounded-full px-3 py-1 text-xs text-slate-400 flex items-center gap-1.5';
-                b.innerHTML = '<i class="fa-solid ' + icon + ' text-[11px]"></i>' + label;
-                b.addEventListener('click', onClick);
-                box.appendChild(b);
-            };
-            chip('fa-flask', 'Deploy GKE', () => showDeployForm('uat'));
-            chip('fa-water', 'Deploy DF', () => showDeployForm('df-uat'));
-            chip('fa-rocket', 'Release', () => sendMessage('release prod'));
-            chip('fa-ellipsis', 'more', openPalette);
+            const title = document.createElement('div');
+            title.className = 'mb-2 text-slate-400 text-xs';
+            title.textContent = 'Pick one, or just type — hover for details:';
+            wrap.appendChild(title);
+
+            const row = document.createElement('div');
+            row.className = 'flex flex-wrap gap-1.5';
+            CAPABILITIES.forEach(c => {
+                const btn = document.createElement('button');
+                btn.title = c.desc;
+                btn.className = 'border border-slate-700/80 hover:border-emerald-400/40 ' +
+                    'hover:bg-slate-800/60 rounded-full px-3 py-1 text-xs text-slate-300 ' +
+                    'flex items-center gap-1.5 transition-colors';
+                btn.innerHTML = '<i class="fa-solid ' + c.icon + ' text-emerald-400/90 text-[11px]"></i>' + c.label;
+                btn.addEventListener('click', () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send));
+                row.appendChild(btn);
+            });
+            wrap.appendChild(row);
+            chat.appendChild(wrap);
+            chat.scrollTop = chat.scrollHeight;
         }
 
         // Deploy form — three inputs: chart name, version, namespace.
@@ -848,9 +857,9 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         window.onload = () => {
             const chat = document.getElementById('chat');
             if (chat.children.length === 0) {
-                addMessage('bot', 'Hi — try <code>deploy my-chart 1.2.3 to uat</code>, or press <code>⌘K</code> to see everything I can do.');
+                addMessage('bot', 'Hello! I can help you deploy Helm charts and manage release workflows.');
+                showCapabilities();
             }
-            renderChips();
             refreshConnectionStatus();
             loadReleaseStatus();
             // Keep it fresh so a release raised in another session shows up here.
