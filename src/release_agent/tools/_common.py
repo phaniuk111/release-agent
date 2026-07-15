@@ -140,14 +140,21 @@ def active_deploy_repo() -> str:
     return settings.deploy_repo
 
 
-# Initialize PyGithub client (PAT via session creds, GH_TOKEN/GITHUB_TOKEN, or the gh CLI login)
+# Initialize PyGithub client (PAT via session creds, GH_TOKEN/GITHUB_TOKEN, or the gh CLI login).
+# Proxy note: PyGithub uses requests.Session (trust_env=True), so a corporate egress
+# proxy is configured purely via env vars — HTTPS_PROXY/NO_PROXY, plus
+# REQUESTS_CA_BUNDLE for TLS-intercepting proxies (see helm values `proxy:` block).
 def _get_github_client() -> Github:
     token = _resolve_github_token()
     retry = _gh_retry()
+    kwargs: dict = {"retry": retry}
+    if settings.github_base_url:
+        # GitHub Enterprise Server (https://ghe.corp/api/v3); empty = github.com.
+        kwargs["base_url"] = settings.github_base_url
     if token:
-        return Github(auth=Auth.Token(token), retry=retry)
+        return Github(auth=Auth.Token(token), **kwargs)
     # Fallback - unauthenticated (will hit rate limits / 404s on private repos)
-    return Github(retry=retry)
+    return Github(**kwargs)
 
 
 # Pydantic schemas for tool inputs (better validation + schema generation)

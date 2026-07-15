@@ -73,6 +73,13 @@ class Settings(BaseSettings):
         default="df-deploy.yml",
         validation_alias=AliasChoices("DF_DEPLOY_WORKFLOW", "DATAFLOW_DEPLOY_WORKFLOW"),
     )
+    # GitHub Enterprise Server API root (e.g. https://github.corp.internal/api/v3).
+    # Empty = public github.com. Egress proxies need no setting here — PyGithub
+    # rides on requests, which honors HTTPS_PROXY/NO_PROXY/REQUESTS_CA_BUNDLE.
+    github_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("GITHUB_BASE_URL", "GH_BASE_URL"),
+    )
     default_workflow: str = Field(
         default="image-tag-step-report.yml",
         validation_alias=AliasChoices("DEFAULT_WORKFLOW", "RELEASE_DEFAULT_WORKFLOW"),

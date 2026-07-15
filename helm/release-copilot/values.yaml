@@ -29,12 +29,29 @@ args: []
 
 containerPort: 8000
 
+# --- Corporate egress proxy (GKE deployments that reach GitHub via a proxy) ---
+# All GitHub traffic (PyGithub uses requests, which honors these standard vars)
+# and the gh CLI go through httpsProxy when set. NO_PROXY defaults keep the GKE
+# metadata server and googleapis (Vertex AI via Private Google Access) direct —
+# override noProxy if your Vertex traffic must also use the proxy.
+proxy:
+  httpsProxy: ""            # e.g. "http://proxy.corp.internal:3128"
+  httpProxy: ""             # usually the same value
+  noProxy: ""               # defaults to "localhost,127.0.0.1,metadata.google.internal,.googleapis.com"
+  # TLS-intercepting proxy? Mount its CA so requests/httpx trust it:
+  # caBundle:
+  #   existingConfigMap: corp-proxy-ca   # ConfigMap holding the PEM
+  #   key: ca.crt                        # key inside the ConfigMap
+
 # --- Non-secret configuration (rendered into a ConfigMap, injected via envFrom) ---
 config:
   # Two repos: BUILD_REPO (code + config + builds/tags + RLFT controls) and DEPLOY_REPO
   # (SIT/UAT/PRD GitOps branches). Legacy RELEASE_AGENT_TARGET_REPO is still accepted.
   BUILD_REPO: "phaniuk111/devops"
   DEPLOY_REPO: "phaniuk111/deployment-repo"
+  # GitHub Enterprise Server? Point the API client at it (e.g.
+  # "https://github.corp.internal/api/v3"). Empty = public github.com.
+  GITHUB_BASE_URL: ""
   # REQUIRED for Vertex AI. Leave set to your GCP project id.
   GOOGLE_CLOUD_PROJECT: ""
   GOOGLE_CLOUD_LOCATION: "us-central1"
