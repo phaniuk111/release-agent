@@ -914,7 +914,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         window.onload = () => {
             const chat = document.getElementById('chat');
             if (chat.children.length === 0) {
-                addMessage('bot', 'Hello! I can help you deploy Helm charts and manage release workflows.');
+                addMessage('bot', 'Welcome to the Dev Portal — deploys, releases and release insights in one place.');
                 showCapabilities();
             }
             refreshConnectionStatus();

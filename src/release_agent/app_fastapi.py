@@ -95,7 +95,7 @@ async def chat_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Release Copilot</title>
+    <title>Dev Portal</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -150,8 +150,8 @@ async def chat_page():
                     <i class="fa-solid fa-rocket text-[#04241c] text-xl"></i>
                 </div>
                 <div>
-                    <h1 class="text-2xl font-semibold tracking-tight">Release Copilot</h1>
-                    <p class="text-xs text-slate-400 tracking-wide">Deploy &amp; release management</p>
+                    <h1 class="text-2xl font-semibold tracking-tight">Dev Portal</h1>
+                    <p class="text-xs text-slate-400 tracking-wide">Deploys, releases &amp; insights</p>
                 </div>
             </div>
             <div class="flex items-center gap-2 text-sm">
@@ -434,5 +434,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", 8000))
-    print(f"Starting Release Copilot FastAPI on http://localhost:{port}")
+    print(f"Starting Dev Portal FastAPI on http://localhost:{port}")
     uvicorn.run("src.release_agent.app_fastapi:app", host="0.0.0.0", port=port, reload=True)

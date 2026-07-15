@@ -262,7 +262,7 @@ class Settings(BaseSettings):
     )
 
     # App metadata (used by FastAPI)
-    app_title: str = "Release Copilot"
+    app_title: str = "Dev Portal"
     # NoDecode: skip pydantic-settings' built-in JSON decoding so the validator
     # below receives the raw env string and can accept comma-separated values.
     cors_origins: Annotated[list[str], NoDecode] = ["*"]
