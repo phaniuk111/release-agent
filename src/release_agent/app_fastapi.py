@@ -163,10 +163,11 @@ async def chat_page():
                     <i id="repo-chip-icon" class="fa-brands fa-github text-slate-400"></i>
                     <span id="repo-chip-label" class="text-slate-300">Connect with GitHub</span>
                 </button>
-                <button onclick="showCapabilities()"
+                <button onclick="openPalette()"
                         class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
                     <i class="fa-solid fa-wand-magic-sparkles text-emerald-400"></i>
                     <span>What can I do?</span>
+                    <span class="text-slate-500 font-mono text-[10px] border border-slate-700 rounded px-1">⌘K</span>
                 </button>
                 <button onclick="newThread()"
                         class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
@@ -176,20 +177,19 @@ async def chat_page():
             </div>
         </div>
 
-        <!-- Today's PRD release window (shared across all sessions via GitHub) -->
+        <!-- One-line status strip (click 'details' for the full picture) -->
         <div id="release-banner"
-             class="mb-4 rounded-2xl border px-4 py-3 text-sm hidden border-slate-700 bg-slate-900">
-            <div class="flex items-center gap-3">
-                <i id="rb-icon" class="fa-solid fa-circle-notch fa-spin text-slate-400"></i>
-                <div class="flex-1">
-                    <div id="rb-title" class="font-semibold text-slate-200">Checking today's release window…</div>
-                    <div id="rb-detail" class="text-xs text-slate-400 mt-0.5"></div>
-                </div>
-                <button onclick="loadReleaseStatus()" title="Refresh"
-                        class="text-slate-500 hover:text-slate-300 text-xs">
+             class="mb-3 rounded-xl border px-3 py-1.5 text-xs hidden border-slate-800 bg-slate-900/60">
+            <div class="flex items-center gap-2">
+                <span id="rb-dot" class="w-2 h-2 rounded-full bg-slate-500 inline-block"></span>
+                <span id="rb-title" class="text-slate-300 truncate">Checking release window…</span>
+                <button id="rb-toggle" onclick="toggleBannerDetail()" class="text-slate-500 hover:text-slate-300">details</button>
+                <span class="flex-1"></span>
+                <button onclick="loadReleaseStatus()" title="Refresh" class="text-slate-600 hover:text-slate-400">
                     <i class="fa-solid fa-rotate-right"></i>
                 </button>
             </div>
+            <div id="rb-detail" class="hidden text-slate-400 mt-1 pl-4"></div>
         </div>
 
         <!-- Chat Area -->
@@ -198,11 +198,14 @@ async def chat_page():
             <!-- Messages injected here -->
         </div>
 
+        <!-- Pinned golden paths + palette trigger -->
+        <div id="chips" class="flex gap-1.5 mb-2 flex-wrap"></div>
+
         <!-- Input -->
         <div class="flex gap-2">
             <input id="input" 
                    type="text" 
-                   placeholder="e.g. deploy my-chart 1.2.3 to uat"
+                   placeholder="Message, or / for commands…"
                    class="flex-1 glass rounded-2xl px-5 py-3.5 text-white placeholder-slate-500 focus:outline-none">
             <button onclick="sendMessage()" 
                     class="send-btn px-8 rounded-2xl font-semibold flex items-center gap-2">

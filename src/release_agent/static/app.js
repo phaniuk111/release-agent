@@ -225,8 +225,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             document.getElementById('thread-label').textContent = threadId;
             document.getElementById('chat').innerHTML = '';
             renderConnectionStatus({ connected: false });
-            addMessage('bot', 'New conversation started. How can I help with releases?');
-            showConnectForm();
+            addMessage('bot', 'New conversation started — <code>⌘K</code> for everything I can do, or the GitHub chip above to connect your token.');
         }
 
         // ---- GitHub PAT connection (per session) -------------------------------
@@ -447,36 +446,107 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             try { input.setSelectionRange(text.length, text.length); } catch (e) {}
         }
 
-        function showCapabilities() {
-            const chat = document.getElementById('chat');
-            const wrap = document.createElement('div');
-            wrap.className = 'message bot rounded-2xl p-4 text-sm';
+        // ---- Command palette + pinned chips (the capability catalog) -----------
+        // Browse-first: opening the palette (⌘K, "/", the ··· chip, or the header
+        // button) lists EVERY capability grouped by category; typing only filters.
+        const CATEGORY_ORDER = ['Deploy', 'Release', 'Inspect', 'Ops'];
+        function paletteActions() {
+            const cat = (c) =>
+                (c.form ? 'Deploy' :
+                 /release/i.test(c.label) ? 'Release' :
+                 /re-run/i.test(c.label) ? 'Ops' : 'Inspect');
+            return CAPABILITIES.map(c => ({
+                label: c.label, desc: c.desc, icon: c.icon, category: cat(c),
+                run: () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send),
+            }));
+        }
 
-            const title = document.createElement('div');
-            title.className = 'mb-2 text-slate-300 font-semibold';
-            title.textContent = 'What I can do — pick one to start:';
-            wrap.appendChild(title);
-
-            const grid = document.createElement('div');
-            grid.className = 'grid grid-cols-1 sm:grid-cols-2 gap-2';
-            CAPABILITIES.forEach(c => {
-                const btn = document.createElement('button');
-                btn.className = 'text-left bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl px-3 py-2 flex items-start gap-2';
-                btn.innerHTML = '<i class="fa-solid ' + c.icon + ' text-emerald-400 mt-1"></i>' +
-                    '<span><span class="font-medium">' + c.label + '</span><br>' +
-                    '<span class="text-[11px] text-slate-400">' + c.desc + '</span></span>';
-                btn.addEventListener('click', () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send));
-                grid.appendChild(btn);
+        let _palette = null, _palSelected = 0, _palItems = [];
+        function _buildPalette() {
+            const overlay = document.createElement('div');
+            overlay.id = 'palette-overlay';
+            overlay.className = 'fixed inset-0 z-50 hidden bg-black/50 flex items-start justify-center pt-24';
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) closePalette(); });
+            overlay.innerHTML =
+                '<div class="glass rounded-2xl w-full max-w-lg overflow-hidden border border-slate-700">' +
+                '<div class="flex items-center gap-2 px-4 py-2.5 border-b border-slate-700/60">' +
+                '<i class="fa-solid fa-magnifying-glass text-slate-500 text-xs"></i>' +
+                '<input id="palette-input" type="text" placeholder="Type to filter — or just browse" ' +
+                'class="flex-1 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"></div>' +
+                '<div id="palette-list" class="max-h-80 overflow-y-auto py-1"></div>' +
+                '<div class="px-4 py-1.5 border-t border-slate-700/60 text-[10px] text-slate-500">' +
+                '↑↓ browse · ↵ open · esc close</div></div>';
+            document.body.appendChild(overlay);
+            const input = overlay.querySelector('#palette-input');
+            input.addEventListener('input', () => _renderPalette(input.value));
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'ArrowDown') { e.preventDefault(); _palSelected = Math.min(_palSelected + 1, _palItems.length - 1); _renderPalette(input.value, true); }
+                else if (e.key === 'ArrowUp') { e.preventDefault(); _palSelected = Math.max(_palSelected - 1, 0); _renderPalette(input.value, true); }
+                else if (e.key === 'Enter') { e.preventDefault(); const it = _palItems[_palSelected]; if (it) { closePalette(); it.run(); } }
+                else if (e.key === 'Escape') { closePalette(); }
             });
-            wrap.appendChild(grid);
+            return overlay;
+        }
+        function _renderPalette(filter, keepSelection) {
+            const list = document.getElementById('palette-list');
+            const q = (filter || '').trim().toLowerCase();
+            _palItems = paletteActions().filter(a =>
+                !q || (a.label + ' ' + a.desc + ' ' + a.category).toLowerCase().includes(q));
+            _palItems.sort((a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category));
+            if (!keepSelection) _palSelected = 0;
+            list.innerHTML = '';
+            if (!_palItems.length) {
+                list.innerHTML = '<div class="px-4 py-3 text-xs text-slate-500">Nothing matches — ask in plain English instead.</div>';
+                return;
+            }
+            let lastCat = null;
+            _palItems.forEach((a, idx) => {
+                if (a.category !== lastCat) {
+                    lastCat = a.category;
+                    const h = document.createElement('div');
+                    h.className = 'px-4 pt-2 pb-0.5 text-[10px] uppercase tracking-wide text-slate-500';
+                    h.textContent = a.category;
+                    list.appendChild(h);
+                }
+                const row = document.createElement('button');
+                row.className = 'w-full text-left px-4 py-1.5 flex items-center justify-between gap-3 ' +
+                    (idx === _palSelected ? 'bg-emerald-500/15' : 'hover:bg-slate-800/70');
+                row.innerHTML = '<span class="text-sm text-slate-200"><i class="fa-solid ' + a.icon +
+                    ' text-emerald-400 mr-2 w-4 text-center"></i>' + a.label + '</span>' +
+                    '<span class="text-[11px] text-slate-500">' + a.desc + '</span>';
+                row.addEventListener('click', () => { closePalette(); a.run(); });
+                list.appendChild(row);
+            });
+        }
+        function openPalette() {
+            if (!_palette) _palette = _buildPalette();
+            _palette.classList.remove('hidden');
+            const input = _palette.querySelector('#palette-input');
+            input.value = '';
+            _renderPalette('');
+            input.focus();
+        }
+        function closePalette() {
+            if (_palette) _palette.classList.add('hidden');
+            document.getElementById('input').focus();
+        }
+        function showCapabilities() { openPalette(); }
 
-            const note = document.createElement('div');
-            note.className = 'text-[10px] text-slate-500 mt-2';
-            note.textContent = 'Deploy opens an editable JSON entry; some actions run immediately; others pre-fill the box so you can edit, then Send.';
-            wrap.appendChild(note);
-
-            chat.appendChild(wrap);
-            chat.scrollTop = chat.scrollHeight;
+        // Pinned golden paths above the composer.
+        function renderChips() {
+            const box = document.getElementById('chips');
+            if (!box) return;
+            const chip = (icon, label, onClick) => {
+                const b = document.createElement('button');
+                b.className = 'border border-slate-700 hover:border-emerald-400/40 hover:text-slate-200 rounded-full px-3 py-1 text-xs text-slate-400 flex items-center gap-1.5';
+                b.innerHTML = '<i class="fa-solid ' + icon + ' text-[11px]"></i>' + label;
+                b.addEventListener('click', onClick);
+                box.appendChild(b);
+            };
+            chip('fa-flask', 'Deploy GKE', () => showDeployForm('uat'));
+            chip('fa-water', 'Deploy DF', () => showDeployForm('df-uat'));
+            chip('fa-rocket', 'Release', () => sendMessage('release prod'));
+            chip('fa-ellipsis', 'more', openPalette);
         }
 
         // Deploy form — three inputs: chart name, version, namespace.
@@ -730,53 +800,45 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             return (arr || []).map(function(c){ return c.helm_chart_name + ':' + c.helm_chart_version; })
                 .join(' &nbsp;│&nbsp; ');
         }
+        function toggleBannerDetail() {
+            const d = document.getElementById('rb-detail');
+            if (d) d.classList.toggle('hidden');
+        }
         async function loadReleaseStatus() {
             const banner = document.getElementById('release-banner');
-            const icon   = document.getElementById('rb-icon');
+            const dot    = document.getElementById('rb-dot');
             const title  = document.getElementById('rb-title');
             const detail = document.getElementById('rb-detail');
             try {
                 const res = await fetch(API_BASE + '/api/release-status');
                 const s = await res.json();
                 banner.classList.remove('hidden');
-                banner.className = 'mb-4 rounded-2xl border px-4 py-3 text-sm';
                 if (s.error) {
-                    banner.classList.add('border-slate-700', 'bg-slate-900');
-                    icon.className = 'fa-solid fa-triangle-exclamation text-slate-400';
+                    dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
                     title.textContent = "Couldn't fetch release status";
                     detail.textContent = s.error;
                     return;
                 }
-                const foot = 'now ' + s.now_utc + ' UTC • ' + s.date_utc;
+                const foot = 'now ' + s.now_utc + ' UTC · ' + s.date_utc;
                 const pr = s.prd_release_pr;
                 if (pr) {
                     const n = (s.pending_to_prod || []).length;
-                    const plural = n === 1 ? '' : 's';
-                    if (pr.can_merge_now) {
-                        banner.classList.add('border-emerald-600/50', 'bg-emerald-500/10');
-                        icon.className = 'fa-solid fa-circle-check text-emerald-400';
-                        title.textContent = '🟢 PRD release PR #' + pr.number + ' ready to release (' + n + ' change' + plural + ')';
-                    } else {
-                        banner.classList.add('border-amber-600/50', 'bg-amber-500/10');
-                        icon.className = 'fa-solid fa-rocket text-amber-400';
-                        title.textContent = '🚀 PRD release PR #' + pr.number + ' collecting (' + n + ' change' + plural + ')';
-                    }
-                    let html = (s.reason ? s.reason + ' • ' : '') + foot;
+                    dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
+                    title.textContent = 'Release PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged';
+                    let html = (s.reason ? s.reason + ' · ' : '') + foot;
                     if ((pr.charts || []).length) {
-                        html += '<br><span class="text-slate-400">staged: ' + _chartList(pr.charts) + '</span>';
+                        html += '<br><span>staged: ' + _chartList(pr.charts) + '</span>';
                     }
                     html += ' &nbsp;<a href="' + pr.url + '" target="_blank" class="underline text-emerald-400">open PR #' + pr.number + '</a>';
                     detail.innerHTML = html;
                     return;
                 }
-                // No PRD release PR open today.
-                banner.classList.add('border-slate-700', 'bg-slate-900');
-                icon.className = 'fa-solid fa-circle-check text-slate-400';
-                title.textContent = 'No PRD release open today';
-                detail.innerHTML = (s.reason ? s.reason + ' • ' : '') + foot;
+                dot.className = 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
+                title.textContent = 'No release open · PRD: ' + (s.prd_charts || []).length + ' charts';
+                detail.innerHTML = (s.reason ? s.reason + ' · ' : '') + foot;
             } catch (e) {
                 banner.classList.remove('hidden');
-                icon.className = 'fa-solid fa-triangle-exclamation text-slate-400';
+                dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
                 title.textContent = "Couldn't reach the release-status endpoint";
                 detail.textContent = String(e);
             }
@@ -786,16 +848,22 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         window.onload = () => {
             const chat = document.getElementById('chat');
             if (chat.children.length === 0) {
-                addMessage('bot', 'Hello! I can help you deploy Helm charts and manage release workflows.');
-                showCapabilities();
+                addMessage('bot', 'Hi — try <code>deploy my-chart 1.2.3 to uat</code>, or press <code>⌘K</code> to see everything I can do.');
             }
+            renderChips();
             refreshConnectionStatus();
             loadReleaseStatus();
             // Keep it fresh so a release raised in another session shows up here.
             setInterval(loadReleaseStatus, 60000);
         };
 
-        // Enter key support
+        // ⌘K / Ctrl+K anywhere, or "/" in an empty composer, opens the palette.
+        document.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); }
+        });
+
+        // Enter key support ("/" in an empty composer opens the palette)
         document.getElementById('input').addEventListener('keypress', function(e) {
+            if (e.key === '/' && !e.target.value) { e.preventDefault(); openPalette(); return; }
             if (e.key === 'Enter') sendMessage();
         });
