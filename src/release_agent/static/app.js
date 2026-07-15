@@ -458,6 +458,19 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         // first expand. All placeholders until their data sources are wired.
         const INSIGHT_SECTIONS = [
             {
+                id: 'uat-status',
+                title: 'UAT status',
+                icon: 'fa-flask',
+                render: (body) => {
+                    body.innerHTML =
+                        '<div class="text-[11px] text-slate-500 leading-relaxed">' +
+                        'Placeholder — UAT environment status will render here once its ' +
+                        'data source is wired.</div>' +
+                        '<div class="mt-2 border border-dashed border-slate-700 rounded-lg p-3 text-center text-[11px] text-slate-600">' +
+                        '<i class="fa-solid fa-flask mr-1"></i>UAT status</div>';
+                },
+            },
+            {
                 id: 'sealights',
                 title: 'Sealights coverage',
                 icon: 'fa-bullseye',
