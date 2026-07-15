@@ -16,6 +16,7 @@ with proper auth, TLS, and observability.
 import json
 import logging
 import os
+import time
 import uuid
 from typing import AsyncGenerator
 
@@ -31,6 +32,11 @@ from .session_creds import SessionCredentials, get_store
 
 # Production-oriented logging
 logging.basicConfig(level=logging.INFO)
+
+# Cache-buster for static assets: browsers heuristically cache app.js (no
+# Cache-Control header from StaticFiles); stamping the URL per server start
+# guarantees a restart always ships fresh UI code.
+APP_STARTED = str(int(time.time()))
 logger = logging.getLogger("release_copilot")
 
 # Use shared Pydantic settings (repos come from env / .env / Helm ConfigMap).
@@ -209,11 +215,11 @@ async def chat_page():
         </p>
     </div>
 
-    <script src="static/app.js"></script>
+    <script src="static/app.js?v={APP_STARTED}"></script>
 </body>
 </html>
     """
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html.replace("{APP_STARTED}", APP_STARTED))
 
 
 @app.post("/api/chat")
@@ -303,6 +309,47 @@ async def release_status_endpoint():
     except Exception as e:
         logger.exception("Error computing release status")
         return {"error": str(e)}
+
+
+@app.get("/api/deployment-types")
+async def deployment_types_endpoint():
+    """The IDP capability registry — the UI renders deploy cards/forms from this."""
+    from .deployment_types import deployment_types
+
+    return deployment_types()
+
+
+@app.get("/api/df-template")
+async def df_template_endpoint(env: str = "uat"):
+    """Recent DF deploy workflow runs plus the default repo — pre-fills the DF form's
+    'recent deploys' context strip. (Deploy = workflow_dispatch; there is no state file.)"""
+    import itertools
+
+    from .tools._common import _get_github_client
+
+    runs: list = []
+    try:
+        if app_settings.df_deploy_repo:
+            repo = _get_github_client().get_repo(app_settings.df_deploy_repo)
+            workflow = repo.get_workflow(app_settings.df_deploy_workflow)
+            for r in itertools.islice(workflow.get_runs(), 3):
+                runs.append(
+                    {
+                        "id": r.id,
+                        "url": r.html_url,
+                        "status": r.status,
+                        "conclusion": r.conclusion,
+                        "created_at": r.created_at.isoformat() if r.created_at else "",
+                    }
+                )
+    except Exception:
+        logger.exception("df-template: could not list DF workflow runs")
+    return {
+        "environment": "uat",
+        "recent_runs": runs,
+        "deploy_repo": app_settings.df_deploy_repo,
+        "workflow": app_settings.df_deploy_workflow,
+    }
 
 
 @app.get("/api/deploy-template")

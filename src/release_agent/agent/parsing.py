@@ -268,6 +268,23 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
     if not isinstance(data, dict):
         return None
 
+    # Dataflow flex-template deploy (the DF form): {image, tag} trigger a
+    # workflow_dispatch — no chart entries, no state file.
+    if str(data.get("deployment_type") or "").lower() == "dataflow":
+        image = str(data.get("image") or "").strip()
+        tag = str(data.get("tag") or "").strip()
+        if not image or not tag:
+            return None
+        env = str(data.get("environment") or "uat").lower()
+        return {
+            "deployment_type": "dataflow",
+            "images": [{"name": image, "tag": tag}],
+            "entries": [],
+            "environment": "prod" if env in ("prod", "prd", "production") else "uat",
+            "deployment_repo": str(data.get("deployment_repo") or ""),
+            "raw": "json-paste",
+        }
+
     pairs: list[dict] = []
     entries: list[dict] = []  # full deployment.json entries (preserved for override + multi-chart)
     namespace = ""

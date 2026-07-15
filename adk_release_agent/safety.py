@@ -38,6 +38,7 @@ BLOCKED_FREEFORM_TOOLS = frozenset(
         "apply_json_update",
         "dispatch_workflow",
         "apply_confirmed_deploy",
+        "deploy_dataflow",
     }
 )
 

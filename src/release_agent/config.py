@@ -63,6 +63,16 @@ class Settings(BaseSettings):
             "DEPLOY_REPO", "RELEASE_DEPLOY_REPO", "RELEASE_AGENT_DEPLOY_REPO"
         ),
     )
+    # Dataflow flex-template deploys: repo hosting the DF deploy workflow. Deploying
+    # means workflow_dispatch of df_deploy_workflow with {image, tag, environment}.
+    df_deploy_repo: str = Field(
+        default="",
+        validation_alias=AliasChoices("DF_DEPLOY_REPO", "DATAFLOW_DEPLOY_REPO"),
+    )
+    df_deploy_workflow: str = Field(
+        default="df-deploy.yml",
+        validation_alias=AliasChoices("DF_DEPLOY_WORKFLOW", "DATAFLOW_DEPLOY_WORKFLOW"),
+    )
     default_workflow: str = Field(
         default="image-tag-step-report.yml",
         validation_alias=AliasChoices("DEFAULT_WORKFLOW", "RELEASE_DEFAULT_WORKFLOW"),

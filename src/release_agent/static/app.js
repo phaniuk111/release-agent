@@ -314,11 +314,117 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
             chat.scrollTop = chat.scrollHeight;
         }
 
+        // ---- Dataflow flex-template deploy (workflow-dispatch golden path) ------
+        // The dev supplies image name + tag; deploying dispatches the DF repo's
+        // deploy workflow. Recent runs give context; repo override sits under
+        // Advanced. Same preview + CONFIRM contract as every other deploy.
+        async function showDfDeployForm() {
+            let ctx = { recent_runs: [], deploy_repo: '', workflow: 'df-deploy.yml' };
+            try {
+                const r = await fetch(API_BASE + '/api/df-template?env=uat');
+                if (r.ok) ctx = await r.json();
+            } catch (e) {}
+
+            const chat = document.getElementById('chat');
+            const wrap = document.createElement('div');
+            wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm';
+            wrap.innerHTML =
+                '<div class="mb-1 font-semibold flex items-center gap-2 text-sky-300">' +
+                '<i class="fa-solid fa-water"></i> Deploy to DF UAT</div>' +
+                '<div class="text-slate-400 text-xs mb-3">Triggers the <code>' + (ctx.workflow || 'df-deploy.yml') +
+                '</code> workflow with your image + tag. Nothing runs until you confirm the preview.</div>';
+
+            if ((ctx.recent_runs || []).length) {
+                const hdr = document.createElement('div');
+                hdr.className = 'text-[11px] text-slate-500 mb-1';
+                hdr.textContent = 'Recent DF deploys';
+                wrap.appendChild(hdr);
+                const list = document.createElement('div');
+                list.className = 'border border-slate-700 rounded-lg px-3 py-1.5 mb-3 text-[11px] font-mono text-slate-400';
+                ctx.recent_runs.forEach(r => {
+                    const row = document.createElement('div');
+                    row.className = 'flex justify-between py-0.5';
+                    row.innerHTML = '<a href="' + r.url + '" target="_blank" class="underline">run #' + r.id + '</a>' +
+                        '<span>' + (r.conclusion || r.status || '') + '</span>';
+                    list.appendChild(row);
+                });
+                wrap.appendChild(list);
+            }
+
+            const grid = document.createElement('div');
+            grid.className = 'grid grid-cols-2 gap-2 mb-1';
+            const mk = (labelText, id, placeholder) => {
+                const l = document.createElement('label');
+                l.className = 'text-[11px] text-slate-400 block mb-0.5';
+                l.textContent = labelText;
+                const el = document.createElement('input');
+                el.id = id; el.type = 'text'; el.placeholder = placeholder;
+                el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+                const box = document.createElement('div');
+                box.appendChild(l); box.appendChild(el);
+                grid.appendChild(box);
+                return el;
+            };
+            const imgEl = mk('Image name', 'df-image', 'e.g. order-enrichment');
+            const tagEl = mk('Tag', 'df-tag', 'e.g. 1.4.2');
+            wrap.appendChild(grid);
+
+            const echo = document.createElement('div');
+            echo.className = 'text-[11px] text-slate-500 mb-2 h-4';
+            wrap.appendChild(echo);
+            const updateEcho = () => {
+                const i = imgEl.value.trim(), t = tagEl.value.trim();
+                echo.textContent = (i && t) ? ('↳ will dispatch ' + i + ':' + t + ' → uat ✓') : '';
+                echo.className = 'text-[11px] mb-2 h-4 ' + ((i && t) ? 'text-emerald-400' : 'text-slate-500');
+            };
+            imgEl.addEventListener('input', updateEcho);
+            tagEl.addEventListener('input', updateEcho);
+
+            // Advanced (collapsed): repo override.
+            const adv = document.createElement('div');
+            adv.className = 'mb-2';
+            const advToggle = document.createElement('button');
+            advToggle.className = 'text-[11px] text-slate-500 hover:text-slate-300';
+            advToggle.innerHTML = '<i class="fa-solid fa-chevron-right"></i> Advanced — repo override';
+            const advBody = document.createElement('div');
+            advBody.className = 'hidden mt-1';
+            const repoInput = document.createElement('input');
+            repoInput.id = 'df-repo'; repoInput.type = 'text';
+            repoInput.value = ctx.deploy_repo || '';
+            repoInput.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+            advBody.appendChild(repoInput);
+            advToggle.addEventListener('click', () => advBody.classList.toggle('hidden'));
+            adv.appendChild(advToggle); adv.appendChild(advBody);
+            wrap.appendChild(adv);
+
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-3 mt-1';
+            const submit = document.createElement('button');
+            submit.className = 'bg-sky-600 hover:bg-sky-500 px-4 py-1.5 rounded-lg text-sm font-medium';
+            submit.textContent = 'Deploy to DF UAT';
+            const err = document.createElement('span');
+            err.className = 'text-[11px] text-red-400';
+            submit.addEventListener('click', () => {
+                err.textContent = '';
+                const image = imgEl.value.trim(), tag = tagEl.value.trim();
+                if (!image || !tag) { err.textContent = 'Image name and tag are both required.'; return; }
+                const payload = { deployment_type: 'dataflow', environment: 'uat', image: image, tag: tag };
+                const repoOverride = repoInput.value.trim();
+                if (repoOverride) payload.deployment_repo = repoOverride;
+                sendMessage(JSON.stringify(payload));
+            });
+            row.appendChild(submit); row.appendChild(err);
+            wrap.appendChild(row);
+            chat.appendChild(wrap);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
         // Quick actions — what the agent can do. mode 'send' runs immediately;
         // otherwise the text is pre-filled so the user edits the image:tag first.
         const CAPABILITIES = [
             {icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
             {icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
+            {icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},
             {icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (finalizes the release)',  send:true,  text:'release prod'},
             {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
             {icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
@@ -384,6 +490,7 @@ let threadId = localStorage.getItem('thread_id') || 'fastapi-' + Math.random().t
         // {environment, include} through /api/chat; the backend previews the exact JSON
         // it will write and asks to confirm.
         async function showDeployForm(env, name, version) {
+            if (env === 'df-uat') { showDfDeployForm(); return; }
             const isProd = env === 'prod';
             const accentT = isProd ? 'text-amber-300' : 'text-emerald-300';
             const accentBtn = isProd ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500';

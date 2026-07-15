@@ -88,6 +88,14 @@ def _request_from_inputs(
 def _build_preview(req: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     env = (req.get("environment") or "uat").lower()
     env = "prod" if env in ("prod", "prd", "production") else "uat"
+    if req.get("deployment_type") == "dataflow":
+        # DF deploy = workflow_dispatch; preview the exact dispatch inputs.
+        image = req["images"][0]
+        return {
+            "workflow_dispatch (df-deploy)": [
+                {"image": image["name"], "tag": image["tag"], "environment": env}
+            ]
+        }
     entries = req.get("entries") or []
     if entries:
         target_entries = [_normalize_entry(entry, env) for entry in entries]
@@ -192,6 +200,16 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
     req = pending["request"]
     env = (req.get("environment") or "uat").lower()
     args: dict[str, Any]
+    if req.get("deployment_type") == "dataflow":
+        image = req["images"][0]
+        args = {"environment": env, "image": image["name"], "tag": image["tag"]}
+        if req.get("deployment_repo"):
+            args["deployment_repo"] = req["deployment_repo"]
+        result = _invoke_tool("deploy_dataflow", args)
+        _PENDING_PREVIEWS.pop(token, None)
+        result.setdefault("ok", True)
+        result["confirmed_token"] = token
+        return result
     if req.get("entries"):
         args = {"environment": env, "deployment_json": json.dumps({"include": req["entries"]})}
     else:
