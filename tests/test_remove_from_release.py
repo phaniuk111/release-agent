@@ -313,7 +313,7 @@ def test_add_to_release_blocked_while_foreign_prd_pr_open(monkeypatch):
     out = _stage_prod(repo, monkeypatch)
     assert out["ok"] is False and out["action"] == "blocked_prd_pr_open"
     assert out["blocking_pr"] == foreign.number
-    assert "one release into PRD at a time" in out["note"]
+    assert "one release at a time" in out["note"] and "PRD" in out["note"]
     # Nothing was staged: no release/prd/<date> branch was created.
     assert _prd_release_branch() not in repo.files
 
@@ -333,4 +333,27 @@ def test_add_to_release_allowed_after_blocker_closes_and_own_pr_exempt(monkeypat
 
     # Today's OWN staging PR must not block further adds (accumulation).
     out2 = _stage_prod(repo, monkeypatch, version="2.1")
+    assert out2["ok"] is True and out2["action"] == "staged_to_prd_pr"
+
+
+def test_add_to_release_blocked_by_pr_into_extra_guard_branch(monkeypatch):
+    """RELEASE_GUARD_BRANCHES adds more release targets (e.g. PRL1): an open PR
+    into ANY of them blocks add-to-release, and the message names that branch."""
+    monkeypatch.setattr(P.settings, "release_guard_branches", ["PRD", "PRL1"], raising=False)
+    initial = {
+        "SIT": {UAT_PATH: {"include": []}},
+        "UAT": {UAT_PATH: {"include": []}},
+        "PRD": {UAT_PATH: {"include": []}, PRD_PATH: {"include": []}},
+        "PRL1": {},
+    }
+    repo = _FakeRepo(initial)
+    foreign = repo.create_pull(title="Promote UAT -> PRL1", body="", head="UAT", base="PRL1")
+
+    out = _stage_prod(repo, monkeypatch)
+    assert out["ok"] is False and out["action"] == "blocked_prd_pr_open"
+    assert out["blocking_pr"] == foreign.number
+    assert "PRL1" in out["note"] and "one release at a time" in out["note"]
+
+    foreign.state = "closed"
+    out2 = _stage_prod(repo, monkeypatch)
     assert out2["ok"] is True and out2["action"] == "staged_to_prd_pr"

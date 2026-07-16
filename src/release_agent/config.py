@@ -148,6 +148,13 @@ class Settings(BaseSettings):
         default=16,
         validation_alias=AliasChoices("PRD_CUTOFF_HOUR_UTC", "RELEASE_PRD_CUTOFF_HOUR_UTC"),
     )
+    # Branches that count as "a release in flight": while any OPEN PR targets one
+    # of these, add-to-release is blocked (one release at a time). Empty = just
+    # the PRD branch. Comma-separated in env, e.g. RELEASE_GUARD_BRANCHES="PRD,PRL1".
+    release_guard_branches: Annotated[list[str], NoDecode] = Field(
+        default=[],
+        validation_alias=AliasChoices("RELEASE_GUARD_BRANCHES", "PRD_GUARD_BRANCHES"),
+    )
     prd_once_per_day: bool = Field(
         default=True,
         validation_alias=AliasChoices("PRD_ONCE_PER_DAY", "RELEASE_PRD_ONCE_PER_DAY"),
@@ -284,7 +291,7 @@ class Settings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
-    @field_validator("allowed_workflows", "control_prefixes", mode="before")
+    @field_validator("allowed_workflows", "control_prefixes", "release_guard_branches", mode="before")
     @classmethod
     def _split_allowed_workflows(cls, v):
         """Accept a comma-separated string (env) or a JSON array for list settings
