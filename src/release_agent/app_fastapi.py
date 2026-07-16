@@ -232,7 +232,7 @@ async def chat_page():
       </aside>
     </div>
 
-    <script src="static/app.js?v={APP_STARTED}"></script>
+    <script type="module" src="static/main.js?v={APP_STARTED}"></script>
 </body>
 </html>
     """
