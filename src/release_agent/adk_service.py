@@ -345,7 +345,10 @@ class AdkChatService:
     @staticmethod
     def _format_deploy_apply_result(result: dict[str, Any]) -> str:
         if result.get("ok") is False:
-            return f"Not applied: {result.get('error') or result.get('status') or 'confirmation failed'}"
+            # Prefer the tool's own explanation (e.g. the one-release-at-a-time
+            # guard's note naming the blocking PR) over a generic failure line.
+            detail = result.get("note") or result.get("error") or result.get("status") or "confirmation failed"
+            return f"Not applied: {detail}"
         if result.get("note"):
             return str(result["note"])
         return "Deploy applied:\n\n```json\n" + json.dumps(result, indent=2) + "\n```"

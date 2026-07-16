@@ -130,20 +130,21 @@ def _merge_pr(pr, method: str = "squash"):
         return False, f"could not auto-merge (likely branch protection): {e}"
 
 
-def _open_pr_on_file(repo, base_branch: str, path: str):
-    """Return the first OPEN PR into base_branch that changes `path`, or None.
-    Lets a deploy say 'a PR is already open' instead of stacking a duplicate — the
-    same guard Dependabot/Renovate use to avoid concurrent writes to one file."""
+def _open_prd_pr_blocker(repo, exclude_head: str = ""):
+    """First OPEN PR into the PRD branch that is NOT today's staging PR, or None.
+
+    A PR already targeting PRD (e.g. a manually raised UAT -> PRD promotion, or any
+    other release branch) means a release is in flight — staging MORE charts on top
+    would create two competing releases, so adds are blocked until it's merged or
+    closed. ``exclude_head`` skips today's own release/prd/<date> staging PR."""
     try:
-        prs = repo.get_pulls(state="open", base=base_branch, sort="created", direction="desc")
+        prs = repo.get_pulls(state="open", base=settings.prd_branch, sort="created", direction="desc")
+        for pr in itertools.islice(prs, 30):
+            if exclude_head and pr.head.ref == exclude_head:
+                continue
+            return pr
     except Exception:
         return None
-    for pr in itertools.islice(prs, 30):
-        try:
-            if any(f.filename == path for f in pr.get_files()):
-                return pr
-        except Exception:
-            continue
     return None
 
 
@@ -567,6 +568,25 @@ def open_release_pr(
 
     # --- PROD: accumulate into today's PRD release PR (merged later at the cutoff) ---
     if env == "prod":
+        blocker = _open_prd_pr_blocker(repo, exclude_head=_prd_release_branch())
+        if blocker is not None:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "action": "blocked_prd_pr_open",
+                    "environment": "prod",
+                    "image_tags": chart_str,
+                    "blocking_pr": blocker.number,
+                    "blocking_pr_url": blocker.html_url,
+                    "note": (
+                        f"NOT staged — a release PR into {settings.prd_branch} is already open: "
+                        f"#{blocker.number} ({blocker.head.ref} → {settings.prd_branch}, "
+                        f"{blocker.html_url}). Merge or close it first; one release into "
+                        f"{settings.prd_branch} at a time."
+                    ),
+                },
+                indent=2,
+            )
         pr, branch, created, changed = _accumulate_into_prd_pr(repo, entries, change_request)
         if pr is None:
             return json.dumps(

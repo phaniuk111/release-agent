@@ -288,3 +288,49 @@ def test_uat_deploy_overrides_both_branches_via_targeted_edits(monkeypatch):
     # Two targeted PRs (one per branch), both merged — no SIT->UAT branch merge.
     stages = [(p.get("stage"), p.get("merged")) for p in out["prs"] if p.get("number")]
     assert stages == [("→SIT", True), ("→UAT", True)]
+
+
+# --- add-to-release guard: block while another PR into PRD is in flight ------
+
+def _stage_prod(repo, monkeypatch, version="2.0"):
+    monkeypatch.setattr(P, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
+    return json.loads(P.open_release_pr.invoke({
+        "environment": "prod",
+        "deployment_json": json.dumps({"include": [_entry("guarded-svc", version)]}),
+    }))
+
+
+def test_add_to_release_blocked_while_foreign_prd_pr_open(monkeypatch):
+    initial = {
+        "SIT": {UAT_PATH: {"include": []}},
+        "UAT": {UAT_PATH: {"include": []}},
+        "PRD": {UAT_PATH: {"include": []}, PRD_PATH: {"include": []}},
+    }
+    repo = _FakeRepo(initial)
+    # A release already in flight: someone raised UAT -> PRD manually.
+    foreign = repo.create_pull(title="Promote UAT -> PRD", body="", head="UAT", base="PRD")
+
+    out = _stage_prod(repo, monkeypatch)
+    assert out["ok"] is False and out["action"] == "blocked_prd_pr_open"
+    assert out["blocking_pr"] == foreign.number
+    assert "one release into PRD at a time" in out["note"]
+    # Nothing was staged: no release/prd/<date> branch was created.
+    assert _prd_release_branch() not in repo.files
+
+
+def test_add_to_release_allowed_after_blocker_closes_and_own_pr_exempt(monkeypatch):
+    initial = {
+        "SIT": {UAT_PATH: {"include": []}},
+        "UAT": {UAT_PATH: {"include": []}},
+        "PRD": {UAT_PATH: {"include": []}, PRD_PATH: {"include": []}},
+    }
+    repo = _FakeRepo(initial)
+    foreign = repo.create_pull(title="Promote UAT -> PRD", body="", head="UAT", base="PRD")
+    foreign.state = "closed"  # blocker resolved
+
+    out = _stage_prod(repo, monkeypatch)
+    assert out["ok"] is True and out["action"] == "staged_to_prd_pr"
+
+    # Today's OWN staging PR must not block further adds (accumulation).
+    out2 = _stage_prod(repo, monkeypatch, version="2.1")
+    assert out2["ok"] is True and out2["action"] == "staged_to_prd_pr"
