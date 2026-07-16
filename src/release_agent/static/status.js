@@ -29,22 +29,34 @@ export async function loadReleaseStatus() {
             return;
         }
         const foot = 'now ' + s.now_utc + ' UTC · ' + s.date_utc;
+        // A PR into a release-guard branch (PRD/PRL1/...) blocks adds — surface it
+        // in the strip so users learn BEFORE filling a deploy form.
+        const blk = s.blocking_pr;
+        const blkTitle = blk ? ' · ⚠ adds blocked by PR #' + blk.number : '';
+        const blkDetail = blk
+            ? '<br><span class="text-amber-400">⚠ Adds to the release are blocked: ' +
+              '<a href="' + blk.url + '" target="_blank" class="underline">PR #' + blk.number +
+              '</a> (' + blk.head + ' → ' + blk.base + ') is open — merge or close it first.</span>'
+            : '';
         const pr = s.prd_release_pr;
         if (pr) {
             const n = (s.pending_to_prod || []).length;
             dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
-            title.textContent = 'Release PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged';
+            title.textContent = 'Release PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged' + blkTitle;
             let html = (s.reason ? s.reason + ' · ' : '') + foot;
             if ((pr.charts || []).length) {
                 html += '<br><span>staged: ' + _chartList(pr.charts) + '</span>';
             }
             html += ' &nbsp;<a href="' + pr.url + '" target="_blank" class="underline text-emerald-400">open PR #' + pr.number + '</a>';
+            html += blkDetail;
             detail.innerHTML = html;
             return;
         }
-        dot.className = 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
-        title.textContent = 'No release open · PRD: ' + (s.prd_charts || []).length + ' charts';
-        detail.innerHTML = (s.reason ? s.reason + ' · ' : '') + foot;
+        dot.className = blk
+            ? 'w-2 h-2 rounded-full bg-amber-400 inline-block'
+            : 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
+        title.textContent = 'No release open · PRD: ' + (s.prd_charts || []).length + ' charts' + blkTitle;
+        detail.innerHTML = (s.reason ? s.reason + ' · ' : '') + foot + blkDetail;
     } catch (e) {
         banner.classList.remove('hidden');
         dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';

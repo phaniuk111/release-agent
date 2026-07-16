@@ -30,6 +30,32 @@ def _charts(repo, env: str) -> dict:
     return _charts_on_branch(repo, settings.uat_branch if env == "uat" else settings.prd_branch, env)
 
 
+def _release_guard_branches() -> list[str]:
+    """Branches that count as 'a release in flight' when an open PR targets them.
+    Configurable (RELEASE_GUARD_BRANCHES, e.g. "PRD,PRL1"); default = the PRD branch."""
+    branches = [b.strip() for b in settings.release_guard_branches if b and b.strip()]
+    return branches or [settings.prd_branch]
+
+
+def _open_prd_pr_blocker(repo, exclude_head: str = ""):
+    """First OPEN PR into any release-guard branch that is NOT today's staging PR.
+
+    A PR already targeting PRD/PRL1/... (e.g. a manually raised UAT -> PRD promotion)
+    means a release is in flight — staging MORE charts on top would create two
+    competing releases, so adds are blocked until it's merged or closed.
+    ``exclude_head`` skips today's own release/prd/<date> staging PR."""
+    for base in _release_guard_branches():
+        try:
+            prs = repo.get_pulls(state="open", base=base, sort="created", direction="desc")
+            for pr in itertools.islice(prs, 30):
+                if exclude_head and pr.head.ref == exclude_head:
+                    continue
+                return pr
+        except Exception:
+            continue
+    return None
+
+
 def _prd_release_branch() -> str:
     """Deterministic per-day branch name so every prod deploy finds the same release PR."""
     from datetime import datetime, timezone
@@ -71,10 +97,12 @@ def get_release_status() -> dict:
         uat = _charts(repo, "uat")
         prd = _charts(repo, "prd")
         pr = _today_prd_pr(repo)
+        blocker = _open_prd_pr_blocker(repo, exclude_head=_prd_release_branch())
     except Exception as e:
         return {
             **base, "error": str(e), "uat_charts": [], "prd_charts": [],
-            "prd_release_pr": None, "pending_to_prod": [], "reason": f"status unavailable: {e}",
+            "prd_release_pr": None, "pending_to_prod": [], "blocking_pr": None,
+            "reason": f"status unavailable: {e}",
         }
 
     prd_release_pr = None
@@ -103,12 +131,26 @@ def get_release_status() -> dict:
     else:
         reason = "No PRD release open today."
 
+    blocking_pr = None
+    if blocker is not None:
+        blocking_pr = {
+            "number": blocker.number,
+            "url": blocker.html_url,
+            "head": blocker.head.ref,
+            "base": blocker.base.ref,
+        }
+        reason += (
+            f" ⚠ Adds to the release are BLOCKED: PR #{blocker.number} "
+            f"({blocker.head.ref} → {blocker.base.ref}) is already open."
+        )
+
     return {
         **base,
         "uat_charts": [{"helm_chart_name": n, "helm_chart_version": v} for n, v in uat.items()],
         "prd_charts": [{"helm_chart_name": n, "helm_chart_version": v} for n, v in prd.items()],
         "prd_release_pr": prd_release_pr,
         "pending_to_prod": pending_to_prod,
+        "blocking_pr": blocking_pr,
         "reason": reason,
     }
 

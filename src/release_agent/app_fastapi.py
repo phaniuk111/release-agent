@@ -44,10 +44,24 @@ settings = app_settings
 
 app = FastAPI(title=settings.app_title, version="0.2.0")
 
-# Serve the UI's JavaScript from a real file (not embedded in a Python string) so it
+# Serve the UI's JavaScript from real files (not embedded in a Python string) so it
 # is lint/syntax-checkable and free of Python-string escaping traps.
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles + Cache-Control: no-cache. ES-module imports (./status.js etc.)
+    carry no ?v= buster, so browsers would heuristically cache them across server
+    restarts and run stale UI code. no-cache forces an ETag revalidation per load —
+    cheap (304s) and always fresh."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _NoCacheStaticFiles(directory=_STATIC_DIR), name="static")
 
 # CORS (useful if you later want a separate frontend)
 app.add_middleware(

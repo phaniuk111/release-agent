@@ -30,7 +30,12 @@ from ._common import (
     _parse_pairs,
     active_deploy_repo,
 )
-from .release_window import _today_prd_pr, _prd_release_branch  # noqa: F401
+from .release_window import (  # noqa: F401
+    _today_prd_pr,
+    _prd_release_branch,
+    _release_guard_branches,
+    _open_prd_pr_blocker,
+)
 
 
 # --- env helpers + entry assembly -------------------------------------------
@@ -128,32 +133,6 @@ def _merge_pr(pr, method: str = "squash"):
         return True, "merged"
     except Exception as e:
         return False, f"could not auto-merge (likely branch protection): {e}"
-
-
-def _release_guard_branches() -> list[str]:
-    """Branches that count as 'a release in flight' when an open PR targets them.
-    Configurable (RELEASE_GUARD_BRANCHES, e.g. "PRD,PRL1"); default = the PRD branch."""
-    branches = [b.strip() for b in settings.release_guard_branches if b and b.strip()]
-    return branches or [settings.prd_branch]
-
-
-def _open_prd_pr_blocker(repo, exclude_head: str = ""):
-    """First OPEN PR into any release-guard branch that is NOT today's staging PR.
-
-    A PR already targeting PRD/PRL1/... (e.g. a manually raised UAT -> PRD promotion)
-    means a release is in flight — staging MORE charts on top would create two
-    competing releases, so adds are blocked until it's merged or closed.
-    ``exclude_head`` skips today's own release/prd/<date> staging PR."""
-    for base in _release_guard_branches():
-        try:
-            prs = repo.get_pulls(state="open", base=base, sort="created", direction="desc")
-            for pr in itertools.islice(prs, 30):
-                if exclude_head and pr.head.ref == exclude_head:
-                    continue
-                return pr
-        except Exception:
-            continue
-    return None
 
 
 def _find_deploy_run(repo, head_sha: str, branch: str = "", tries: int = 4, delay: float = 1.5):
