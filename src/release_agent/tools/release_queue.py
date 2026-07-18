@@ -31,7 +31,7 @@ _TABLE = "release_intents"
 
 _SCHEMA = [
     ("event_id", "STRING"),
-    ("event_type", "STRING"),  # queued | withdrawn | released
+    ("event_type", "STRING"),  # queued | withdrawn | released | deployed
     ("event_ts", "TIMESTAMP"),
     ("requested_by", "STRING"),
     ("artifact_name", "STRING"),
@@ -39,10 +39,11 @@ _SCHEMA = [
     ("prl1_only", "BOOL"),
     ("df_only", "BOOL"),
     ("note", "STRING"),
-    ("deployment_repo", "STRING"),
+    ("deployment_repo", "STRING"),  # target GitHub repo (owner/repo)
     ("release_name", "STRING"),  # set on 'released' events
-    ("pr_number", "INT64"),  # set on 'released' events
+    ("pr_number", "INT64"),  # set on 'released'/'deployed' events
     ("build_verified", "BOOL"),  # None = not checked at queue time
+    ("environment", "STRING"),  # set on 'deployed' events: uat | prod | dataflow-uat
 ]
 
 _lock = threading.Lock()
@@ -84,6 +85,14 @@ def _get_client():
             )
             table.time_partitioning = bigquery.TimePartitioning(field="event_ts")
             _client.create_table(table, exists_ok=True)
+            # Additive schema migration: new nullable columns (e.g. environment)
+            # are appended to a table created by an older version of this module.
+            live = _client.get_table(_table_id())
+            have = {f.name for f in live.schema}
+            missing = [bigquery.SchemaField(n, t) for n, t in _SCHEMA if n not in have]
+            if missing:
+                live.schema = list(live.schema) + missing
+                _client.update_table(live, ["schema"])
             _table_ready = True
         return _client
 
@@ -213,6 +222,57 @@ def mark_released(
     if not rows:
         return {"ok": True, "note": "no artifacts to mark"}
     return _insert(rows)
+
+
+def record_deployment(
+    environment: str,
+    artifacts: list[dict[str, str]],
+    deployment_repo: str = "",
+    pr_number: int | None = None,
+    note: str = "",
+) -> dict[str, Any]:
+    """Capture a confirmed deployment (UAT override / PRD staging / DF dispatch):
+    one 'deployed' event per chart ({'name': ..., 'tag': ...}) with the target
+    GitHub repo and the deploy PR number. Pure telemetry — best-effort, callers
+    must never fail a deploy on a queue error. The queue reduction ignores these
+    events; they exist for the deployment history ("what went to UAT this week,
+    from which repo")."""
+    now = _now_iso()
+    rows = [
+        {
+            "event_id": uuid.uuid4().hex,
+            "event_type": "deployed",
+            "event_ts": now,
+            "requested_by": None,
+            "artifact_name": a.get("name"),
+            "artifact_version": a.get("tag"),
+            "prl1_only": None,
+            "df_only": None,
+            "note": str(note or "").strip() or None,
+            "deployment_repo": str(deployment_repo or "").strip() or None,
+            "release_name": None,
+            "pr_number": pr_number,
+            "build_verified": None,
+            "environment": str(environment or "").strip().lower() or None,
+        }
+        for a in artifacts
+        if a.get("name")
+    ]
+    if not rows:
+        return {"ok": True, "note": "no artifacts to record"}
+    return _insert(rows)
+
+
+def recent_deployments(days: int = 30) -> dict[str, Any]:
+    """Deployment history from the event log — newest first, per chart per env."""
+    if not queue_enabled():
+        return _disabled()
+    try:
+        events = _fetch_events(days)
+    except Exception as e:
+        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
+    deploys = [e for e in reversed(events) if e.get("event_type") == "deployed"]
+    return {"ok": True, "deployments": deploys, "count": len(deploys)}
 
 
 # --- reads -------------------------------------------------------------------

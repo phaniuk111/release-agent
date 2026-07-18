@@ -246,6 +246,7 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
         _PENDING_PREVIEWS.pop(token, None)
         result.setdefault("ok", True)
         result["confirmed_token"] = token
+        _record_deploy_event(req, f"dataflow-{env}", result)
         return result
     if req.get("entries"):
         args = {"environment": env, "deployment_json": json.dumps({"include": req["entries"]})}
@@ -266,4 +267,38 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
     _PENDING_PREVIEWS.pop(token, None)
     result.setdefault("ok", True)
     result["confirmed_token"] = token
+    _record_deploy_event(req, env, result)
     return result
+
+
+def _record_deploy_event(req: dict[str, Any], environment: str, result: dict[str, Any]) -> None:
+    """Capture a confirmed deploy in the BQ event log (deployment history with
+    the target GitHub repo). Best-effort telemetry — never fails the deploy."""
+    if not result.get("ok") or result.get("action") in ("no_change", "blocked_prd_pr_open"):
+        return
+    try:
+        from release_agent.tools import release_queue as _rq
+        from release_agent.tools._common import active_deploy_repo
+
+        repo = req.get("deployment_repo") or ""
+        if not repo:
+            try:
+                repo = active_deploy_repo()
+            except Exception:
+                repo = ""
+        # PRD staging returns pr_number; the UAT promote chain returns a prs list —
+        # record the terminal (last-merged) PR of the chain.
+        pr_number = result.get("pr_number")
+        if not pr_number:
+            prs = [p for p in (result.get("prs") or []) if p.get("number")]
+            if prs:
+                pr_number = prs[-1].get("number")
+        _rq.record_deployment(
+            environment=environment,
+            artifacts=req.get("images") or [],
+            deployment_repo=repo,
+            pr_number=int(pr_number) if pr_number else None,
+            note=str(result.get("action") or ""),
+        )
+    except Exception:
+        pass

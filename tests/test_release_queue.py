@@ -72,6 +72,40 @@ def test_queue_intent_veto_routes_to_chat():
     assert not is_queue_intent("release prod")
 
 
+def test_reduce_queue_ignores_deployed_events():
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00"),
+        _ev("deployed", "svc-b", "2026-07-14T10:00:00", environment="uat"),
+        _ev("deployed", "svc-a", "2026-07-14T11:00:00", environment="uat"),
+    ]
+    queue = RQ.reduce_queue(events)
+    # svc-a stays queued (a UAT deploy is not a release); svc-b never enters
+    assert [q["artifact_name"] for q in queue] == ["svc-a"]
+
+
+def test_record_deployment_rows(monkeypatch):
+    captured = {}
+    def _fake_insert(rows):
+        captured["rows"] = rows
+        return {"ok": True}
+
+    monkeypatch.setattr(RQ, "_insert", _fake_insert)
+    out = RQ.record_deployment(
+        environment="uat",
+        artifacts=[{"name": "svc-a", "tag": "1.0.0"}, {"name": "svc-b", "tag": "2.0.0"}],
+        deployment_repo="org/deploy-repo",
+        pr_number=77,
+        note="applied",
+    )
+    assert out["ok"] is True
+    rows = captured["rows"]
+    assert len(rows) == 2
+    assert all(r["event_type"] == "deployed" for r in rows)
+    assert all(r["environment"] == "uat" for r in rows)
+    assert all(r["deployment_repo"] == "org/deploy-repo" for r in rows)
+    assert all(r["pr_number"] == 77 for r in rows)
+
+
 def test_validate_release_deployment_repo():
     payload = {
         "release_name": "R1",
