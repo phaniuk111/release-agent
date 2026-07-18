@@ -220,3 +220,4 @@ websockets==15.0.1
     #   google-adk
     #   google-genai
     #   uvicorn
+ruamel.yaml

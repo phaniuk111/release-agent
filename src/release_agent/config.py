@@ -104,6 +104,28 @@ class Settings(BaseSettings):
         default="PRD",
         validation_alias=AliasChoices("PRD_BRANCH", "PROD_BRANCH", "RELEASE_PRD_BRANCH"),
     )
+    # Second terminal environment branch alongside PRD (releases may target PRD,
+    # PRL1, or both; prl1_only services stop at UAT/PRL1 and never reach PRD).
+    prl1_branch: str = Field(
+        default="PRL1",
+        validation_alias=AliasChoices("PRL1_BRANCH", "RELEASE_PRL1_BRANCH"),
+    )
+    # --- Live release file-set model (release_details.json -> updater script) ----
+    # The deployment repo carries the release as a FILE-SET present on every branch:
+    # artefact-provider/artefact.json, sdlc-governance/{releaseTemplate,
+    # changeRequestTemplate,RCTLDEF0000104}.json and the per-env governed deploy
+    # workflows. The repo's own updater script generates them from a TRANSIENT
+    # release_details.json (never committed).
+    release_updater_script: str = Field(
+        default="scripts/release/update_release_files.py",
+        validation_alias=AliasChoices("RELEASE_UPDATER_SCRIPT"),
+    )
+    # Base path prepended when a developer supplies bare name:version instead of a
+    # full artifactory URL (e.g. https://artifactory.../com/db/acme-ds/).
+    artifactory_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("ARTIFACTORY_BASE_URL"),
+    )
     # JSON config the promotion updates (same path on each env branch). [legacy]
     env_config_path: str = Field(
         default="configs/images.json",
