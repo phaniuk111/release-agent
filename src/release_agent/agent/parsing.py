@@ -268,6 +268,25 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
     if not isinstance(data, dict):
         return None
 
+    # Live release payload (the Create-release form): release_name + artefact list.
+    if data.get("release_name") and isinstance(data.get("artefact"), list):
+        pairs = []
+        for url in data["artefact"]:
+            last = str(url).rstrip("/").split("/")[-1]
+            if ":" in last:
+                n, _, v = last.partition(":")
+                pairs.append({"name": n, "tag": v})
+        if not pairs:
+            return None
+        return {
+            "deployment_type": "release",
+            "release": data,
+            "images": pairs,
+            "entries": [],
+            "environment": "prod",
+            "raw": "json-paste",
+        }
+
     # Dataflow flex-template deploy (the DF form): {image, tag} trigger a
     # workflow_dispatch — no chart entries, no state file.
     if str(data.get("deployment_type") or "").lower() == "dataflow":

@@ -38,7 +38,12 @@ def _cleanup_expired_previews(now: float | None = None) -> None:
         if now - float(payload.get("created_at", 0)) > _PREVIEW_TTL_SECONDS
     ]
     for token in expired:
-        _PENDING_PREVIEWS.pop(token, None)
+        entry = _PENDING_PREVIEWS.pop(token, None)
+        prep = ((entry or {}).get("request") or {}).get("release_prep")
+        if prep:
+            from release_agent.tools import release_fileset as _rf
+
+            _rf.cleanup_prepared_release(prep)
 
 
 def _image_pairs_from_tags(image_tags: str) -> list[dict[str, str]]:
@@ -160,6 +165,28 @@ def prepare_deploy_preview(
     env = (req.get("environment") or "uat").lower()
     env = "prod" if env in ("prod", "prd", "production") else "uat"
     req["environment"] = env
+    if req.get("deployment_type") == "release":
+        # Live release model: generate the file-set locally NOW (clone + updater
+        # script, no push) so the preview shows the real diff, partition and RCTL
+        # timeline. Apply then only pushes + opens the release PR.
+        from release_agent.tools import release_fileset as _rf
+
+        prep = _rf.prepare_release_fileset(req["release"])
+        if not prep.get("ok"):
+            return {"ok": False, "error": "; ".join(prep.get("errors", ["release preparation failed"]))}
+        req["release_prep"] = prep
+        token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
+        _PENDING_PREVIEWS[token] = {"request": req, "preview": prep["preview"], "created_at": time.time()}
+        return {
+            "ok": True,
+            "status": "awaiting_confirmation",
+            "environment": env,
+            "image_tags": prep["release_name"],
+            "token": token,
+            "proposed": prep["preview"],
+            "deployment_repo": "",
+            "message": f"Reply with exactly {token} to create this release.",
+        }
     preview = _build_preview(req)
     token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
     _PENDING_PREVIEWS[token] = {
@@ -200,6 +227,14 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
     req = pending["request"]
     env = (req.get("environment") or "uat").lower()
     args: dict[str, Any]
+    if req.get("deployment_type") == "release":
+        from release_agent.tools import release_fileset as _rf
+
+        result = _rf.apply_release_fileset(req.get("release_prep") or {})
+        _PENDING_PREVIEWS.pop(token, None)
+        result.setdefault("ok", True)
+        result["confirmed_token"] = token
+        return result
     if req.get("deployment_type") == "dataflow":
         image = req["images"][0]
         args = {"environment": env, "image": image["name"], "tag": image["tag"]}

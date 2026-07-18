@@ -7,6 +7,7 @@ import { showDeployForm } from './forms.js';
 // Quick actions — what the agent can do. mode 'send' runs immediately;
 // otherwise the text is pre-filled so the user edits the image:tag first.
 export const CAPABILITIES = [
+    {icon:'fa-box-open',          label:'Create release',       desc:'full weekly release: artifacts + CHG + governance file-set', form:'release'},
     {icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
     {icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
     {icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},

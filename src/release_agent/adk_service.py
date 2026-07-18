@@ -160,6 +160,12 @@ def _confirmation_interrupt_payload(pending: PendingAdkCall) -> dict[str, Any]:
             "SIT → UAT → PRD. **Once released, no new charts can be added to this "
             "release** — later prod deploys start a new release."
         )
+    elif function == "promote_release":
+        target = str((original.get("args") or {}).get("target", "")).upper() or "the target environment"
+        hint = (
+            f"Promote the current release's file-set to **{target}**? This copies the "
+            "release files onto that environment branch and merges the promotion PR."
+        )
     else:
         hint = confirmation.get("hint") or f"Confirm {function}?"
     return {

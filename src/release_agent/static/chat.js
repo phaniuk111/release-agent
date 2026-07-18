@@ -144,7 +144,14 @@ export async function sendMessage(overrideText) {
                         botMsg.querySelector('div').innerHTML = renderMarkdown(fullText);
                     } else if (data.type === 'interrupt') {
                         isInterrupt = true;
-                        botMsg.remove();
+                        // Keep any streamed preview text (deploy diff / release
+                        // file-set / RCTL timeline) visible above the confirm box;
+                        // only drop the message if it's still the typing dots.
+                        if (fullText) {
+                            botMsg.querySelector('div').classList.remove('streaming');
+                        } else {
+                            botMsg.remove();
+                        }
                         addMessage('interrupt', data.data || {});
                     } else if (data.type === 'done') {
                         // finished

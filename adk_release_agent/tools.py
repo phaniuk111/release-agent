@@ -111,6 +111,13 @@ def retrigger_deployment_workflow(
     )
 
 
+def promote_release(target: str, release_branch: str = "") -> dict[str, Any]:
+    """Promote the current release's file-set to the next environment branch
+    (uat, prd or prl1). Copies the release's changed files verbatim via a
+    change-branch PR — use after a release has been created."""
+    return _invoke_tool("promote_release", {"target": target, "release_branch": release_branch})
+
+
 def merge_prod_release(deployment_repo: str = "") -> dict[str, Any]:
     """Release today's staged PRD release now (any time). Releasing finalizes it —
     no new charts can be added afterwards; later prod deploys start a new release.
@@ -145,6 +152,7 @@ OPS_TOOLS = [
     remove_from_release,
     retrigger_deployment_workflow,
     merge_prod_release,
+    promote_release,
     find_prs,
     get_pr_details,
 ]

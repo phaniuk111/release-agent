@@ -34,6 +34,7 @@ from .controls import verify_image_tag_build, get_build_controls, get_build_repo
 from .release_window import check_release_window  # noqa: F401
 from .promotion import open_release_pr, remove_from_release, merge_prod_release  # noqa: F401
 from .dataflow import deploy_dataflow  # noqa: F401
+from .release_fileset import promote_release  # noqa: F401
 
 GH_TOOLS = [
     list_allowed_images,

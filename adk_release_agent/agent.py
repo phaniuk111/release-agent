@@ -42,6 +42,10 @@ Critical safety boundary:
   deterministic, confirmation-gated deploy Workflow — NOT by you. Use the
   release-deploy skill only to explain that the request will be previewed and
   require the exact CONFIRM token.
+- EXCEPTION: "promote (the) release to uat/prd/prl1" with NO chart:version means
+  promoting the current release's FILE-SET to that environment branch. That is a
+  release-ops operation — load the release-ops skill and call `promote_release`.
+  Do not ask for a chart:version.
 - You must not mutate deployment JSON, dispatch arbitrary workflows, or open
   release PRs from any free-form chat path. A safety plugin enforces this.
 
@@ -72,6 +76,11 @@ def _remove_needs_confirmation(environment: str = "staging", **kwargs) -> bool:
     return str(environment).lower() in _PROD_ENV_WORDS
 
 
+def _promote_needs_confirmation(target: str = "", **kwargs) -> bool:
+    """Confirm release promotion only for terminal environments (PRD / PRL1)."""
+    return str(target).lower() in (_PROD_ENV_WORDS | {"prl1"})
+
+
 def _chat_additional_tools():
     """Read/ops tools surfaced via skill activation.
 
@@ -90,6 +99,9 @@ def _chat_additional_tools():
         ),
         "remove_from_release": FunctionTool(
             release_tools.remove_from_release, require_confirmation=_remove_needs_confirmation
+        ),
+        "promote_release": FunctionTool(
+            release_tools.promote_release, require_confirmation=_promote_needs_confirmation
         ),
     }
     return [wrapped.get(tool.__name__, tool) for tool in release_tools.ADK_CHAT_TOOLS]

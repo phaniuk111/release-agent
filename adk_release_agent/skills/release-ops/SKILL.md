@@ -6,6 +6,7 @@ metadata:
     - remove_from_release
     - retrigger_deployment_workflow
     - merge_prod_release
+    - promote_release
     - find_prs
     - get_pr_details
 ---
@@ -15,6 +16,7 @@ Use this skill only when the user gives a direct operation command, not when the
 Allowed actions:
 - `remove_from_release` to unstage chart names from today's PRD release PR, or to remove them from a live environment.
 - `retrigger_deployment_workflow` to rerun deployment workflow for an existing PR.
+- `promote_release` to promote the current release's FILE-SET to the next environment branch (target=uat, prd or prl1). Use for 'promote release to uat/prd/prl1'. Terminal targets (prd, prl1) pause on a yes/no approval.
 - `merge_prod_release` to release today's staged PRD batch — allowed at any time. Releasing finalizes the release: no new charts can be added to it afterwards (later prod deploys start a new release). The tool confirmation warns the user about this before anything ships.
 
 Choosing `remove_from_release`'s environment:
