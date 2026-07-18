@@ -1,11 +1,12 @@
 ---
 name: release-queue
-description: "Manage the next-release intake queue: add a chart:version for the upcoming release, withdraw one, or list what's accumulated for DevOps."
+description: "Manage the next-release intake queue (add/withdraw/list charts for the upcoming release) and answer release-history stats questions: which images were released, how often a chart shipped, deploy counts."
 metadata:
   adk_additional_tools:
     - queue_release_intent
     - withdraw_release_intent
     - list_release_queue
+    - release_stats
     - verify_image_tag_build
     - list_allowed_images
 ---
@@ -53,6 +54,18 @@ Being a good intake assistant (in order):
 
 Withdrawals only need the chart name. Re-queuing a chart replaces its version —
 that is how a user "changes" a queued version; there is no edit operation.
+
+History / stats questions — use `release_stats`:
+- "which images were released (this month)?" → event_type='released', days≈30.
+- "how many acme-capability images were released?" → pattern='acme-capability*'
+  (globs with * work; a plain word is a substring match), report the per-chart
+  counts and the releases they shipped in (with PR numbers).
+- "what got deployed to UAT this week?" → event_type='deployed', days=7; the
+  per-chart `environments` map shows uat/prod/dataflow-uat counts.
+Present stats as a short ranked list (chart — count — last release/date), not
+raw JSON. If total_events is 0, say so plainly and mention the window used
+(e.g. "no matches in the last 30 days") — do not invent history. The log
+started when this feature shipped; releases before that are not in it.
 
 Forbidden: do not deploy, do not create the release, do not promote — those run
 through their own gated flows. If the user wants the release actually created,

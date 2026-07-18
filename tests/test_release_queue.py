@@ -130,6 +130,43 @@ def test_record_deployment_rows(monkeypatch):
     assert all(r["pr_number"] == 77 for r in rows)
 
 
+def test_aggregate_history_pattern_and_counts():
+    events = [
+        _ev("released", "acme-capability-svc", "2026-07-01T10:00:00",
+            artifact_version="1.2.0", release_name="Release 30", pr_number=100),
+        _ev("released", "acme-capability-svc", "2026-07-10T10:00:00",
+            artifact_version="1.3.0", release_name="Release 31", pr_number=105),
+        _ev("released", "acme-workflow-service", "2026-07-10T10:00:00",
+            artifact_version="4.0.66", release_name="Release 31", pr_number=105),
+        _ev("deployed", "acme-capability-svc", "2026-07-11T10:00:00", environment="uat"),
+        _ev("queued", "acme-capability-svc", "2026-07-12T10:00:00"),
+    ]
+    # glob pattern, released only
+    out = RQ.aggregate_history(events, pattern="acme-capability*")
+    assert out["total_events"] == 2 and out["chart_count"] == 1
+    cap = out["charts"][0]
+    assert cap["count"] == 2
+    assert cap["versions"] == ["1.2.0", "1.3.0"]
+    assert [r["release"] for r in cap["releases"]] == ["Release 30", "Release 31"]
+
+    # substring match + all charts ranked by count
+    out = RQ.aggregate_history(events, pattern="acme")
+    assert [c["artifact_name"] for c in out["charts"]] == [
+        "acme-capability-svc", "acme-workflow-service"
+    ]
+
+    # deployed lens carries the environment counts
+    out = RQ.aggregate_history(events, pattern="", event_types=("deployed",))
+    assert out["charts"][0]["environments"] == {"uat": 1}
+
+
+def test_pattern_match_modes():
+    assert RQ._pattern_match("acme-capability-svc", "")
+    assert RQ._pattern_match("acme-capability-svc", "acme-capability*")
+    assert RQ._pattern_match("acme-capability-svc", "capability")
+    assert not RQ._pattern_match("acme-workflow-service", "acme-capability*")
+
+
 def test_validate_release_deployment_repo():
     payload = {
         "release_name": "R1",

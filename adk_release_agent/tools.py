@@ -191,6 +191,19 @@ def list_release_queue() -> dict[str, Any]:
     return _rq.current_queue()
 
 
+def release_stats(pattern: str = "", days: int = 90, event_type: str = "released") -> dict[str, Any]:
+    """Stats over the release/deployment history event log. Answers questions
+    like 'which images were released this month?' or 'how many acme-capability*
+    images were released?'. pattern: empty = all charts; supports * globs
+    (acme-capability*) or a plain substring (capability). event_type:
+    'released' (shipped in a release), 'deployed' (UAT/PRD/DF deploys),
+    'queued', or 'all'. Returns per-chart counts, versions, the releases each
+    shipped in (with PR numbers), environments and last activity."""
+    from release_agent.tools import release_queue as _rq
+
+    return _rq.history_stats(pattern=pattern, days=days, event_type=event_type)
+
+
 def merge_prod_release(deployment_repo: str = "") -> dict[str, Any]:
     """Release today's staged PRD release now (any time). Releasing finalizes it —
     no new charts can be added afterwards; later prod deploys start a new release.
@@ -230,11 +243,13 @@ OPS_TOOLS = [
     get_pr_details,
 ]
 
-# Next-release intake queue (BigQuery-backed) — conversational adds/withdraws/list.
+# Next-release intake queue (BigQuery-backed) — conversational adds/withdraws/list,
+# plus stats over the release/deploy history event log.
 QUEUE_TOOLS = [
     queue_release_intent,
     withdraw_release_intent,
     list_release_queue,
+    release_stats,
     verify_image_tag_build,
     list_allowed_images,
 ]

@@ -271,6 +271,78 @@ def record_deployment(
     return _insert(rows)
 
 
+def _pattern_match(name: str, pattern: str) -> bool:
+    """'' matches all; a pattern with * is a glob; otherwise substring match —
+    so both 'acme-capability*' and 'capability' find acme-capability-svc."""
+    if not pattern:
+        return True
+    import fnmatch
+
+    pattern = pattern.strip().lower()
+    name = (name or "").lower()
+    if "*" in pattern or "?" in pattern:
+        return fnmatch.fnmatch(name, pattern)
+    return pattern in name
+
+
+def aggregate_history(
+    events: list[dict[str, Any]],
+    pattern: str = "",
+    event_types: tuple[str, ...] = ("released",),
+) -> dict[str, Any]:
+    """Pure aggregation over the event log: per-chart stats for the charts
+    matching pattern, for the given event types (released / deployed / queued)."""
+    charts: dict[str, dict[str, Any]] = {}
+    total = 0
+    for ev in events:
+        if ev.get("event_type") not in event_types:
+            continue
+        name = ev.get("artifact_name") or ""
+        if not _pattern_match(name, pattern):
+            continue
+        total += 1
+        c = charts.setdefault(
+            name,
+            {"artifact_name": name, "count": 0, "versions": [], "releases": [],
+             "environments": {}, "last_at": None},
+        )
+        c["count"] += 1
+        v = ev.get("artifact_version")
+        if v and v not in c["versions"]:
+            c["versions"].append(v)
+        rel = ev.get("release_name")
+        entry = {"release": rel, "version": v, "pr": ev.get("pr_number"), "at": ev.get("event_ts")}
+        if ev.get("event_type") == "released" and rel:
+            c["releases"].append(entry)
+        env = ev.get("environment")
+        if env:
+            c["environments"][env] = c["environments"].get(env, 0) + 1
+        ts = ev.get("event_ts")
+        if ts and (c["last_at"] is None or ts > c["last_at"]):
+            c["last_at"] = ts
+    ranked = sorted(charts.values(), key=lambda c: (-c["count"], c["artifact_name"]))
+    return {"total_events": total, "chart_count": len(ranked), "charts": ranked}
+
+
+def history_stats(
+    pattern: str = "", days: int = 90, event_type: str = "released"
+) -> dict[str, Any]:
+    """Stats over the release/deploy history: which charts matched, how often,
+    which versions/releases, when last. event_type: released | deployed | queued
+    | all."""
+    if not queue_enabled():
+        return _disabled()
+    try:
+        events = _fetch_events(days)
+    except Exception as e:
+        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
+    et = (event_type or "released").strip().lower()
+    types = ("released", "deployed", "queued", "withdrawn") if et == "all" else (et,)
+    out = aggregate_history(events, pattern=pattern, event_types=types)
+    out.update({"ok": True, "pattern": pattern or "*", "days": days, "event_type": et})
+    return out
+
+
 def recent_deployments(days: int = 30) -> dict[str, Any]:
     """Deployment history from the event log — newest first, per chart per env."""
     if not queue_enabled():

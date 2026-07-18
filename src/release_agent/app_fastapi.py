@@ -437,6 +437,16 @@ async def release_queue_withdraw(req: QueueWithdrawRequest):
     return release_queue.withdraw_intent(req.artifact_name, req.requested_by)
 
 
+@app.get("/api/release-insights")
+async def release_insights(pattern: str = "", days: int = 90, event_type: str = "released"):
+    """Stats over the release/deploy history event log — powers the Insights
+    panel's Release stats section (which images released, per-chart counts,
+    pattern filter like acme-capability*)."""
+    from .tools import release_queue
+
+    return release_queue.history_stats(pattern=pattern, days=days, event_type=event_type)
+
+
 @app.get("/api/deployment-types")
 async def deployment_types_endpoint():
     """The IDP capability registry — the UI renders deploy cards/forms from this."""

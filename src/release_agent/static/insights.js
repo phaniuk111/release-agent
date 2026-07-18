@@ -81,6 +81,62 @@ async function _renderQueueSection(body) {
     if (add) add.addEventListener('click', () => showQueueForm());
 }
 
+// Release stats: which images shipped, how often — with a pattern filter
+// (glob like acme-capability* or plain substring) over the BQ event log.
+async function _renderStatsSection(body) {
+    if (!body.querySelector('#ri-pattern')) {
+        body.innerHTML =
+            '<div class="flex gap-1.5 mb-2">' +
+            '<input id="ri-pattern" type="text" placeholder="filter: acme-capability* (empty = all)" ' +
+            'class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none">' +
+            '<select id="ri-type" class="bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-[11px] text-slate-300 focus:outline-none">' +
+            '<option value="released">released</option>' +
+            '<option value="deployed">deployed</option>' +
+            '<option value="all">all events</option></select>' +
+            '</div><div id="ri-results" class="text-[11px] text-slate-500">Loading…</div>';
+        const rerun = () => _renderStatsSection(body);
+        body.querySelector('#ri-pattern').addEventListener('change', rerun);
+        body.querySelector('#ri-pattern').addEventListener('keydown', e => { if (e.key === 'Enter') rerun(); });
+        body.querySelector('#ri-type').addEventListener('change', rerun);
+    }
+    const results = body.querySelector('#ri-results');
+    results.innerHTML = '<span class="text-slate-600">Loading…</span>';
+    let data = null;
+    try {
+        const qs = new URLSearchParams({
+            pattern: body.querySelector('#ri-pattern').value.trim(),
+            event_type: body.querySelector('#ri-type').value,
+            days: '90',
+        });
+        const r = await fetch(API_BASE + '/api/release-insights?' + qs.toString());
+        data = await r.json();
+    } catch (e) { data = { ok: false, error: String(e) }; }
+    if (!data || !data.ok) {
+        results.innerHTML = data && data.disabled ? 'Stats disabled (no BigQuery configured).'
+            : 'Unavailable: ' + ((data && data.error) || 'unknown error');
+        return;
+    }
+    if (!data.charts.length) {
+        results.innerHTML = 'No matches in the last ' + data.days + ' days.';
+        return;
+    }
+    let html = '<div class="text-[10px] text-slate-600 mb-1">' + data.total_events + ' event(s) · ' +
+        data.chart_count + ' chart(s) · last ' + data.days + 'd</div><div class="space-y-1">';
+    data.charts.forEach(c => {
+        const rel = c.releases.length ? c.releases[c.releases.length - 1] : null;
+        const sub = rel ? ('last: ' + (rel.release || '') + (rel.pr ? ' (PR #' + rel.pr + ')' : ''))
+            : Object.keys(c.environments || {}).map(e => e + '×' + c.environments[e]).join(' ');
+        html += '<div class="text-[11px] font-mono text-slate-300">' +
+            '<div class="flex items-center gap-1.5">' +
+            '<span class="flex-1 truncate">' + c.artifact_name + '</span>' +
+            '<span class="bg-slate-800 rounded px-1.5 text-emerald-300">' + c.count + '</span></div>' +
+            (sub ? '<div class="text-[10px] text-slate-600 truncate pl-0.5">' + sub +
+                   (c.versions.length ? ' · v' + c.versions[c.versions.length - 1] : '') + '</div>' : '') +
+            '</div>';
+    });
+    results.innerHTML = html + '</div>';
+}
+
 const INSIGHT_SECTIONS = [
     {
         id: 'next-release',
@@ -88,6 +144,13 @@ const INSIGHT_SECTIONS = [
         icon: 'fa-cart-plus',
         live: true,
         render: _renderQueueSection,
+    },
+    {
+        id: 'release-stats',
+        title: 'Release stats',
+        icon: 'fa-chart-simple',
+        live: true,
+        render: _renderStatsSection,
     },
     {
         id: 'uat-status',
