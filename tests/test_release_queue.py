@@ -72,6 +72,30 @@ def test_queue_intent_veto_routes_to_chat():
     assert not is_queue_intent("release prod")
 
 
+def test_reduce_queue_carries_change_context():
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00",
+            jira_ticket="REL-1234", change_details="fixes schema drift"),
+    ]
+    q = RQ.reduce_queue(events)[0]
+    assert q["jira_ticket"] == "REL-1234"
+    assert q["change_details"] == "fixes schema drift"
+
+
+def test_add_intent_normalizes_jira(monkeypatch):
+    captured = {}
+
+    def _fake_insert(rows):
+        captured["row"] = rows[0]
+        return {"ok": True}
+
+    monkeypatch.setattr(RQ, "_insert", _fake_insert)
+    RQ.add_intent("svc-a:1.0.0", "dev@db.com", jira_ticket="acme-1234",
+                  change_details="  why text  ")
+    assert captured["row"]["jira_ticket"] == "REL-1234"
+    assert captured["row"]["change_details"] == "why text"
+
+
 def test_reduce_queue_ignores_deployed_events():
     events = [
         _ev("queued", "svc-a", "2026-07-13T10:00:00"),

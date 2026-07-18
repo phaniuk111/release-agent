@@ -131,12 +131,17 @@ def queue_release_intent(
     prl1_only: bool = False,
     df_only: bool = False,
     note: str = "",
+    jira_ticket: str = "",
+    change_details: str = "",
 ) -> dict[str, Any]:
     """Register an artifact for the NEXT release (the intake queue): chart:version,
     the requester's email, PRL1-only / Dataflow-only routing, optional note for
-    DevOps. Verifies the tag against the build repo as a courtesy check (result
-    includes build_verified) and reports how the chart was routed last time.
-    Re-queuing a chart replaces its queued version (latest wins)."""
+    DevOps, plus the change context — jira_ticket (e.g. REL-1234) and
+    change_details (what changed and why, one or two sentences). The context
+    pre-drafts the release's CHG description when DevOps creates it. Verifies
+    the tag against the build repo as a courtesy check (result includes
+    build_verified) and reports how the chart was routed last time. Re-queuing
+    a chart replaces its queued version (latest wins)."""
     from release_agent.tools import release_queue as _rq
 
     name, version = _rq._split_artifact(artifact)
@@ -154,6 +159,8 @@ def queue_release_intent(
         df_only=df_only,
         note=note,
         build_verified=verified,
+        jira_ticket=jira_ticket,
+        change_details=change_details,
     )
     if result.get("ok"):
         result["build_verified"] = verified

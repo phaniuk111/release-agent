@@ -75,8 +75,29 @@ export async function showQueueForm() {
     const verEl = mk('Version *', 'q-version', 'e.g. 4.0.154');
     const emailEl = mk('Your email *', 'q-email', 'you@company.com');
     emailEl.value = localStorage.getItem('queue_email') || '';
-    const noteEl = mk('Note for DevOps (optional)', 'q-note', 'e.g. ship together with workflow-service');
+    const jiraEl = mk('JIRA / ticket (optional)', 'q-jira', 'e.g. REL-1234');
     wrap.appendChild(grid);
+
+    // Change context: the dev's what-and-why becomes the CHG description draft
+    // when DevOps opens Create release — the dev knows this better on Monday
+    // than anyone reconstructing it on Thursday.
+    const detailsLabel = document.createElement('label');
+    detailsLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
+    detailsLabel.textContent = 'Change details (optional) — what changed & why; pre-drafts the CHG for DevOps';
+    const detailsEl = document.createElement('textarea');
+    detailsEl.id = 'q-details'; detailsEl.rows = 2;
+    detailsEl.placeholder = 'e.g. fixes schema drift in position feed after upstream v4 migration';
+    detailsEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none mb-2';
+    wrap.appendChild(detailsLabel); wrap.appendChild(detailsEl);
+
+    const noteLabel = document.createElement('label');
+    noteLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
+    noteLabel.textContent = 'Note for DevOps (optional)';
+    const noteEl = document.createElement('input');
+    noteEl.id = 'q-note'; noteEl.type = 'text';
+    noteEl.placeholder = 'e.g. ship together with workflow-service';
+    noteEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none mb-2';
+    wrap.appendChild(noteLabel); wrap.appendChild(noteEl);
 
     const flagRow = document.createElement('div');
     flagRow.className = 'flex items-center gap-4 text-[11px] text-slate-400 mb-2';
@@ -109,6 +130,8 @@ export async function showQueueForm() {
                     prl1_only: document.getElementById('q-prl1').checked,
                     df_only: document.getElementById('q-df').checked,
                     note: noteEl.value.trim(),
+                    jira_ticket: jiraEl.value.trim(),
+                    change_details: detailsEl.value.trim(),
                 }),
             });
             result = await r.json();
@@ -255,6 +278,27 @@ export async function showReleaseForm() {
                 if (d) d.checked = !!it.df_only;
             });
         };
+        // CHG draft from the devs' own context: the description aggregates each
+        // checked item's JIRA + change details; the reason lists the tickets.
+        // Auto-fills only while the field is empty or still equal to the last
+        // auto draft — a manual DevOps edit always wins.
+        let autoDesc = '', autoReason = '';
+        const composeChg = () => {
+            const checked = qctx.queue.filter(it => {
+                const cb = qBox.querySelector('input[data-q="' + it.artifact_name + '"]');
+                return cb && cb.checked;
+            });
+            const descDraft = checked.map(it =>
+                '- ' + it.artifact_name + ':' + it.artifact_version +
+                (it.jira_ticket ? ' (' + it.jira_ticket + ')' : '') +
+                (it.change_details ? ': ' + it.change_details : '') +
+                (it.requested_by ? ' — ' + it.requested_by.split('@')[0] : '')
+            ).join('\n');
+            const jiras = checked.map(it => it.jira_ticket).filter(Boolean);
+            const reasonDraft = jiras.length ? 'Delivers ' + jiras.join(', ') : '';
+            if (!descEl.value.trim() || descEl.value === autoDesc) { descEl.value = descDraft; autoDesc = descDraft; }
+            if (reasonDraft && (!reasonEl.value.trim() || reasonEl.value === autoReason)) { reasonEl.value = reasonDraft; autoReason = reasonDraft; }
+        };
         const applyItem = (q, on) => {
             const line = q.artifact_name + ':' + q.artifact_version;
             const lines = artEl.value.split('\n').map(l => l.trim()).filter(Boolean)
@@ -263,6 +307,7 @@ export async function showReleaseForm() {
             artEl.value = lines.join('\n');
             renderFlags();
             syncFlags();
+            composeChg();
         };
         qctx.queue.forEach(q => {
             const row = document.createElement('label');
@@ -276,9 +321,11 @@ export async function showReleaseForm() {
             const span = document.createElement('span');
             span.className = 'flex-1 truncate';
             span.innerHTML = q.artifact_name + ':' + q.artifact_version + badge +
+                (q.jira_ticket ? ' <span class="text-amber-300/80">' + q.jira_ticket + '</span>' : '') +
                 (q.prl1_only ? ' <span class="text-violet-400">PRL1</span>' : '') +
                 (q.df_only ? ' <span class="text-sky-400">DF</span>' : '');
-            if (q.note) span.title = q.note + ' — ' + (q.requested_by || '');
+            const tip = [q.change_details, q.note].filter(Boolean).join(' · ');
+            if (tip) span.title = tip + ' — ' + (q.requested_by || '');
             const who = document.createElement('span');
             who.className = 'text-slate-600 truncate';
             who.textContent = (q.requested_by || '').split('@')[0];

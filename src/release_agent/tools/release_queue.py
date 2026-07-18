@@ -44,6 +44,8 @@ _SCHEMA = [
     ("pr_number", "INT64"),  # set on 'released'/'deployed' events
     ("build_verified", "BOOL"),  # None = not checked at queue time
     ("environment", "STRING"),  # set on 'deployed' events: uat | prod | dataflow-uat
+    ("jira_ticket", "STRING"),  # e.g. REL-1234 — audit link, surfaces in CHG draft
+    ("change_details", "STRING"),  # dev's what-changed-and-why, feeds change_description
 ]
 
 _lock = threading.Lock()
@@ -138,10 +140,14 @@ def add_intent(
     note: str = "",
     deployment_repo: str = "",
     build_verified: bool | None = None,
+    jira_ticket: str = "",
+    change_details: str = "",
 ) -> dict[str, Any]:
     """Queue an artifact for the next release. Re-queuing the same chart
     replaces it in the derived queue (latest event wins) — that's how a dev
-    bumps the version without a separate edit action."""
+    bumps the version without a separate edit action. jira_ticket and
+    change_details are the dev's context — they feed the aggregated CHG draft
+    when DevOps opens the Create-release form."""
     name, version = _split_artifact(artifact)
     if not name or not version:
         return {"ok": False, "error": f"Need chart:version (got {artifact!r})."}
@@ -161,6 +167,8 @@ def add_intent(
         "release_name": None,
         "pr_number": None,
         "build_verified": build_verified,
+        "jira_ticket": str(jira_ticket or "").strip().upper() or None,
+        "change_details": str(change_details or "").strip() or None,
     }
     result = _insert([row])
     if result.get("ok"):
@@ -322,6 +330,8 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "note": ev.get("note") or "",
                 "deployment_repo": ev.get("deployment_repo") or "",
                 "build_verified": ev.get("build_verified"),
+                "jira_ticket": ev.get("jira_ticket") or "",
+                "change_details": ev.get("change_details") or "",
             }
         elif etype in ("withdrawn", "released"):
             state.pop(name, None)

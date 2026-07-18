@@ -42,10 +42,12 @@ async function _renderQueueSection(body) {
                 : q.build_verified === false
                     ? '<i class="fa-solid fa-triangle-exclamation text-amber-400" title="no traceable build at queue time"></i>'
                     : '';
+            const tip = [q.change_details, q.note].filter(Boolean).join(' · ');
             html += '<div class="flex items-center gap-1.5 text-[11px] font-mono text-slate-300" ' +
-                (q.note ? 'title="' + q.note.split('"').join('&quot;') + '"' : '') + '>' +
+                (tip ? 'title="' + tip.split('"').join('&quot;') + '"' : '') + '>' +
                 '<span class="flex-1 truncate">' + q.artifact_name + ':' + q.artifact_version + '</span>' +
                 badge +
+                (q.jira_ticket ? '<span class="text-amber-300/80">' + q.jira_ticket + '</span>' : '') +
                 (q.prl1_only ? '<span class="text-violet-400">PRL1</span>' : '') +
                 (q.df_only ? '<span class="text-sky-400">DF</span>' : '') +
                 '<span class="text-slate-600">' + (q.requested_by || '').split('@')[0] + '</span>' +

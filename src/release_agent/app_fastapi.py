@@ -360,6 +360,8 @@ class QueueAddRequest(BaseModel):
     prl1_only: bool = False
     df_only: bool = False
     note: str = ""
+    jira_ticket: str = ""
+    change_details: str = ""  # dev's what-changed-and-why → CHG draft on release day
 
 
 class QueueWithdrawRequest(BaseModel):
@@ -421,6 +423,8 @@ async def release_queue_add(req: QueueAddRequest):
         prl1_only=req.prl1_only,
         df_only=req.df_only,
         note=req.note,
+        jira_ticket=req.jira_ticket,
+        change_details=req.change_details,
     )
 
 
