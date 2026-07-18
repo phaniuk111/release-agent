@@ -73,6 +73,25 @@ release/date), not raw JSON. If total_events is 0 or an environment is absent,
 say so plainly and mention the window — do not invent history. The log started
 when this feature shipped; anything deployed before that is not in it.
 
+Presenting numbers — tables and charts (the UI renders both):
+- Markdown pipe tables render as real tables — use one whenever exact numbers
+  matter (| chart | count | last release |).
+- When the user asks for a chart/trend/graph, or the result is clearly
+  chart-shaped (counts per chart / per environment / per week), ALSO emit a
+  fenced chart block. The UI draws it with Chart.js; you only supply the spec:
+
+  ```chart
+  {"type": "hbar", "title": "Releases per chart (90d)",
+   "labels": ["acme-workflow-service", "acme-risk-fetcher"],
+   "series": [{"label": "releases", "data": [7, 5]}]}
+  ```
+
+  Types: "bar", "hbar" (horizontal — best for per-chart counts), "line"
+  (trends over time), "pie" (env shares). Rules: valid JSON only; labels and
+  each series' data must be the same length; ≤ 12 labels, ≤ 2 series; numbers
+  from tool results ONLY — never invented. One short takeaway sentence before
+  the chart; skip the chart entirely when the data is empty or a single number.
+
 Forbidden: do not deploy, do not create the release, do not promote — those run
 through their own gated flows. If the user wants the release actually created,
 point them at the CARE Release form (helm charts) or the DF Release form

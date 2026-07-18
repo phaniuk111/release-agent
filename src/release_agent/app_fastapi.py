@@ -246,6 +246,9 @@ async def chat_page():
       </aside>
     </div>
 
+    <!-- Vendored Chart.js (no CDN — must work behind the corporate proxy).
+         Loaded before the module bundle so `Chart` is global when charts render. -->
+    <script src="static/vendor/chart.umd.min.js?v={APP_STARTED}"></script>
     <script type="module" src="static/main.js?v={APP_STARTED}"></script>
 </body>
 </html>

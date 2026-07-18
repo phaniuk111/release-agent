@@ -7,8 +7,128 @@ import { renderConnectionStatus } from './connect.js';
 import { showCapabilities } from './palette.js';
 import { loadReleaseStatus } from './status.js';
 
+// --- chart-spec blocks ------------------------------------------------------
+// The agent answers data questions with a fenced ```chart block carrying
+// {type, title?, labels: [...], series: [{label, data, color?}...]}. The block
+// is swapped for a <canvas> and drawn with the VENDORED Chart.js (bundled in
+// static/vendor — no CDN, works behind the corporate proxy). The LLM only
+// picks the spec; all drawing is deterministic code here, and a malformed
+// spec falls back to plain text — never a broken bubble.
+const _chartSpecs = new Map();
+let _chartSeq = 0;
+const CHART_COLORS = ['#34d399', '#38bdf8', '#a78bfa', '#fbbf24', '#f87171', '#4ade80'];
+
+function _extractChartBlocks(t) {
+    // Complete blocks only — while streaming, an unterminated block stays text.
+    let out = '', idx = 0;
+    while (true) {
+        const start = t.indexOf('```chart', idx);
+        if (start === -1) { out += t.slice(idx); break; }
+        const bodyStart = t.indexOf('\n', start);
+        const end = bodyStart === -1 ? -1 : t.indexOf('```', bodyStart);
+        if (end === -1) { out += t.slice(idx); break; }
+        out += t.slice(idx, start);
+        try {
+            const spec = JSON.parse(t.slice(bodyStart + 1, end));
+            const id = 'chat-chart-' + (++_chartSeq);
+            _chartSpecs.set(id, spec);
+            out += '\nCHARTSLOT' + id + 'ENDCHART\n';
+        } catch (e) {
+            out += t.slice(start, end + 3);
+        }
+        idx = end + 3;
+    }
+    return out;
+}
+
+export function renderCharts(root) {
+    if (typeof Chart === 'undefined') return;
+    (root || document).querySelectorAll('canvas.chat-chart:not([data-rendered])').forEach(cv => {
+        const spec = _chartSpecs.get(cv.id);
+        if (!spec) return;
+        cv.dataset.rendered = '1';
+        const type = String(spec.type || 'bar').toLowerCase();
+        const horizontal = type === 'hbar';
+        const circular = type === 'pie' || type === 'doughnut';
+        const datasets = (spec.series || []).map((s, i) => {
+            const base = s.color || CHART_COLORS[i % CHART_COLORS.length];
+            return {
+                label: s.label || '',
+                data: s.data || [],
+                backgroundColor: circular
+                    ? (s.data || []).map((_, j) => CHART_COLORS[j % CHART_COLORS.length] + 'cc')
+                    : base + (type === 'line' ? '22' : 'cc'),
+                borderColor: base,
+                borderWidth: type === 'line' ? 2 : 0,
+                borderRadius: 4,
+                fill: type === 'line',
+                tension: 0.25,
+                pointRadius: 3,
+            };
+        });
+        try {
+            new Chart(cv, {
+                type: horizontal ? 'bar' : (circular ? type : (type === 'line' ? 'line' : 'bar')),
+                data: { labels: spec.labels || [], datasets },
+                options: {
+                    indexAxis: horizontal ? 'y' : 'x',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: circular || (spec.series || []).length > 1,
+                            labels: { color: '#94a3b8', boxWidth: 10, font: { size: 10 } },
+                        },
+                        title: spec.title
+                            ? { display: true, text: spec.title, color: '#94a3b8', font: { size: 11 } }
+                            : { display: false },
+                    },
+                    scales: circular ? {} : {
+                        x: { ticks: { color: '#94a3b8', font: { size: 10 } },
+                             grid: { color: 'rgba(148,163,184,.08)' } },
+                        y: { ticks: { color: '#94a3b8', font: { size: 10 } },
+                             grid: { color: 'rgba(148,163,184,.08)' } },
+                    },
+                },
+            });
+        } catch (e) { console.error('chart render failed', e); }
+    });
+}
+
+// Markdown pipe tables -> styled HTML tables (emitted as one line so the later
+// \n -> <br> pass can't inject breaks inside the markup).
+function _renderTables(t) {
+    const isRow = (s) => { s = s.trim(); return s.startsWith('|') && s.endsWith('|') && s.length > 2; };
+    const isSep = (s) => isRow(s) && /^[|\s:-]+$/.test(s.trim());
+    const cells = (s) => s.trim().slice(1, -1).split('|').map(c => c.trim());
+    const lines = t.split('\n');
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (isRow(lines[i]) && i + 1 < lines.length && isSep(lines[i + 1])) {
+            const head = cells(lines[i]);
+            let j = i + 2;
+            const rows = [];
+            while (j < lines.length && isRow(lines[j]) && !isSep(lines[j])) { rows.push(cells(lines[j])); j++; }
+            let html = '<div class="overflow-x-auto my-2"><table class="text-xs font-mono w-full border-collapse">';
+            html += '<thead><tr>' + head.map(h =>
+                '<th class="text-left text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-700 px-2 py-1">' + h + '</th>').join('') + '</tr></thead><tbody>';
+            rows.forEach(r => {
+                html += '<tr>' + r.map(c =>
+                    '<td class="px-2 py-1 border-b border-slate-800 text-slate-300">' + c + '</td>').join('') + '</tr>';
+            });
+            html += '</tbody></table></div>';
+            out.push(html);
+            i = j - 1;
+        } else {
+            out.push(lines[i]);
+        }
+    }
+    return out.join('\n');
+}
+
 // Minimal, safe markdown -> HTML for streamed assistant text.
 export function renderMarkdown(t) {
+    t = _extractChartBlocks(t);
     t = t.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;');
     // [text](url) markdown links -> stash so the bare-URL linkifier below
     // doesn't double-wrap the URL inside the href attribute.
@@ -21,7 +141,16 @@ export function renderMarkdown(t) {
     t = t.replace(/LINKTOKEN(\d+)ENDTOKEN/g, function(m, i) { return _links[+i]; });
     t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     t = t.replace(/`([^`]+)`/g, '<code class="bg-slate-800 px-1 rounded text-emerald-300">$1</code>');
+    t = _renderTables(t);
+    // Chart placeholder -> canvas (post-markdown so the token survives escaping).
+    t = t.replace(/CHARTSLOT(chat-chart-\d+)ENDCHART/g, function(m, id) {
+        return '<div class="my-2 rounded-xl border border-slate-700/70 bg-slate-950/40 p-3" style="height:230px">' +
+               '<canvas id="' + id + '" class="chat-chart"></canvas></div>';
+    });
+    // \n -> <br>, but never adjacent to block elements (tables/charts render
+    // their own spacing; stray <br> around them doubles the gaps).
     t = t.split('\n').join('<br>');
+    t = t.replace(/(<br>)+(<div)/g, '$2').replace(/(<\/div>)(<br>)+/g, '$1');
     return t;
 }
 
@@ -81,6 +210,7 @@ export function addMessage(role, content, isStreaming = false) {
     }
 
     chat.appendChild(div);
+    renderCharts(div);
     chat.scrollTop = chat.scrollHeight;
     return div;
 }
@@ -142,6 +272,7 @@ export async function sendMessage(overrideText) {
                     if (data.type === 'token') {
                         fullText += (fullText ? '\n\n' : '') + data.content;
                         botMsg.querySelector('div').innerHTML = renderMarkdown(fullText);
+                        renderCharts(botMsg);
                     } else if (data.type === 'interrupt') {
                         isInterrupt = true;
                         // Keep any streamed preview text (deploy diff / release
