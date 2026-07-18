@@ -20,6 +20,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "rich>=13.9",
     "pyyaml>=6.0",
+    # Release intake queue (append-only event table; serverless, no Cloud SQL)
+    "google-cloud-bigquery>=3.25",
 ]
 
 [project.optional-dependencies]

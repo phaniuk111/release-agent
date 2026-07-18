@@ -31,6 +31,7 @@ from google.adk.sessions import InMemorySessionService
 
 from adk_release_agent import deploy as adk_deploy
 from adk_release_agent import intent as adk_intent
+from release_agent.agent import parsing as adk_parsing
 from adk_release_agent.tracing import log_router_decision
 from adk_release_agent.agent import app as chat_app
 from adk_release_agent.deploy_workflow import build_deploy_app
@@ -246,7 +247,11 @@ class AdkChatService:
         # One classifier call; on a hit we route the SAME deterministic Workflow
         # (preview + CONFIRM token + mutation guard) — routing only, never a
         # new mutation path. On a miss/error the turn falls to the chat lane.
-        payload = await asyncio.to_thread(adk_intent.deploy_payload_from_freeform, message)
+        # Queue phrasings ("add X to the NEXT release") skip the classifier too —
+        # they belong to the release-queue skill in the chat lane.
+        payload = None
+        if not adk_parsing.is_queue_intent(message):
+            payload = await asyncio.to_thread(adk_intent.deploy_payload_from_freeform, message)
         if payload:
             log_router_decision(thread_id, message, "deploy_workflow:classifier", detail=payload)
             async for event in self._stream_deploy_preview(payload, thread_id):

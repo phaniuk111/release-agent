@@ -111,11 +111,77 @@ def retrigger_deployment_workflow(
     )
 
 
-def promote_release(target: str, release_branch: str = "") -> dict[str, Any]:
+def promote_release(
+    target: str, release_branch: str = "", deployment_repo: str = ""
+) -> dict[str, Any]:
     """Promote the current release's file-set to the next environment branch
     (uat, prd or prl1). Copies the release's changed files verbatim via a
-    change-branch PR — use after a release has been created."""
-    return _invoke_tool("promote_release", {"target": target, "release_branch": release_branch})
+    change-branch PR — use after a release has been created. deployment_repo
+    (owner/repo) targets a non-default deployment repo — pass it only when the
+    user names one."""
+    return _invoke_tool(
+        "promote_release",
+        {"target": target, "release_branch": release_branch, "deployment_repo": deployment_repo},
+    )
+
+
+def queue_release_intent(
+    artifact: str,
+    requested_by: str,
+    prl1_only: bool = False,
+    df_only: bool = False,
+    note: str = "",
+) -> dict[str, Any]:
+    """Register an artifact for the NEXT release (the intake queue): chart:version,
+    the requester's email, PRL1-only / Dataflow-only routing, optional note for
+    DevOps. Verifies the tag against the build repo as a courtesy check (result
+    includes build_verified) and reports how the chart was routed last time.
+    Re-queuing a chart replaces its queued version (latest wins)."""
+    from release_agent.tools import release_queue as _rq
+
+    name, version = _rq._split_artifact(artifact)
+    verified: bool | None = None
+    if name and version:
+        try:
+            check = _invoke_tool("verify_image_tag_build", {"image": name, "tag": version})
+            verified = bool(check.get("verified")) if "verified" in check else None
+        except Exception:
+            verified = None
+    result = _rq.add_intent(
+        artifact=artifact,
+        requested_by=requested_by,
+        prl1_only=prl1_only,
+        df_only=df_only,
+        note=note,
+        build_verified=verified,
+    )
+    if result.get("ok"):
+        result["build_verified"] = verified
+        try:
+            events = _rq._fetch_events()
+            result["last_shipped"] = _rq.last_shipped(events, name)
+            result["last_time_flags"] = _rq.last_queued_flags(events, name)
+        except Exception:
+            pass
+    return result
+
+
+def withdraw_release_intent(artifact_name: str, requested_by: str = "") -> dict[str, Any]:
+    """Withdraw a chart from the next-release intake queue (e.g. 'remove my
+    risk-fetcher from the queue'). Only touches the queue — never a live
+    environment or an open release."""
+    from release_agent.tools import release_queue as _rq
+
+    return _rq.withdraw_intent(artifact_name, requested_by)
+
+
+def list_release_queue() -> dict[str, Any]:
+    """List everything queued for the NEXT release: chart, version, requester,
+    when, PRL1-only/DF flags, note, and whether the build was verified at queue
+    time. This is what DevOps reviews before creating the release."""
+    from release_agent.tools import release_queue as _rq
+
+    return _rq.current_queue()
 
 
 def merge_prod_release(deployment_repo: str = "") -> dict[str, Any]:
@@ -157,8 +223,20 @@ OPS_TOOLS = [
     get_pr_details,
 ]
 
+# Next-release intake queue (BigQuery-backed) — conversational adds/withdraws/list.
+QUEUE_TOOLS = [
+    queue_release_intent,
+    withdraw_release_intent,
+    list_release_queue,
+    verify_image_tag_build,
+    list_allowed_images,
+]
+
 ADK_CHAT_TOOLS = list(
-    {id(tool): tool for tool in (STATUS_TOOLS + PR_TOOLS + CONTROLS_TOOLS + OPS_TOOLS)}.values()
+    {
+        id(tool): tool
+        for tool in (STATUS_TOOLS + PR_TOOLS + CONTROLS_TOOLS + OPS_TOOLS + QUEUE_TOOLS)
+    }.values()
 )
 
 # These remain in the deterministic confirmed path, not the ADK free-form toolset.

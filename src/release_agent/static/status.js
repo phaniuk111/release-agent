@@ -33,6 +33,10 @@ export async function loadReleaseStatus() {
         // in the strip so users learn BEFORE filling a deploy form.
         const blk = s.blocking_pr;
         const blkTitle = blk ? ' · ⚠ adds blocked by PR #' + blk.number : '';
+        // Intake-queue awareness: how many charts devs have registered for the
+        // NEXT release (absent when the BQ queue is disabled).
+        const qTitle = (typeof s.queued_next === 'number' && s.queued_next > 0)
+            ? ' · ' + s.queued_next + ' queued for next release' : '';
         const blkDetail = blk
             ? '<br><span class="text-amber-400">⚠ Adds to the release are blocked: ' +
               '<a href="' + blk.url + '" target="_blank" class="underline">PR #' + blk.number +
@@ -42,7 +46,7 @@ export async function loadReleaseStatus() {
         if (pr) {
             const n = (s.pending_to_prod || []).length;
             dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
-            title.textContent = 'Release PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged' + blkTitle;
+            title.textContent = 'Release PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged' + blkTitle + qTitle;
             let html = (s.reason ? s.reason + ' · ' : '') + foot;
             if ((pr.charts || []).length) {
                 html += '<br><span>staged: ' + _chartList(pr.charts) + '</span>';
@@ -55,7 +59,7 @@ export async function loadReleaseStatus() {
         dot.className = blk
             ? 'w-2 h-2 rounded-full bg-amber-400 inline-block'
             : 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
-        title.textContent = 'No release open · PRD: ' + (s.prd_charts || []).length + ' charts' + blkTitle;
+        title.textContent = 'No release open · PRD: ' + (s.prd_charts || []).length + ' charts' + blkTitle + qTitle;
         detail.innerHTML = (s.reason ? s.reason + ' · ' : '') + foot + blkDetail;
     } catch (e) {
         banner.classList.remove('hidden');

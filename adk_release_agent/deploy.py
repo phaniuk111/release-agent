@@ -20,6 +20,7 @@ from release_agent.agent.parsing import (
     _extract_images_from_text,
     _is_query_not_promote,
     _try_parse_json_payload,
+    is_queue_intent,
 )
 from release_agent.tools.gh_tools import assemble_entry, plan_deploy, _normalize_entry
 
@@ -73,7 +74,8 @@ def _request_from_inputs(
         return payload
 
     pairs = _image_pairs_from_tags(image_tags) if image_tags else _extract_images_from_text(message)
-    if pairs and message and _is_query_not_promote(message):
+    # "add X:1.2.3 to the NEXT release" is an intake-queue note, not a deploy.
+    if pairs and message and (is_queue_intent(message) or _is_query_not_promote(message)):
         return None
     if not pairs:
         return None

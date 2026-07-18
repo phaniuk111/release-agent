@@ -1,0 +1,320 @@
+"""Release intake queue — an APPEND-ONLY event table in BigQuery.
+
+A developer who is ready on Monday registers "put me in the next release"
+(chart, version, routing flags, note). DevOps sees the accumulated list when
+creating Thursday's release, pre-filled into the Create-release form. After the
+release PR merges, queued items are marked released and the queue drains.
+
+Design rules (deliberate):
+  * Append-only — every action (queue / withdraw / released) is an INSERT.
+    No UPDATE/DELETE ever: streaming-buffer rows can't be mutated anyway, and
+    the event log doubles as the audit history ("who asked for what, when,
+    and which release it went out in").
+  * The queue is DERIVED, not stored: fetch recent events and reduce them
+    client-side (`reduce_queue`) — trivially unit-testable, no SQL window
+    functions, and at a few rows/week the full scan is free.
+  * Git/PRs stay the source of truth for what shipped; `released` events are
+    only written after the release PR actually merged, carrying its number.
+  * Fire-and-forget: BigQuery being down must never block a release. Every
+    entry point returns {"ok": False, ...} instead of raising.
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import threading
+import uuid
+from typing import Any
+
+from ..config import settings
+
+_TABLE = "release_intents"
+
+_SCHEMA = [
+    ("event_id", "STRING"),
+    ("event_type", "STRING"),  # queued | withdrawn | released
+    ("event_ts", "TIMESTAMP"),
+    ("requested_by", "STRING"),
+    ("artifact_name", "STRING"),
+    ("artifact_version", "STRING"),
+    ("prl1_only", "BOOL"),
+    ("df_only", "BOOL"),
+    ("note", "STRING"),
+    ("deployment_repo", "STRING"),
+    ("release_name", "STRING"),  # set on 'released' events
+    ("pr_number", "INT64"),  # set on 'released' events
+    ("build_verified", "BOOL"),  # None = not checked at queue time
+]
+
+_lock = threading.Lock()
+_client = None
+_table_ready = False
+# The banner polls every turn; don't hit BQ more than once a minute for a count.
+_count_cache: dict[str, Any] = {"at": 0.0, "count": None}
+
+
+def queue_enabled() -> bool:
+    return bool(settings.bq_dataset and settings.gcp_project)
+
+
+def _disabled() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "disabled": True,
+        "error": "Release queue is disabled (BQ_DATASET or GOOGLE_CLOUD_PROJECT unset).",
+    }
+
+
+def _get_client():
+    """BigQuery client + dataset/table bootstrap (idempotent, cached)."""
+    global _client, _table_ready
+    with _lock:
+        if _client is not None and _table_ready:
+            return _client
+        from google.cloud import bigquery
+
+        if _client is None:
+            _client = bigquery.Client(project=settings.gcp_project)
+        if not _table_ready:
+            dataset_ref = bigquery.Dataset(f"{settings.gcp_project}.{settings.bq_dataset}")
+            dataset_ref.location = settings.bq_location
+            _client.create_dataset(dataset_ref, exists_ok=True)
+            table = bigquery.Table(
+                _table_id(),
+                schema=[bigquery.SchemaField(n, t) for n, t in _SCHEMA],
+            )
+            table.time_partitioning = bigquery.TimePartitioning(field="event_ts")
+            _client.create_table(table, exists_ok=True)
+            _table_ready = True
+        return _client
+
+
+def _table_id() -> str:
+    return f"{settings.gcp_project}.{settings.bq_dataset}.{_TABLE}"
+
+
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def _insert(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not queue_enabled():
+        return _disabled()
+    try:
+        client = _get_client()
+        # row_ids gives best-effort dedup on network retries.
+        errors = client.insert_rows_json(
+            _table_id(), rows, row_ids=[r["event_id"] for r in rows]
+        )
+        if errors:
+            return {"ok": False, "error": f"BigQuery insert failed: {errors}"}
+        _count_cache["at"] = 0.0  # count changed — drop the banner cache
+        return {"ok": True}
+    except Exception as e:  # never let queue telemetry break a release path
+        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
+
+
+def _split_artifact(artifact: str) -> tuple[str, str]:
+    """'name:version' (or a full artifactory URL ending in name:version)."""
+    last = str(artifact).strip().rstrip("/").split("/")[-1]
+    name, _, version = last.partition(":")
+    return name.strip(), version.strip()
+
+
+# --- writes ------------------------------------------------------------------
+def add_intent(
+    artifact: str,
+    requested_by: str,
+    prl1_only: bool = False,
+    df_only: bool = False,
+    note: str = "",
+    deployment_repo: str = "",
+    build_verified: bool | None = None,
+) -> dict[str, Any]:
+    """Queue an artifact for the next release. Re-queuing the same chart
+    replaces it in the derived queue (latest event wins) — that's how a dev
+    bumps the version without a separate edit action."""
+    name, version = _split_artifact(artifact)
+    if not name or not version:
+        return {"ok": False, "error": f"Need chart:version (got {artifact!r})."}
+    if not str(requested_by).strip():
+        return {"ok": False, "error": "requested_by (your email) is required."}
+    row = {
+        "event_id": uuid.uuid4().hex,
+        "event_type": "queued",
+        "event_ts": _now_iso(),
+        "requested_by": requested_by.strip(),
+        "artifact_name": name,
+        "artifact_version": version,
+        "prl1_only": bool(prl1_only),
+        "df_only": bool(df_only),
+        "note": str(note or "").strip(),
+        "deployment_repo": str(deployment_repo or "").strip(),
+        "release_name": None,
+        "pr_number": None,
+        "build_verified": build_verified,
+    }
+    result = _insert([row])
+    if result.get("ok"):
+        result["intent"] = {k: v for k, v in row.items() if v is not None}
+    return result
+
+
+def withdraw_intent(artifact_name: str, actor: str) -> dict[str, Any]:
+    name = str(artifact_name).strip().split(":")[0]
+    if not name:
+        return {"ok": False, "error": "artifact_name is required."}
+    row = {
+        "event_id": uuid.uuid4().hex,
+        "event_type": "withdrawn",
+        "event_ts": _now_iso(),
+        "requested_by": str(actor or "").strip(),
+        "artifact_name": name,
+        "artifact_version": None,
+        "prl1_only": None,
+        "df_only": None,
+        "note": None,
+        "deployment_repo": None,
+        "release_name": None,
+        "pr_number": None,
+        "build_verified": None,
+    }
+    result = _insert([row])
+    if result.get("ok"):
+        result["withdrawn"] = name
+    return result
+
+
+def mark_released(
+    release_name: str, pr_number: int | None, artifacts: list[dict[str, str]]
+) -> dict[str, Any]:
+    """Drain the queue after a release PR merged: one 'released' event per
+    shipped artifact ({'name': ..., 'tag': ...}). Best-effort — callers must
+    not fail the release on a queue error."""
+    now = _now_iso()
+    rows = [
+        {
+            "event_id": uuid.uuid4().hex,
+            "event_type": "released",
+            "event_ts": now,
+            "requested_by": None,
+            "artifact_name": a.get("name"),
+            "artifact_version": a.get("tag"),
+            "prl1_only": None,
+            "df_only": None,
+            "note": None,
+            "deployment_repo": None,
+            "release_name": release_name,
+            "pr_number": pr_number,
+            "build_verified": None,
+        }
+        for a in artifacts
+        if a.get("name")
+    ]
+    if not rows:
+        return {"ok": True, "note": "no artifacts to mark"}
+    return _insert(rows)
+
+
+# --- reads -------------------------------------------------------------------
+def _fetch_events(days: int = 120) -> list[dict[str, Any]]:
+    client = _get_client()
+    query = (
+        f"SELECT * FROM `{_table_id()}` "
+        "WHERE event_ts > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY) "
+        "ORDER BY event_ts"
+    )
+    from google.cloud import bigquery
+
+    job = client.query(
+        query,
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("days", "INT64", days)]
+        ),
+    )
+    out = []
+    for r in job.result():
+        row = dict(r)
+        ts = row.get("event_ts")
+        if hasattr(ts, "isoformat"):
+            row["event_ts"] = ts.isoformat()
+        out.append(row)
+    return out
+
+
+def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pure reduction: replay events chronologically; an artifact is queued when
+    its LATEST event is 'queued' (withdrawn/released clear it). Re-queue after a
+    release naturally re-enters the next queue."""
+    state: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        name = ev.get("artifact_name")
+        if not name:
+            continue
+        etype = ev.get("event_type")
+        if etype == "queued":
+            state[name] = {
+                "artifact_name": name,
+                "artifact_version": ev.get("artifact_version"),
+                "requested_by": ev.get("requested_by"),
+                "requested_at": ev.get("event_ts"),
+                "prl1_only": bool(ev.get("prl1_only")),
+                "df_only": bool(ev.get("df_only")),
+                "note": ev.get("note") or "",
+                "deployment_repo": ev.get("deployment_repo") or "",
+                "build_verified": ev.get("build_verified"),
+            }
+        elif etype in ("withdrawn", "released"):
+            state.pop(name, None)
+    return sorted(state.values(), key=lambda x: x.get("requested_at") or "")
+
+
+def last_shipped(events: list[dict[str, Any]], artifact_name: str) -> dict[str, Any] | None:
+    """Most recent 'released' event for a chart — powers "same as last time?"
+    suggestions (which release, which version)."""
+    for ev in reversed(events):
+        if ev.get("event_type") == "released" and ev.get("artifact_name") == artifact_name:
+            return {
+                "release_name": ev.get("release_name"),
+                "version": ev.get("artifact_version"),
+                "released_at": ev.get("event_ts"),
+            }
+    return None
+
+
+def last_queued_flags(events: list[dict[str, Any]], artifact_name: str) -> dict[str, Any] | None:
+    """Flags from the chart's most recent PAST queue event (before the current
+    one) — lets the bot suggest "PRL1-only again, like last time?"."""
+    seen_current = False
+    for ev in reversed(events):
+        if ev.get("event_type") == "queued" and ev.get("artifact_name") == artifact_name:
+            if not seen_current:
+                seen_current = True  # skip the entry just written
+                continue
+            return {"prl1_only": bool(ev.get("prl1_only")), "df_only": bool(ev.get("df_only"))}
+    return None
+
+
+def current_queue() -> dict[str, Any]:
+    if not queue_enabled():
+        return _disabled()
+    try:
+        events = _fetch_events()
+    except Exception as e:
+        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
+    queue = reduce_queue(events)
+    return {"ok": True, "queue": queue, "count": len(queue), "events_considered": len(events)}
+
+
+def cached_queue_count() -> int | None:
+    """Banner-friendly count: at most one BQ query per minute; None on any issue."""
+    import time
+
+    if not queue_enabled():
+        return None
+    now = time.time()
+    if now - _count_cache["at"] < 60:
+        return _count_cache["count"]
+    result = current_queue()
+    _count_cache["at"] = now
+    _count_cache["count"] = result.get("count") if result.get("ok") else None
+    return _count_cache["count"]

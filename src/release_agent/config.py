@@ -290,6 +290,20 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ADK_CONFIRM_PROD_OPS", "RELEASE_ADK_CONFIRM_PROD_OPS"),
     )
 
+    # --- Release intake queue (BigQuery) -----------------------------------------
+    # Devs register "put me in the next release" any day of the week; DevOps sees
+    # the accumulated list when creating the release. Stored as an APPEND-ONLY
+    # event table in BigQuery (no Cloud SQL needed at this volume). Empty dataset
+    # name disables the feature entirely (all queue endpoints report disabled).
+    bq_dataset: str = Field(
+        default="release_agent",
+        validation_alias=AliasChoices("BQ_DATASET", "RELEASE_BQ_DATASET"),
+    )
+    bq_location: str = Field(
+        default="US",
+        validation_alias=AliasChoices("BQ_LOCATION", "RELEASE_BQ_LOCATION"),
+    )
+
     # App metadata (used by FastAPI)
     app_title: str = "Dev Portal"
     # NoDecode: skip pydantic-settings' built-in JSON decoding so the validator

@@ -336,10 +336,101 @@ async def release_status_endpoint():
     from .tools.gh_tools import get_release_status
 
     try:
-        return get_release_status()
+        status = get_release_status()
     except Exception as e:
         logger.exception("Error computing release status")
         return {"error": str(e)}
+    # Banner extra: how many charts are queued for the NEXT release (cached ≤1/min;
+    # None/absent when the BQ queue is disabled or unreachable — never an error).
+    try:
+        from .tools import release_queue
+
+        count = release_queue.cached_queue_count()
+        if count is not None:
+            status["queued_next"] = count
+    except Exception:
+        pass
+    return status
+
+
+# --- Next-release intake queue (BigQuery-backed) -----------------------------
+class QueueAddRequest(BaseModel):
+    artifact: str  # chart:version (or full artifactory URL)
+    requested_by: str
+    prl1_only: bool = False
+    df_only: bool = False
+    note: str = ""
+
+
+class QueueWithdrawRequest(BaseModel):
+    artifact_name: str
+    requested_by: str = ""
+
+
+_known_charts_cache: dict = {"at": 0.0, "charts": []}
+
+
+def _known_charts() -> list[str]:
+    """Chart-name datalist for the queue form — from the build repo's image
+    catalog, cached 5 minutes, empty on any failure."""
+    import time as _time
+
+    now = _time.time()
+    if now - _known_charts_cache["at"] < 300:
+        return _known_charts_cache["charts"]
+    charts: list[str] = []
+    try:
+        from .tools.manifest import list_allowed_images
+
+        data = json.loads(list_allowed_images())
+        charts = sorted(data.get("allowed_images") or [])
+    except Exception:
+        pass
+    _known_charts_cache["at"] = now
+    _known_charts_cache["charts"] = charts
+    return charts
+
+
+@app.get("/api/release-queue")
+async def release_queue_get():
+    """The accumulated next-release queue + form context (default repo, known
+    chart names). Powers the Insights panel and the Create-release pre-fill."""
+    from .tools import release_queue
+    from .tools._common import active_deploy_repo
+
+    result = release_queue.current_queue()
+    result["default_repo"] = app_settings.deploy_repo
+    try:
+        result["default_repo"] = active_deploy_repo() or app_settings.deploy_repo
+    except Exception:
+        pass
+    result["known_charts"] = _known_charts()
+    return result
+
+
+@app.post("/api/release-queue")
+async def release_queue_add(req: QueueAddRequest):
+    """Queue a chart:version for the next release (the 'Monday dev' path).
+    Runs the courtesy build check and reports last-time routing, same as the
+    conversational intake."""
+    from adk_release_agent.tools import queue_release_intent
+
+    return queue_release_intent(
+        artifact=req.artifact,
+        requested_by=req.requested_by,
+        prl1_only=req.prl1_only,
+        df_only=req.df_only,
+        note=req.note,
+    )
+
+
+@app.post("/api/release-queue/withdraw")
+async def release_queue_withdraw(req: QueueWithdrawRequest):
+    """Withdraw a chart from the next-release queue (append-only: writes a
+    'withdrawn' event; nothing is deleted)."""
+    from .tools import release_queue
+
+    return release_queue.withdraw_intent(req.artifact_name, req.requested_by)
 
 
 @app.get("/api/deployment-types")

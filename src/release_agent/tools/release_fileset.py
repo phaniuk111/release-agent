@@ -122,6 +122,13 @@ def validate_release(payload: dict) -> tuple[dict | None, list[str]]:
                     "(a typo here would silently misroute the release)."
                 )
 
+    # Optional target deployment repo (owner/repo). Validated here but kept OUT
+    # of the details dict — release_details.json must stay exactly the shape the
+    # live updater script consumes.
+    repo = str(payload.get("deployment_repo") or "").strip()
+    if repo and ("/" not in repo or repo.startswith("/") or repo.endswith("/")):
+        errors.append(f"'deployment_repo' must be owner/repo (got {repo!r}).")
+
     if errors:
         return None, errors
 
@@ -179,7 +186,8 @@ def prepare_release_fileset(payload: dict) -> dict:
     if errors:
         return {"ok": False, "errors": errors}
 
-    repo_full = active_deploy_repo()
+    # Form-supplied target repo wins; empty falls back to session/config default.
+    repo_full = str(payload.get("deployment_repo") or "").strip() or active_deploy_repo()
     try:
         gh_repo = _get_github_client().get_repo(repo_full)
         blocker = _open_prd_pr_blocker(gh_repo)
@@ -255,15 +263,23 @@ def prepare_release_fileset(payload: dict) -> dict:
         shutil.rmtree(workdir, ignore_errors=True)
         return {"ok": False, "errors": [str(e)]}
 
+    artifact_pairs = [
+        {"name": nv[0], "tag": nv[1]}
+        for a in details["artefact"]
+        if (nv := _artifact_name_version(a))
+    ]
     return {
         "ok": True,
         "release_name": details["release_name"],
         "branch": branch,
         "workdir": workdir,
+        "deployment_repo": repo_full,
+        "artifacts": artifact_pairs,
         "preview": {
             "release": details["release_name"],
             "window": f"{details['start_date']} -> {details['end_date']}",
             "initiator": details["change_initiator"],
+            "deployment_repo": repo_full,
             "changed_files": changed_files,
             "environments": partition_environments(details),
             "rctl_timeline": timeline,
@@ -282,7 +298,7 @@ def apply_release_fileset(prep: dict) -> dict:
         if rc != 0:
             return {"ok": False, "error": f"push failed: {out[-400:]}"}
 
-        repo_full = active_deploy_repo()
+        repo_full = prep.get("deployment_repo") or active_deploy_repo()
         gh_repo = _get_github_client().get_repo(repo_full)
         preview = prep.get("preview", {})
         body = (
@@ -301,11 +317,23 @@ def apply_release_fileset(prep: dict) -> dict:
             f"{settings.sit_branch}{'' if merged else f' — {detail}'}. "
             f"Promote with 'promote release to uat' then 'promote release to prd/prl1'."
         )
+        if merged:
+            # Drain the intake queue: shipped charts get 'released' events so next
+            # week starts clean. Best-effort — never fails the release.
+            try:
+                from . import release_queue as _rq
+
+                _rq.mark_released(
+                    prep.get("release_name") or "", pr.number, prep.get("artifacts") or []
+                )
+            except Exception:
+                pass
         return {
             "ok": True,
             "action": "release_created",
             "release_name": prep.get("release_name"),
             "branch": branch,
+            "deployment_repo": repo_full,
             "pr_number": pr.number,
             "pr_url": pr.html_url,
             "merged_to_sit": merged,
@@ -363,10 +391,14 @@ class PromoteReleaseInput(BaseModel):
         default="",
         description="Release branch (release/<slug>). Empty = the latest release PR's branch.",
     )
+    deployment_repo: str = Field(
+        default="",
+        description="Deployment repo (owner/repo) the release lives in. Empty = the configured default.",
+    )
 
 
 @tool(args_schema=PromoteReleaseInput)
-def promote_release(target: str, release_branch: str = "") -> str:
+def promote_release(target: str, release_branch: str = "", deployment_repo: str = "") -> str:
     """Promote the current release's FILE-SET to the next environment branch
     (SIT -> UAT -> PRD/PRL1): copies the release's changed files verbatim onto the
     target via a short-lived change branch + PR (auto-merged when allowed)."""
@@ -382,7 +414,8 @@ def promote_release(target: str, release_branch: str = "") -> str:
     target_branch = branch_map[t]
 
     try:
-        gh_repo = _get_github_client().get_repo(active_deploy_repo())
+        repo_full = str(deployment_repo or "").strip() or active_deploy_repo()
+        gh_repo = _get_github_client().get_repo(repo_full)
     except Exception as e:
         return json.dumps({"ok": False, "error": f"GitHub error: {e}"})
 

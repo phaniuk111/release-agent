@@ -46,6 +46,9 @@ Critical safety boundary:
   promoting the current release's FILE-SET to that environment branch. That is a
   release-ops operation — load the release-ops skill and call `promote_release`.
   Do not ask for a chart:version.
+- EXCEPTION: "add/queue X for the NEXT release" (the intake queue) is a note to
+  DevOps, not a deploy — load the release-queue skill. Queueing needs no CONFIRM
+  token and no approval; never describe it as a deployment.
 - You must not mutate deployment JSON, dispatch arbitrary workflows, or open
   release PRs from any free-form chat path. A safety plugin enforces this.
 

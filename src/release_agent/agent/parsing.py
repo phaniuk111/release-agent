@@ -188,6 +188,26 @@ def _is_query_not_promote(text: str) -> bool:
     return is_query and not _has_promote_verb(words)
 
 
+# Intake-queue phrasings: "add X to the NEXT release", "queue Y", "withdraw from
+# the queue". These name a chart:version but must NOT enter the deploy Workflow —
+# they are notes to DevOps, routed to the release-queue skill in the chat lane.
+_QUEUE_PHRASES = (
+    "next release",
+    "upcoming release",
+    "coming release",
+    "next week s release",
+    "release queue",
+)
+
+
+def is_queue_intent(text: str) -> bool:
+    """True when the message is about the next-release intake queue rather than
+    a deploy — vetoes both the deterministic deploy router and the classifier."""
+    words = _norm_words(text)
+    normalized = " ".join(words)
+    return "queue" in words or any(p in normalized for p in _QUEUE_PHRASES)
+
+
 def _detect_environment(text: str) -> str:
     low = text.lower()
     words = set(_norm_words(text))

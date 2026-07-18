@@ -4,6 +4,144 @@
 // previews the exact change and asks for the CONFIRM token.
 import { API_BASE } from './state.js';
 import { sendMessage } from './chat.js';
+import { loadReleaseStatus } from './status.js';
+
+
+// ---- Add to next release (intake queue) ----------------------------------
+// A dev ready on Monday registers chart:version + routing here; DevOps sees
+// the accumulated list on release day (and the Create-release form pre-fills
+// from it). Queueing writes a BQ intent event — it never deploys anything.
+export async function showQueueForm() {
+    let ctx = { queue: [], known_charts: [], default_repo: '' };
+    try {
+        const r = await fetch(API_BASE + '/api/release-queue');
+        if (r.ok) ctx = await r.json();
+    } catch (e) {}
+
+    const chat = document.getElementById('chat');
+    const wrap = document.createElement('div');
+    wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm';
+    wrap.innerHTML =
+        '<div class="mb-1 font-semibold flex items-center gap-2 text-emerald-300">' +
+        '<i class="fa-solid fa-cart-plus"></i> Add to next release</div>' +
+        '<div class="text-slate-400 text-xs mb-3">Register your chart for the upcoming release — ' +
+        'no need to come back on release day. DevOps reviews the accumulated list when creating it. ' +
+        'Nothing deploys from here.</div>';
+
+    if ((ctx.queue || []).length) {
+        const hdr = document.createElement('div');
+        hdr.className = 'text-[11px] text-slate-500 mb-1';
+        hdr.textContent = 'Already queued (' + ctx.queue.length + ')';
+        wrap.appendChild(hdr);
+        const list = document.createElement('div');
+        list.className = 'border border-slate-700 rounded-lg px-3 py-1.5 mb-3 text-[11px] font-mono text-slate-400';
+        ctx.queue.forEach(q => {
+            const row = document.createElement('div');
+            row.className = 'flex justify-between gap-2 py-0.5';
+            row.innerHTML = '<span class="truncate">' + q.artifact_name + ':' + q.artifact_version +
+                (q.prl1_only ? ' <span class="text-violet-400">PRL1</span>' : '') +
+                (q.df_only ? ' <span class="text-sky-400">DF</span>' : '') + '</span>' +
+                '<span class="text-slate-600 truncate">' + (q.requested_by || '').split('@')[0] + '</span>';
+            list.appendChild(row);
+        });
+        wrap.appendChild(list);
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'grid grid-cols-2 gap-2 mb-2';
+    const mk = (labelText, id, placeholder, listId) => {
+        const l = document.createElement('label');
+        l.className = 'text-[11px] text-slate-400 block mb-0.5';
+        l.textContent = labelText;
+        const el = document.createElement('input');
+        el.id = id; el.type = 'text'; if (placeholder) el.placeholder = placeholder;
+        if (listId) el.setAttribute('list', listId);
+        el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+        const box = document.createElement('div');
+        box.appendChild(l); box.appendChild(el);
+        grid.appendChild(box);
+        return el;
+    };
+    // Known charts from the build catalog → typo-proof picking, still free-text.
+    if ((ctx.known_charts || []).length) {
+        const dl = document.createElement('datalist');
+        dl.id = 'q-charts-list';
+        ctx.known_charts.forEach(c => {
+            const o = document.createElement('option'); o.value = c; dl.appendChild(o);
+        });
+        wrap.appendChild(dl);
+    }
+    const chartEl = mk('Chart name *', 'q-chart', 'e.g. acme-risk-fetcher', 'q-charts-list');
+    const verEl = mk('Version *', 'q-version', 'e.g. 4.0.154');
+    const emailEl = mk('Your email *', 'q-email', 'you@company.com');
+    emailEl.value = localStorage.getItem('queue_email') || '';
+    const noteEl = mk('Note for DevOps (optional)', 'q-note', 'e.g. ship together with workflow-service');
+    wrap.appendChild(grid);
+
+    const flagRow = document.createElement('div');
+    flagRow.className = 'flex items-center gap-4 text-[11px] text-slate-400 mb-2';
+    flagRow.innerHTML =
+        '<label class="flex items-center gap-1"><input type="checkbox" id="q-prl1"> PRL1-only (never PRD)</label>' +
+        '<label class="flex items-center gap-1"><input type="checkbox" id="q-df"> Dataflow image</label>';
+    wrap.appendChild(flagRow);
+
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-3 mt-1';
+    const submit = document.createElement('button');
+    submit.className = 'bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 rounded-lg text-sm font-medium';
+    submit.textContent = 'Queue it';
+    const err = document.createElement('span');
+    err.className = 'text-[11px] text-red-400';
+    submit.addEventListener('click', async () => {
+        err.textContent = '';
+        const chart = chartEl.value.trim(), ver = verEl.value.trim(), email = emailEl.value.trim();
+        if (!chart || !ver || !email) { err.textContent = 'Chart, version and your email are required.'; return; }
+        localStorage.setItem('queue_email', email);
+        submit.disabled = true; submit.textContent = 'Queueing…';
+        let result = null;
+        try {
+            const r = await fetch(API_BASE + '/api/release-queue', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    artifact: chart + ':' + ver,
+                    requested_by: email,
+                    prl1_only: document.getElementById('q-prl1').checked,
+                    df_only: document.getElementById('q-df').checked,
+                    note: noteEl.value.trim(),
+                }),
+            });
+            result = await r.json();
+        } catch (e) { result = { ok: false, error: String(e) }; }
+        submit.disabled = false; submit.textContent = 'Queue it';
+        if (!result || !result.ok) {
+            err.textContent = (result && result.error) || 'Could not queue — try again.';
+            return;
+        }
+        // Replace the form with a human confirmation: build check + last-time context.
+        const verified = result.build_verified;
+        const vBadge = verified === true
+            ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build verified</span>'
+            : verified === false
+                ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> no traceable build for this tag (queued anyway — is it built yet?)</span>'
+                : '<span class="text-slate-500">build check skipped</span>';
+        const last = result.last_shipped
+            ? '<div class="text-[11px] text-slate-500 mt-1">Last shipped in “' + result.last_shipped.release_name +
+              '” as ' + result.last_shipped.version + '.</div>' : '';
+        wrap.innerHTML =
+            '<div class="font-semibold text-emerald-300 mb-1"><i class="fa-solid fa-circle-check"></i> Queued for the next release</div>' +
+            '<div class="text-xs text-slate-300 font-mono">' + chart + ':' + ver +
+            (document.getElementById('q-prl1') && result.intent && result.intent.prl1_only ? ' · PRL1-only' : '') + '</div>' +
+            '<div class="text-[11px] mt-1">' + vBadge + '</div>' + last +
+            '<div class="text-[11px] text-slate-500 mt-2">You\'re done — it will be in the Create-release form automatically. ' +
+            'Withdraw any time from the Insights panel or by asking me.</div>';
+        loadReleaseStatus();
+    });
+    row.appendChild(submit); row.appendChild(err);
+    wrap.appendChild(row);
+    chat.appendChild(wrap);
+    chat.scrollTop = chat.scrollHeight;
+}
 
 
 // ---- Create release (live model) ----------------------------------------
@@ -11,7 +149,16 @@ import { sendMessage } from './chat.js';
 // per-service PRL1-only / Dataflow-only flags. Submitting sends the payload;
 // the backend generates the file-set with the repo's own updater script and
 // previews the diff + env partition + RCTL timeline before the CONFIRM token.
-export function showReleaseForm() {
+export async function showReleaseForm() {
+    // Queue context first: the accumulated "add me to the next release" intents
+    // pre-fill the artifact list, and the default deployment repo pre-fills the
+    // target repo field.
+    let qctx = { queue: [], default_repo: '' };
+    try {
+        const r = await fetch(API_BASE + '/api/release-queue');
+        if (r.ok) qctx = await r.json();
+    } catch (e) {}
+
     const chat = document.getElementById('chat');
     const wrap = document.createElement('div');
     wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm';
@@ -47,6 +194,9 @@ export function showReleaseForm() {
     const riskEl = mk('Associated risk', document.createElement('textarea'), 'rel-risk');
     const consEl = mk('Consequence', document.createElement('textarea'), 'rel-consequence');
     const impactEl = mk('User/service impact', document.createElement('textarea'), 'rel-impact');
+    const repoEl = mk('Deployment repo (owner/repo) *', document.createElement('input'),
+        'rel-repo', 'text', 'e.g. my-org/deployment-repo');
+    repoEl.value = qctx.default_repo || '';
     const artEl = mk('Artifacts * — one per line (full URL or name:version)',
         document.createElement('textarea'), 'rel-artifacts', null,
         'acme-workflow-service:4.0.66\nhttps://artifactory…/acme-risk-fetcher:4.0.153');
@@ -87,6 +237,59 @@ export function showReleaseForm() {
     artEl.addEventListener('input', renderFlags);
     renderFlags();
 
+    // Thursday pre-fill: the intake queue arrives as a checklist — untick an
+    // item to defer it (it stays queued for the next release). Ticked items
+    // fill the artifact list and carry their PRL1/DF routing flags.
+    if ((qctx.queue || []).length) {
+        const qBox = document.createElement('div');
+        qBox.className = 'border border-emerald-700/40 bg-emerald-500/5 rounded-lg px-3 py-2 mb-2';
+        qBox.innerHTML = '<div class="text-[11px] text-emerald-300 mb-1"><i class="fa-solid fa-cart-plus mr-1"></i>' +
+            'Queued for this release (' + qctx.queue.length + ') — untick to defer to the next one</div>';
+        const syncFlags = () => {
+            qctx.queue.forEach(it => {
+                const cb = qBox.querySelector('input[data-q="' + it.artifact_name + '"]');
+                if (!cb || !cb.checked) return;
+                const p = flags.querySelector('input[data-prl1="' + it.artifact_name + '"]');
+                if (p) p.checked = !!it.prl1_only;
+                const d = flags.querySelector('input[data-df="' + it.artifact_name + '"]');
+                if (d) d.checked = !!it.df_only;
+            });
+        };
+        const applyItem = (q, on) => {
+            const line = q.artifact_name + ':' + q.artifact_version;
+            const lines = artEl.value.split('\n').map(l => l.trim()).filter(Boolean)
+                .filter(l => l.split('/').pop().indexOf(q.artifact_name + ':') !== 0);
+            if (on) lines.push(line);
+            artEl.value = lines.join('\n');
+            renderFlags();
+            syncFlags();
+        };
+        qctx.queue.forEach(q => {
+            const row = document.createElement('label');
+            row.className = 'flex items-center gap-2 text-[11px] text-slate-300 font-mono py-0.5 cursor-pointer';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.checked = true; cb.dataset.q = q.artifact_name;
+            const badge = (q.build_verified === true)
+                ? ' <i class="fa-solid fa-circle-check text-emerald-400" title="build verified at queue time"></i>'
+                : (q.build_verified === false)
+                    ? ' <i class="fa-solid fa-triangle-exclamation text-amber-400" title="no traceable build at queue time"></i>' : '';
+            const span = document.createElement('span');
+            span.className = 'flex-1 truncate';
+            span.innerHTML = q.artifact_name + ':' + q.artifact_version + badge +
+                (q.prl1_only ? ' <span class="text-violet-400">PRL1</span>' : '') +
+                (q.df_only ? ' <span class="text-sky-400">DF</span>' : '');
+            if (q.note) span.title = q.note + ' — ' + (q.requested_by || '');
+            const who = document.createElement('span');
+            who.className = 'text-slate-600 truncate';
+            who.textContent = (q.requested_by || '').split('@')[0];
+            cb.addEventListener('change', () => applyItem(q, cb.checked));
+            row.appendChild(cb); row.appendChild(span); row.appendChild(who);
+            qBox.appendChild(row);
+        });
+        wrap.insertBefore(qBox, grid);
+        qctx.queue.forEach(q => applyItem(q, true));
+    }
+
     const fmt = (v) => v ? v.replace('T', ' ') + (v.length === 16 ? ':00' : '') : '';
 
     const row = document.createElement('div');
@@ -102,9 +305,13 @@ export function showReleaseForm() {
         if (!nameEl.value.trim() || !startEl.value || !endEl.value || !initEl.value.trim() || !sumEl.value.trim()) {
             err.textContent = 'Release name, start, end, initiator and summary are required.'; return;
         }
+        if (!repoEl.value.trim() || repoEl.value.indexOf('/') < 1) {
+            err.textContent = 'Deployment repo is required (owner/repo).'; return;
+        }
         if (!artifacts.length) { err.textContent = 'At least one artifact is required.'; return; }
         if (fmt(endEl.value) <= fmt(startEl.value)) { err.textContent = 'End must be after start.'; return; }
         const payload = {
+            deployment_repo: repoEl.value.trim(),
             release_name: nameEl.value.trim(),
             start_date: fmt(startEl.value),
             end_date: fmt(endEl.value),
@@ -240,6 +447,7 @@ export async function showDfDeployForm() {
 export async function showDeployForm(env, name, version) {
     if (env === 'df-uat') { showDfDeployForm(); return; }
     if (env === 'release') { showReleaseForm(); return; }
+    if (env === 'queue') { showQueueForm(); return; }
     const isProd = env === 'prod';
     const accentT = isProd ? 'text-amber-300' : 'text-emerald-300';
     const accentBtn = isProd ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500';

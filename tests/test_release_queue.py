@@ -1,0 +1,90 @@
+"""Intake queue: event reduction, routing veto, deployment-repo plumbing."""
+from release_agent.agent.parsing import is_queue_intent
+from release_agent.tools import release_queue as RQ
+from release_agent.tools import release_fileset as RF
+
+
+def _ev(etype, name, ts, **over):
+    base = {
+        "event_type": etype,
+        "artifact_name": name,
+        "event_ts": ts,
+        "artifact_version": "1.0.0",
+        "requested_by": "dev@db.com",
+        "prl1_only": False,
+        "df_only": False,
+        "note": "",
+        "deployment_repo": "",
+        "release_name": None,
+        "pr_number": None,
+        "build_verified": None,
+    }
+    base.update(over)
+    return base
+
+
+def test_reduce_queue_latest_event_wins():
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00", artifact_version="1.0.0"),
+        _ev("queued", "svc-b", "2026-07-14T09:00:00", prl1_only=True),
+        # dev bumps svc-a's version by re-queuing — latest wins
+        _ev("queued", "svc-a", "2026-07-15T08:00:00", artifact_version="1.0.1"),
+        # svc-b withdrawn
+        _ev("withdrawn", "svc-b", "2026-07-15T09:00:00"),
+    ]
+    queue = RQ.reduce_queue(events)
+    assert [q["artifact_name"] for q in queue] == ["svc-a"]
+    assert queue[0]["artifact_version"] == "1.0.1"
+
+
+def test_reduce_queue_drains_on_release_and_requeues():
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00"),
+        _ev("released", "svc-a", "2026-07-16T12:00:00", release_name="Release 32", pr_number=109),
+        # re-queued after shipping → next release's queue
+        _ev("queued", "svc-a", "2026-07-17T10:00:00", artifact_version="1.1.0"),
+    ]
+    queue = RQ.reduce_queue(events)
+    assert len(queue) == 1 and queue[0]["artifact_version"] == "1.1.0"
+    assert RQ.last_shipped(events, "svc-a")["release_name"] == "Release 32"
+
+
+def test_last_queued_flags_skips_current_entry():
+    events = [
+        _ev("queued", "svc-a", "2026-07-01T10:00:00", prl1_only=True),
+        _ev("released", "svc-a", "2026-07-02T10:00:00"),
+        _ev("queued", "svc-a", "2026-07-15T10:00:00"),  # the entry just written
+    ]
+    assert RQ.last_queued_flags(events, "svc-a") == {"prl1_only": True, "df_only": False}
+
+
+def test_split_artifact_handles_urls_and_bare():
+    assert RQ._split_artifact("acme-x:1.2.3") == ("acme-x", "1.2.3")
+    assert RQ._split_artifact("https://art.example/com/db/acme-x:1.2.3") == ("acme-x", "1.2.3")
+    assert RQ._split_artifact("no-version") == ("no-version", "")
+
+
+def test_queue_intent_veto_routes_to_chat():
+    assert is_queue_intent("add acme-risk-fetcher:4.0.153 to the next release prl1 only")
+    assert is_queue_intent("queue acme-x:1.2.3 for thursday")
+    assert is_queue_intent("what's in the release queue?")
+    assert not is_queue_intent("deploy acme-x:1.2.3 to uat")
+    assert not is_queue_intent("release prod")
+
+
+def test_validate_release_deployment_repo():
+    payload = {
+        "release_name": "R1",
+        "start_date": "2026-07-20 10:00:00",
+        "end_date": "2026-07-21 10:00:00",
+        "change_initiator": "dev@db.com",
+        "change_summary": "R1",
+        "artefact": ["svc-a:1.0.0"],
+    }
+    details, errors = RF.validate_release({**payload, "deployment_repo": "org/deploy-repo"})
+    assert errors == []
+    # kept OUT of release_details.json — the live script's input shape is sacred
+    assert "deployment_repo" not in details
+
+    _, errors = RF.validate_release({**payload, "deployment_repo": "not-a-repo"})
+    assert any("deployment_repo" in e for e in errors)
