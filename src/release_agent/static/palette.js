@@ -8,7 +8,8 @@ import { showDeployForm } from './forms.js';
 // otherwise the text is pre-filled so the user edits the image:tag first.
 export const CAPABILITIES = [
     {icon:'fa-cart-plus',         label:'Add to next release',  desc:'queue your chart:version now — DevOps picks it up on release day', form:'queue'},
-    {icon:'fa-box-open',          label:'Create release',       desc:'full weekly release: artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
+    {icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
+    {icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
     {icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
     {icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
     {icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},

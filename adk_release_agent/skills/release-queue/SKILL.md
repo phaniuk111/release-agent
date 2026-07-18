@@ -56,4 +56,6 @@ that is how a user "changes" a queued version; there is no edit operation.
 
 Forbidden: do not deploy, do not create the release, do not promote — those run
 through their own gated flows. If the user wants the release actually created,
-point them at the Create release form (it comes pre-filled from this queue).
+point them at the CARE Release form (helm charts) or the DF Release form
+(Dataflow images) — both come pre-filled from this queue (CARE takes the
+non-DF intents, DF Release takes the df-flagged ones).
