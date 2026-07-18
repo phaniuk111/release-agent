@@ -92,6 +92,7 @@ async function _renderStatsSection(body) {
             '<select id="ri-type" class="bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-[11px] text-slate-300 focus:outline-none">' +
             '<option value="released">released</option>' +
             '<option value="deployed">deployed</option>' +
+            '<option value="state">deployed state</option>' +
             '<option value="all">all events</option></select>' +
             '</div><div id="ri-results" class="text-[11px] text-slate-500">Loading…</div>';
         const rerun = () => _renderStatsSection(body);
@@ -114,6 +115,26 @@ async function _renderStatsSection(body) {
     if (!data || !data.ok) {
         results.innerHTML = data && data.disabled ? 'Stats disabled (no BigQuery configured).'
             : 'Unavailable: ' + ((data && data.error) || 'unknown error');
+        return;
+    }
+    if (data.event_type === 'state') {
+        // Per-environment deployed state: env — distinct image count — images.
+        if (!data.environments.length) {
+            results.innerHTML = 'No deployed state recorded yet.';
+            return;
+        }
+        let html = '<div class="text-[10px] text-slate-600 mb-1">' + data.distinct_images +
+            ' distinct image(s) across ' + data.environments.length + ' env(s)</div><div class="space-y-1.5">';
+        data.environments.forEach(e => {
+            html += '<div class="text-[11px] font-mono">' +
+                '<div class="flex items-center gap-1.5 text-slate-300">' +
+                '<span class="flex-1 uppercase">' + e.environment + '</span>' +
+                '<span class="bg-slate-800 rounded px-1.5 text-emerald-300">' + e.count + '</span></div>' +
+                e.images.map(i => '<div class="text-[10px] text-slate-600 truncate pl-1">' +
+                    i.artifact_name + (i.version ? ':' + i.version : '') + '</div>').join('') +
+                '</div>';
+        });
+        results.innerHTML = html + '</div>';
         return;
     }
     if (!data.charts.length) {

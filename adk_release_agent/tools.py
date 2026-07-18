@@ -196,9 +196,11 @@ def release_stats(pattern: str = "", days: int = 90, event_type: str = "released
     like 'which images were released this month?' or 'how many acme-capability*
     images were released?'. pattern: empty = all charts; supports * globs
     (acme-capability*) or a plain substring (capability). event_type:
-    'released' (shipped in a release), 'deployed' (UAT/PRD/DF deploys),
-    'queued', or 'all'. Returns per-chart counts, versions, the releases each
-    shipped in (with PR numbers), environments and last activity."""
+    'released' (shipped in a release), 'deployed' (UAT/PRD/PRL1/DF deploys and
+    promotions), 'queued', 'all' — or 'state' for the CURRENT per-environment
+    deployed picture ('how many capability images are on uat/prd/prl1?'):
+    latest deployed/removed event per artifact per environment wins, returning
+    each environment's distinct image count and list."""
     from release_agent.tools import release_queue as _rq
 
     return _rq.history_stats(pattern=pattern, days=days, event_type=event_type)

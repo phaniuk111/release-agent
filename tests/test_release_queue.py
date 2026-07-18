@@ -167,6 +167,57 @@ def test_pattern_match_modes():
     assert not RQ._pattern_match("acme-workflow-service", "acme-capability*")
 
 
+def test_workflow_chart_entries_parses_multi_deployments_json():
+    wf = """
+name: deploy prd
+jobs:
+  deploy:
+    with:
+      multi_deployments_json: |
+        [
+          {
+            "helm_chart_name": "acme-capability-consumerA",
+            "helm_chart_version": "1.2.0",
+            "gke_namespace": "apps1"
+          },
+          {
+            "helm_chart_name": "acme-workflow-service",
+            "helm_chart_version": "4.0.67"
+          }
+        ]
+"""
+    assert RF._workflow_chart_entries(wf) == [
+        {"name": "acme-capability-consumerA", "tag": "1.2.0"},
+        {"name": "acme-workflow-service", "tag": "4.0.67"},
+    ]
+    assert RF._workflow_chart_entries("") == []
+
+
+def test_aggregate_env_state_latest_event_wins():
+    events = [
+        # consumerA reaches uat and prl1; consumerB only uat, later removed
+        _ev("deployed", "acme-capability-consumerA", "2026-07-01T10:00:00",
+            environment="uat", artifact_version="1.0.0"),
+        _ev("deployed", "acme-capability-consumerB", "2026-07-02T10:00:00", environment="uat"),
+        _ev("deployed", "acme-capability-consumerA", "2026-07-03T10:00:00", environment="prl1"),
+        # version bump on uat — latest wins
+        _ev("deployed", "acme-capability-consumerA", "2026-07-05T10:00:00",
+            environment="uat", artifact_version="1.1.0"),
+        _ev("removed", "acme-capability-consumerB", "2026-07-06T10:00:00", environment="uat"),
+        # legacy 'prod' rows normalize into prd
+        _ev("deployed", "acme-capability-consumerA", "2026-07-07T10:00:00", environment="prod"),
+        # non-matching chart excluded by pattern
+        _ev("deployed", "acme-workflow-service", "2026-07-07T11:00:00", environment="uat"),
+    ]
+    out = RQ.aggregate_env_state(events, pattern="acme-capability*")
+    envs = {e["environment"]: e for e in out["environments"]}
+    assert envs["uat"]["count"] == 1  # consumerB removed
+    assert envs["uat"]["images"][0]["version"] == "1.1.0"
+    assert envs["prl1"]["count"] == 1
+    assert envs["prd"]["count"] == 1  # 'prod' normalized
+    assert out["distinct_images"] == 1  # only consumerA still deployed anywhere
+
+
 def test_validate_release_deployment_repo():
     payload = {
         "release_name": "R1",

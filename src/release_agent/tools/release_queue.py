@@ -131,6 +131,13 @@ def _split_artifact(artifact: str) -> tuple[str, str]:
     return name.strip(), version.strip()
 
 
+def _norm_env(env: str) -> str:
+    """One canonical name per environment: prod → prd (applied on both write
+    and read, so rows captured before the rename still aggregate together)."""
+    e = str(env or "").strip().lower()
+    return {"prod": "prd", "dataflow-prod": "dataflow-prd"}.get(e, e)
+
+
 # --- writes ------------------------------------------------------------------
 def add_intent(
     artifact: str,
@@ -238,18 +245,20 @@ def record_deployment(
     deployment_repo: str = "",
     pr_number: int | None = None,
     note: str = "",
+    event_type: str = "deployed",
 ) -> dict[str, Any]:
-    """Capture a confirmed deployment (UAT override / PRD staging / DF dispatch):
-    one 'deployed' event per chart ({'name': ..., 'tag': ...}) with the target
-    GitHub repo and the deploy PR number. Pure telemetry — best-effort, callers
-    must never fail a deploy on a queue error. The queue reduction ignores these
-    events; they exist for the deployment history ("what went to UAT this week,
-    from which repo")."""
+    """Capture a confirmed deployment (UAT override / PRD staging / DF dispatch /
+    release promotion): one event per chart ({'name': ..., 'tag': ...}) with the
+    target GitHub repo and the PR number. event_type 'deployed' (default) or
+    'removed' (live removals) — together they make the per-environment deployed
+    state derivable from the log. Pure telemetry — best-effort, callers must
+    never fail a deploy on a queue error. The queue reduction ignores these
+    events."""
     now = _now_iso()
     rows = [
         {
             "event_id": uuid.uuid4().hex,
-            "event_type": "deployed",
+            "event_type": event_type,
             "event_ts": now,
             "requested_by": None,
             "artifact_name": a.get("name"),
@@ -261,7 +270,7 @@ def record_deployment(
             "release_name": None,
             "pr_number": pr_number,
             "build_verified": None,
-            "environment": str(environment or "").strip().lower() or None,
+            "environment": _norm_env(environment) or None,
         }
         for a in artifacts
         if a.get("name")
@@ -314,7 +323,7 @@ def aggregate_history(
         entry = {"release": rel, "version": v, "pr": ev.get("pr_number"), "at": ev.get("event_ts")}
         if ev.get("event_type") == "released" and rel:
             c["releases"].append(entry)
-        env = ev.get("environment")
+        env = _norm_env(ev.get("environment"))
         if env:
             c["environments"][env] = c["environments"].get(env, 0) + 1
         ts = ev.get("event_ts")
@@ -324,19 +333,61 @@ def aggregate_history(
     return {"total_events": total, "chart_count": len(ranked), "charts": ranked}
 
 
+def aggregate_env_state(events: list[dict[str, Any]], pattern: str = "") -> dict[str, Any]:
+    """Per-environment DEPLOYED STATE derived from the event log: for each
+    (artifact, environment) the latest deployed/removed event wins — an
+    artifact counts as deployed in an env while its latest event there is
+    'deployed'. This is the source of truth for "how many X images are on
+    UAT/PRD/PRL1" — the governance workflow files can't answer it because the
+    updater script regenerates them per release (they describe the LAST
+    release, not the cumulative estate)."""
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for ev in events:  # events arrive in ts order — later overwrite earlier
+        if ev.get("event_type") not in ("deployed", "removed"):
+            continue
+        name, env = ev.get("artifact_name") or "", _norm_env(ev.get("environment"))
+        if not name or not env or not _pattern_match(name, pattern):
+            continue
+        latest[(name, env)] = ev
+    envs: dict[str, dict[str, Any]] = {}
+    for (name, env), ev in latest.items():
+        if ev.get("event_type") != "deployed":
+            continue
+        e = envs.setdefault(env, {"environment": env, "count": 0, "images": []})
+        e["count"] += 1
+        e["images"].append({
+            "artifact_name": name,
+            "version": ev.get("artifact_version"),
+            "since": ev.get("event_ts"),
+        })
+    for e in envs.values():
+        e["images"].sort(key=lambda i: i["artifact_name"])
+    return {
+        "environments": sorted(envs.values(), key=lambda e: e["environment"]),
+        "distinct_images": len({n for (n, _env), ev in latest.items()
+                                if ev.get("event_type") == "deployed"}),
+    }
+
+
 def history_stats(
     pattern: str = "", days: int = 90, event_type: str = "released"
 ) -> dict[str, Any]:
     """Stats over the release/deploy history: which charts matched, how often,
     which versions/releases, when last. event_type: released | deployed | queued
-    | all."""
+    | all — or 'state' for the CURRENT per-environment deployed state (latest
+    deployed/removed event per artifact per env)."""
     if not queue_enabled():
         return _disabled()
+    et = (event_type or "released").strip().lower()
     try:
-        events = _fetch_events(days)
+        # State questions look across the whole log, not just the stats window.
+        events = _fetch_events(365 if et == "state" else days)
     except Exception as e:
         return {"ok": False, "error": f"BigQuery unavailable: {e}"}
-    et = (event_type or "released").strip().lower()
+    if et == "state":
+        out = aggregate_env_state(events, pattern=pattern)
+        out.update({"ok": True, "pattern": pattern or "*", "event_type": "state"})
+        return out
     types = ("released", "deployed", "queued", "withdrawn") if et == "all" else (et,)
     out = aggregate_history(events, pattern=pattern, event_types=types)
     out.update({"ok": True, "pattern": pattern or "*", "days": days, "event_type": et})

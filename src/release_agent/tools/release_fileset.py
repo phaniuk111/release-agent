@@ -385,6 +385,23 @@ def _read_raw(gh_repo, path: str, ref: str) -> str | None:
         return None
 
 
+def _workflow_chart_entries(text: str) -> list[dict[str, str]]:
+    """Chart name:version pairs from a governed-deploy workflow's
+    multi_deployments_json block (line scan — the block is JSON-in-YAML).
+    This is the exact deploy set for that environment: prl1_only charts are
+    absent from the PRD workflow, df_images from all of them."""
+    entries: list[dict[str, str]] = []
+    name = None
+    for line in (text or "").splitlines():
+        s = line.strip().rstrip(",")
+        if '"helm_chart_name"' in s and ":" in s:
+            name = s.split(":", 1)[1].strip().strip('"')
+        elif '"helm_chart_version"' in s and ":" in s and name:
+            entries.append({"name": name, "tag": s.split(":", 1)[1].strip().strip('"')})
+            name = None
+    return entries
+
+
 class PromoteReleaseInput(BaseModel):
     target: str = Field(..., description="Branch to promote the release file-set to: uat, prd, or prl1.")
     release_branch: str = Field(
@@ -468,6 +485,31 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             head=work, base=target_branch,
         )
         merged, detail = _merge_pr(promo_pr, "squash")
+        if merged:
+            # BQ capture: the promoted env's governance workflow on the release
+            # branch IS that env's exact deploy set — record one 'deployed' event
+            # per chart so per-environment state/stats include UAT/PRD/PRL1
+            # promotions. Best-effort; never fails the promotion.
+            try:
+                from . import release_queue as _rq
+
+                key = "prd" if t in ("prd", "prod") else t
+                wf_text = _read_raw(
+                    gh_repo,
+                    f".github/workflows/deploy_with_sdlc_governance_{key}.yaml",
+                    release_branch,
+                )
+                charts = _workflow_chart_entries(wf_text or "")
+                if charts:
+                    _rq.record_deployment(
+                        environment=key,
+                        artifacts=charts,
+                        deployment_repo=repo_full,
+                        pr_number=promo_pr.number,
+                        note="release_promoted",
+                    )
+            except Exception:
+                pass
         return json.dumps({
             "ok": True,
             "action": "release_promoted" if merged else "promotion_pending",

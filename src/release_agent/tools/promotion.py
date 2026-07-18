@@ -963,6 +963,24 @@ def remove_from_release(image_names: str, environment: str = "staging", deployme
         + f"Removed {', '.join(removed)} from live {env} via PR chain. {_pr_chain_note(res['prs'])}"
         + _deploy_run_note(res)
     )
+    # BQ capture: live removals write 'removed' events so the per-environment
+    # deployed state derived from the event log stays accurate. A prod removal
+    # edits both prd and uat deployment files. Best-effort telemetry.
+    try:
+        from . import release_queue as _rq
+
+        terminal_pr = next((p.get("number") for p in reversed(res["prs"]) if p.get("number")), None)
+        for ev_env in (("prd", "uat") if env == "prod" else ("uat",)):
+            _rq.record_deployment(
+                environment=ev_env,
+                artifacts=[{"name": n} for n in removed],
+                deployment_repo=target_repo or active_deploy_repo(),
+                pr_number=terminal_pr,
+                note="removed_from_live",
+                event_type="removed",
+            )
+    except Exception:
+        pass
     return json.dumps(
         {"ok": True, "action": "removed", "environment": env,
          "removed": sorted(set(removed) | set(staged_removed)), "staging_pr": staging,
