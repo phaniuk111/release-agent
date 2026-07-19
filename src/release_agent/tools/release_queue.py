@@ -28,10 +28,10 @@ from typing import Any
 from ..config import settings
 
 # Reference schema. In cluster deployments the table is provisioned SEPARATELY
-# (DDL: bigquery/release_intents.sql; bq CLI schema: release_intents.schema.json)
+# (terraform: bigquery/terraform consuming bigquery/release_intents.schema.json)
 # and dataset/table names arrive via Helm values (BQ_DATASET / BQ_TABLE). This
 # list is only used by the dev-mode bootstrap (BQ_AUTO_CREATE=true) — keep the
-# DDL files in sync when adding columns.
+# JSON schema in sync when adding columns.
 _SCHEMA = [
     ("event_id", "STRING"),
     ("event_type", "STRING"),  # queued | withdrawn | released | deployed

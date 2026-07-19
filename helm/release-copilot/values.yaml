@@ -94,7 +94,7 @@ config:
   # Fail-closed: block a PRD release when any build control failed.
   PRD_REQUIRE_CONTROLS: "true"
   # --- Release intake queue + release/deploy analytics (BigQuery) ---
-  # The event table is provisioned SEPARATELY (see bigquery/release_intents.sql);
+  # The event table is provisioned SEPARATELY (terraform module in bigquery/);
   # the app only inserts/queries. Empty BQ_DATASET disables the feature.
   # Runtime SA needs roles/bigquery.dataEditor on the dataset + jobUser on the project.
   BQ_DATASET: "release_agent"

@@ -295,8 +295,8 @@ class Settings(BaseSettings):
     # the accumulated list when creating the release. Stored as an APPEND-ONLY
     # event table in BigQuery (no Cloud SQL needed at this volume). Empty dataset
     # name disables the feature entirely (all queue endpoints report disabled).
-    # The table is provisioned SEPARATELY (DDL in bigquery/release_intents.sql);
-    # dataset + table names arrive via env / Helm values.
+    # The table is provisioned SEPARATELY (terraform module + JSON schema in
+    # bigquery/); dataset + table names arrive via env / Helm values.
     bq_dataset: str = Field(
         default="release_agent",
         validation_alias=AliasChoices("BQ_DATASET", "RELEASE_BQ_DATASET"),

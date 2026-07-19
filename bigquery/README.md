@@ -1,20 +1,32 @@
 # BigQuery provisioning — release event log
 
 The Dev Portal's intake queue and release/deploy analytics use ONE append-only
-BigQuery table. It is provisioned **separately** from the app (DBA / terraform /
-CI), and the app receives the names via Helm values — the runtime service
-account needs no schema permissions.
+BigQuery table. It is provisioned **separately** from the app (terraform / CI —
+never by the runtime), and the app receives the names via Helm values — the
+runtime service account needs no schema permissions.
 
-## Create the table
+The schema's single source of truth is
+[release_intents.schema.json](release_intents.schema.json); the terraform
+module consumes it via `file()`, and it works directly with `bq mk` too.
 
-Option A — DDL (bq console or CLI). Edit `PROJECT.DATASET.TABLE` in
-[release_intents.sql](release_intents.sql), then:
+## Option A — Terraform (recommended)
 
-```bash
-bq query --use_legacy_sql=false < bigquery/release_intents.sql
+```hcl
+module "release_events" {
+  source                  = "./bigquery/terraform"
+  project_id              = "my-project"
+  runtime_service_account = "release-copilot@my-project.iam.gserviceaccount.com"
+  # dataset_id = "release_agent"   table_id = "release_intents"   location = "US"
+  # partition_expiration_days = 0  # retention for requested_by emails, per data policy
+}
 ```
 
-Option B — bq CLI with the JSON schema:
+Creates the dataset, the day-partitioned table (partitioned on `event_ts`,
+`deletion_protection = true`), and least-privilege IAM for the runtime SA
+(`roles/bigquery.dataEditor` on the dataset + `roles/bigquery.jobUser` on the
+project).
+
+## Option B — bq CLI with the JSON schema
 
 ```bash
 bq mk --dataset --location=US PROJECT:release_agent
@@ -38,25 +50,14 @@ config:
 Empty `BQ_DATASET` disables the whole feature (queue endpoints report disabled;
 releases/deploys are unaffected — capture is best-effort by design).
 
-## Runtime service-account IAM (least privilege)
-
-```bash
-# insert + select on the dataset only
-bq add-iam-policy-binding --member=serviceAccount:SA_EMAIL \
-  --role=roles/bigquery.dataEditor PROJECT:release_agent
-# run query jobs
-gcloud projects add-iam-policy-binding PROJECT \
-  --member=serviceAccount:SA_EMAIL --role=roles/bigquery.jobUser
-```
-
 ## Rules of the road
 
 - **Append-only.** The app only ever INSERTs; queue state and per-environment
   deployed state are derived (latest event per key wins). Never UPDATE/DELETE
   from the app — the event log is also the audit history.
-- **Schema changes** are additive nullable columns, applied by the DDL owner
-  (`ALTER TABLE ... ADD COLUMN`). Keep `release_intents.sql`,
-  `release_intents.schema.json` and `_SCHEMA` in
-  `src/release_agent/tools/release_queue.py` in sync.
-- Retention/PII: `requested_by` holds emails — apply your data policy via a
-  partition expiration or dataset default if required.
+- **Schema changes** are additive nullable columns: edit
+  `release_intents.schema.json`, `terraform apply` (BigQuery accepts additive
+  schema updates in place), and mirror the column in `_SCHEMA` in
+  `src/release_agent/tools/release_queue.py`.
+- Retention/PII: `requested_by` holds emails — set
+  `partition_expiration_days` per your data policy if required.
