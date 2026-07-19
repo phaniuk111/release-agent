@@ -68,6 +68,18 @@ config:
   SIT_BRANCH: "SIT"
   UAT_BRANCH: "UAT"
   PRD_BRANCH: "PRD"
+  # Second terminal environment branch alongside PRD (prl1_only charts stop at
+  # UAT/PRL1 and never reach PRD).
+  PRL1_BRANCH: "PRL1"
+  # --- CARE/DF release file-set model ---
+  # Path (inside DEPLOY_REPO) of the updater script that generates the release
+  # file-set from the transient release_details.json.
+  RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
+  # Prepended when a dev supplies bare name:version instead of a full URL.
+  ARTIFACTORY_BASE_URL: ""
+  # --- Dataflow flex-template deploys (workflow_dispatch) ---
+  DF_DEPLOY_REPO: ""
+  DF_DEPLOY_WORKFLOW: "df-deploy.yml"
   # One release at a time: while any OPEN PR targets one of these branches,
   # add-to-release is blocked. Empty = just PRD_BRANCH. e.g. "PRD,PRL1".
   RELEASE_GUARD_BRANCHES: ""

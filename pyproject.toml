@@ -22,6 +22,9 @@ dependencies = [
     "pyyaml>=6.0",
     # Release intake queue (append-only event table; serverless, no Cloud SQL)
     "google-cloud-bigquery>=3.25",
+    # The deployment repo's release updater script (run via sys.executable in
+    # prepare_release_fileset) round-trips workflow YAML with ruamel.
+    "ruamel.yaml>=0.18",
 ]
 
 [project.optional-dependencies]

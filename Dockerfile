@@ -55,6 +55,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# git is required at runtime: the CARE/DF release flow clones the deployment
+# repo, runs its updater script, commits and pushes (release_fileset.py).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Bring over the prebuilt venv and the application source only (no build tools, no uv).
 COPY --from=builder /opt/venv /opt/venv
 COPY src/ ./src/
