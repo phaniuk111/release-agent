@@ -90,7 +90,7 @@ def test_add_intent_normalizes_jira(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(RQ, "_insert", _fake_insert)
-    RQ.add_intent("svc-a:1.0.0", "dev@db.com", jira_ticket="acme-1234",
+    RQ.add_intent("svc-a:1.0.0", "dev@db.com", jira_ticket="rel-1234",
                   change_details="  why text  ")
     assert captured["row"]["jira_ticket"] == "REL-1234"
     assert captured["row"]["change_details"] == "why text"
