@@ -27,8 +27,11 @@ from typing import Any
 
 from ..config import settings
 
-_TABLE = "release_intents"
-
+# Reference schema. In cluster deployments the table is provisioned SEPARATELY
+# (DDL: bigquery/release_intents.sql; bq CLI schema: release_intents.schema.json)
+# and dataset/table names arrive via Helm values (BQ_DATASET / BQ_TABLE). This
+# list is only used by the dev-mode bootstrap (BQ_AUTO_CREATE=true) — keep the
+# DDL files in sync when adding columns.
 _SCHEMA = [
     ("event_id", "STRING"),
     ("event_type", "STRING"),  # queued | withdrawn | released | deployed
@@ -68,7 +71,9 @@ def _disabled() -> dict[str, Any]:
 
 
 def _get_client():
-    """BigQuery client + dataset/table bootstrap (idempotent, cached)."""
+    """BigQuery client. The table is expected to EXIST (provisioned separately);
+    the dev-only BQ_AUTO_CREATE flag turns on the dataset/table bootstrap and
+    additive column migration for local hacking."""
     global _client, _table_ready
     with _lock:
         if _client is not None and _table_ready:
@@ -77,7 +82,7 @@ def _get_client():
 
         if _client is None:
             _client = bigquery.Client(project=settings.gcp_project)
-        if not _table_ready:
+        if not _table_ready and settings.bq_auto_create:
             dataset_ref = bigquery.Dataset(f"{settings.gcp_project}.{settings.bq_dataset}")
             dataset_ref.location = settings.bq_location
             _client.create_dataset(dataset_ref, exists_ok=True)
@@ -87,20 +92,21 @@ def _get_client():
             )
             table.time_partitioning = bigquery.TimePartitioning(field="event_ts")
             _client.create_table(table, exists_ok=True)
-            # Additive schema migration: new nullable columns (e.g. environment)
-            # are appended to a table created by an older version of this module.
+            # Additive schema migration: new nullable columns are appended to a
+            # table created by an older version of this module (dev mode only —
+            # in cluster the DDL owner runs ALTER TABLE).
             live = _client.get_table(_table_id())
             have = {f.name for f in live.schema}
             missing = [bigquery.SchemaField(n, t) for n, t in _SCHEMA if n not in have]
             if missing:
                 live.schema = list(live.schema) + missing
                 _client.update_table(live, ["schema"])
-            _table_ready = True
+        _table_ready = True
         return _client
 
 
 def _table_id() -> str:
-    return f"{settings.gcp_project}.{settings.bq_dataset}.{_TABLE}"
+    return f"{settings.gcp_project}.{settings.bq_dataset}.{settings.bq_table}"
 
 
 def _now_iso() -> str:

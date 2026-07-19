@@ -1,0 +1,18 @@
+[
+  {"name": "event_id", "type": "STRING", "mode": "NULLABLE", "description": "UUID per event; used as insertId for best-effort dedup on retries"},
+  {"name": "event_type", "type": "STRING", "mode": "NULLABLE", "description": "queued | withdrawn | released | deployed | removed"},
+  {"name": "event_ts", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "UTC time the event was written"},
+  {"name": "requested_by", "type": "STRING", "mode": "NULLABLE", "description": "requester email (queued/withdrawn events)"},
+  {"name": "artifact_name", "type": "STRING", "mode": "NULLABLE", "description": "chart / image name"},
+  {"name": "artifact_version", "type": "STRING", "mode": "NULLABLE", "description": "version / tag"},
+  {"name": "prl1_only", "type": "BOOL", "mode": "NULLABLE", "description": "ship to UAT+PRL1 only, never PRD (queued events)"},
+  {"name": "df_only", "type": "BOOL", "mode": "NULLABLE", "description": "Dataflow image, excluded from helm deploys (queued events)"},
+  {"name": "note", "type": "STRING", "mode": "NULLABLE", "description": "note to DevOps or action tag (release_promoted / removed_from_live / df_workflow_dispatched)"},
+  {"name": "deployment_repo", "type": "STRING", "mode": "NULLABLE", "description": "target GitHub repo, owner/repo"},
+  {"name": "release_name", "type": "STRING", "mode": "NULLABLE", "description": "release the artifact shipped in (released events)"},
+  {"name": "pr_number", "type": "INT64", "mode": "NULLABLE", "description": "release / promotion / deploy PR number"},
+  {"name": "build_verified", "type": "BOOL", "mode": "NULLABLE", "description": "courtesy build check at queue time; null = not checked"},
+  {"name": "environment", "type": "STRING", "mode": "NULLABLE", "description": "deployed/removed events: uat | prd | prl1 | dataflow-uat"},
+  {"name": "jira_ticket", "type": "STRING", "mode": "NULLABLE", "description": "e.g. REL-1234; surfaces in the CHG draft"},
+  {"name": "change_details", "type": "STRING", "mode": "NULLABLE", "description": "dev what-changed-and-why; aggregated into change_description"}
+]

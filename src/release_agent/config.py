@@ -295,13 +295,26 @@ class Settings(BaseSettings):
     # the accumulated list when creating the release. Stored as an APPEND-ONLY
     # event table in BigQuery (no Cloud SQL needed at this volume). Empty dataset
     # name disables the feature entirely (all queue endpoints report disabled).
+    # The table is provisioned SEPARATELY (DDL in bigquery/release_intents.sql);
+    # dataset + table names arrive via env / Helm values.
     bq_dataset: str = Field(
         default="release_agent",
         validation_alias=AliasChoices("BQ_DATASET", "RELEASE_BQ_DATASET"),
     )
+    bq_table: str = Field(
+        default="release_intents",
+        validation_alias=AliasChoices("BQ_TABLE", "RELEASE_BQ_TABLE"),
+    )
     bq_location: str = Field(
         default="US",
         validation_alias=AliasChoices("BQ_LOCATION", "RELEASE_BQ_LOCATION"),
+    )
+    # Dev convenience only: create the dataset/table on first touch. Keep FALSE in
+    # cluster deployments — there the table is created separately (DDL/terraform)
+    # and the runtime service account needs no schema-mutation permissions.
+    bq_auto_create: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("BQ_AUTO_CREATE", "RELEASE_BQ_AUTO_CREATE"),
     )
 
     # App metadata (used by FastAPI)

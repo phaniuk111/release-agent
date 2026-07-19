@@ -81,6 +81,15 @@ config:
   CONTROL_PREFIXES: "RLFT,RFTL"
   # Fail-closed: block a PRD release when any build control failed.
   PRD_REQUIRE_CONTROLS: "true"
+  # --- Release intake queue + release/deploy analytics (BigQuery) ---
+  # The event table is provisioned SEPARATELY (see bigquery/release_intents.sql);
+  # the app only inserts/queries. Empty BQ_DATASET disables the feature.
+  # Runtime SA needs roles/bigquery.dataEditor on the dataset + jobUser on the project.
+  BQ_DATASET: "release_agent"
+  BQ_TABLE: "release_intents"
+  BQ_LOCATION: "US"
+  # Keep false in cluster (table pre-provisioned); true only for local dev bootstrap.
+  BQ_AUTO_CREATE: "false"
   # Deploy-target specifics — code defaults are generic. Set your real GKE namespaces
   # and helm chart dir here (or via --set / a private values file), not in source.
   # UAT_NAMESPACE: "default"
