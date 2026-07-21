@@ -218,6 +218,43 @@ def test_aggregate_env_state_latest_event_wins():
     assert out["distinct_images"] == 1  # only consumerA still deployed anywhere
 
 
+def test_bq_fully_optional_when_disabled():
+    """BQ is OPTIONAL: with no dataset configured every entry point returns a
+    calm disabled dict — never an exception — so releases/deploys (whose queue
+    writes are best-effort) and the UI (which renders the disabled shape) work
+    without the table existing at all. (conftest blanks bq_dataset globally.)"""
+    assert RQ.queue_enabled() is False
+    for result in (
+        RQ.current_queue(),
+        RQ.add_intent("svc-a:1.0.0", "dev@db.com"),
+        RQ.withdraw_intent("svc-a", "dev@db.com"),
+        RQ.record_deployment("uat", [{"name": "svc-a", "tag": "1.0.0"}]),
+        RQ.mark_released("R1", 1, [{"name": "svc-a", "tag": "1.0.0"}]),
+        RQ.history_stats(),
+        RQ.recent_deployments(),
+    ):
+        assert result["ok"] is False and result.get("disabled") is True
+    assert RQ.cached_queue_count() is None  # banner simply omits the count
+
+
+def test_bq_unreachable_degrades_not_raises(monkeypatch):
+    """Enabled-but-broken (missing table / network down): error dicts, never
+    exceptions, so a BQ outage can never block a release or deploy."""
+    monkeypatch.setattr(RQ.settings, "bq_dataset", "release_agent", raising=False)
+    monkeypatch.setattr(RQ.settings, "gcp_project", "some-project", raising=False)
+
+    def _boom(*a, **k):
+        raise RuntimeError("table not found")
+
+    monkeypatch.setattr(RQ, "_get_client", _boom)
+    monkeypatch.setattr(RQ, "_fetch_events", _boom)
+    assert RQ.current_queue()["ok"] is False
+    assert "unavailable" in RQ.add_intent("svc-a:1.0.0", "dev@db.com")["error"].lower()
+    assert RQ.record_deployment("uat", [{"name": "s", "tag": "1"}])["ok"] is False
+    assert RQ.history_stats()["ok"] is False
+    assert RQ.cached_queue_count() is None
+
+
 def test_validate_release_deployment_repo():
     payload = {
         "release_name": "R1",
