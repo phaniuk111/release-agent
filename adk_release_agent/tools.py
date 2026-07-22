@@ -152,60 +152,66 @@ def queue_release_intent(
     the requester's email, PRL1-only / Dataflow-only routing, optional note for
     DevOps, the change context — jira_ticket (e.g. REL-1234) and change_details
     (what changed and why) — and build_run_url, the GitHub Actions run that
-    built the tag. When build_run_url is given the run is checked NOW: a failed
-    build or failed RLFT/RFTL control makes the chart INELIGIBLE — nothing is
-    queued and the result lists exactly what failed (eligible=false,
-    failed_controls, failed_steps) so the dev can fix and re-run first. A clean
-    run queues as eligible (build_verified=true). Without a URL, a courtesy
-    tag check runs instead. Re-queuing a chart replaces its version."""
+    built the tag. build_run_url is REQUIRED: nothing is queued without it —
+    the run is checked NOW, and a failed build or failed RLFT/RFTL control
+    makes the chart INELIGIBLE (eligible=false with failed_controls and
+    failed_steps listed) so the dev fixes and re-runs first. A clean run
+    queues as eligible (build_verified=true). Re-queuing a chart replaces
+    its version."""
     from release_agent.tools import release_queue as _rq
 
     name, version = _rq._split_artifact(artifact)
     verified: bool | None = None
     warnings: list[str] = []
     run_url = str(build_run_url or "").strip()
-    if run_url:
-        # Eligibility gate: the dev pointed at the exact run — judge it.
-        try:
-            report = _invoke_tool("get_build_report", {"workflow_url": run_url})
-        except Exception as e:
-            report = {"found": False, "reason": str(e)}
-        if report.get("found"):
-            failed_controls = [c.get("control") for c in report.get("controls") or [] if c.get("failed")]
-            failed_steps = report.get("failed_steps") or []
-            if failed_controls or not report.get("run_succeeded"):
-                return {
-                    "ok": False,
-                    "eligible": False,
-                    "artifact": f"{name}:{version}",
-                    "run_url": (report.get("run") or {}).get("url") or run_url,
-                    "run_conclusion": (report.get("run") or {}).get("conclusion"),
-                    "failed_controls": failed_controls,
-                    "failed_steps": failed_steps,
-                    "gate": report.get("gate"),
-                    "reason": (
-                        "This build is NOT eligible for the release — fix the failures, "
-                        "re-run the build, then queue again with the new run."
-                    ),
-                }
-            verified = report.get("gate") == "PASS"
-            if report.get("gate") == "UNKNOWN":
-                warnings.append("Run succeeded but no RLFT/RFTL control steps were found in it.")
-            run_tag = str(report.get("tag") or "")
-            if version and run_tag and version not in run_tag and name not in run_tag:
-                warnings.append(
-                    f"The run built '{run_tag}', which doesn't obviously match {name}:{version} — double-check the URL."
-                )
-        else:
-            warnings.append(
-                f"Could not inspect the run ({report.get('reason')}) — queued without an eligibility verdict."
-            )
-    elif name and version:
-        try:
-            check = _invoke_tool("verify_image_tag_build", {"image": name, "tag": version})
-            verified = bool(check.get("verified")) if "verified" in check else None
-        except Exception:
-            verified = None
+    if not run_url:
+        return {
+            "ok": False,
+            "error": (
+                "The GitHub Actions run URL that built this tag is required — "
+                "I check the build and RLFT/RFTL controls before anything is "
+                "queued. Ask the developer for the run URL (…/actions/runs/<id>)."
+            ),
+        }
+    # Eligibility gate: the dev pointed at the exact run — judge it.
+    try:
+        report = _invoke_tool("get_build_report", {"workflow_url": run_url})
+    except Exception as e:
+        report = {"found": False, "reason": str(e)}
+    if not report.get("found"):
+        return {
+            "ok": False,
+            "error": (
+                f"Could not inspect that run ({report.get('reason')}). "
+                "Check the URL — it must be a GitHub Actions run "
+                "(…/actions/runs/<id>) in the build repo. Nothing was queued."
+            ),
+        }
+    failed_controls = [c.get("control") for c in report.get("controls") or [] if c.get("failed")]
+    failed_steps = report.get("failed_steps") or []
+    if failed_controls or not report.get("run_succeeded"):
+        return {
+            "ok": False,
+            "eligible": False,
+            "artifact": f"{name}:{version}",
+            "run_url": (report.get("run") or {}).get("url") or run_url,
+            "run_conclusion": (report.get("run") or {}).get("conclusion"),
+            "failed_controls": failed_controls,
+            "failed_steps": failed_steps,
+            "gate": report.get("gate"),
+            "reason": (
+                "This build is NOT eligible for the release — fix the failures, "
+                "re-run the build, then queue again with the new run."
+            ),
+        }
+    verified = report.get("gate") == "PASS"
+    if report.get("gate") == "UNKNOWN":
+        warnings.append("Run succeeded but no RLFT/RFTL control steps were found in it.")
+    run_tag = str(report.get("tag") or "")
+    if version and run_tag and version not in run_tag and name not in run_tag:
+        warnings.append(
+            f"The run built '{run_tag}', which doesn't obviously match {name}:{version} — double-check the URL."
+        )
     result = _rq.add_intent(
         artifact=artifact,
         requested_by=requested_by,

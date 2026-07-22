@@ -76,11 +76,11 @@ export async function showQueueForm() {
     const emailEl = mk('Your email *', 'q-email', 'you@company.com');
     emailEl.value = localStorage.getItem('queue_email') || '';
     const jiraEl = mk('JIRA / ticket (optional)', 'q-jira', 'e.g. REL-1234');
-    const runEl = mk('Build run URL (recommended)', 'q-run', 'https://github.com/…/actions/runs/…');
+    const runEl = mk('Build run URL *', 'q-run', 'https://github.com/…/actions/runs/…');
     wrap.appendChild(grid);
     const runHint = document.createElement('div');
     runHint.className = 'text-[10px] text-slate-600 -mt-1 mb-2';
-    runHint.textContent = 'With the run URL I check the build + RLFT/RFTL controls NOW and tell you if this can go in the release.';
+    runHint.textContent = 'Required — the run that built this tag. I check the build + RLFT/RFTL controls NOW and only queue release-eligible builds.';
     wrap.appendChild(runHint);
 
     // Change context: the dev's what-and-why becomes the CHG description draft
@@ -122,6 +122,9 @@ export async function showQueueForm() {
         err.textContent = '';
         const chart = chartEl.value.trim(), ver = verEl.value.trim(), email = emailEl.value.trim();
         if (!chart || !ver || !email) { err.textContent = 'Chart, version and your email are required.'; return; }
+        if (!runEl.value.trim() || runEl.value.indexOf('/actions/runs/') === -1) {
+            err.textContent = 'The build run URL is required (…/actions/runs/<id>) — it proves the tag is release-eligible.'; return;
+        }
         localStorage.setItem('queue_email', email);
         submit.disabled = true; submit.textContent = 'Queueing…';
         let result = null;

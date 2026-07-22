@@ -255,6 +255,24 @@ def test_bq_unreachable_degrades_not_raises(monkeypatch):
     assert RQ.cached_queue_count() is None
 
 
+def test_queue_intent_requires_run_url(monkeypatch):
+    """No build run URL -> nothing queued, and the error tells the agent to
+    ask the developer for it."""
+    from adk_release_agent import tools as T
+
+    inserted = []
+    monkeypatch.setattr(RQ, "add_intent", lambda **kw: inserted.append(kw) or {"ok": True})
+    out = T.queue_release_intent("svc-a:1.0.0", "dev@db.com")
+    assert out["ok"] is False and "run URL" in out["error"]
+    assert inserted == []
+
+    # Uninspectable URL is also a refusal, not a silent queue.
+    monkeypatch.setattr(T, "_invoke_tool", lambda *a, **k: {"found": False, "reason": "404"})
+    out = T.queue_release_intent("svc-a:1.0.0", "dev@db.com", build_run_url="https://x/actions/runs/1")
+    assert out["ok"] is False and "Nothing was queued" in out["error"]
+    assert inserted == []
+
+
 def test_queue_intent_blocks_ineligible_build(monkeypatch):
     """A build_run_url whose run failed its build or a control makes the chart
     INELIGIBLE: nothing is queued and the result names what failed."""

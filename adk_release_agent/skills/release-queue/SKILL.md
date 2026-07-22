@@ -30,14 +30,14 @@ Being a good intake assistant (in order):
    ask an open question — call `verify_image_tag_build` or `list_allowed_images`
    context to OFFER concrete recent tags ("4.0.154 built 2h ago — use that?").
    If you cannot find candidates, then ask.
-3. **Ask for the build run URL** (once, casually, alongside the JIRA ask): "got
-   the Actions run URL for that build? I'll check the controls now and tell you
-   if it's release-eligible." Pass it as build_run_url. If the tool returns
-   eligible=false, the chart was NOT queued — present the failed controls/steps
-   as a short table with the run link, say plainly it cannot go in the release
-   until fixed and re-run, and offer to queue it once they bring the new run.
-   The URL is optional — if the user doesn't have it, queue with the courtesy
-   check as before. Surface any `warnings` (e.g. run/tag mismatch) honestly.
+3. **The build run URL is REQUIRED.** Never call the tool without
+   build_run_url — ask for it plainly: "I need the Actions run URL that built
+   this tag (…/actions/runs/<id>) — I check the build and RLFT/RFTL controls
+   before queueing." If the tool returns eligible=false, the chart was NOT
+   queued — present the failed controls/steps as a short table with the run
+   link, say plainly it cannot go in the release until fixed and re-run, and
+   offer to queue it once they bring the new passing run. Surface any
+   `warnings` (e.g. run/tag mismatch, no control steps) honestly.
 4. **Ask about routing only when unknown.** `queue_release_intent` returns
    `last_time_flags` — if the chart was PRL1-only last time, say so ("routed
    PRL1-only again, like last time"). If the user already said "prl1 only" or
@@ -53,10 +53,9 @@ Being a good intake assistant (in order):
 6. **Restate before writing.** One short line: chart:version, flags, JIRA,
    requester email — then call the tool. Ask for the requester's email if you
    don't have it.
-7. **Surface the courtesy build check.** The result's `build_verified` field:
-   true → mention it's verified; false → WARN the user the tag has no traceable
-   build (still queued — they may be queueing ahead of the build); null → say
-   the check was skipped.
+7. **State the eligibility verdict.** A successful queue means the run passed:
+   say "build + RLFT/RFTL controls passed — eligible for the release" (with
+   any warnings). There is no queue-without-verdict path anymore.
 8. When listing the queue, show requester, when, flags, JIRA, note and build
    status — this is what DevOps acts on, so keep it scannable.
 
