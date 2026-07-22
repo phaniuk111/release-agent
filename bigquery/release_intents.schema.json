@@ -14,5 +14,6 @@
   {"name": "build_verified", "type": "BOOL", "mode": "NULLABLE", "description": "courtesy build check at queue time; null = not checked"},
   {"name": "environment", "type": "STRING", "mode": "NULLABLE", "description": "deployed/removed events: uat | prd | prl1 | dataflow-uat"},
   {"name": "jira_ticket", "type": "STRING", "mode": "NULLABLE", "description": "e.g. REL-1234; surfaces in the CHG draft"},
-  {"name": "change_details", "type": "STRING", "mode": "NULLABLE", "description": "dev what-changed-and-why; aggregated into change_description"}
+  {"name": "change_details", "type": "STRING", "mode": "NULLABLE", "description": "dev what-changed-and-why; aggregated into change_description"},
+  {"name": "build_run_url", "type": "STRING", "mode": "NULLABLE", "description": "GitHub Actions run that built the tag — eligibility evidence checked at queue time"}
 ]

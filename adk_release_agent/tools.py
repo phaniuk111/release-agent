@@ -146,20 +146,61 @@ def queue_release_intent(
     note: str = "",
     jira_ticket: str = "",
     change_details: str = "",
+    build_run_url: str = "",
 ) -> dict[str, Any]:
     """Register an artifact for the NEXT release (the intake queue): chart:version,
     the requester's email, PRL1-only / Dataflow-only routing, optional note for
-    DevOps, plus the change context — jira_ticket (e.g. REL-1234) and
-    change_details (what changed and why, one or two sentences). The context
-    pre-drafts the release's CHG description when DevOps creates it. Verifies
-    the tag against the build repo as a courtesy check (result includes
-    build_verified) and reports how the chart was routed last time. Re-queuing
-    a chart replaces its queued version (latest wins)."""
+    DevOps, the change context — jira_ticket (e.g. REL-1234) and change_details
+    (what changed and why) — and build_run_url, the GitHub Actions run that
+    built the tag. When build_run_url is given the run is checked NOW: a failed
+    build or failed RLFT/RFTL control makes the chart INELIGIBLE — nothing is
+    queued and the result lists exactly what failed (eligible=false,
+    failed_controls, failed_steps) so the dev can fix and re-run first. A clean
+    run queues as eligible (build_verified=true). Without a URL, a courtesy
+    tag check runs instead. Re-queuing a chart replaces its version."""
     from release_agent.tools import release_queue as _rq
 
     name, version = _rq._split_artifact(artifact)
     verified: bool | None = None
-    if name and version:
+    warnings: list[str] = []
+    run_url = str(build_run_url or "").strip()
+    if run_url:
+        # Eligibility gate: the dev pointed at the exact run — judge it.
+        try:
+            report = _invoke_tool("get_build_report", {"workflow_url": run_url})
+        except Exception as e:
+            report = {"found": False, "reason": str(e)}
+        if report.get("found"):
+            failed_controls = [c.get("control") for c in report.get("controls") or [] if c.get("failed")]
+            failed_steps = report.get("failed_steps") or []
+            if failed_controls or not report.get("run_succeeded"):
+                return {
+                    "ok": False,
+                    "eligible": False,
+                    "artifact": f"{name}:{version}",
+                    "run_url": (report.get("run") or {}).get("url") or run_url,
+                    "run_conclusion": (report.get("run") or {}).get("conclusion"),
+                    "failed_controls": failed_controls,
+                    "failed_steps": failed_steps,
+                    "gate": report.get("gate"),
+                    "reason": (
+                        "This build is NOT eligible for the release — fix the failures, "
+                        "re-run the build, then queue again with the new run."
+                    ),
+                }
+            verified = report.get("gate") == "PASS"
+            if report.get("gate") == "UNKNOWN":
+                warnings.append("Run succeeded but no RLFT/RFTL control steps were found in it.")
+            run_tag = str(report.get("tag") or "")
+            if version and run_tag and version not in run_tag and name not in run_tag:
+                warnings.append(
+                    f"The run built '{run_tag}', which doesn't obviously match {name}:{version} — double-check the URL."
+                )
+        else:
+            warnings.append(
+                f"Could not inspect the run ({report.get('reason')}) — queued without an eligibility verdict."
+            )
+    elif name and version:
         try:
             check = _invoke_tool("verify_image_tag_build", {"image": name, "tag": version})
             verified = bool(check.get("verified")) if "verified" in check else None
@@ -174,7 +215,12 @@ def queue_release_intent(
         build_verified=verified,
         jira_ticket=jira_ticket,
         change_details=change_details,
+        build_run_url=run_url,
     )
+    if result.get("ok"):
+        result["eligible"] = True if verified else None
+        if warnings:
+            result["warnings"] = warnings
     if result.get("ok"):
         result["build_verified"] = verified
         try:

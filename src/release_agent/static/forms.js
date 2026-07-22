@@ -76,7 +76,12 @@ export async function showQueueForm() {
     const emailEl = mk('Your email *', 'q-email', 'you@company.com');
     emailEl.value = localStorage.getItem('queue_email') || '';
     const jiraEl = mk('JIRA / ticket (optional)', 'q-jira', 'e.g. REL-1234');
+    const runEl = mk('Build run URL (recommended)', 'q-run', 'https://github.com/…/actions/runs/…');
     wrap.appendChild(grid);
+    const runHint = document.createElement('div');
+    runHint.className = 'text-[10px] text-slate-600 -mt-1 mb-2';
+    runHint.textContent = 'With the run URL I check the build + RLFT/RFTL controls NOW and tell you if this can go in the release.';
+    wrap.appendChild(runHint);
 
     // Change context: the dev's what-and-why becomes the CHG description draft
     // when DevOps opens Create release — the dev knows this better on Monday
@@ -132,22 +137,42 @@ export async function showQueueForm() {
                     note: noteEl.value.trim(),
                     jira_ticket: jiraEl.value.trim(),
                     change_details: detailsEl.value.trim(),
+                    build_run_url: runEl.value.trim(),
                 }),
             });
             result = await r.json();
         } catch (e) { result = { ok: false, error: String(e) }; }
         submit.disabled = false; submit.textContent = 'Queue it';
+        if (result && result.eligible === false) {
+            // The provided run failed its build or controls — NOT queued.
+            // Show the verdict with exactly what to fix; the form stays usable.
+            const items = (result.failed_controls || []).map(c => '❌ control: ' + c)
+                .concat((result.failed_steps || []).map(s => '❌ step: ' + (s.name || s) + (s.job ? ' (' + s.job + ')' : '')));
+            err.innerHTML = '';
+            const box = document.createElement('div');
+            box.className = 'w-full border border-red-500/40 bg-red-500/10 rounded-lg px-3 py-2 text-[11px] text-red-300';
+            box.innerHTML = '<b>Not eligible for the release — not queued.</b><br>' +
+                items.map(i => '<span class="font-mono">' + i + '</span>').join('<br>') +
+                '<br>Fix these, re-run the build, then queue again with the new run. ' +
+                (result.run_url ? '<a href="' + result.run_url + '" target="_blank" class="underline">open run</a>' : '');
+            row.parentNode.insertBefore(box, row);
+            return;
+        }
         if (!result || !result.ok) {
             err.textContent = (result && result.error) || 'Could not queue — try again.';
             return;
         }
-        // Replace the form with a human confirmation: build check + last-time context.
+        // Replace the form with a human confirmation: eligibility verdict + last-time context.
         const verified = result.build_verified;
-        const vBadge = verified === true
-            ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build verified</span>'
-            : verified === false
-                ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> no traceable build for this tag (queued anyway — is it built yet?)</span>'
-                : '<span class="text-slate-500">build check skipped</span>';
+        const vBadge = result.eligible === true
+            ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build + RLFT/RFTL controls passed — eligible for the release</span>'
+            : verified === true
+                ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build verified</span>'
+                : verified === false
+                    ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> no traceable build for this tag (queued anyway — is it built yet?)</span>'
+                    : '<span class="text-slate-500">build check skipped</span>';
+        const warn = (result.warnings || []).map(w =>
+            '<div class="text-[11px] text-amber-400 mt-1"><i class="fa-solid fa-triangle-exclamation"></i> ' + w + '</div>').join('');
         const last = result.last_shipped
             ? '<div class="text-[11px] text-slate-500 mt-1">Last shipped in “' + result.last_shipped.release_name +
               '” as ' + result.last_shipped.version + '.</div>' : '';
@@ -155,7 +180,7 @@ export async function showQueueForm() {
             '<div class="font-semibold text-emerald-300 mb-1"><i class="fa-solid fa-circle-check"></i> Queued for the next release</div>' +
             '<div class="text-xs text-slate-300 font-mono">' + chart + ':' + ver +
             (document.getElementById('q-prl1') && result.intent && result.intent.prl1_only ? ' · PRL1-only' : '') + '</div>' +
-            '<div class="text-[11px] mt-1">' + vBadge + '</div>' + last +
+            '<div class="text-[11px] mt-1">' + vBadge + '</div>' + warn + last +
             '<div class="text-[11px] text-slate-500 mt-2">You\'re done — it will be in the ' +
             '<b>' + (document.getElementById('q-df').checked ? 'DF' : 'CARE') + ' Release</b> form automatically. ' +
             'Withdraw any time from the Insights panel or by asking me.</div>';

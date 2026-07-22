@@ -255,6 +255,55 @@ def test_bq_unreachable_degrades_not_raises(monkeypatch):
     assert RQ.cached_queue_count() is None
 
 
+def test_queue_intent_blocks_ineligible_build(monkeypatch):
+    """A build_run_url whose run failed its build or a control makes the chart
+    INELIGIBLE: nothing is queued and the result names what failed."""
+    from adk_release_agent import tools as T
+
+    inserted = []
+    monkeypatch.setattr(RQ, "add_intent", lambda **kw: inserted.append(kw) or {"ok": True})
+
+    def _report(tool, args):
+        assert tool == "get_build_report"
+        return {
+            "found": True, "run_succeeded": False, "gate": "FAIL",
+            "run": {"url": args["workflow_url"], "conclusion": "failure"},
+            "controls": [
+                {"control": "RLFT approval gate", "passed": True, "failed": False},
+                {"control": "RFTL deploy control", "passed": False, "failed": True},
+            ],
+            "failed_steps": [{"job": "build", "name": "Build image", "conclusion": "failure"}],
+        }
+
+    monkeypatch.setattr(T, "_invoke_tool", _report)
+    out = T.queue_release_intent(
+        "svc-a:1.0.0", "dev@db.com", build_run_url="https://gh/actions/runs/1"
+    )
+    assert out["ok"] is False and out["eligible"] is False
+    assert out["failed_controls"] == ["RFTL deploy control"]
+    assert inserted == []  # nothing written to the queue
+
+
+def test_queue_intent_eligible_build_queues_verified(monkeypatch):
+    from adk_release_agent import tools as T
+
+    inserted = {}
+    monkeypatch.setattr(RQ, "add_intent", lambda **kw: inserted.update(kw) or {"ok": True})
+    monkeypatch.setattr(RQ, "_fetch_events", lambda *a, **k: [])
+    monkeypatch.setattr(T, "_invoke_tool", lambda tool, args: {
+        "found": True, "run_succeeded": True, "gate": "PASS",
+        "run": {"url": args["workflow_url"], "conclusion": "success"},
+        "controls": [{"control": "RLFT approval gate", "passed": True, "failed": False}],
+        "failed_steps": [], "tag": "svc-a-1.0.0",
+    })
+    out = T.queue_release_intent(
+        "svc-a:1.0.0", "dev@db.com", build_run_url="https://gh/actions/runs/2"
+    )
+    assert out["ok"] is True and out["eligible"] is True
+    assert inserted["build_verified"] is True
+    assert inserted["build_run_url"] == "https://gh/actions/runs/2"
+
+
 def test_validate_release_deployment_repo():
     payload = {
         "release_name": "R1",

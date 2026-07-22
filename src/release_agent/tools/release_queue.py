@@ -49,6 +49,7 @@ _SCHEMA = [
     ("environment", "STRING"),  # set on 'deployed' events: uat | prod | dataflow-uat
     ("jira_ticket", "STRING"),  # e.g. REL-1234 — audit link, surfaces in CHG draft
     ("change_details", "STRING"),  # dev's what-changed-and-why, feeds change_description
+    ("build_run_url", "STRING"),  # the Actions run that built the tag — eligibility evidence
 ]
 
 _lock = threading.Lock()
@@ -155,6 +156,7 @@ def add_intent(
     build_verified: bool | None = None,
     jira_ticket: str = "",
     change_details: str = "",
+    build_run_url: str = "",
 ) -> dict[str, Any]:
     """Queue an artifact for the next release. Re-queuing the same chart
     replaces it in the derived queue (latest event wins) — that's how a dev
@@ -182,6 +184,7 @@ def add_intent(
         "build_verified": build_verified,
         "jira_ticket": str(jira_ticket or "").strip().upper() or None,
         "change_details": str(change_details or "").strip() or None,
+        "build_run_url": str(build_run_url or "").strip() or None,
     }
     result = _insert([row])
     if result.get("ok"):
@@ -461,6 +464,7 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "build_verified": ev.get("build_verified"),
                 "jira_ticket": ev.get("jira_ticket") or "",
                 "change_details": ev.get("change_details") or "",
+                "build_run_url": ev.get("build_run_url") or "",
             }
         elif etype in ("withdrawn", "released"):
             state.pop(name, None)

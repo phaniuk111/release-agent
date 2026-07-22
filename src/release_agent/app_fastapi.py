@@ -365,6 +365,7 @@ class QueueAddRequest(BaseModel):
     note: str = ""
     jira_ticket: str = ""
     change_details: str = ""  # dev's what-changed-and-why → CHG draft on release day
+    build_run_url: str = ""  # Actions run that built the tag → eligibility check at queue time
 
 
 class QueueWithdrawRequest(BaseModel):
@@ -428,6 +429,7 @@ async def release_queue_add(req: QueueAddRequest):
         note=req.note,
         jira_ticket=req.jira_ticket,
         change_details=req.change_details,
+        build_run_url=req.build_run_url,
     )
 
 
