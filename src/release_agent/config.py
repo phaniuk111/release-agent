@@ -193,10 +193,12 @@ class Settings(BaseSettings):
         default=8,
         validation_alias=AliasChoices("REACT_MAX_TOOL_TURNS", "RELEASE_REACT_MAX_TOOL_TURNS"),
     )
-    # Step-name prefixes that mark release controls in the build pipeline
-    # (e.g. "RLFT approval gate", "RFTL0001 ..."). Comma-separated.
+    # Step/job-name prefixes that mark release controls in the build pipeline —
+    # matched case-insensitively against step AND job names. Live pipelines use
+    # RCTLDEF0001691-style SDLC control steps and the xSecurity-Gatekeeper gate;
+    # RLFT/RFTL are the demo-scaffolding names. Comma-separated env override.
     control_prefixes: Annotated[list[str], NoDecode] = Field(
-        default=["RLFT", "RFTL"],
+        default=["RLFT", "RFTL", "RCTLD", "xSecurity-Gatekeeper"],
         validation_alias=AliasChoices("CONTROL_PREFIXES", "RELEASE_CONTROL_PREFIXES"),
     )
     # Block a PRD release when any build control failed (fail-closed). When a build

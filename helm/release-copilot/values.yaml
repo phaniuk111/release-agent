@@ -89,8 +89,11 @@ config:
   # Lead time (days) required between raising the release and the change start_date.
   # 1 = the change request start_date must be tomorrow or later.
   PRD_LEAD_TIME_DAYS: "1"
-  # Step-name prefixes that mark release controls in the build pipeline.
-  CONTROL_PREFIXES: "RLFT,RFTL"
+  # Step/job-name prefixes that mark release controls in the build pipeline
+  # (case-insensitive; matched against steps AND whole jobs). RCTLD covers
+  # RCTLDEF0001691-style SDLC controls; add e.g. "Xray and Prisma,CodeQL" if
+  # scan steps should gate releases too.
+  CONTROL_PREFIXES: "RLFT,RFTL,RCTLD,xSecurity-Gatekeeper"
   # Fail-closed: block a PRD release when any build control failed.
   PRD_REQUIRE_CONTROLS: "true"
   # --- Release intake queue + release/deploy analytics (BigQuery) ---

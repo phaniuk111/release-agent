@@ -235,23 +235,47 @@ _FAIL_CONCLUSIONS = {"failure", "timed_out", "cancelled", "startup_failure", "ac
 
 
 def _is_control_step(name: str) -> bool:
-    return any(name.startswith(p) for p in settings.control_prefixes)
+    """Case-insensitive prefix match against CONTROL_PREFIXES — covers RLFT/RFTL
+    demo gates as well as live pipelines' RCTLDEF0001691-style SDLC controls
+    and xSecurity-Gatekeeper."""
+    low = name.lower()
+    return any(low.startswith(p.lower()) for p in settings.control_prefixes)
 
 
 def _collect_controls(run) -> list[dict]:
-    """Enumerate a build run's release-control steps (RLFT/RFTL...) with pass/fail."""
+    """Enumerate a build run's release controls with pass/fail. Controls may be
+    STEPS inside a job (RCTLDEF…, xSecurity-Gatekeeper in build-deploy-publish)
+    or entire JOBS named like a control — both are collected; skipped controls
+    are neither passed nor failed (they make the gate UNKNOWN, not PASS)."""
     controls = []
     for job in run.jobs():
-        for step in getattr(job, "steps", None) or []:
+        job_name = getattr(job, "name", "") or ""
+        steps = getattr(job, "steps", None) or []
+        matched_step = False
+        for step in steps:
             name = getattr(step, "name", "") or ""
             if not _is_control_step(name):
                 continue
+            matched_step = True
             concl = getattr(step, "conclusion", None)
             controls.append(
                 {
                     "control": name,
-                    "job": job.name,
+                    "job": job_name,
                     "status": getattr(step, "status", None),
+                    "conclusion": concl,
+                    "passed": concl == "success",
+                    "failed": concl in _FAIL_CONCLUSIONS,
+                }
+            )
+        # A whole job can BE the control (e.g. a security-scan job at top level).
+        if not matched_step and _is_control_step(job_name):
+            concl = getattr(job, "conclusion", None)
+            controls.append(
+                {
+                    "control": job_name,
+                    "job": job_name,
+                    "status": getattr(job, "status", None),
                     "conclusion": concl,
                     "passed": concl == "success",
                     "failed": concl in _FAIL_CONCLUSIONS,
