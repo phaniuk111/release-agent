@@ -5,14 +5,26 @@ metadata:
   adk_additional_tools:
     - verify_image_tag_build
     - get_build_controls
+    - get_build_report
     - get_recent_runs
 ---
 
-Use this skill when the user asks whether an image tag was built, whether release controls passed, or what RLFT/RFTL gates are associated with a build.
+Use this skill when the user asks whether an image tag was built, whether release controls passed, what RLFT/RFTL gates are associated with a build — or WHAT FAILED in a build ("my build failed, which step/control?").
 
 Rules:
 - Use `verify_image_tag_build` for image and tag provenance.
 - Use `get_build_controls` for RLFT/RFTL control details.
-- If image and tag cannot identify the run, ask for a GitHub Actions run id.
+- Use `get_build_report` when the user wants the failure diagnosis: it takes
+  image+tag OR a pasted GitHub Actions run URL and returns failed steps,
+  per-control pass/fail, the gate verdict, and built-from-main. Present it as
+  a markdown table (Step/Control | Job | Result with ✅/❌) after a one-line
+  summary with the run link — never raw JSON.
+- After reporting failures, tell the user plainly what to do next: failed
+  RLFT/RFTL controls must be fixed and the build re-run before this tag can
+  ship to PRD (this skill cannot approve, waive, or rerun controls); failed
+  ordinary steps mean fixing the build itself. Offer to check again once
+  they've re-run it.
+- If image and tag cannot identify the run, ask for the GitHub Actions run
+  id or URL.
 - Report control names and states exactly as returned by tools.
 - This skill is read-only and cannot approve, waive, or rerun controls.

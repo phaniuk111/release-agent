@@ -88,6 +88,19 @@ def get_build_controls(
     )
 
 
+def get_build_report(
+    image: str = "", tag: str = "", workflow_url: str = "", repo: str = ""
+) -> dict[str, Any]:
+    """Full build diagnosis for an image:tag OR a GitHub Actions run URL: which
+    STEPS failed, which RLFT/RFTL controls passed/failed (gate verdict), and
+    whether the tag was built from the default branch. Use when a developer
+    asks WHAT failed in their build/run and what to fix."""
+    return _invoke_tool(
+        "get_build_report",
+        {"image": image, "tag": tag, "workflow_url": workflow_url, "repo": repo},
+    )
+
+
 def remove_from_release(
     image_names: str, environment: str = "staging", deployment_repo: str = ""
 ) -> dict[str, Any]:
@@ -233,6 +246,7 @@ PR_TOOLS = [
 CONTROLS_TOOLS = [
     verify_image_tag_build,
     get_build_controls,
+    get_build_report,
     get_recent_runs,
 ]
 
