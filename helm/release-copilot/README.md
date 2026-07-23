@@ -3,7 +3,7 @@
 Deploys the **Release Copilot** (ADK + FastAPI) to **GKE** behind **Anthos Service Mesh (ASM / Istio)**.
 
 Renders:
-- **Deployment** — runs the FastAPI UI (`uvicorn release_agent.app_fastapi:app` on `:8000`), `/health` probes, ASM sidecar injection, Workload-Identity ServiceAccount, `GH_TOKEN` from a Secret, config via ConfigMap.
+- **Deployment** — runs the FastAPI UI (`uvicorn release_agent.app_fastapi:app` on `:8000`), `/health` probes, Workload-Identity ServiceAccount, `GH_TOKEN` from a Secret, config via ConfigMap.
 - **Service** — `ClusterIP` with a named `http` port (required by Istio).
 - **VirtualService** — routes your host to the Service through an ASM ingress gateway (120s route timeout so the SSE promote/PR-tracking flow isn't cut off).
 - Optional: **Gateway** (`gateway.enabled`), **DestinationRule** (`destinationRule.enabled`, session stickiness), chart-managed **Secret**, **ServiceAccount**.
@@ -101,7 +101,6 @@ pod logs and the fix is this values-only change — no image rebuild.
 | `config.BUILD_REPO` / `config.DEPLOY_REPO` | `phaniuk111/devops` / `phaniuk111/deployment-repo` | the two repos the agent operates on (code+build / GitOps) |
 | `githubToken.existingSecret` / `githubToken.value` | `""` | provide one; `existingSecret` preferred |
 | `serviceAccount.annotations` | `{}` | set `iam.gke.io/gcp-service-account` for WI |
-| `istioInjection` | `false` | pod-level inject annotation — leave false; the namespace `istio.io/rev` label handles injection |
 | `virtualService.hosts` / `.gateways` | example.com / `istio-ingress/asm-ingressgateway` | external host + ASM gateway |
 | `virtualService.timeout` | `120s` | use `0s` to fully disable for SSE |
 | `gateway.enabled` | `false` | create a Gateway instead of reusing a shared one |

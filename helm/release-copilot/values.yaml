@@ -13,20 +13,7 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Container entrypoint — runs the FastAPI app (matches the image's default CMD).
-command:
-  - python
-  - -m
-  - uvicorn
-  - release_agent.app_fastapi:app
-  - --app-dir
-  - src
-  - --host
-  - "0.0.0.0"
-  - --port
-  - "8000"
-args: []
-
+# The container runs the image's own CMD (uvicorn on :8000) — no override needed.
 containerPort: 8000
 
 # --- Corporate egress proxy (GKE deployments that reach GitHub via a proxy) ---
@@ -156,13 +143,8 @@ serviceAccount:
     # iam.gke.io/gcp-service-account: release-copilot@<PROJECT_ID>.iam.gserviceaccount.com
 
 # --- ASM / Istio sidecar injection ---
-# Sidecar injection comes from the NAMESPACE label (the standard mechanism):
+# Sidecar injection comes from the NAMESPACE label (nothing pod-level needed):
 #   kubectl label namespace <ns> istio.io/rev=asm-managed --overwrite
-# Leave this false when the namespace is labeled — the pod-level
-# sidecar.istio.io/inject annotation is redundant there (and it's the legacy
-# form). Set true only for clusters that rely on pod-level opt-in instead.
-istioInjection: false
-
 podAnnotations: {}
 podLabels: {}
 
