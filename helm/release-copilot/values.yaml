@@ -40,7 +40,9 @@ config:
   # GitHub Enterprise Server? Point the API client at it (e.g.
   # "https://github.corp.internal/api/v3"). Empty = public github.com.
   GITHUB_BASE_URL: ""
-  # REQUIRED for Vertex AI. Leave set to your GCP project id.
+  # REQUIRED — the project hosting VERTEX AI (and BQ, unless BQ_PROJECT is set).
+  # NOT the GKE cluster's own project when they differ: the app never needs the
+  # cluster project; cross-project access flows through Workload Identity.
   GOOGLE_CLOUD_PROJECT: ""
   GOOGLE_CLOUD_LOCATION: "us-central1"
   GEMINI_MODEL: "gemini-2.5-flash"
