@@ -101,7 +101,7 @@ pod logs and the fix is this values-only change — no image rebuild.
 | `config.BUILD_REPO` / `config.DEPLOY_REPO` | `phaniuk111/devops` / `phaniuk111/deployment-repo` | the two repos the agent operates on (code+build / GitOps) |
 | `githubToken.existingSecret` / `githubToken.value` | `""` | provide one; `existingSecret` preferred |
 | `serviceAccount.annotations` | `{}` | set `iam.gke.io/gcp-service-account` for WI |
-| `istioInjection` | `true` | adds `sidecar.istio.io/inject: "true"` |
+| `istioInjection` | `false` | pod-level inject annotation — leave false; the namespace `istio.io/rev` label handles injection |
 | `virtualService.hosts` / `.gateways` | example.com / `istio-ingress/asm-ingressgateway` | external host + ASM gateway |
 | `virtualService.timeout` | `120s` | use `0s` to fully disable for SSE |
 | `gateway.enabled` | `false` | create a Gateway instead of reusing a shared one |

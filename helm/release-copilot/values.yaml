@@ -156,10 +156,12 @@ serviceAccount:
     # iam.gke.io/gcp-service-account: release-copilot@<PROJECT_ID>.iam.gserviceaccount.com
 
 # --- ASM / Istio sidecar injection ---
-# For managed ASM, prefer labeling the namespace with the revision, e.g.:
+# Sidecar injection comes from the NAMESPACE label (the standard mechanism):
 #   kubectl label namespace <ns> istio.io/rev=asm-managed --overwrite
-# Setting this true also adds a pod-level injection annotation as a belt-and-braces.
-istioInjection: true
+# Leave this false when the namespace is labeled — the pod-level
+# sidecar.istio.io/inject annotation is redundant there (and it's the legacy
+# form). Set true only for clusters that rely on pod-level opt-in instead.
+istioInjection: false
 
 podAnnotations: {}
 podLabels: {}
