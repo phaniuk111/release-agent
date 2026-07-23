@@ -13,6 +13,10 @@ Use this skill when the user asks whether an image tag was built, whether releas
 
 Rules:
 - Use `verify_image_tag_build` for image and tag provenance.
+- There are TWO build repos: GKE services build in the default build repo,
+  Dataflow images in a separate one. For a Dataflow image, pass dataflow=true
+  on any image+tag lookup (run-URL lookups need nothing — the URL carries its
+  repo). If unsure which kind the image is, ask.
 - Use `get_build_controls` for RLFT/RFTL control details.
 - Use `get_build_report` when the user wants the failure diagnosis: it takes
   image+tag OR a pasted GitHub Actions run URL and returns failed steps,

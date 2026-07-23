@@ -63,6 +63,13 @@ class Settings(BaseSettings):
             "DEPLOY_REPO", "RELEASE_DEPLOY_REPO", "RELEASE_AGENT_DEPLOY_REPO"
         ),
     )
+    # Dataflow images are BUILT in a separate repo from the GKE services' build
+    # repo. Empty = fall back to BUILD_REPO. Used when verifying DF image tags /
+    # controls by image+tag (run-URL lookups carry their own repo).
+    df_build_repo: str = Field(
+        default="",
+        validation_alias=AliasChoices("DF_BUILD_REPO", "DATAFLOW_BUILD_REPO"),
+    )
     # Dataflow flex-template deploys: repo hosting the DF deploy workflow. Deploying
     # means workflow_dispatch of df_deploy_workflow with {image, tag, environment}.
     df_deploy_repo: str = Field(

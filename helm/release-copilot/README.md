@@ -114,6 +114,7 @@ pod logs and the fix is this values-only change — no image rebuild.
 | `config.PRL1_BRANCH` | `PRL1` | second terminal env branch (prl1_only charts never reach PRD) |
 | `config.RELEASE_UPDATER_SCRIPT` | `scripts/release/update_release_files.py` | deploy repo's file-set generator (CARE/DF releases) |
 | `config.ARTIFACTORY_BASE_URL` | `""` | prepended when devs give bare `name:version` |
+| `config.DF_BUILD_REPO` | `""` | Dataflow images' build repo (empty = BUILD_REPO) |
 | `config.DF_DEPLOY_REPO` / `.DF_DEPLOY_WORKFLOW` | `""` / `df-deploy.yml` | Dataflow workflow-dispatch deploys |
 | `config.CONTROL_PREFIXES` | `RLFT,RFTL,RCTLD,xSecurity-Gatekeeper` | control step/JOB prefixes, case-insensitive; add `Xray and Prisma,CodeQL` to gate on scans |
 | `config.BQ_DATASET` / `.BQ_TABLE` / `.BQ_LOCATION` | `release_agent` / `release_intents` / `US` | must match the terraform-provisioned table; empty dataset disables |

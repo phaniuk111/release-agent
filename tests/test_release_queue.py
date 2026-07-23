@@ -338,3 +338,21 @@ def test_validate_release_deployment_repo():
 
     _, errors = RF.validate_release({**payload, "deployment_repo": "not-a-repo"})
     assert any("deployment_repo" in e for e in errors)
+
+
+def test_build_repo_routing_for_dataflow(monkeypatch):
+    """Two build repos: DF images resolve to DF_BUILD_REPO on image+tag
+    lookups; explicit repo always wins; GKE images use the config default."""
+    from adk_release_agent import tools as T
+    from release_agent.config import settings
+
+    monkeypatch.setattr(settings, "df_build_repo", "org/df-build", raising=False)
+    captured = {}
+    monkeypatch.setattr(T, "_invoke_tool", lambda tool, args: captured.update(args) or {"ok": True})
+
+    T.verify_image_tag_build("df-img", "1.0", dataflow=True)
+    assert captured["repo"] == "org/df-build"
+    T.verify_image_tag_build("svc", "1.0")
+    assert captured["repo"] == ""  # tool layer falls back to BUILD_REPO
+    T.get_build_report(image="df-img", tag="1.0", repo="explicit/repo", dataflow=True)
+    assert captured["repo"] == "explicit/repo"

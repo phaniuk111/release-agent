@@ -73,31 +73,54 @@ def summarize_pr_controls(pr_number: int) -> dict[str, Any]:
     return _invoke_tool("summarize_pr_controls", {"pr_number": pr_number})
 
 
-def verify_image_tag_build(image: str, tag: str, repo: str = "") -> dict[str, Any]:
-    """Verify whether an image tag can be traced to a build workflow run."""
-    return _invoke_tool("verify_image_tag_build", {"image": image, "tag": tag, "repo": repo})
+def _build_repo_for(repo: str, dataflow: bool) -> str:
+    """Explicit repo wins; else Dataflow images resolve to DF_BUILD_REPO (their
+    builds live in a separate repo from the GKE services'); else config default."""
+    if repo:
+        return repo
+    if dataflow:
+        from release_agent.config import settings
+
+        return settings.df_build_repo
+    return ""
+
+
+def verify_image_tag_build(
+    image: str, tag: str, repo: str = "", dataflow: bool = False
+) -> dict[str, Any]:
+    """Verify whether an image tag can be traced to a build workflow run.
+    Set dataflow=true for Dataflow images — they are built in a different repo
+    (DF_BUILD_REPO) than the GKE services."""
+    return _invoke_tool(
+        "verify_image_tag_build",
+        {"image": image, "tag": tag, "repo": _build_repo_for(repo, dataflow)},
+    )
 
 
 def get_build_controls(
-    image: str = "", tag: str = "", repo: str = "", run_id: int = 0
+    image: str = "", tag: str = "", repo: str = "", run_id: int = 0, dataflow: bool = False
 ) -> dict[str, Any]:
-    """Read RLFT/RFTL build controls for an image tag or explicit workflow run id."""
+    """Read release build controls for an image tag or explicit workflow run id.
+    Set dataflow=true for Dataflow images (built in DF_BUILD_REPO)."""
     return _invoke_tool(
         "get_build_controls",
-        {"image": image, "tag": tag, "repo": repo, "run_id": run_id},
+        {"image": image, "tag": tag, "repo": _build_repo_for(repo, dataflow), "run_id": run_id},
     )
 
 
 def get_build_report(
-    image: str = "", tag: str = "", workflow_url: str = "", repo: str = ""
+    image: str = "", tag: str = "", workflow_url: str = "", repo: str = "", dataflow: bool = False
 ) -> dict[str, Any]:
     """Full build diagnosis for an image:tag OR a GitHub Actions run URL: which
-    STEPS failed, which RLFT/RFTL controls passed/failed (gate verdict), and
-    whether the tag was built from the default branch. Use when a developer
-    asks WHAT failed in their build/run and what to fix."""
+    STEPS failed, which controls (RCTLDEF/xSecurity-Gatekeeper/RLFT) passed or
+    failed (gate verdict), and whether the tag was built from the default
+    branch. Use when a developer asks WHAT failed in their build/run and what
+    to fix. A workflow_url carries its own repo; for image+tag lookups of
+    Dataflow images set dataflow=true (they build in DF_BUILD_REPO)."""
     return _invoke_tool(
         "get_build_report",
-        {"image": image, "tag": tag, "workflow_url": workflow_url, "repo": repo},
+        {"image": image, "tag": tag, "workflow_url": workflow_url,
+         "repo": _build_repo_for(repo, dataflow)},
     )
 
 

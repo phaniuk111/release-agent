@@ -65,7 +65,10 @@ config:
   RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
   # Prepended when a dev supplies bare name:version instead of a full URL.
   ARTIFACTORY_BASE_URL: ""
-  # --- Dataflow flex-template deploys (workflow_dispatch) ---
+  # --- Dataflow (separate repos from the GKE services) ---
+  # DF images BUILD in their own repo (empty = fall back to BUILD_REPO); DF
+  # deploys are a workflow_dispatch in the DF deploy repo.
+  DF_BUILD_REPO: ""
   DF_DEPLOY_REPO: ""
   DF_DEPLOY_WORKFLOW: "df-deploy.yml"
   # One release at a time: while any OPEN PR targets one of these branches,
