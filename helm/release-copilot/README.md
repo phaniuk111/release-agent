@@ -6,7 +6,7 @@ Renders:
 - **Deployment** — runs the FastAPI UI (`uvicorn release_agent.app_fastapi:app` on `:8000`), `/health` probes, Workload-Identity ServiceAccount, `GH_TOKEN` from a Secret, config via ConfigMap.
 - **Service** — `ClusterIP` with a named `http` port (required by Istio).
 - **VirtualService** — routes your host to the Service through an ASM ingress gateway (120s route timeout so the SSE promote/PR-tracking flow isn't cut off).
-- Optional: **Gateway** (`gateway.enabled`), **DestinationRule** (`destinationRule.enabled`, session stickiness), chart-managed **Secret**, **ServiceAccount**.
+- Optional: **Gateway** (`gateway.enabled`), chart-managed **Secret**, **ServiceAccount**.
 
 ## Prerequisites
 - A GKE cluster with **ASM enabled** (managed or in-cluster Istio) and an ingress gateway.
@@ -106,7 +106,6 @@ pod logs and the fix is this values-only change — no image rebuild.
 | `virtualService.hosts` / `.gateways` | example.com / `istio-ingress/asm-ingressgateway` | external host + ASM gateway |
 | `virtualService.timeout` | `120s` | use `0s` to fully disable for SSE |
 | `gateway.enabled` | `false` | create a Gateway instead of reusing a shared one |
-| `destinationRule.enabled` | `false` | enable with `replicaCount>1` for sticky sessions |
 | `config.ADK_CONTEXT_CACHE` | `true` | cache the static prompt prefix (root instruction + skills) |
 | `config.ADK_EVENT_COMPACTION` | `true` | summarize old events on long chat sessions |
 | `config.ADK_MEMORY_ENABLED` | `true` | preload memories + persist sessions (in-memory / per-pod) |
@@ -154,8 +153,7 @@ The agent keeps chat state, sessions, and long-term memory in **in-memory ADK se
 (session / artifact / memory), so it's single-pod by default (`replicaCount: 1`). These are
 per-pod and ephemeral — a **PVC does not persist them** (the memory service is pure RAM).
 To scale out or survive restarts, use a shared/durable backend (ADK `DatabaseSessionService`
-with SQLite-on-PVC for a single replica, or Postgres for many) **or** enable
-`destinationRule` (source-IP stickiness) so a client's thread stays on one pod.
+with SQLite-on-PVC for a single replica, or Postgres for many).
 
 ## Verify locally before applying
 ```bash

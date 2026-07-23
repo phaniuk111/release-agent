@@ -1,8 +1,8 @@
 # Default values for release-copilot.
 # Deploys the FastAPI production UI (port 8000) to GKE behind Anthos Service Mesh.
 
-replicaCount: 1   # In-memory ADK session/artifact services are per-pod; keep 1 unless
-                  # you add shared ADK storage (then enable destinationRule for stickiness).
+replicaCount: 1   # In-memory ADK session/artifact services are per-pod; keep 1
+                  # unless you add shared ADK storage.
 
 image:
   repository: ghcr.io/phaniuk111/release-copilot
@@ -235,12 +235,6 @@ gateway:
   tls: {}
     # mode: SIMPLE
     # credentialName: release-copilot-tls
-
-# --- Optional DestinationRule for session stickiness (needed if replicaCount>1) ---
-destinationRule:
-  enabled: false
-  consistentHash:
-    useSourceIp: true
 
 nodeSelector: {}
 tolerations: []
