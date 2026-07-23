@@ -120,6 +120,21 @@ config:
   ADK_MEMORY_ENABLED: "true"
   # Require confirmation before high-impact prod ops (merge PRD release / prod remove).
   ADK_CONFIRM_PROD_OPS: "true"
+  # --- Advanced (safe code defaults; uncomment to override) ---
+  # Any pydantic setting in src/release_agent/config.py can be set here — the
+  # ConfigMap passes every key under config: through as env verbatim.
+  # ADK_CONTEXT_CACHE_MIN_TOKENS: "2048"
+  # ADK_CONTEXT_CACHE_TTL_SECONDS: "1800"
+  # ADK_COMPACTION_INTERVAL: "20"
+  # ADK_COMPACTION_OVERLAP: "3"
+  # REACT_MAX_TOOL_TURNS: "8"
+  # PRD_ONCE_PER_DAY: "true"
+  # CHANGE_REQUEST_PATH: "change-request.json"
+  # DEPLOYMENT_PATH_PATTERN: "{env}/deployment.json"
+  # HELM_VALUES_PATTERN: "{env}/values_{env}.yaml"
+  # ENV_CONFIG_PATH: "configs/images.json"
+  # MANIFEST_PATH: "release-manifest.json"
+  # CONFIG_PATH: "image-workflows.json"
 
 # Extra raw env entries appended to the container (list of {name,value|valueFrom}).
 extraEnv: []
