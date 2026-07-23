@@ -70,24 +70,13 @@ proxy:
   # *.googleapis.com); override only if Vertex/BQ must also use the proxy.
 ```
 
-**Do you need `proxy.caBundle`?** Only if the proxy does TLS inspection. Decision
-test — from a pod in the target cluster/namespace:
-
-```bash
-kubectl run tlscheck --rm -it --image=python:3.11-slim \
-  --env=HTTPS_PROXY=http://proxy.corp.internal:3128 -- \
-  python -c "import requests; print(requests.get('https://api.github.com').status_code)"
-```
-
-- **200** → the proxy tunnels TLS (or bypasses inspection for GitHub): leave
-  `caBundle` unset — no volume, no cert env vars are rendered.
-- **SSLError: certificate verify failed** → the proxy intercepts TLS: put the
-  corporate root CA in a ConfigMap and set `proxy.caBundle.existingConfigMap`.
-  The chart mounts it and points `REQUESTS_CA_BUNDLE` + `SSL_CERT_FILE` at it
-  (verification stays ON — never disable TLS verification instead).
-
-If the proxy team later enables inspection, the symptom is that exact SSLError in
-pod logs and the fix is this values-only change — no image rebuild.
+The proxy must **tunnel** TLS (verified for this environment: a plain pod in the
+target cluster gets HTTP 200 through the proxy with certificate verification on).
+The chart deliberately carries no CA-bundle machinery. If the proxy team ever
+enables TLS inspection, the symptom is `certificate verify failed` in pod logs;
+the fix is mounting the corporate root CA and setting `REQUESTS_CA_BUNDLE` +
+`SSL_CERT_FILE` via `extraEnv` + a volume (or reintroducing chart support) —
+never disabling TLS verification.
 
 `config.GITHUB_BASE_URL` is unrelated to the proxy: leave it empty for github.com
 (the client then uses `api.github.com`); set it only for GitHub Enterprise Server
@@ -120,7 +109,6 @@ pod logs and the fix is this values-only change — no image rebuild.
 | `config.BQ_AUTO_CREATE` | `false` | keep false in cluster (table pre-provisioned) |
 | `config.RELEASE_GUARD_BRANCHES` | `""` | e.g. `SIT,UAT,PRD,PRL1` — one release at a time |
 | `proxy.httpsProxy` / `.httpProxy` / `.noProxy` | `""` | corporate egress proxy (see above) |
-| `proxy.caBundle.existingConfigMap` | unset | ONLY for TLS-inspecting proxies (see decision test) |
 
 ## Shared domain with a path prefix (multiple apps on one host)
 

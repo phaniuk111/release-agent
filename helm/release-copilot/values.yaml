@@ -25,10 +25,9 @@ proxy:
   httpsProxy: ""            # e.g. "http://proxy.corp.internal:3128"
   httpProxy: ""             # usually the same value
   noProxy: ""               # defaults to "localhost,127.0.0.1,metadata.google.internal,.googleapis.com"
-  # TLS-intercepting proxy? Mount its CA so requests/httpx trust it:
-  # caBundle:
-  #   existingConfigMap: corp-proxy-ca   # ConfigMap holding the PEM
-  #   key: ca.crt                        # key inside the ConfigMap
+  # NOTE: the proxy must tunnel TLS (verified: 200 from an in-cluster pod). If it
+  # ever switches to TLS inspection (symptom: "certificate verify failed"), mount
+  # the corp CA via extraEnv (REQUESTS_CA_BUNDLE + SSL_CERT_FILE) and a volume.
 
 # --- Non-secret configuration (rendered into a ConfigMap, injected via envFrom) ---
 config:
