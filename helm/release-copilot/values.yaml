@@ -112,6 +112,10 @@ config:
   # Require confirmation before high-impact prod ops (merge PRD release / prod remove).
   ADK_CONFIRM_PROD_OPS: "true"
   # --- Advanced (safe code defaults; uncomment to override) ---
+  # BQ in a DIFFERENT project than Vertex (three-project layouts). Empty = same
+  # project as GOOGLE_CLOUD_PROJECT (which should be the Vertex/BQ project —
+  # NOT the cluster's own project; the app never needs the cluster's project).
+  # BQ_PROJECT: ""
   # Any pydantic setting in src/release_agent/config.py can be set here — the
   # ConfigMap passes every key under config: through as env verbatim.
   # ADK_CONTEXT_CACHE_MIN_TOKENS: "2048"

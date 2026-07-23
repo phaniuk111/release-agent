@@ -59,8 +59,13 @@ _table_ready = False
 _count_cache: dict[str, Any] = {"at": 0.0, "count": None}
 
 
+def _bq_project() -> str:
+    """BQ may live in a different GCP project than Vertex; empty = same."""
+    return settings.bq_project or settings.gcp_project
+
+
 def queue_enabled() -> bool:
-    return bool(settings.bq_dataset and settings.gcp_project)
+    return bool(settings.bq_dataset and _bq_project())
 
 
 def _disabled() -> dict[str, Any]:
@@ -82,9 +87,9 @@ def _get_client():
         from google.cloud import bigquery
 
         if _client is None:
-            _client = bigquery.Client(project=settings.gcp_project)
+            _client = bigquery.Client(project=_bq_project())
         if not _table_ready and settings.bq_auto_create:
-            dataset_ref = bigquery.Dataset(f"{settings.gcp_project}.{settings.bq_dataset}")
+            dataset_ref = bigquery.Dataset(f"{_bq_project()}.{settings.bq_dataset}")
             dataset_ref.location = settings.bq_location
             _client.create_dataset(dataset_ref, exists_ok=True)
             table = bigquery.Table(
@@ -107,7 +112,7 @@ def _get_client():
 
 
 def _table_id() -> str:
-    return f"{settings.gcp_project}.{settings.bq_dataset}.{settings.bq_table}"
+    return f"{_bq_project()}.{settings.bq_dataset}.{settings.bq_table}"
 
 
 def _now_iso() -> str:

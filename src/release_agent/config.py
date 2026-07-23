@@ -306,6 +306,13 @@ class Settings(BaseSettings):
     # name disables the feature entirely (all queue endpoints report disabled).
     # The table is provisioned SEPARATELY (terraform module + JSON schema in
     # bigquery/); dataset + table names arrive via env / Helm values.
+    # BQ can live in a DIFFERENT GCP project than Vertex (GOOGLE_CLOUD_PROJECT)
+    # — e.g. GKE in project A, Vertex in B, the data warehouse in C. Empty =
+    # same project as Vertex. The GSA needs BQ roles in whichever project this is.
+    bq_project: str = Field(
+        default="",
+        validation_alias=AliasChoices("BQ_PROJECT", "RELEASE_BQ_PROJECT"),
+    )
     bq_dataset: str = Field(
         default="release_agent",
         validation_alias=AliasChoices("BQ_DATASET", "RELEASE_BQ_DATASET"),
