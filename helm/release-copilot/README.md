@@ -35,6 +35,8 @@ kubectl -n release create secret generic release-copilot-secrets \
 # 3) Install
 helm upgrade --install rc helm/release-copilot -n release \
   --set config.GOOGLE_CLOUD_PROJECT=<PROJECT_ID> \
+  --set config.BUILD_REPO=<org>/<build-repo> \
+  --set config.DEPLOY_REPO=<org>/<deploy-repo> \
   --set githubToken.existingSecret=release-copilot-secrets \
   --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=release-copilot@<PROJECT_ID>.iam.gserviceaccount.com \
   --set virtualService.hosts="{release-copilot.your-domain.com}" \
@@ -98,7 +100,7 @@ pod logs and the fix is this values-only change — no image rebuild.
 | `image.repository` / `image.tag` | `ghcr.io/phaniuk111/release-copilot` / appVersion | container image |
 | `config.GOOGLE_CLOUD_PROJECT` | `""` | **required** for Vertex AI |
 | `config.GEMINI_MODEL` | `gemini-2.5-flash` | Vertex model id |
-| `config.BUILD_REPO` / `config.DEPLOY_REPO` | `phaniuk111/devops` / `phaniuk111/deployment-repo` | the two repos the agent operates on (code+build / GitOps) |
+| `config.BUILD_REPO` / `config.DEPLOY_REPO` | `""` | **required** — owner/repo of the build repo and the GitOps deploy repo |
 | `githubToken.existingSecret` / `githubToken.value` | `""` | provide one; `existingSecret` preferred |
 | `serviceAccount.annotations` | `{}` | set `iam.gke.io/gcp-service-account` for WI |
 | `virtualService.hosts` / `.gateways` | example.com / `istio-ingress/asm-ingressgateway` | external host + ASM gateway |

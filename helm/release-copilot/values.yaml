@@ -32,10 +32,11 @@ proxy:
 
 # --- Non-secret configuration (rendered into a ConfigMap, injected via envFrom) ---
 config:
-  # Two repos: BUILD_REPO (code + config + builds/tags + RLFT controls) and DEPLOY_REPO
-  # (SIT/UAT/PRD GitOps branches). Legacy RELEASE_AGENT_TARGET_REPO is still accepted.
-  BUILD_REPO: "phaniuk111/devops"
-  DEPLOY_REPO: "phaniuk111/deployment-repo"
+  # REQUIRED — supplied per environment by the installer (--set / values file):
+  # BUILD_REPO (code + image catalog + builds/tags + controls) and DEPLOY_REPO
+  # (SIT/UAT/PRD/PRL1 GitOps branches). owner/repo format. No defaults on purpose.
+  BUILD_REPO: ""
+  DEPLOY_REPO: ""
   # GitHub Enterprise Server? Point the API client at it (e.g.
   # "https://github.corp.internal/api/v3"). Empty = public github.com.
   GITHUB_BASE_URL: ""
