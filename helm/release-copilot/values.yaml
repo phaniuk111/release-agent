@@ -30,95 +30,84 @@ proxy:
   # the corp CA via extraEnv (REQUESTS_CA_BUNDLE + SSL_CERT_FILE) and a volume.
 
 # --- Non-secret configuration (rendered into a ConfigMap, injected via envFrom) ---
+# Legend:  [REQUIRED]  app is broken without it — installer must set it
+#          [FEATURE]   required only when that feature is used; empty disables cleanly
+#          [OPTIONAL]  safe default — tune to your process
+# Keys marked "UI-overridable" are only the DEFAULT the forms pre-fill; a developer
+# can supply a different value per operation in the UI/chat.
 config:
-  # REQUIRED — supplied per environment by the installer (--set / values file):
-  # BUILD_REPO (code + image catalog + builds/tags + controls) and DEPLOY_REPO
-  # (SIT/UAT/PRD/PRL1 GitOps branches). owner/repo format. No defaults on purpose.
+  # ============================ [REQUIRED] ==================================
+  # Build repo: image catalog + build runs + controls. UI-overridable per lookup.
   BUILD_REPO: ""
+  # GitOps deploy repo (SIT/UAT/PRD/PRL1 branches). UI-overridable per deploy/release.
   DEPLOY_REPO: ""
-  # GitHub Enterprise Server? Point the API client at it (e.g.
-  # "https://github.corp.internal/api/v3"). Empty = public github.com.
-  GITHUB_BASE_URL: ""
-  # REQUIRED — the project hosting VERTEX AI (and BQ, unless BQ_PROJECT is set).
-  # NOT the GKE cluster's own project when they differ: the app never needs the
-  # cluster project; cross-project access flows through Workload Identity.
+  # The project hosting VERTEX AI (and BQ unless BQ_PROJECT is set). NOT the GKE
+  # cluster's own project — the app never needs the cluster project.
   GOOGLE_CLOUD_PROJECT: ""
   GOOGLE_CLOUD_LOCATION: "us-central1"
   GEMINI_MODEL: "gemini-2.5-flash"
-  # Route google-genai to Vertex AI (uses Workload Identity / ADC + the project
-  # above). Without this it defaults to AI Studio and needs a GEMINI_API_KEY.
+  # Route google-genai to Vertex (Workload Identity / ADC). Keep "true".
   GOOGLE_GENAI_USE_VERTEXAI: "true"
-  DEFAULT_WORKFLOW: "image-tag-step-report.yml"
-  ON_MERGE_WORKFLOW: "on-merge-deploy.yml"
-  # Comma-separated allow-list of workflows the agent may dispatch (enforced).
-  ALLOWED_WORKFLOWS: "image-tag-step-report.yml,release-promote.yml,create-deployment-pr.yml"
-  # Promotion branches in DEPLOY_REPO (SIT -> UAT -> PRD). Images accumulate on
-  # UAT through the day; the single UAT->PRD release PR is raised after the cutoff.
-  SIT_BRANCH: "SIT"
-  UAT_BRANCH: "UAT"
-  PRD_BRANCH: "PRD"
-  # Second terminal environment branch alongside PRD (prl1_only charts stop at
-  # UAT/PRL1 and never reach PRD).
-  PRL1_BRANCH: "PRL1"
-  # --- CARE/DF release file-set model ---
-  # Path (inside DEPLOY_REPO) of the updater script that generates the release
-  # file-set from the transient release_details.json.
-  RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
-  # Prepended when a dev supplies bare name:version instead of a full URL.
-  ARTIFACTORY_BASE_URL: ""
-  # --- Dataflow (separate repos from the GKE services) ---
-  # DF images BUILD in their own repo (empty = fall back to BUILD_REPO); DF
-  # deploys are a workflow_dispatch in the DF deploy repo.
+
+  # ==================== [FEATURE] set only if you use it ====================
+  # Dataflow: DF images build in their own repo (empty = BUILD_REPO fallback);
+  # a DF deploy is a workflow_dispatch in the DF deploy repo. DF_DEPLOY_REPO is
+  # UI-overridable via the DF form's Advanced field.
   DF_BUILD_REPO: ""
   DF_DEPLOY_REPO: ""
   DF_DEPLOY_WORKFLOW: "df-deploy.yml"
-  # One release at a time: while any OPEN PR targets one of these branches,
-  # add-to-release is blocked. Empty = just PRD_BRANCH. e.g. "PRD,PRL1".
-  RELEASE_GUARD_BRANCHES: ""
-  # Daily release window: the UAT->PRD PR may be raised only after this UTC hour
-  # (raising it locks the day). The UI shows today's window status.
-  PRD_CUTOFF_HOUR_UTC: "16"
-  # Lead time (days) required between raising the release and the change start_date.
-  # 1 = the change request start_date must be tomorrow or later.
-  PRD_LEAD_TIME_DAYS: "1"
-  # Step/job-name prefixes that mark release controls in the build pipeline
-  # (case-insensitive; matched against steps AND whole jobs). RCTLD covers
-  # RCTLDEF0001691-style SDLC controls; add e.g. "Xray and Prisma,CodeQL" if
-  # scan steps should gate releases too.
-  CONTROL_PREFIXES: "RLFT,RFTL,RCTLD,xSecurity-Gatekeeper"
-  # Fail-closed: block a PRD release when any build control failed.
-  PRD_REQUIRE_CONTROLS: "true"
-  # --- Release intake queue + release/deploy analytics (BigQuery) ---
-  # The event table is provisioned SEPARATELY (terraform module in bigquery/);
-  # the app only inserts/queries. Empty BQ_DATASET disables the feature.
-  # Runtime SA needs roles/bigquery.dataEditor on the dataset + jobUser on the project.
+  # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
+  # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
+  # EMPTY BQ_DATASET DISABLES the whole feature cleanly.
   BQ_DATASET: "release_agent"
   BQ_TABLE: "release_intents"
   BQ_LOCATION: "US"
-  # Keep false in cluster (table pre-provisioned); true only for local dev bootstrap.
-  BQ_AUTO_CREATE: "false"
-  # Deploy-target specifics — code defaults are generic. Set your real GKE namespaces
-  # and helm chart dir here (or via --set / a private values file), not in source.
+  BQ_AUTO_CREATE: "false"   # keep false in cluster; true only for local dev
+  # CARE/DF release forms: lets devs type bare name:version (they can always
+  # paste full URLs instead — UI-overridable per artifact line).
+  ARTIFACTORY_BASE_URL: ""
+  # GitHub Enterprise Server API root. Empty = public github.com (api.github.com).
+  GITHUB_BASE_URL: ""
+
+  # ================== [OPTIONAL] safe defaults — tune to process =============
+  # Promotion branches in DEPLOY_REPO; prl1_only charts stop at UAT/PRL1.
+  SIT_BRANCH: "SIT"
+  UAT_BRANCH: "UAT"
+  PRD_BRANCH: "PRD"
+  PRL1_BRANCH: "PRL1"
+  # One release at a time: adds are blocked while an OPEN PR targets one of
+  # these. Empty = just PRD_BRANCH. Recommended: "SIT,UAT,PRD,PRL1".
+  RELEASE_GUARD_BRANCHES: ""
+  # Control step/JOB name prefixes (case-insensitive): RCTLDEF... SDLC controls,
+  # xSecurity-Gatekeeper. Add "Xray and Prisma,CodeQL" to gate on scans too.
+  CONTROL_PREFIXES: "RLFT,RFTL,RCTLD,xSecurity-Gatekeeper"
+  # Fail-closed: block a PRD release when any build control failed.
+  PRD_REQUIRE_CONTROLS: "true"
+  # Release window policy.
+  PRD_CUTOFF_HOUR_UTC: "16"
+  PRD_LEAD_TIME_DAYS: "1"
+  # Path (inside DEPLOY_REPO) of the team's release file-set generator.
+  RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
+  # Workflows: allow-list fencing the dispatch capability (enforced in code);
+  # ON_MERGE is dispatched by chat "re-run the deploy for PR #N"; DEFAULT is the
+  # legacy tag-tracing hint (run-URL flows don't need it).
+  ALLOWED_WORKFLOWS: "image-tag-step-report.yml,release-promote.yml,create-deployment-pr.yml"
+  ON_MERGE_WORKFLOW: "on-merge-deploy.yml"
+  DEFAULT_WORKFLOW: "image-tag-step-report.yml"
+  # ADK runtime (leave true).
+  ADK_CONTEXT_CACHE: "true"
+  ADK_EVENT_COMPACTION: "true"
+  ADK_MEMORY_ENABLED: "true"    # in-memory / per-pod — keep replicaCount: 1
+  ADK_CONFIRM_PROD_OPS: "true"
+  # Deploy-target specifics (code defaults are generic; set your real values):
   # UAT_NAMESPACE: "default"
   # PRD_NAMESPACE: "default"
   # HELM_CHART_DIR: "charts"
-  # --- ADK 2.x runtime features (safe defaults; override per-env) ---
-  # Cache the static prompt prefix (root instruction + skill catalog).
-  ADK_CONTEXT_CACHE: "true"
-  # Summarize older events on long chat sessions to avoid context overflow.
-  ADK_EVENT_COMPACTION: "true"
-  # Preload relevant memories each turn + persist finished sessions. NOTE: the
-  # memory service is in-memory / per-pod / ephemeral (keep replicaCount: 1).
-  ADK_MEMORY_ENABLED: "true"
-  # Require confirmation before high-impact prod ops (merge PRD release / prod remove).
-  ADK_CONFIRM_PROD_OPS: "true"
-  # --- Advanced (safe code defaults; uncomment to override) ---
-  # BQ in a DIFFERENT project than Vertex (three-project layouts). Empty = same
-  # project as GOOGLE_CLOUD_PROJECT (which should be the Vertex/BQ project —
-  # NOT the cluster's own project; the app never needs the cluster's project).
-  # BQ_PROJECT: ""
-  # Any pydantic setting in src/release_agent/config.py can be set here — the
+
+  # ================== [ADVANCED] rarely changed (commented) =================
+  # Any pydantic setting in src/release_agent/config.py can go here — the
   # ConfigMap passes every key under config: through as env verbatim.
+  # BQ_PROJECT: ""                     # BQ in a different project than Vertex
   # ADK_CONTEXT_CACHE_MIN_TOKENS: "2048"
   # ADK_CONTEXT_CACHE_TTL_SECONDS: "1800"
   # ADK_COMPACTION_INTERVAL: "20"
