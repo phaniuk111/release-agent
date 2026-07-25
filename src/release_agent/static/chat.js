@@ -276,13 +276,30 @@ export async function sendMessage(overrideText) {
         let fullText = '';
         let isInterrupt = false;
         let buffer = '';
+        const steps = [];                     // progress labels for this turn
+        const chat = document.getElementById('chat');
 
         function handleEvent(rawEvent) {
             for (const line of rawEvent.split('\n')) {
                 if (!line.startsWith('data: ')) continue;
                 try {
                     const data = JSON.parse(line.slice(6));
-                    if (data.type === 'token') {
+                    if (data.type === 'progress') {
+                        // Multi-tool turns can run for a minute; show what the
+                        // agent is doing (steps accumulate, dimmed) instead of
+                        // silent dots. Cleared as soon as real text arrives.
+                        if (!fullText) {
+                            steps.push(escapeHtml(data.content));
+                            botMsg.querySelector('div').innerHTML =
+                                '<div class="text-[11px] text-slate-500 space-y-0.5">' +
+                                steps.map((s, i) => '<div>' +
+                                    (i === steps.length - 1
+                                        ? '<span class="dots"><span></span><span></span><span></span></span> '
+                                        : '<i class="fa-solid fa-check text-emerald-500/70 mr-1"></i>') +
+                                    s + '</div>').join('') + '</div>';
+                            chat.scrollTop = chat.scrollHeight;
+                        }
+                    } else if (data.type === 'token') {
                         fullText += (fullText ? '\n\n' : '') + data.content;
                         botMsg.querySelector('div').innerHTML = renderMarkdown(fullText);
                         renderCharts(botMsg);

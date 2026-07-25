@@ -15,6 +15,10 @@ def _sse_payloads(text: str):
     return out
 
 
+def _interrupt(payloads):
+    return next(p["data"] for p in payloads if p["type"] == "interrupt")
+
+
 def test_chat_endpoint_uses_adk_deploy_preview_path():
     deploy._PENDING_PREVIEWS.clear()
     client = TestClient(app)
@@ -26,9 +30,12 @@ def test_chat_endpoint_uses_adk_deploy_preview_path():
 
     assert res.status_code == 200
     payloads = _sse_payloads(res.text)
-    assert [p["type"] for p in payloads] == ["token", "interrupt", "done"]
+    # progress events are advisory UI chatter and may appear anywhere
+    assert [p["type"] for p in payloads if p["type"] != "progress"] == [
+        "token", "interrupt", "done",
+    ]
     assert "uat/deployment.json" in payloads[0]["content"]
-    assert payloads[1]["data"]["token"].startswith("CONFIRM-")
+    assert _interrupt(payloads)["token"].startswith("CONFIRM-")
 
 
 def test_chat_endpoint_applies_confirmed_adk_deploy(monkeypatch):
@@ -38,7 +45,7 @@ def test_chat_endpoint_applies_confirmed_adk_deploy(monkeypatch):
         "/api/chat",
         json={"thread_id": "fastapi-adk-apply", "message": "deploy abc-client-api-svc:1.1.1230 to uat"},
     )
-    token = _sse_payloads(preview.text)[1]["data"]["token"]
+    token = _interrupt(_sse_payloads(preview.text))["token"]
     calls = []
 
     def fake_invoke(name, args):

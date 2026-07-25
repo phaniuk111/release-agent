@@ -260,8 +260,12 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("ADK_CONTEXT_CACHE", "RELEASE_ADK_CONTEXT_CACHE"),
     )
+    # Gemini 2.5 Flash caches from 1024 tokens; the old 2048 default sat ABOVE
+    # this app's prompt prefix (~1.1k tokens), so nothing was ever cached
+    # ("Previous request too small for caching (1079 < 2048)"). 1024 = cache
+    # from the smallest size the model supports.
     adk_context_cache_min_tokens: int = Field(
-        default=2048,
+        default=1024,
         validation_alias=AliasChoices(
             "ADK_CONTEXT_CACHE_MIN_TOKENS", "RELEASE_ADK_CONTEXT_CACHE_MIN_TOKENS"
         ),

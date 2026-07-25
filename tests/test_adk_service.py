@@ -16,15 +16,25 @@ def _token_events(events):
     return [event for event in events if event.get("type") == "token"]
 
 
+def _types(events):
+    """Event types EXCLUDING progress — progress is advisory UI chatter that may
+    appear anywhere in a turn, so contract assertions ignore it."""
+    return [e["type"] for e in events if e.get("type") != "progress"]
+
+
+def _interrupt(events):
+    return next(e["data"] for e in events if e.get("type") == "interrupt")
+
+
 def test_adk_service_streams_deterministic_deploy_preview():
     deploy._PENDING_PREVIEWS.clear()
     service = AdkChatService()
 
     events = _collect(service, "deploy abc-client-api-svc:1.1.1230 to uat")
 
-    assert [event["type"] for event in events] == ["token", "interrupt", "done"]
+    assert _types(events) == ["token", "interrupt", "done"]
     assert "uat/deployment.json" in _token_events(events)[0]["content"]
-    interrupt = events[1]["data"]
+    interrupt = _interrupt(events)
     assert interrupt["type"] == "confirmation"
     assert interrupt["token"].startswith("CONFIRM-")
     assert interrupt["token"] in deploy._PENDING_PREVIEWS
@@ -34,7 +44,7 @@ def test_adk_service_confirmation_applies_pending_deploy(monkeypatch):
     deploy._PENDING_PREVIEWS.clear()
     service = AdkChatService()
     preview_events = _collect(service, "deploy abc-client-api-svc:1.1.1230 to uat")
-    token = preview_events[1]["data"]["token"]
+    token = _interrupt(preview_events)["token"]
     calls = []
 
     def fake_invoke(name, args):
@@ -45,7 +55,10 @@ def test_adk_service_confirmation_applies_pending_deploy(monkeypatch):
 
     events = _collect(service, token)
 
-    assert events == [{"type": "token", "content": "deployed via test"}, {"type": "done"}]
+    assert [e for e in events if e.get("type") != "progress"] == [
+        {"type": "token", "content": "deployed via test"},
+        {"type": "done"},
+    ]
     assert calls == [
         (
             "open_release_pr",
@@ -79,6 +92,33 @@ def test_adk_service_accepts_ui_deploy_json_payload():
 
     events = _collect(service, payload)
 
-    interrupt = events[1]["data"]
+    interrupt = _interrupt(events)
     assert interrupt["environment"] == "prod"
     assert {"uat/deployment.json", "prd/deployment.json"} == set(interrupt["proposed"])
+
+
+def test_progress_events_describe_tool_calls():
+    """Long turns stream `progress` labels so the UI shows what the agent is
+    doing instead of silent dots. Labels are human text, never raw tool names
+    for known tools, and the HITL confirmation call is excluded (it becomes an
+    interrupt of its own)."""
+    from types import SimpleNamespace
+
+    from release_agent import adk_service as S
+
+    def call(name, args=None):
+        return SimpleNamespace(name=name, args=args or {})
+
+    event = SimpleNamespace(get_function_calls=lambda: [
+        call("release_stats"),
+        call("load_skill", {"skill_name": "release-queue"}),
+        call("some_new_tool"),
+        call(S._REQUEST_CONFIRMATION),
+    ])
+    assert S._progress_events(event) == [
+        "Reading the release history",
+        "Loading release-queue guidance",
+        "Some new tool",
+    ]
+    # no function calls -> no progress
+    assert S._progress_events(SimpleNamespace(get_function_calls=lambda: [])) == []

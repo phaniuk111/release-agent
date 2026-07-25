@@ -108,7 +108,7 @@ config:
   # Any pydantic setting in src/release_agent/config.py can go here — the
   # ConfigMap passes every key under config: through as env verbatim.
   # BQ_PROJECT: ""                     # BQ in a different project than Vertex
-  # ADK_CONTEXT_CACHE_MIN_TOKENS: "2048"
+  # ADK_CONTEXT_CACHE_MIN_TOKENS: "1024"   # Gemini 2.5 Flash minimum; below this nothing caches
   # ADK_CONTEXT_CACHE_TTL_SECONDS: "1800"
   # ADK_COMPACTION_INTERVAL: "20"
   # ADK_COMPACTION_OVERLAP: "3"

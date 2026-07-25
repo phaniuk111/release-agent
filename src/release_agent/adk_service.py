@@ -125,6 +125,57 @@ def _pending_call_from_event(event: Any) -> PendingAdkCall | None:
     return None
 
 
+# Human labels for the tool calls a turn makes, streamed as `progress` events so
+# the UI shows what the agent is doing instead of dots. A multi-tool turn (load a
+# skill -> query -> answer) can take a minute against Gemini; silence reads as a
+# hang. Unmapped tools fall back to their humanized name, so new tools need no
+# entry here.
+_TOOL_LABELS = {
+    "release_stats": "Reading the release history",
+    "list_release_queue": "Reading the next-release queue",
+    "queue_release_intent": "Checking the build and queueing",
+    "withdraw_release_intent": "Withdrawing from the queue",
+    "check_release_window": "Checking the release window",
+    "list_allowed_images": "Reading the image catalog",
+    "get_recent_runs": "Listing recent workflow runs",
+    "get_workflow_status": "Checking the workflow run",
+    "find_prs": "Searching pull requests",
+    "get_pr_details": "Reading the pull request",
+    "get_pr_comments": "Reading PR comments",
+    "summarize_pr_controls": "Summarizing PR controls",
+    "verify_image_tag_build": "Verifying the build for this tag",
+    "get_build_controls": "Reading the build controls",
+    "get_build_report": "Diagnosing the build run",
+    "promote_release": "Promoting the release file-set",
+    "remove_from_release": "Removing from the release",
+    "merge_prod_release": "Releasing the staged PRD batch",
+    "retrigger_deployment_workflow": "Re-running the deployment workflow",
+}
+
+
+def _progress_label(name: str, args: dict[str, Any]) -> str:
+    """One short present-tense line describing a tool call."""
+    if "skill" in name:
+        skill = str(args.get("skill_name") or args.get("name") or "").strip()
+        return f"Loading {skill} guidance" if skill else "Loading skill guidance"
+    label = _TOOL_LABELS.get(name)
+    if label:
+        return label
+    return (name or "working").replace("_", " ").strip().capitalize()
+
+
+def _progress_events(event: Any) -> list[str]:
+    """Progress labels for an ADK event's tool calls (HITL pauses excluded —
+    those surface as their own interrupt)."""
+    labels: list[str] = []
+    for call in event.get_function_calls() or []:
+        name = getattr(call, "name", "") or ""
+        if not name or name == _REQUEST_CONFIRMATION:
+            continue
+        labels.append(_progress_label(name, dict(getattr(call, "args", None) or {})))
+    return labels
+
+
 def _content_from_pending_reply(text: str, pending: PendingAdkCall) -> types.Content:
     """Build the function-response that resumes a paused tool confirmation."""
     if pending.function_name == _REQUEST_CONFIRMATION:
@@ -269,6 +320,8 @@ class AdkChatService:
         async for event in self.deploy_runner.run_async(
             user_id=_USER_ID, session_id=thread_id, new_message=_content_from_text(message)
         ):
+            for label in _progress_events(event):
+                yield {"type": "progress", "content": label}
             text = _text_from_event(event)
             if text:
                 yield {"type": "token", "content": text}
@@ -328,6 +381,8 @@ class AdkChatService:
             invocation_id=invocation_id,
             new_message=content,
         ):
+            for label in _progress_events(event):
+                yield {"type": "progress", "content": label}
             text = _text_from_event(event)
             if text:
                 yield {"type": "token", "content": text}
