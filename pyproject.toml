@@ -7,7 +7,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     # Core agent framework — 2.3+ for App, plugins, and the Workflow graph API.
-    "google-adk>=2.3",
+    "google-adk>=2.5",
     # Vertex AI Gemini
     "google-genai>=1.0",
     # Web server (production UI)

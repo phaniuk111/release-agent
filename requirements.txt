@@ -50,7 +50,7 @@ fastapi==0.138.1
     # via
     #   google-adk
     #   release-copilot
-google-adk==2.3.0
+google-adk==2.5.0
     # via release-copilot
 google-api-core==2.32.0
     # via
