@@ -126,10 +126,23 @@ function _renderTables(t) {
     return out.join('\n');
 }
 
+// HTML-escape untrusted text before it enters innerHTML. Quotes MUST be escaped
+// too: model output and tool results (PR titles, branch names, BQ notes) can
+// carry a `"` that would otherwise break out of an attribute value — the
+// indirect-prompt-injection path ADK's safety guidance calls out.
+export function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .split('&').join('&amp;')
+        .split('<').join('&lt;')
+        .split('>').join('&gt;')
+        .split('"').join('&quot;')
+        .split("'").join('&#39;');
+}
+
 // Minimal, safe markdown -> HTML for streamed assistant text.
 export function renderMarkdown(t) {
     t = _extractChartBlocks(t);
-    t = t.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;');
+    t = escapeHtml(t);
     // [text](url) markdown links -> stash so the bare-URL linkifier below
     // doesn't double-wrap the URL inside the href attribute.
     const _links = [];

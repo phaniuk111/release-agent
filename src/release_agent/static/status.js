@@ -2,9 +2,10 @@
 // { date_utc, now_utc, uat_charts, prd_charts,
 //   prd_release_pr: {number,url,charts,can_merge_now}, pending_to_prod, reason }
 import { API_BASE } from './state.js';
+import { escapeHtml as esc } from './chat.js';
 
 function _chartList(arr) {
-    return (arr || []).map(function(c){ return c.helm_chart_name + ':' + c.helm_chart_version; })
+    return (arr || []).map(function(c){ return esc(c.helm_chart_name) + ':' + esc(c.helm_chart_version); })
         .join(' &nbsp;│&nbsp; ');
 }
 
@@ -39,19 +40,19 @@ export async function loadReleaseStatus() {
             ? ' · ' + s.queued_next + ' queued for next release' : '';
         const blkDetail = blk
             ? '<br><span class="text-amber-400">⚠ Adds to the release are blocked: ' +
-              '<a href="' + blk.url + '" target="_blank" class="underline">PR #' + blk.number +
-              '</a> (' + blk.head + ' → ' + blk.base + ') is open — merge or close it first.</span>'
+              '<a href="' + esc(blk.url) + '" target="_blank" class="underline">PR #' + esc(blk.number) +
+              '</a> (' + esc(blk.head) + ' → ' + esc(blk.base) + ') is open — merge or close it first.</span>'
             : '';
         const pr = s.prd_release_pr;
         if (pr) {
             const n = (s.pending_to_prod || []).length;
             dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
             title.textContent = 'Release PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged' + blkTitle + qTitle;
-            let html = (s.reason ? s.reason + ' · ' : '') + foot;
+            let html = (s.reason ? esc(s.reason) + ' · ' : '') + foot;
             if ((pr.charts || []).length) {
                 html += '<br><span>staged: ' + _chartList(pr.charts) + '</span>';
             }
-            html += ' &nbsp;<a href="' + pr.url + '" target="_blank" class="underline text-emerald-400">open PR #' + pr.number + '</a>';
+            html += ' &nbsp;<a href="' + esc(pr.url) + '" target="_blank" class="underline text-emerald-400">open PR #' + esc(pr.number) + '</a>';
             html += blkDetail;
             detail.innerHTML = html;
             return;
@@ -60,7 +61,7 @@ export async function loadReleaseStatus() {
             ? 'w-2 h-2 rounded-full bg-amber-400 inline-block'
             : 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
         title.textContent = 'No release open · PRD: ' + (s.prd_charts || []).length + ' charts' + blkTitle + qTitle;
-        detail.innerHTML = (s.reason ? s.reason + ' · ' : '') + foot + blkDetail;
+        detail.innerHTML = (s.reason ? esc(s.reason) + ' · ' : '') + foot + blkDetail;
     } catch (e) {
         banner.classList.remove('hidden');
         dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';

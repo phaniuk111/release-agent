@@ -3,7 +3,7 @@
 // form sends a JSON payload through the normal /api/chat SSE flow; the backend
 // previews the exact change and asks for the CONFIRM token.
 import { API_BASE } from './state.js';
-import { sendMessage } from './chat.js';
+import { sendMessage, escapeHtml as esc } from './chat.js';
 import { loadReleaseStatus } from './status.js';
 
 
@@ -38,10 +38,10 @@ export async function showQueueForm() {
         ctx.queue.forEach(q => {
             const row = document.createElement('div');
             row.className = 'flex justify-between gap-2 py-0.5';
-            row.innerHTML = '<span class="truncate">' + q.artifact_name + ':' + q.artifact_version +
+            row.innerHTML = '<span class="truncate">' + esc(q.artifact_name) + ':' + esc(q.artifact_version) +
                 (q.prl1_only ? ' <span class="text-violet-400">PRL1</span>' : '') +
                 (q.df_only ? ' <span class="text-sky-400">DF</span>' : '') + '</span>' +
-                '<span class="text-slate-600 truncate">' + (q.requested_by || '').split('@')[0] + '</span>';
+                '<span class="text-slate-600 truncate">' + esc((q.requested_by || '').split('@')[0]) + '</span>';
             list.appendChild(row);
         });
         wrap.appendChild(list);
@@ -149,15 +149,15 @@ export async function showQueueForm() {
         if (result && result.eligible === false) {
             // The provided run failed its build or controls — NOT queued.
             // Show the verdict with exactly what to fix; the form stays usable.
-            const items = (result.failed_controls || []).map(c => '❌ control: ' + c)
-                .concat((result.failed_steps || []).map(s => '❌ step: ' + (s.name || s) + (s.job ? ' (' + s.job + ')' : '')));
+            const items = (result.failed_controls || []).map(c => '❌ control: ' + esc(c))
+                .concat((result.failed_steps || []).map(s => '❌ step: ' + esc(s.name || s) + (s.job ? ' (' + esc(s.job) + ')' : '')));
             err.innerHTML = '';
             const box = document.createElement('div');
             box.className = 'w-full border border-red-500/40 bg-red-500/10 rounded-lg px-3 py-2 text-[11px] text-red-300';
             box.innerHTML = '<b>Not eligible for the release — not queued.</b><br>' +
                 items.map(i => '<span class="font-mono">' + i + '</span>').join('<br>') +
                 '<br>Fix these, re-run the build, then queue again with the new run. ' +
-                (result.run_url ? '<a href="' + result.run_url + '" target="_blank" class="underline">open run</a>' : '');
+                (result.run_url ? '<a href="' + esc(result.run_url) + '" target="_blank" class="underline">open run</a>' : '');
             row.parentNode.insertBefore(box, row);
             return;
         }
@@ -175,13 +175,13 @@ export async function showQueueForm() {
                     ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> no traceable build for this tag (queued anyway — is it built yet?)</span>'
                     : '<span class="text-slate-500">build check skipped</span>';
         const warn = (result.warnings || []).map(w =>
-            '<div class="text-[11px] text-amber-400 mt-1"><i class="fa-solid fa-triangle-exclamation"></i> ' + w + '</div>').join('');
+            '<div class="text-[11px] text-amber-400 mt-1"><i class="fa-solid fa-triangle-exclamation"></i> ' + esc(w) + '</div>').join('');
         const last = result.last_shipped
-            ? '<div class="text-[11px] text-slate-500 mt-1">Last shipped in “' + result.last_shipped.release_name +
-              '” as ' + result.last_shipped.version + '.</div>' : '';
+            ? '<div class="text-[11px] text-slate-500 mt-1">Last shipped in “' + esc(result.last_shipped.release_name) +
+              '” as ' + esc(result.last_shipped.version) + '.</div>' : '';
         wrap.innerHTML =
             '<div class="font-semibold text-emerald-300 mb-1"><i class="fa-solid fa-circle-check"></i> Queued for the next release</div>' +
-            '<div class="text-xs text-slate-300 font-mono">' + chart + ':' + ver +
+            '<div class="text-xs text-slate-300 font-mono">' + esc(chart) + ':' + esc(ver) +
             (document.getElementById('q-prl1') && result.intent && result.intent.prl1_only ? ' · PRL1-only' : '') + '</div>' +
             '<div class="text-[11px] mt-1">' + vBadge + '</div>' + warn + last +
             '<div class="text-[11px] text-slate-500 mt-2">You\'re done — it will be in the ' +
@@ -295,9 +295,9 @@ export async function showReleaseForm(kind) {
             if (seen.has(n)) return; seen.add(n);
             const row = document.createElement('div');
             row.className = 'flex items-center gap-3 text-[11px] text-slate-300 font-mono';
-            row.innerHTML = '<span class="flex-1 truncate">' + n + '</span>' +
-                '<label class="flex items-center gap-1 text-slate-400"><input type="checkbox" data-prl1="' + n + '"> PRL1-only</label>' +
-                '<label class="flex items-center gap-1 text-slate-400"><input type="checkbox" data-df="' + n + '"> DF image</label>';
+            row.innerHTML = '<span class="flex-1 truncate">' + esc(n) + '</span>' +
+                '<label class="flex items-center gap-1 text-slate-400"><input type="checkbox" data-prl1="' + esc(n) + '"> PRL1-only</label>' +
+                '<label class="flex items-center gap-1 text-slate-400"><input type="checkbox" data-df="' + esc(n) + '"> DF image</label>';
             flags.appendChild(row);
         });
         flagsHdr.style.display = seen.size ? '' : 'none';
@@ -365,8 +365,8 @@ export async function showReleaseForm(kind) {
                     ? ' <i class="fa-solid fa-triangle-exclamation text-amber-400" title="no traceable build at queue time"></i>' : '';
             const span = document.createElement('span');
             span.className = 'flex-1 truncate';
-            span.innerHTML = q.artifact_name + ':' + q.artifact_version + badge +
-                (q.jira_ticket ? ' <span class="text-amber-300/80">' + q.jira_ticket + '</span>' : '') +
+            span.innerHTML = esc(q.artifact_name) + ':' + esc(q.artifact_version) + badge +
+                (q.jira_ticket ? ' <span class="text-amber-300/80">' + esc(q.jira_ticket) + '</span>' : '') +
                 (q.prl1_only ? ' <span class="text-violet-400">PRL1</span>' : '') +
                 (q.df_only ? ' <span class="text-sky-400">DF</span>' : '');
             const tip = [q.change_details, q.note].filter(Boolean).join(' · ');

@@ -4,6 +4,7 @@
 // Static sections render once on first expand; sections marked live:true
 // re-render every time they're opened (fresh data each look).
 import { API_BASE } from './state.js';
+import { escapeHtml as esc } from './chat.js';
 import { showQueueForm } from './forms.js';
 import { loadReleaseStatus } from './status.js';
 
@@ -44,15 +45,15 @@ async function _renderQueueSection(body) {
                     : '';
             const tip = [q.change_details, q.note].filter(Boolean).join(' · ');
             html += '<div class="flex items-center gap-1.5 text-[11px] font-mono text-slate-300" ' +
-                (tip ? 'title="' + tip.split('"').join('&quot;') + '"' : '') + '>' +
-                '<span class="flex-1 truncate">' + q.artifact_name + ':' + q.artifact_version + '</span>' +
+                (tip ? 'title="' + esc(tip) + '"' : '') + '>' +
+                '<span class="flex-1 truncate">' + esc(q.artifact_name) + ':' + esc(q.artifact_version) + '</span>' +
                 badge +
-                (q.jira_ticket ? '<span class="text-amber-300/80">' + q.jira_ticket + '</span>' : '') +
+                (q.jira_ticket ? '<span class="text-amber-300/80">' + esc(q.jira_ticket) + '</span>' : '') +
                 (q.prl1_only ? '<span class="text-violet-400">PRL1</span>' : '') +
                 (q.df_only ? '<span class="text-sky-400">DF</span>' : '') +
-                '<span class="text-slate-600">' + (q.requested_by || '').split('@')[0] + '</span>' +
+                '<span class="text-slate-600">' + esc((q.requested_by || '').split('@')[0]) + '</span>' +
                 '<span class="text-slate-700">' + _timeAgo(q.requested_at) + '</span>' +
-                '<button data-wd="' + q.artifact_name + '" title="Withdraw from the queue" ' +
+                '<button data-wd="' + esc(q.artifact_name) + '" title="Withdraw from the queue" ' +
                 'class="text-slate-600 hover:text-red-400"><i class="fa-solid fa-xmark"></i></button>' +
                 '</div>';
         });
@@ -128,10 +129,10 @@ async function _renderStatsSection(body) {
         data.environments.forEach(e => {
             html += '<div class="text-[11px] font-mono">' +
                 '<div class="flex items-center gap-1.5 text-slate-300">' +
-                '<span class="flex-1 uppercase">' + e.environment + '</span>' +
+                '<span class="flex-1 uppercase">' + esc(e.environment) + '</span>' +
                 '<span class="bg-slate-800 rounded px-1.5 text-emerald-300">' + e.count + '</span></div>' +
                 e.images.map(i => '<div class="text-[10px] text-slate-600 truncate pl-1">' +
-                    i.artifact_name + (i.version ? ':' + i.version : '') + '</div>').join('') +
+                    esc(i.artifact_name) + (i.version ? ':' + esc(i.version) : '') + '</div>').join('') +
                 '</div>';
         });
         results.innerHTML = html + '</div>';
@@ -149,10 +150,10 @@ async function _renderStatsSection(body) {
             : Object.keys(c.environments || {}).map(e => e + '×' + c.environments[e]).join(' ');
         html += '<div class="text-[11px] font-mono text-slate-300">' +
             '<div class="flex items-center gap-1.5">' +
-            '<span class="flex-1 truncate">' + c.artifact_name + '</span>' +
+            '<span class="flex-1 truncate">' + esc(c.artifact_name) + '</span>' +
             '<span class="bg-slate-800 rounded px-1.5 text-emerald-300">' + c.count + '</span></div>' +
-            (sub ? '<div class="text-[10px] text-slate-600 truncate pl-0.5">' + sub +
-                   (c.versions.length ? ' · v' + c.versions[c.versions.length - 1] : '') + '</div>' : '') +
+            (sub ? '<div class="text-[10px] text-slate-600 truncate pl-0.5">' + esc(sub) +
+                   (c.versions.length ? ' · v' + esc(c.versions[c.versions.length - 1]) : '') + '</div>' : '') +
             '</div>';
     });
     results.innerHTML = html + '</div>';
