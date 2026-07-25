@@ -201,7 +201,9 @@ async def chat_page():
              class="mb-3 rounded-xl border px-3 py-1.5 text-xs hidden border-slate-800 bg-slate-900/60">
             <div class="flex items-center gap-2">
                 <span id="rb-dot" class="w-2 h-2 rounded-full bg-slate-500 inline-block"></span>
-                <span id="rb-title" class="text-slate-300 truncate">Checking release window…</span>
+                <span id="rb-title" onclick="toggleBannerDetail()"
+                      class="text-slate-300 truncate cursor-pointer hover:text-white"
+                      title="Click to see the charts in each environment">Checking release window…</span>
                 <button id="rb-toggle" onclick="toggleBannerDetail()" class="text-slate-500 hover:text-slate-300">details</button>
                 <span class="flex-1"></span>
                 <button onclick="loadReleaseStatus()" title="Refresh" class="text-slate-600 hover:text-slate-400">

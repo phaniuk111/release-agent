@@ -9,6 +9,19 @@ function _chartList(arr) {
         .join(' &nbsp;│&nbsp; ');
 }
 
+// What's actually deployed per environment — the detail behind the banner's
+// "PRD: N charts" summary, so a click answers "which N?".
+function _envLists(s) {
+    let out = '';
+    if ((s.prd_charts || []).length) {
+        out += '<br><span class="text-slate-300">PRD (' + s.prd_charts.length + '):</span> ' + _chartList(s.prd_charts);
+    }
+    if ((s.uat_charts || []).length) {
+        out += '<br><span class="text-slate-300">UAT (' + s.uat_charts.length + '):</span> ' + _chartList(s.uat_charts);
+    }
+    return out;
+}
+
 export function toggleBannerDetail() {
     const d = document.getElementById('rb-detail');
     if (d) d.classList.toggle('hidden');
@@ -53,6 +66,7 @@ export async function loadReleaseStatus() {
                 html += '<br><span>staged: ' + _chartList(pr.charts) + '</span>';
             }
             html += ' &nbsp;<a href="' + esc(pr.url) + '" target="_blank" class="underline text-emerald-400">open PR #' + esc(pr.number) + '</a>';
+            html += _envLists(s);
             html += blkDetail;
             detail.innerHTML = html;
             return;
@@ -61,7 +75,7 @@ export async function loadReleaseStatus() {
             ? 'w-2 h-2 rounded-full bg-amber-400 inline-block'
             : 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
         title.textContent = 'No release open · PRD: ' + (s.prd_charts || []).length + ' charts' + blkTitle + qTitle;
-        detail.innerHTML = (s.reason ? esc(s.reason) + ' · ' : '') + foot + blkDetail;
+        detail.innerHTML = (s.reason ? esc(s.reason) + ' · ' : '') + foot + _envLists(s) + blkDetail;
     } catch (e) {
         banner.classList.remove('hidden');
         dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
