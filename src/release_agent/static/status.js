@@ -9,17 +9,12 @@ function _chartList(arr) {
         .join(' &nbsp;│&nbsp; ');
 }
 
-// What's actually deployed per environment — the detail behind the banner's
-// "PRD: N charts" summary, so a click answers "which N?".
+// The detail behind the banner's "PRD: N charts" summary, so a click answers
+// "which N?". PRD only — the banner is about the release state; UAT contents
+// live in the Insights panel's deployed-state view.
 function _envLists(s) {
-    let out = '';
-    if ((s.prd_charts || []).length) {
-        out += '<br><span class="text-slate-300">PRD (' + s.prd_charts.length + '):</span> ' + _chartList(s.prd_charts);
-    }
-    if ((s.uat_charts || []).length) {
-        out += '<br><span class="text-slate-300">UAT (' + s.uat_charts.length + '):</span> ' + _chartList(s.uat_charts);
-    }
-    return out;
+    if (!(s.prd_charts || []).length) return '';
+    return '<br><span class="text-slate-300">PRD (' + s.prd_charts.length + '):</span> ' + _chartList(s.prd_charts);
 }
 
 export function toggleBannerDetail() {
