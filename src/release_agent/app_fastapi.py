@@ -222,7 +222,7 @@ async def chat_page():
                       title="Click to see the charts in each environment">Checking release window…</span>
                 <button id="rb-toggle" onclick="toggleBannerDetail()" class="text-slate-500 hover:text-slate-300">details</button>
                 <span class="flex-1"></span>
-                <button onclick="loadReleaseStatus()" title="Refresh" class="text-slate-600 hover:text-slate-400">
+                <button onclick="loadReleaseStatus(true)" title="Refresh" class="text-slate-600 hover:text-slate-400">
                     <i class="fa-solid fa-rotate-right"></i>
                 </button>
             </div>
@@ -357,12 +357,23 @@ async def session_disconnect_endpoint(req: SessionThreadRequest):
 # banner loads took 22.7s instead of ~6.5s). As plain `def`, FastAPI runs them
 # in its threadpool and they overlap. /api/chat stays async: it streams and its
 # work is already awaited or dispatched to threads.
+# The banner is SHARED state (same answer for everyone) but costs 5 GitHub API
+# calls per load. With a team on one PAT (5000/hr) that is the first thing to
+# exhaust the rate limit, so serve it from a short cache. Anyone who just acted
+# passes fresh=1 (after a chat turn, or the manual refresh) and bypasses it.
+_STATUS_TTL_SECONDS = 15.0
+_status_cache: dict = {"at": 0.0, "value": None}
+
+
 @app.get("/api/release-status")
-def release_status_endpoint():
+def release_status_endpoint(fresh: int = 0):
     """Today's PRD release window — read live from GitHub so every session/developer
     sees the same answer (the PRD PR is the shared source of truth)."""
     from .tools.gh_tools import get_release_status
 
+    if not fresh and _status_cache["value"] is not None:
+        if time.time() - _status_cache["at"] < _STATUS_TTL_SECONDS:
+            return _status_cache["value"]
     try:
         status = get_release_status()
     except Exception as e:
@@ -378,6 +389,8 @@ def release_status_endpoint():
             status["queued_next"] = count
     except Exception:
         pass
+    _status_cache["at"] = time.time()
+    _status_cache["value"] = status
     return status
 
 

@@ -22,13 +22,13 @@ export function toggleBannerDetail() {
     if (d) d.classList.toggle('hidden');
 }
 
-export async function loadReleaseStatus() {
+export async function loadReleaseStatus(fresh) {
     const banner = document.getElementById('release-banner');
     const dot    = document.getElementById('rb-dot');
     const title  = document.getElementById('rb-title');
     const detail = document.getElementById('rb-detail');
     try {
-        const res = await fetch(API_BASE + '/api/release-status');
+        const res = await fetch(API_BASE + '/api/release-status' + (fresh ? '?fresh=1' : ''));
         const s = await res.json();
         banner.classList.remove('hidden');
         if (s.error) {

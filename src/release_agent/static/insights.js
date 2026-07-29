@@ -74,7 +74,7 @@ async function _renderQueueSection(body) {
                     });
                 } catch (e) {}
                 _renderQueueSection(body);
-                loadReleaseStatus();
+                loadReleaseStatus(true);
             });
         });
     }

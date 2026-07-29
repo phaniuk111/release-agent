@@ -343,8 +343,9 @@ export async function sendMessage(overrideText) {
         if (!isInterrupt && botMsg) {
             botMsg.querySelector('div').classList.remove('streaming');
         }
-        // A turn may have raised/blocked a PRD PR — refresh the window banner.
-        loadReleaseStatus();
+        // A turn may have raised/blocked a PRD PR — refresh the window banner,
+        // bypassing the shared cache since this user may have just changed it.
+        loadReleaseStatus(true);
     } catch (err) {
         botMsg.querySelector('div').innerHTML = `<span class="text-red-400">Error: ${err.message}</span>`;
     }

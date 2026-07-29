@@ -267,7 +267,7 @@ export async function showQueueForm() {
             '<b>' + (document.getElementById('q-df').checked ? 'DF' : 'CARE') + ' Release</b> form automatically. ' +
             'Withdraw any time from the Insights panel or by asking me.</div>';
         _withDismiss(wrap);          // innerHTML above wiped the original ✕
-        loadReleaseStatus();
+        loadReleaseStatus(true);
     });
     row.appendChild(submit); row.appendChild(err);
     wrap.appendChild(row);
