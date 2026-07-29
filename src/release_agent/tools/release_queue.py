@@ -523,10 +523,13 @@ def current_queue(use_cache: bool = True) -> dict[str, Any]:
             return _queue_cache["value"]
     try:
         events = _fetch_events()
+        result = {"ok": True}
+        queue = reduce_queue(events)
+        result.update(queue=queue, count=len(queue), events_considered=len(events))
     except Exception as e:
-        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
-    queue = reduce_queue(events)
-    result = {"ok": True, "queue": queue, "count": len(queue), "events_considered": len(events)}
+        # Cache FAILURES too (briefly): a misconfigured or not-yet-provisioned
+        # table would otherwise cost a doomed BQ round trip on every form open.
+        result = {"ok": False, "error": f"BigQuery unavailable: {e}"}
     _queue_cache["at"] = time.time()
     _queue_cache["value"] = result
     return result
