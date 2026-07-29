@@ -59,7 +59,7 @@ def test_chat_endpoint_applies_confirmed_adk_deploy(monkeypatch):
     assert res.status_code == 200
     assert _sse_payloads(res.text) == [
         {"type": "token", "content": "fastapi deployed"},
-        {"type": "done"},
+        {"type": "done", "mutated": True},
     ]
     assert calls == [
         (

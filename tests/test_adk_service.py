@@ -55,9 +55,11 @@ def test_adk_service_confirmation_applies_pending_deploy(monkeypatch):
 
     events = _collect(service, token)
 
+    # an applied deploy reports mutated=True so the UI refreshes the banner
+    # (a plain question does not — that's what keeps the banner off GitHub)
     assert [e for e in events if e.get("type") != "progress"] == [
         {"type": "token", "content": "deployed via test"},
-        {"type": "done"},
+        {"type": "done", "mutated": True},
     ]
     assert calls == [
         (
@@ -122,3 +124,24 @@ def test_progress_events_describe_tool_calls():
     ]
     # no function calls -> no progress
     assert S._progress_events(SimpleNamespace(get_function_calls=lambda: [])) == []
+
+
+def test_only_state_changing_tools_mark_a_turn_mutated():
+    """The banner is refreshed only when a turn actually changed release state —
+    that is what keeps read-only questions off GitHub's rate limit."""
+    from types import SimpleNamespace
+
+    from release_agent import adk_service as S
+
+    def ev(*names):
+        return SimpleNamespace(
+            get_function_calls=lambda: [SimpleNamespace(name=n, args={}) for n in names]
+        )
+
+    assert S._changes_release_state(ev("promote_release")) is True
+    assert S._changes_release_state(ev("merge_prod_release")) is True
+    assert S._changes_release_state(ev("remove_from_release")) is True
+    # reads must NOT trigger a refresh
+    assert S._changes_release_state(ev("release_stats", "find_prs")) is False
+    assert S._changes_release_state(ev("list_release_queue")) is False
+    assert S._changes_release_state(ev()) is False

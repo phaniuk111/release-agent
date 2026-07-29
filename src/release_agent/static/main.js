@@ -5,7 +5,7 @@ import { addMessage, sendMessage, sendConfirmation, sendApproval, newThread } fr
 import { renderConnectionStatus, refreshConnectionStatus, showConnectForm } from './connect.js';
 import { showCapabilities, openPalette } from './palette.js';
 import { toggleInsights, renderInsights } from './insights.js';
-import { loadReleaseStatus, toggleBannerDetail } from './status.js';
+import { loadReleaseStatus, toggleBannerDetail, startBannerAgeTicker, showBannerIdle } from './status.js';
 
 // Inline onclick handlers in the served HTML (and interrupt-box templates).
 Object.assign(window, {
@@ -29,9 +29,9 @@ window.onload = () => {
         renderInsights();
     }
     refreshConnectionStatus();
-    loadReleaseStatus();
+    showBannerIdle();
+    startBannerAgeTicker();
     // Keep it fresh so a release raised in another session shows up here.
-    setInterval(loadReleaseStatus, 60000);
 };
 
 // ⌘K / Ctrl+K anywhere, or "/" in an empty composer, opens the palette.

@@ -277,6 +277,7 @@ export async function sendMessage(overrideText) {
         let isInterrupt = false;
         let buffer = '';
         const steps = [];                     // progress labels for this turn
+        let mutated = false;                  // did this turn change release state?
         const chat = document.getElementById('chat');
 
         function handleEvent(rawEvent) {
@@ -315,7 +316,11 @@ export async function sendMessage(overrideText) {
                         }
                         addMessage('interrupt', data.data || {});
                     } else if (data.type === 'done') {
-                        // finished
+                        // Refresh the banner ONLY when this turn actually changed
+                        // release/deploy state — a question shouldn't cost 5
+                        // GitHub calls. Otherwise the cached snapshot stands and
+                        // the ⟳ button gives a live read on demand.
+                        mutated = !!data.mutated;
                     } else if (data.type === 'error') {
                         botMsg.querySelector('div').innerHTML =
                             '<span class="text-red-400">' + (data.content || 'Error') + '</span>';
@@ -343,9 +348,9 @@ export async function sendMessage(overrideText) {
         if (!isInterrupt && botMsg) {
             botMsg.querySelector('div').classList.remove('streaming');
         }
-        // A turn may have raised/blocked a PRD PR — refresh the window banner,
-        // bypassing the shared cache since this user may have just changed it.
-        loadReleaseStatus(true);
+        // Only a state-changing turn needs a live re-read (bypassing the shared
+        // cache); questions leave the banner's snapshot alone.
+        if (mutated) loadReleaseStatus(true);
     } catch (err) {
         botMsg.querySelector('div').innerHTML = `<span class="text-red-400">Error: ${err.message}</span>`;
     }

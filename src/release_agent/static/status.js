@@ -17,6 +17,32 @@ function _envLists(s) {
     return '<br><span class="text-slate-300">PRD (' + s.prd_charts.length + '):</span> ' + _chartList(s.prd_charts);
 }
 
+let _lastLoadedAt = 0;
+
+// The banner is fetched ONLY on demand: reading it costs 5 GitHub API calls and
+// the answer is the same for everyone, so auto-loading it per page view (and
+// the old 60s poll) burned the shared PAT's rate limit for data nobody asked
+// for. Show the strip in an idle state until the user clicks ⟳.
+export function showBannerIdle() {
+    const banner = document.getElementById('release-banner');
+    const dot = document.getElementById('rb-dot');
+    const title = document.getElementById('rb-title');
+    if (!banner) return;
+    banner.classList.remove('hidden');
+    dot.className = 'w-2 h-2 rounded-full bg-slate-600 inline-block';
+    title.textContent = 'Release status — click ⟳ to load';
+}
+
+// Age the banner label in place ("· 3m ago") without re-fetching anything.
+export function startBannerAgeTicker() {
+    setInterval(function () {
+        const el = document.getElementById('rb-age');
+        if (!el || !_lastLoadedAt) return;
+        const mins = Math.floor((Date.now() - _lastLoadedAt) / 60000);
+        el.textContent = mins >= 1 ? ' · ' + mins + 'm ago' : '';
+    }, 30000);
+}
+
 export function toggleBannerDetail() {
     const d = document.getElementById('rb-detail');
     if (d) d.classList.toggle('hidden');
@@ -37,7 +63,10 @@ export async function loadReleaseStatus(fresh) {
             detail.textContent = s.error;
             return;
         }
-        const foot = 'now ' + s.now_utc + ' UTC · ' + s.date_utc;
+        // The banner is a shared snapshot, not a live feed — say how old it is
+        // so "⟳" is an obvious, meaningful action rather than decoration.
+        _lastLoadedAt = Date.now();
+        const foot = 'as of ' + s.now_utc + ' UTC · ' + s.date_utc;
         // A PR into a release-guard branch (PRD/PRL1/...) blocks adds — surface it
         // in the strip so users learn BEFORE filling a deploy form.
         const blk = s.blocking_pr;

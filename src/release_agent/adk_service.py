@@ -164,6 +164,24 @@ def _progress_label(name: str, args: dict[str, Any]) -> str:
     return (name or "working").replace("_", " ").strip().capitalize()
 
 
+# Tools whose success changes release/deploy state — i.e. the banner is now
+# stale. Only these trigger an automatic banner refresh; every other turn leaves
+# the cached snapshot alone (the ⟳ button forces a live read on demand).
+_STATE_CHANGING_TOOLS = frozenset({
+    "promote_release",
+    "merge_prod_release",
+    "remove_from_release",
+    "retrigger_deployment_workflow",
+})
+
+
+def _changes_release_state(event: Any) -> bool:
+    for call in event.get_function_calls() or []:
+        if (getattr(call, "name", "") or "") in _STATE_CHANGING_TOOLS:
+            return True
+    return False
+
+
 def _progress_events(event: Any) -> list[str]:
     """Progress labels for an ADK event's tool calls (HITL pauses excluded —
     those surface as their own interrupt)."""
@@ -284,7 +302,7 @@ class AdkChatService:
                 # Stateless fallback (e.g. reconnect with no tracked invocation).
                 result = adk_deploy.apply_confirmed_deploy(message)
                 yield {"type": "token", "content": self._format_deploy_apply_result(result)}
-                yield {"type": "done"}
+                yield {"type": "done", "mutated": True}
                 return
 
         if _looks_like_deploy_request(message):
@@ -359,7 +377,7 @@ class AdkChatService:
             if output is not None:
                 result = output
         yield {"type": "token", "content": self._format_deploy_apply_result(result or {})}
-        yield {"type": "done"}
+        yield {"type": "done", "mutated": True}
 
     async def _run_chat_agent(
         self,
@@ -375,6 +393,7 @@ class AdkChatService:
         memory service so future turns can recall it.
         """
         interrupted = False
+        mutated = False          # did this turn change release/deploy state?
         async for event in self.chat_runner.run_async(
             user_id=_USER_ID,
             session_id=thread_id,
@@ -383,6 +402,8 @@ class AdkChatService:
         ):
             for label in _progress_events(event):
                 yield {"type": "progress", "content": label}
+            if _changes_release_state(event):
+                mutated = True
             text = _text_from_event(event)
             if text:
                 yield {"type": "token", "content": text}
@@ -395,7 +416,7 @@ class AdkChatService:
 
         if not interrupted and settings.adk_memory_enabled:
             await self._persist_session_to_memory(thread_id)
-        yield {"type": "done"}
+        yield {"type": "done", "mutated": mutated}
 
     async def _persist_session_to_memory(self, thread_id: str) -> None:
         """Best-effort: add the finished chat session to the memory service."""

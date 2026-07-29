@@ -220,9 +220,10 @@ async def chat_page():
                 <span id="rb-title" onclick="toggleBannerDetail()"
                       class="text-slate-300 truncate cursor-pointer hover:text-white"
                       title="Click to see the charts in each environment">Checking release window…</span>
+                <span id="rb-age" class="text-slate-600 text-[11px]"></span>
                 <button id="rb-toggle" onclick="toggleBannerDetail()" class="text-slate-500 hover:text-slate-300">details</button>
                 <span class="flex-1"></span>
-                <button onclick="loadReleaseStatus(true)" title="Refresh" class="text-slate-600 hover:text-slate-400">
+                <button onclick="loadReleaseStatus(true)" title="Refresh now (live read)" class="text-slate-600 hover:text-slate-400">
                     <i class="fa-solid fa-rotate-right"></i>
                 </button>
             </div>
