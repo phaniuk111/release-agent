@@ -350,8 +350,15 @@ async def session_disconnect_endpoint(req: SessionThreadRequest):
     return {"ok": True, "connected": False}
 
 
+# NOTE: the read endpoints below are deliberately `def`, not `async def`.
+# They perform SYNCHRONOUS network I/O (GitHub REST via PyGithub, BigQuery
+# query jobs). On the event loop that blocks every other request — with a
+# handful of concurrent users the portal serializes (measured: 5 concurrent
+# banner loads took 22.7s instead of ~6.5s). As plain `def`, FastAPI runs them
+# in its threadpool and they overlap. /api/chat stays async: it streams and its
+# work is already awaited or dispatched to threads.
 @app.get("/api/release-status")
-async def release_status_endpoint():
+def release_status_endpoint():
     """Today's PRD release window — read live from GitHub so every session/developer
     sees the same answer (the PRD PR is the shared source of truth)."""
     from .tools.gh_tools import get_release_status
@@ -416,7 +423,7 @@ def _known_charts() -> list[str]:
 
 
 @app.get("/api/release-queue")
-async def release_queue_get():
+def release_queue_get():
     """The accumulated next-release queue + form context (default repo, known
     chart names). Powers the Insights panel and the Create-release pre-fill."""
     from .tools import release_queue
@@ -433,7 +440,7 @@ async def release_queue_get():
 
 
 @app.post("/api/release-queue")
-async def release_queue_add(req: QueueAddRequest):
+def release_queue_add(req: QueueAddRequest):
     """Queue a chart:version for the next release (the 'Monday dev' path).
     Runs the courtesy build check and reports last-time routing, same as the
     conversational intake."""
@@ -452,7 +459,7 @@ async def release_queue_add(req: QueueAddRequest):
 
 
 @app.post("/api/release-queue/withdraw")
-async def release_queue_withdraw(req: QueueWithdrawRequest):
+def release_queue_withdraw(req: QueueWithdrawRequest):
     """Withdraw a chart from the next-release queue (append-only: writes a
     'withdrawn' event; nothing is deleted)."""
     from .tools import release_queue
@@ -461,7 +468,7 @@ async def release_queue_withdraw(req: QueueWithdrawRequest):
 
 
 @app.get("/api/release-insights")
-async def release_insights(pattern: str = "", days: int = 90, event_type: str = "released"):
+def release_insights(pattern: str = "", days: int = 90, event_type: str = "released"):
     """Stats over the release/deploy history event log — powers the Insights
     panel's Release stats section (which images released, per-chart counts,
     pattern filter like acme-capability*)."""
@@ -479,7 +486,7 @@ async def deployment_types_endpoint():
 
 
 @app.get("/api/df-template")
-async def df_template_endpoint(env: str = "uat"):
+def df_template_endpoint(env: str = "uat"):
     """Recent DF deploy workflow runs plus the default repo — pre-fills the DF form's
     'recent deploys' context strip. (Deploy = workflow_dispatch; there is no state file.)"""
     import itertools
@@ -512,7 +519,7 @@ async def df_template_endpoint(env: str = "uat"):
 
 
 @app.get("/api/deploy-template")
-async def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""):
+def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""):
     """Pre-fill the UI's editable JSON box with the ACTUAL current deployment.json for the
     env — uat/deployment.json from the UAT branch, prd/deployment.json from PRD — so the dev
     edits the real deployed set, not a blank template. If a chart name+version is supplied
