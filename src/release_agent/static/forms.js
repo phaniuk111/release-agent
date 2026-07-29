@@ -30,6 +30,38 @@ async function _ctx(path, fallback) {
     }
 }
 
+// An accidentally-opened form is long (CARE Release especially) and used to
+// leave the user scrolling past it. Every form card gets a ✕ in its corner, and
+// Escape closes the most recently opened one. Closing sends nothing.
+function _withDismiss(wrap) {
+    wrap.classList.add('relative', 'dismissible-form');
+
+    const close = () => {
+        wrap.remove();
+        document.removeEventListener('keydown', onKey);
+    };
+    const onKey = (e) => {
+        if (e.key !== 'Escape') return;
+        if (!document.body.contains(wrap)) { document.removeEventListener('keydown', onKey); return; }
+        const palette = document.getElementById('palette-overlay');
+        if (palette && !palette.classList.contains('hidden')) return;   // palette owns Esc while open
+        const open = document.querySelectorAll('.dismissible-form');
+        if (open.length && open[open.length - 1] !== wrap) return;      // only the newest closes
+        close();
+    };
+    document.addEventListener('keydown', onKey);
+
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.title = 'Close this form (Esc) — nothing is sent';
+    x.className = 'absolute top-2 right-3 text-slate-500 hover:text-red-400 text-sm leading-none';
+    x.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+    x.addEventListener('click', close);
+    wrap.appendChild(x);
+    return wrap;
+}
+
+
 // A click must feel instant even when the context endpoint takes seconds
 // (BigQuery + GitHub reads). Show a placeholder bubble immediately; the form
 // replaces it when ready.
@@ -234,10 +266,12 @@ export async function showQueueForm() {
             '<div class="text-[11px] text-slate-500 mt-2">You\'re done — it will be in the ' +
             '<b>' + (document.getElementById('q-df').checked ? 'DF' : 'CARE') + ' Release</b> form automatically. ' +
             'Withdraw any time from the Insights panel or by asking me.</div>';
+        _withDismiss(wrap);          // innerHTML above wiped the original ✕
         loadReleaseStatus();
     });
     row.appendChild(submit); row.appendChild(err);
     wrap.appendChild(row);
+    _withDismiss(wrap);
     chat.appendChild(wrap);
     chat.scrollTop = chat.scrollHeight;
 }
@@ -472,6 +506,7 @@ export async function showReleaseForm(kind) {
     });
     row.appendChild(submit); row.appendChild(err);
     wrap.appendChild(row);
+    _withDismiss(wrap);
     chat.appendChild(wrap);
     chat.scrollTop = chat.scrollHeight;
 }
@@ -578,6 +613,7 @@ export async function showDfDeployForm() {
     });
     row.appendChild(submit); row.appendChild(err);
     wrap.appendChild(row);
+    _withDismiss(wrap);
     chat.appendChild(wrap);
     chat.scrollTop = chat.scrollHeight;
 }
@@ -731,6 +767,7 @@ export async function showDeployForm(env, name, version) {
     row.appendChild(err);
     wrap.appendChild(row);
 
+    _withDismiss(wrap);
     chat.appendChild(wrap);
     chat.scrollTop = chat.scrollHeight;
 }
