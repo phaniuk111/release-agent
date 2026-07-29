@@ -110,6 +110,22 @@ async def chat_page():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dev Portal</title>
+    <script>
+    // Served under a path prefix (e.g. /dev-portal) the TRAILING SLASH decides
+    // how relative asset URLs resolve: at "/dev-portal" the browser resolves
+    // "static/main.js" against the parent -> "/static/main.js" at the domain
+    // root -> 404 -> no JS -> a dead page that still renders its static shell.
+    // Pin the base to the directory form so assets resolve inside the prefix
+    // whether or not the ingress issues the usual "/prefix" -> "/prefix/"
+    // redirect. Must run before any relative URL is parsed.
+    (function () {
+        var path = window.location.pathname;
+        if (path.charAt(path.length - 1) !== '/') path += '/';
+        var base = document.createElement('base');
+        base.href = path;
+        document.head.appendChild(base);
+    })();
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
