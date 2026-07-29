@@ -583,6 +583,94 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
     }
 
 
+@app.get("/api/diagnostics")
+def diagnostics():
+    """One-shot dependency report for a fresh deployment: what is configured and
+    whether each backend actually answers. Deliberately NOT part of /health —
+    it makes live calls, so probes must not run it. Never returns secrets: the
+    GitHub token is reported as a boolean only.
+
+    Typical reads:
+      vertex.ok false + "API key"        -> GOOGLE_GENAI_USE_VERTEXAI not "true"
+      vertex.ok false + 403/PermissionDenied -> Workload Identity or missing
+                                            roles/aiplatform.user in the Vertex project
+      vertex.ok false + 404 on the model -> model not served in GOOGLE_CLOUD_LOCATION
+      vertex.ok false + 429              -> quota; request an increase
+      github.ok false + 404              -> wrong repo, or the token can't see it
+      bq.ok false + 404 Not found: Table -> table not provisioned yet
+    """
+    import os as _os
+
+    from .tools._common import _resolve_github_token, active_deploy_repo
+
+    report: dict = {
+        "config": {
+            "GOOGLE_CLOUD_PROJECT": settings.gcp_project or "(unset)",
+            "GOOGLE_CLOUD_LOCATION": settings.gcp_location,
+            "GEMINI_MODEL": settings.gemini_model,
+            "GOOGLE_GENAI_USE_VERTEXAI": _os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "(unset)"),
+            "BUILD_REPO": settings.build_repo or "(unset)",
+            "DEPLOY_REPO": settings.deploy_repo or "(unset)",
+            "DF_BUILD_REPO": settings.df_build_repo or "(unset — falls back to BUILD_REPO)",
+            "GITHUB_BASE_URL": settings.github_base_url or "(github.com)",
+            "github_token_present": bool(_resolve_github_token()),
+            "HTTPS_PROXY": _os.getenv("HTTPS_PROXY") or "(none)",
+            "NO_PROXY": _os.getenv("NO_PROXY") or "(default)",
+            "BQ": (
+                f"{settings.bq_project or settings.gcp_project}."
+                f"{settings.bq_dataset}.{settings.bq_table}"
+                if settings.bq_dataset else "(disabled)"
+            ),
+        }
+    }
+
+    # Vertex: the smallest possible real generation — proves auth, region and model.
+    try:
+        from google import genai
+
+        client = genai.Client()
+        resp = client.models.generate_content(
+            model=settings.gemini_model,
+            contents="ping",
+            config={"max_output_tokens": 1},
+        )
+        report["vertex"] = {"ok": True, "model": settings.gemini_model,
+                           "responded": bool(resp)}
+    except Exception as e:
+        report["vertex"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
+
+    # GitHub: can we actually see the deploy repo with the resolved token?
+    try:
+        from .tools._common import _get_github_client
+
+        repo_full = active_deploy_repo()
+        if not repo_full:
+            report["github"] = {"ok": False, "error": "DEPLOY_REPO is not configured"}
+        else:
+            repo = _get_github_client().get_repo(repo_full)
+            report["github"] = {"ok": True, "repo": repo.full_name,
+                                "default_branch": repo.default_branch}
+    except Exception as e:
+        report["github"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
+
+    # BigQuery: only meaningful when the queue feature is switched on.
+    try:
+        from .tools import release_queue
+
+        if not release_queue.queue_enabled():
+            report["bq"] = {"ok": None, "disabled": True,
+                            "note": "BQ_DATASET or project unset — queue/analytics off"}
+        else:
+            q = release_queue.current_queue(use_cache=False)
+            report["bq"] = ({"ok": True, "queued": q.get("count")} if q.get("ok")
+                            else {"ok": False, "error": str(q.get("error"))[:300]})
+    except Exception as e:
+        report["bq"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+
+    report["ok"] = bool(report["vertex"].get("ok") and report["github"].get("ok"))
+    return report
+
+
 @app.get("/health")
 async def health():
     """Health check endpoint for Kubernetes liveness/readiness probes."""

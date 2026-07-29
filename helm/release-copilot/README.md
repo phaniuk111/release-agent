@@ -143,6 +143,34 @@ per-pod and ephemeral — a **PVC does not persist them** (the memory service is
 To scale out or survive restarts, use a shared/durable backend (ADK `DatabaseSessionService`
 with SQLite-on-PVC for a single replica, or Postgres for many).
 
+## Debugging a fresh deployment
+
+`GET /api/diagnostics` reports what is configured and whether each backend
+actually answers — no secrets (the GitHub token is a boolean):
+
+```bash
+kubectl -n release port-forward deploy/rc-release-copilot 8000:8000
+curl -s localhost:8000/api/diagnostics | jq
+# or in-browser: https://<host>/<prefix>/api/diagnostics
+```
+
+Reading the `vertex` result:
+
+| Symptom | Cause |
+|---|---|
+| `No API key was provided` | `GOOGLE_GENAI_USE_VERTEXAI` is not `"true"` — the SDK fell back to AI Studio |
+| `PermissionDenied` / 403 | Workload Identity not bound, or the GSA lacks `roles/aiplatform.user` **in the Vertex project** (cross-project setups grant it there, not in the cluster project) |
+| 404 on the model | `GEMINI_MODEL` not served in `GOOGLE_CLOUD_LOCATION` |
+| 429 / `RESOURCE_EXHAUSTED` | Vertex quota — request an increase |
+| times out | egress blocked, or `NO_PROXY` no longer exempts `.googleapis.com` |
+
+`github.ok false` with 404 means the repo name is wrong or the token can't see
+it; `bq.ok false` with `404 Not found: Table` means the table isn't provisioned
+yet (or set `BQ_DATASET: ""` to switch the feature off).
+
+It is intentionally NOT part of `/health` — it makes live calls, so probes must
+not hit it.
+
 ## Verify locally before applying
 ```bash
 helm lint helm/release-copilot
