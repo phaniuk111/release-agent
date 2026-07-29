@@ -57,6 +57,12 @@ _client = None
 _table_ready = False
 # The banner polls every turn; don't hit BQ more than once a minute for a count.
 _count_cache: dict[str, Any] = {"at": 0.0, "count": None}
+# Every form open reads the queue (a BQ query job ~2-3s). Cache the reduced
+# queue briefly so opening a form twice, or two users at once, is instant.
+# Short TTL: the queue changes only when someone queues/withdraws, and both
+# paths invalidate it explicitly below.
+_QUEUE_TTL_SECONDS = 30.0
+_queue_cache: dict[str, Any] = {"at": 0.0, "value": None}
 
 
 def _bq_project() -> str:
@@ -130,7 +136,9 @@ def _insert(rows: list[dict[str, Any]]) -> dict[str, Any]:
         )
         if errors:
             return {"ok": False, "error": f"BigQuery insert failed: {errors}"}
-        _count_cache["at"] = 0.0  # count changed — drop the banner cache
+        # state changed — drop the derived caches
+        _count_cache["at"] = 0.0
+        _queue_cache["at"] = 0.0
         return {"ok": True}
     except Exception as e:  # never let queue telemetry break a release path
         return {"ok": False, "error": f"BigQuery unavailable: {e}"}
@@ -502,15 +510,26 @@ def last_queued_flags(events: list[dict[str, Any]], artifact_name: str) -> dict[
     return None
 
 
-def current_queue() -> dict[str, Any]:
+def current_queue(use_cache: bool = True) -> dict[str, Any]:
+    """The derived next-release queue. Cached for _QUEUE_TTL_SECONDS because a
+    BQ query job costs seconds and every form open needs this; writes clear the
+    cache, so a queue/withdraw is reflected immediately."""
+    import time
+
     if not queue_enabled():
         return _disabled()
+    if use_cache and _queue_cache["value"] is not None:
+        if time.time() - _queue_cache["at"] < _QUEUE_TTL_SECONDS:
+            return _queue_cache["value"]
     try:
         events = _fetch_events()
     except Exception as e:
         return {"ok": False, "error": f"BigQuery unavailable: {e}"}
     queue = reduce_queue(events)
-    return {"ok": True, "queue": queue, "count": len(queue), "events_considered": len(events)}
+    result = {"ok": True, "queue": queue, "count": len(queue), "events_considered": len(events)}
+    _queue_cache["at"] = time.time()
+    _queue_cache["value"] = result
+    return result
 
 
 def cached_queue_count() -> int | None:
