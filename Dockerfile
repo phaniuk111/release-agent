@@ -1,9 +1,14 @@
 ###############################################################################
 # Release Copilot image — uv-based, enterprise-friendly.
 #
-# External touchpoints are ONLY: (1) the base image, (2) your Python package
-# index. Both are build-args so they can point at internal mirrors — there is no
-# pull from ghcr.io / docker.io/uv and no BuildKit frontend image.
+# External touchpoints: (1) the base image, (2) your Python package index, and
+# (3) the base image's APT repo — the runtime stage installs `git`, which the
+# CARE/DF release flow shells out to (clone the deploy repo, run its updater
+# script, commit, push). (1) and (2) are build-args pointing at internal
+# mirrors; there is no pull from ghcr.io / docker.io/uv and no BuildKit
+# frontend image. For an air-gapped build either point APT at your internal
+# Debian mirror (bake sources.list into a custom BASE_IMAGE) or supply a
+# BASE_IMAGE that already ships git — then the apt-get step is a no-op.
 #
 # Internal-mirror build example:
 #   docker build \
@@ -57,9 +62,13 @@ WORKDIR /app
 
 # git is required at runtime: the CARE/DF release flow clones the deployment
 # repo, runs its updater script, commits and pushes (release_fileset.py).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Skipped entirely when BASE_IMAGE already ships git — that's the air-gapped
+# path (no APT/Debian-mirror reachability needed at build time).
+RUN if ! command -v git >/dev/null 2>&1; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends git ca-certificates \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # Bring over the prebuilt venv and the application source only (no build tools, no uv).
 COPY --from=builder /opt/venv /opt/venv
