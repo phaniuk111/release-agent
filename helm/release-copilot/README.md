@@ -70,13 +70,34 @@ proxy:
   # *.googleapis.com); override only if Vertex/BQ must also use the proxy.
 ```
 
-The proxy must **tunnel** TLS (verified for this environment: a plain pod in the
-target cluster gets HTTP 200 through the proxy with certificate verification on).
-The chart deliberately carries no CA-bundle machinery. If the proxy team ever
-enables TLS inspection, the symptom is `certificate verify failed` in pod logs;
-the fix is mounting the corporate root CA and setting `REQUESTS_CA_BUNDLE` +
-`SSL_CERT_FILE` via `extraEnv` + a volume (or reintroducing chart support) —
-never disabling TLS verification.
+Two things bite here, in this order:
+
+1. **Scheme.** `httpsProxy` names the proxy used *for* https traffic, but its
+   value must be `http://host:port` — the hop to the proxy is plain HTTP.
+   `https://…` produces `Unable to connect to proxy … only use HTTP`.
+2. **TLS inspection.** If the proxy re-signs certificates, the slim base image
+   does not trust the corporate CA and every call fails with
+   `certificate verify failed: self-signed certificate in certificate chain`.
+   Mount the CA:
+
+```bash
+kubectl -n release create configmap corp-proxy-ca --from-file=ca.crt=/path/to/root-ca.crt
+```
+```yaml
+proxy:
+  caBundle:
+    existingConfigMap: corp-proxy-ca
+    key: ca.crt          # optional, defaults to ca.crt
+```
+
+The chart mounts it read-only and sets `REQUESTS_CA_BUNDLE` (requests/PyGithub),
+`SSL_CERT_FILE` (OpenSSL — httpx, google clients) **and** `GIT_SSL_CAINFO`
+(git, which reads none of the others and is what the release flow clones with).
+Verification stays ON — never disable it instead.
+
+**Test from THIS image, not another pod.** Corporate base images often already
+trust the CA, so a probe from a neighbouring pod can report success while the
+app still fails. `/api/diagnostics` checks from inside the running app.
 
 `config.GITHUB_BASE_URL` is unrelated to the proxy: leave it empty for github.com
 (the client then uses `api.github.com`); set it only for GitHub Enterprise Server

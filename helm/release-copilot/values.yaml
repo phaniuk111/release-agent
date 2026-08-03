@@ -25,9 +25,15 @@ proxy:
   httpsProxy: ""            # e.g. "http://proxy.corp.internal:3128"
   httpProxy: ""             # usually the same value
   noProxy: ""               # defaults to "localhost,127.0.0.1,metadata.google.internal,.googleapis.com"
-  # NOTE: the proxy must tunnel TLS (verified: 200 from an in-cluster pod). If it
-  # ever switches to TLS inspection (symptom: "certificate verify failed"), mount
-  # the corp CA via extraEnv (REQUESTS_CA_BUNDLE + SSL_CERT_FILE) and a volume.
+  # TLS-INSPECTING proxy? (symptom: "certificate verify failed: self-signed
+  # certificate in certificate chain"). Put the corporate root CA in a ConfigMap
+  # and reference it here — the chart mounts it and points requests, OpenSSL and
+  # git at it. Verify from THIS image, not another pod: corporate base images
+  # often already trust the CA and hide the problem.
+  #   kubectl -n <ns> create configmap corp-proxy-ca --from-file=ca.crt=/path/to/root-ca.crt
+  # caBundle:
+  #   existingConfigMap: corp-proxy-ca
+  #   key: ca.crt
 
 # --- Non-secret configuration (rendered into a ConfigMap, injected via envFrom) ---
 # Legend:  [REQUIRED]  app is broken without it — installer must set it

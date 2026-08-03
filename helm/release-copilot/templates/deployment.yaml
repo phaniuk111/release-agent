@@ -43,7 +43,7 @@ spec:
                 name: {{ include "release-copilot.fullname" . }}-env
           {{- $hasToken := or .Values.githubToken.existingSecret .Values.githubToken.value }}
           {{- $prx := .Values.proxy | default dict }}
-          {{- if or $hasToken .Values.extraEnv $prx.httpsProxy $prx.httpProxy }}
+          {{- if or $hasToken .Values.extraEnv $prx.httpsProxy $prx.httpProxy $prx.caBundle }}
           env:
             {{- if $hasToken }}
             - name: GH_TOKEN
@@ -64,9 +64,29 @@ spec:
             - name: NO_PROXY
               value: {{ $prx.noProxy | default "localhost,127.0.0.1,metadata.google.internal,.googleapis.com" | quote }}
             {{- end }}
+            {{- if $prx.caBundle }}
+            {{- $ca := printf "/etc/proxy-ca/%s" (default "ca.crt" $prx.caBundle.key) }}
+            # A TLS-INSPECTING proxy re-signs certs with the corporate CA, which
+            # the slim base image does not trust. Three vars because the stack
+            # has three TLS clients: requests/PyGithub, OpenSSL (httpx, google
+            # clients) and git — GIT_SSL_CAINFO is the one that lets the release
+            # flow clone the deploy repo.
+            - name: REQUESTS_CA_BUNDLE
+              value: {{ $ca | quote }}
+            - name: SSL_CERT_FILE
+              value: {{ $ca | quote }}
+            - name: GIT_SSL_CAINFO
+              value: {{ $ca | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- end }}
+          {{- if $prx.caBundle }}
+          volumeMounts:
+            - name: proxy-ca
+              mountPath: /etc/proxy-ca
+              readOnly: true
           {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
@@ -76,6 +96,13 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+      {{- $prx := .Values.proxy | default dict }}
+      {{- if $prx.caBundle }}
+      volumes:
+        - name: proxy-ca
+          configMap:
+            name: {{ $prx.caBundle.existingConfigMap }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
