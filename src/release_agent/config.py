@@ -16,22 +16,26 @@ def _use_system_ca_for_requests() -> None:
     corporate root CA is installed system-wide — so curl, git and urllib all
     work — while requests alone fails with
     "CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain".
-    That split is confusing to debug (a urllib probe in the very same pod
-    succeeds), so default requests to the system bundle, which on Debian/RHEL
-    already contains the public CAs plus anything the image added.
+    That split is confusing: a urllib probe in the very same pod succeeds.
+
+    ASK OpenSSL where its trust store is rather than guessing distro paths —
+    the location varies (/etc/ssl/certs/ca-certificates.crt on Debian,
+    /etc/pki/tls/certs/ca-bundle.crt on RHEL, /etc/ssl/cert.pem on Alpine and
+    some corporate images), and this is exactly the file urllib/curl/git use.
 
     An explicit REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE always wins, and nothing
-    happens if no system bundle exists (verification stays ON either way).
+    happens when no system bundle exists (verification stays ON via certifi).
     """
     if os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("CURL_CA_BUNDLE"):
         return
-    for path in (
-        "/etc/ssl/certs/ca-certificates.crt",   # debian/ubuntu
-        "/etc/pki/tls/certs/ca-bundle.crt",     # rhel/centos
-    ):
-        if os.path.exists(path):
-            os.environ["REQUESTS_CA_BUNDLE"] = path
-            return
+    try:
+        import ssl
+
+        cafile = ssl.get_default_verify_paths().cafile
+    except Exception:
+        return
+    if cafile and os.path.exists(cafile):
+        os.environ["REQUESTS_CA_BUNDLE"] = cafile
 
 
 _use_system_ca_for_requests()
