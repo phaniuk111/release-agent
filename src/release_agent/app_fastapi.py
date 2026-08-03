@@ -647,11 +647,53 @@ def diagnostics():
         if not repo_full:
             report["github"] = {"ok": False, "error": "DEPLOY_REPO is not configured"}
         else:
-            repo = _get_github_client().get_repo(repo_full)
-            report["github"] = {"ok": True, "repo": repo.full_name,
-                                "default_branch": repo.default_branch}
+            client = _get_github_client()
+            repo = client.get_repo(repo_full)
+            info: dict = {"ok": True, "repo": repo.full_name,
+                          "default_branch": repo.default_branch}
+            # Which identity is the token, and do the configured branches exist?
+            # A wrong branch name fails deploys/promotions long after the API
+            # itself is reachable, so surface it here.
+            try:
+                info["authenticated_as"] = client.get_user().login
+            except Exception:
+                pass
+            branches = {}
+            for label, name in (("sit", settings.sit_branch), ("uat", settings.uat_branch),
+                                ("prd", settings.prd_branch), ("prl1", settings.prl1_branch)):
+                try:
+                    repo.get_branch(name)
+                    branches[name] = True
+                except Exception:
+                    branches[name] = False
+            info["branches"] = branches
+            if not all(branches.values()):
+                info["hint"] = ("missing branches — set SIT_BRANCH/UAT_BRANCH/"
+                                "PRD_BRANCH/PRL1_BRANCH to your real branch names")
+            report["github"] = info
     except Exception as e:
         report["github"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
+
+    # The REST API and the GIT endpoint are different hosts and may be allowed
+    # separately by the proxy. The CARE/DF release flow clones over https to
+    # github.com, so a working API says nothing about whether a release can run.
+    try:
+        import subprocess as _sp
+
+        host = settings.github_base_url.split("://")[-1].split("/")[0] if settings.github_base_url else "github.com"
+        probe = _sp.run(
+            ["git", "ls-remote", f"https://{host}/{active_deploy_repo()}.git", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+        report["git_https"] = (
+            {"ok": True, "host": host}
+            if probe.returncode == 0
+            else {"ok": False, "host": host,
+                  "error": (probe.stderr or probe.stdout).strip()[:300],
+                  "hint": "release/promotion clones use this path — check the proxy allows it"}
+        )
+    except Exception as e:
+        report["git_https"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
 
     # BigQuery: only meaningful when the queue feature is switched on.
     try:
@@ -667,7 +709,11 @@ def diagnostics():
     except Exception as e:
         report["bq"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
 
-    report["ok"] = bool(report["vertex"].get("ok") and report["github"].get("ok"))
+    report["ok"] = bool(
+        report["vertex"].get("ok")
+        and report["github"].get("ok")
+        and report["git_https"].get("ok")
+    )
     return report
 
 
