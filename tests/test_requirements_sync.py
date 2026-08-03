@@ -72,3 +72,36 @@ def test_direct_dependencies_are_pinned_in_requirements():
         "pydantic-settings",
     }
     assert required <= names, f"missing from requirements.txt: {sorted(required - names)}"
+
+
+def test_requests_defaults_to_system_ca_bundle(monkeypatch):
+    """Behind a TLS-inspecting proxy the corporate CA lands in the system trust
+    store, which requests ignores in favour of certifi — so GitHub calls fail
+    while curl/git/urllib succeed in the SAME pod. Default requests to the
+    system bundle; an explicit setting must still win."""
+    import os
+
+    from release_agent import config
+
+    debian = "/etc/ssl/certs/ca-certificates.crt"
+    # registers the pre-test state so teardown reverts whatever the code sets
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "sentinel")
+    monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
+
+    # 1) system bundle present, nothing configured -> point requests at it
+    os.environ.pop("REQUESTS_CA_BUNDLE")
+    monkeypatch.setattr(config.os.path, "exists", lambda p: p == debian)
+    config._use_system_ca_for_requests()
+    assert os.environ["REQUESTS_CA_BUNDLE"] == debian
+
+    # 2) an explicit operator setting is never overridden
+    os.environ["REQUESTS_CA_BUNDLE"] = "/explicit/ca.pem"
+    config._use_system_ca_for_requests()
+    assert os.environ["REQUESTS_CA_BUNDLE"] == "/explicit/ca.pem"
+
+    # 3) no system bundle (e.g. a distroless image) -> leave it alone entirely,
+    #    verification stays on via certifi
+    os.environ.pop("REQUESTS_CA_BUNDLE")
+    monkeypatch.setattr(config.os.path, "exists", lambda p: False)
+    config._use_system_ca_for_requests()
+    assert "REQUESTS_CA_BUNDLE" not in os.environ

@@ -8,6 +8,35 @@ from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
+def _use_system_ca_for_requests() -> None:
+    """Make `requests` trust the image's system CA store.
+
+    requests/PyGithub verify against certifi's PRIVATE bundle and deliberately
+    ignore the OS trust store. Behind a TLS-inspecting corporate proxy the
+    corporate root CA is installed system-wide — so curl, git and urllib all
+    work — while requests alone fails with
+    "CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain".
+    That split is confusing to debug (a urllib probe in the very same pod
+    succeeds), so default requests to the system bundle, which on Debian/RHEL
+    already contains the public CAs plus anything the image added.
+
+    An explicit REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE always wins, and nothing
+    happens if no system bundle exists (verification stays ON either way).
+    """
+    if os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("CURL_CA_BUNDLE"):
+        return
+    for path in (
+        "/etc/ssl/certs/ca-certificates.crt",   # debian/ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt",     # rhel/centos
+    ):
+        if os.path.exists(path):
+            os.environ["REQUESTS_CA_BUNDLE"] = path
+            return
+
+
+_use_system_ca_for_requests()
+
+
 def _get_gcp_project() -> str:
     """Get GCP project from env or gcloud (ADC / installed gcloud)."""
     project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT")
