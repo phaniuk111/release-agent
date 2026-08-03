@@ -192,6 +192,51 @@ yet (or set `BQ_DATASET: ""` to switch the feature off).
 It is intentionally NOT part of `/health` — it makes live calls, so probes must
 not hit it.
 
+### Two probes for TLS / proxy problems
+
+Run these **in the app pod**, not a neighbouring one: corporate base images often
+already trust the corporate CA, so a probe from another pod can report success
+while the app still fails. Both read the proxy from the pod's own environment,
+so there is nothing to edit.
+
+**1. Which CA file does this image actually use?**
+
+```bash
+kubectl -n <namespace> exec deploy/<release>-release-copilot -- \
+  python -c "import ssl; p=ssl.get_default_verify_paths(); print('cafile:', p.cafile); print('capath:', p.capath)"
+```
+
+Whatever `cafile` prints is the store that `curl`, `git` and `urllib` already
+trust — and therefore the correct value for `REQUESTS_CA_BUNDLE`. Debian prints
+`/etc/ssl/certs/ca-certificates.crt`, RHEL/UBI `/etc/pki/tls/certs/ca-bundle.crt`.
+Read it; don't assume.
+
+**2. Which client, and which host, actually fails?**
+
+```bash
+kubectl -n <namespace> exec -i deploy/<release>-release-copilot -- python - <<'PROBE'
+import os, ssl, urllib.request, requests, certifi
+px = os.environ.get("HTTPS_PROXY", "")
+o = urllib.request.build_opener(urllib.request.ProxyHandler({"http": px, "https": px}))
+for host in ("https://github.com", "https://api.github.com"):
+    for name, call in (("urllib  ", lambda h=host: o.open(h, timeout=10).status),
+                       ("requests", lambda h=host: requests.get(h, timeout=10).status_code)):
+        try:
+            print(host, name, "->", call())
+        except Exception as e:
+            print(host, name, "-> FAIL", type(e).__name__)
+print("system CA:", ssl.get_default_verify_paths().cafile)
+print("certifi  :", certifi.where())
+PROBE
+```
+
+| Result | Meaning | Fix |
+|---|---|---|
+| `urllib` OK, `requests` FAIL | the CA is in the **system** store; only `requests` (hence PyGithub) can't see it — it verifies against certifi | set `REQUESTS_CA_BUNDLE` to probe 1's `cafile`, or rebuild: the app now defaults to it |
+| both FAIL with a cert error | the image doesn't trust the CA at all | mount it — `proxy.caBundle.existingConfigMap` |
+| `github.com` OK, `api.github.com` FAIL | the proxy treats the hosts differently | proxy allow-list change (network team). The app needs **both**: REST on `api.github.com`, git clone on `github.com` |
+| both FAIL, `ProxyError … only use HTTP` | proxy URL has the wrong scheme | the value must be `http://host:port` |
+
 ## Verify locally before applying
 ```bash
 helm lint helm/release-copilot
