@@ -678,20 +678,33 @@ def diagnostics():
     # separately by the proxy. The CARE/DF release flow clones over https to
     # github.com, so a working API says nothing about whether a release can run.
     try:
+        import os as _os2
         import subprocess as _sp
 
+        from .tools.release_fileset import _authed_clone_url
+
         host = settings.github_base_url.split("://")[-1].split("/")[0] if settings.github_base_url else "github.com"
+        # Use the SAME authenticated URL the release flow builds — an anonymous
+        # ls-remote fails on a private repo for reasons that have nothing to do
+        # with the proxy, which would send an operator chasing a phantom.
+        url = _authed_clone_url(active_deploy_repo())
+        env = {**_os2.environ, "GIT_TERMINAL_PROMPT": "0"}   # never block on a credential prompt
         probe = _sp.run(
-            ["git", "ls-remote", f"https://{host}/{active_deploy_repo()}.git", "HEAD"],
-            capture_output=True, text=True, timeout=30,
+            ["git", "ls-remote", url, "HEAD"],
+            capture_output=True, text=True, timeout=30, env=env,
         )
-        report["git_https"] = (
-            {"ok": True, "host": host}
-            if probe.returncode == 0
-            else {"ok": False, "host": host,
-                  "error": (probe.stderr or probe.stdout).strip()[:300],
-                  "hint": "release/promotion clones use this path — check the proxy allows it"}
-        )
+        if probe.returncode == 0:
+            report["git_https"] = {"ok": True, "host": host}
+        else:
+            # git echoes the remote URL on failure — strip the embedded token.
+            detail = (probe.stderr or probe.stdout).strip()
+            token = _resolve_github_token() or ""
+            if token:
+                detail = detail.replace(token, "***")
+            report["git_https"] = {
+                "ok": False, "host": host, "error": detail[:300],
+                "hint": "release creation clones over this path — check proxy access and SSO for the token",
+            }
     except Exception as e:
         report["git_https"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
 
