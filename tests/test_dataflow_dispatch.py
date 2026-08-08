@@ -175,3 +175,107 @@ def test_a_rejected_dispatch_is_reported_as_an_error_not_a_deploy(run_deploy):
     # the operator needs the reason AND what we actually sent, to fix the mapping
     assert reason in result
     assert "UAT.yaml" in result and "acme/df-app" in result and "acme-svc-a" in result
+
+
+# ---------------------------------------------------------------- UI field spec
+
+def test_field_names_invert_the_mapping(df_config):
+    df_config(df_dispatch_inputs='{"module": "{image}", "binary_version": "{tag}"}')
+    assert dataflow._field_input_names() == {"image": "module", "tag": "binary_version"}
+
+
+def test_composite_templates_have_no_single_form_field(df_config):
+    """One input fed by two fields cannot be labelled or populated by either."""
+    df_config(df_dispatch_inputs='{"artifact": "{image}:{tag}", "env": "{environment}"}')
+    assert dataflow._field_input_names() == {}
+
+
+def test_unusable_mapping_does_not_break_the_form(df_config):
+    """A bad template must fail the DEPLOY loudly and leave the form usable."""
+    df_config(df_dispatch_inputs='{"module": ')
+    assert dataflow._dispatch_mapping() == {}
+    assert dataflow._field_input_names() == {}
+
+
+class _FakeContents:
+    def __init__(self, text: str):
+        self.decoded_content = text.encode()
+
+
+class _WorkflowRepo:
+    default_branch = "main"
+
+    def __init__(self, text: str):
+        self._text = text
+
+    def get_contents(self, path, ref):
+        return _FakeContents(self._text)
+
+
+_WORKFLOW_YAML = """
+name: UAT deploy
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        type: choice
+        description: Module to deploy
+        options:
+          - acme-svc-a
+          - acme-svc-b
+      binary_version:
+        type: string
+        default: "1.0.0"
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+"""
+
+
+def test_workflow_dispatch_inputs_are_read_from_the_workflow_yaml():
+    repo = _WorkflowRepo(_WORKFLOW_YAML)
+    inputs = dataflow.workflow_dispatch_inputs(
+        repo, type("W", (), {"path": ".github/workflows/UAT.yaml"})(), "main",
+    )
+    assert inputs["module"]["options"] == ["acme-svc-a", "acme-svc-b"]
+    assert inputs["binary_version"]["default"] == "1.0.0"
+
+
+def test_unreadable_workflow_yields_no_inputs():
+    """The form must still open when the workflow cannot be read."""
+    class _Boom:
+        def get_contents(self, path, ref):
+            raise RuntimeError("404")
+
+    assert dataflow.workflow_dispatch_inputs(
+        _Boom(), type("W", (), {"path": "x.yml"})(), "main") == {}
+
+
+def test_form_fields_carry_workflow_labels_and_choice_options(df_config, monkeypatch):
+    from release_agent import app_fastapi
+
+    df_config(df_dispatch_inputs='{"module": "{image}", "binary_version": "{tag}"}',
+              df_deploy_ref="main")
+    workflow = type("W", (), {"path": ".github/workflows/UAT.yaml"})()
+    fields = app_fastapi._df_form_fields(_WorkflowRepo(_WORKFLOW_YAML), workflow)
+
+    assert fields["image"]["name"] == "module"
+    assert fields["image"]["label"] == "Module"
+    assert fields["image"]["options"] == ["acme-svc-a", "acme-svc-b"]
+    assert fields["image"]["description"] == "Module to deploy"
+    # a string input stays free text — no options to constrain it to
+    assert fields["tag"]["label"] == "Binary version"
+    assert fields["tag"]["options"] == []
+    assert fields["tag"]["default"] == "1.0.0"
+
+
+def test_form_fields_fall_back_when_the_workflow_is_unavailable(df_config):
+    from release_agent import app_fastapi
+
+    df_config(df_dispatch_inputs='{"module": "{image}", "binary_version": "{tag}"}')
+    fields = app_fastapi._df_form_fields(None, None)
+    # still labelled from the mapping; just no options to offer
+    assert fields["image"]["label"] == "Module"
+    assert fields["image"]["options"] == []

@@ -153,10 +153,16 @@ config:
   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
 ```
 
-The confirmation preview renders the mapped inputs, so what the developer
-approves is exactly what gets dispatched. A `choice` input also constrains the
-value — an image name outside `options:` is refused by GitHub, and the error is
-surfaced verbatim.
+The **Deploy to DF UAT** form then labels itself from the workflow: the fields
+read *Module* and *Binary version*, and a `choice` input renders as a dropdown of
+its `options:` — so a value GitHub would refuse cannot be entered. The
+confirmation preview renders the mapped inputs, so what the developer approves is
+exactly what gets dispatched.
+
+The form reads the workflow's `inputs:` block from GitHub (cached 5 min). If that
+read fails it falls back to plain *Image name* / *Tag* text fields rather than
+failing to open — a rejected dispatch is then reported as an error, never as a
+deploy.
 | `config.CONTROL_PREFIXES` | `RLFT,RFTL,RCTLD,xSecurity-Gatekeeper` | control step/JOB prefixes, case-insensitive; add `Xray and Prisma,CodeQL` to gate on scans |
 | `config.BQ_DATASET` / `.BQ_TABLE` / `.BQ_LOCATION` | `release_agent` / `release_intents` / `US` | must match the terraform-provisioned table; empty dataset disables |
 | `config.BQ_AUTO_CREATE` | `false` | keep false in cluster (table pre-provisioned) |

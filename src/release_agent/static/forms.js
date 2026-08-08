@@ -527,8 +527,8 @@ export async function showDfDeployForm() {
     wrap.innerHTML =
         '<div class="mb-1 font-semibold flex items-center gap-2 text-sky-300">' +
         '<i class="fa-solid fa-water"></i> Deploy to DF UAT</div>' +
-        '<div class="text-slate-400 text-xs mb-3">Triggers the <code>' + (ctx.workflow || 'df-deploy.yml') +
-        '</code> workflow with your image + tag. Nothing runs until you confirm the preview.</div>';
+        '<div class="text-slate-400 text-xs mb-3">Triggers the <code>' + esc(ctx.workflow || 'df-deploy.yml') +
+        '</code> workflow. Nothing runs until you confirm the preview.</div>';
 
     const dfNote = _ctxNote(ctx, 'recent DF runs'); if (dfNote) wrap.appendChild(dfNote);
 
@@ -549,22 +549,47 @@ export async function showDfDeployForm() {
         wrap.appendChild(list);
     }
 
+    // Fields are labelled with the TARGET WORKFLOW's own input names (module /
+    // binary_version, not our internal image / tag) and a `choice` input becomes
+    // a dropdown — GitHub rejects any value outside its options:, so offering
+    // free text there only produces a refusal after the developer confirms.
+    const fields = ctx.fields || {};
+    const fImage = fields.image || { name: 'image', label: 'Image name', options: [] };
+    const fTag = fields.tag || { name: 'tag', label: 'Tag', options: [] };
+
     const grid = document.createElement('div');
     grid.className = 'grid grid-cols-2 gap-2 mb-1';
-    const mk = (labelText, id, placeholder) => {
+    const mk = (spec, id, fallbackLabel, placeholder) => {
         const l = document.createElement('label');
         l.className = 'text-[11px] text-slate-400 block mb-0.5';
-        l.textContent = labelText;
-        const el = document.createElement('input');
-        el.id = id; el.type = 'text'; el.placeholder = placeholder;
+        l.textContent = spec.label || fallbackLabel;
+        const opts = spec.options || [];
+        const el = document.createElement(opts.length ? 'select' : 'input');
+        el.id = id;
         el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+        if (opts.length) {
+            const blank = document.createElement('option');
+            blank.value = ''; blank.textContent = 'select ' + (spec.label || fallbackLabel).toLowerCase() + '…';
+            el.appendChild(blank);
+            opts.forEach(o => {
+                const opt = document.createElement('option');
+                opt.value = o; opt.textContent = o;
+                el.appendChild(opt);
+            });
+            if (spec.default && opts.indexOf(spec.default) !== -1) el.value = spec.default;
+        } else {
+            el.type = 'text';
+            el.placeholder = placeholder;
+            if (spec.default) el.value = spec.default;
+        }
+        if (spec.description) el.title = spec.description;
         const box = document.createElement('div');
         box.appendChild(l); box.appendChild(el);
         grid.appendChild(box);
         return el;
     };
-    const imgEl = mk('Image name', 'df-image', 'e.g. order-enrichment');
-    const tagEl = mk('Tag', 'df-tag', 'e.g. 1.4.2');
+    const imgEl = mk(fImage, 'df-image', 'Image name', 'e.g. order-enrichment');
+    const tagEl = mk(fTag, 'df-tag', 'Tag', 'e.g. 1.4.2');
     wrap.appendChild(grid);
 
     const echo = document.createElement('div');
@@ -572,11 +597,17 @@ export async function showDfDeployForm() {
     wrap.appendChild(echo);
     const updateEcho = () => {
         const i = imgEl.value.trim(), t = tagEl.value.trim();
-        echo.textContent = (i && t) ? ('↳ will dispatch ' + i + ':' + t + ' → uat ✓') : '';
+        // Echo the real dispatch inputs, matching what the preview will show.
+        echo.textContent = (i && t)
+            ? ('↳ will dispatch ' + fImage.name + '=' + i + ' ' + fTag.name + '=' + t + ' → uat ✓')
+            : '';
         echo.className = 'text-[11px] mb-2 h-4 ' + ((i && t) ? 'text-emerald-400' : 'text-slate-500');
     };
-    imgEl.addEventListener('input', updateEcho);
-    tagEl.addEventListener('input', updateEcho);
+    ['input', 'change'].forEach(ev => {
+        imgEl.addEventListener(ev, updateEcho);
+        tagEl.addEventListener(ev, updateEcho);
+    });
+    updateEcho();
 
     // Advanced (collapsed): repo override.
     const adv = document.createElement('div');
@@ -605,7 +636,11 @@ export async function showDfDeployForm() {
     submit.addEventListener('click', () => {
         err.textContent = '';
         const image = imgEl.value.trim(), tag = tagEl.value.trim();
-        if (!image || !tag) { err.textContent = 'Image name and tag are both required.'; return; }
+        if (!image || !tag) {
+            err.textContent = (fImage.label || 'Image name') + ' and ' +
+                (fTag.label || 'tag').toLowerCase() + ' are both required.';
+            return;
+        }
         const payload = { deployment_type: 'dataflow', environment: 'uat', image: image, tag: tag };
         const repoOverride = repoInput.value.trim();
         if (repoOverride) payload.deployment_repo = repoOverride;

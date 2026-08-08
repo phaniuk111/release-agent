@@ -80,6 +80,60 @@ def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
     return out
 
 
+def _dispatch_mapping() -> dict:
+    """DF_DISPATCH_INPUTS as a dict, or {} when it is unset/unusable.
+
+    UI-facing callers want the mapping without inheriting the dispatch path's
+    hard failure — a bad template must break the deploy, not blank the form.
+    """
+    template = (settings.df_dispatch_inputs or "").strip()
+    if not template:
+        return {}
+    try:
+        mapping = json.loads(template)
+    except json.JSONDecodeError:
+        return {}
+    return mapping if isinstance(mapping, dict) else {}
+
+
+def _field_input_names() -> dict:
+    """Invert the mapping: which workflow input carries our image, and which our
+    tag — e.g. {"image": "module", "tag": "binary_version"}.
+
+    Only templates that are exactly one placeholder map back to a form field; a
+    composite like "{image}:{tag}" is one input fed by two fields, so it has no
+    single field to label or populate and is left out.
+    """
+    out = {}
+    for key, raw in _dispatch_mapping().items():
+        placeholder = str(raw).strip()
+        for field in ("image", "tag"):
+            if placeholder == "{" + field + "}":
+                out.setdefault(field, str(key))
+    return out
+
+
+def workflow_dispatch_inputs(repo, workflow, ref: str) -> dict:
+    """The target workflow's declared ``workflow_dispatch`` inputs, read from its
+    YAML at ``ref``. Empty dict if it cannot be read — the form falls back to
+    plain text fields rather than failing to open."""
+    from ruamel.yaml import YAML
+
+    try:
+        raw = repo.get_contents(workflow.path, ref=ref).decoded_content
+        spec = YAML(typ="safe").load(raw) or {}
+    except Exception:
+        return {}
+    # YAML 1.1 parses a bare `on:` key as the boolean True; 1.2 keeps it a
+    # string. Loaders disagree, so accept either.
+    triggers = spec.get("on", spec.get(True)) or {}
+    if not isinstance(triggers, dict):
+        return {}
+    dispatch = triggers.get("workflow_dispatch") or {}
+    inputs = dispatch.get("inputs") if isinstance(dispatch, dict) else None
+    return inputs if isinstance(inputs, dict) else {}
+
+
 @tool(args_schema=DeployDataflowInput)
 def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str = "") -> str:
     """Deploy a Dataflow flex template: dispatch the DF repo's deploy workflow with

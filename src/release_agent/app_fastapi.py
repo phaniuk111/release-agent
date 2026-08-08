@@ -499,15 +499,80 @@ async def deployment_types_endpoint():
     return deployment_types()
 
 
+def _df_label(name: str) -> str:
+    """'binary_version' -> 'Binary version'. The form is labelled with the target
+    workflow's own input names, so what the developer fills in reads the same as
+    what the workflow declares."""
+    words = str(name).replace("-", " ").replace("_", " ").split()
+    return " ".join(words).capitalize() if words else ""
+
+
+# A workflow's `inputs:` block changes about as often as the workflow is
+# rewritten, but reading it costs a GitHub round-trip on every form open — which
+# behind a TLS-inspecting proxy is the difference between the form opening and
+# the frontend's 5s fetch giving up. Cached per (repo, workflow, ref, mapping).
+_DF_FIELDS_TTL_SECONDS = 300.0
+_df_fields_cache: dict = {}
+
+
+def _df_form_fields(repo=None, workflow=None) -> dict:
+    """Describe the DF form's two value fields from the target workflow's declared
+    inputs: the label to show, and the allowed values when the workflow declares a
+    ``choice`` — GitHub refuses anything outside ``options:``, so the UI offers a
+    dropdown instead of letting the developer type a value that will be rejected.
+
+    Falls back to plain image/tag text fields whenever the workflow cannot be read.
+    """
+    from .tools.dataflow import _field_input_names, workflow_dispatch_inputs
+
+    names = _field_input_names()
+    fields = {
+        "image": {"name": names.get("image", "image"), "options": [], "description": ""},
+        "tag": {"name": names.get("tag", "tag"), "options": [], "description": ""},
+    }
+    declared, key = {}, None
+    if repo is not None and workflow is not None:
+        try:
+            ref = (app_settings.df_deploy_ref or "").strip() or repo.default_branch
+            key = (app_settings.df_deploy_repo, app_settings.df_deploy_workflow, ref,
+                   app_settings.df_dispatch_inputs)
+            cached = _df_fields_cache.get(key)
+            if cached and time.time() - cached["at"] < _DF_FIELDS_TTL_SECONDS:
+                return cached["value"]
+            declared = workflow_dispatch_inputs(repo, workflow, ref)
+        except Exception:
+            logger.exception("df-template: could not read DF workflow inputs")
+            key = None
+
+    for field, spec in fields.items():
+        spec["label"] = _df_label(spec["name"]) or field.capitalize()
+        declared_input = declared.get(spec["name"])
+        if not isinstance(declared_input, dict):
+            continue
+        spec["description"] = str(declared_input.get("description") or "")
+        spec["default"] = str(declared_input.get("default") or "")
+        options = declared_input.get("options")
+        if declared_input.get("type") == "choice" and isinstance(options, list):
+            spec["options"] = [str(o) for o in options]
+    # Only cache a spec built from a workflow we actually read — caching the
+    # fallback would pin the form to plain text fields for the whole TTL after a
+    # transient GitHub blip.
+    if key is not None and declared:
+        _df_fields_cache[key] = {"at": time.time(), "value": fields}
+    return fields
+
+
 @app.get("/api/df-template")
 def df_template_endpoint(env: str = "uat"):
-    """Recent DF deploy workflow runs plus the default repo — pre-fills the DF form's
-    'recent deploys' context strip. (Deploy = workflow_dispatch; there is no state file.)"""
+    """Recent DF deploy workflow runs, the default repo, and the form's field spec
+    (labels + choice options taken from the workflow itself) — everything the DF
+    form renders from. (Deploy = workflow_dispatch; there is no state file.)"""
     import itertools
 
     from .tools._common import _get_github_client
 
     runs: list = []
+    repo = workflow = None
     try:
         if app_settings.df_deploy_repo:
             repo = _get_github_client().get_repo(app_settings.df_deploy_repo)
@@ -529,6 +594,7 @@ def df_template_endpoint(env: str = "uat"):
         "recent_runs": runs,
         "deploy_repo": app_settings.df_deploy_repo,
         "workflow": app_settings.df_deploy_workflow,
+        "fields": _df_form_fields(repo, workflow),
     }
 
 
