@@ -61,7 +61,19 @@ config:
   # UI-overridable via the DF form's Advanced field.
   DF_BUILD_REPO: ""
   DF_DEPLOY_REPO: ""
+  # Exact file name under .github/workflows/ (case- and suffix-sensitive).
   DF_DEPLOY_WORKFLOW: "df-deploy.yml"
+  # Branch to dispatch on. GitHub only accepts a dispatch for a ref that ALREADY
+  # holds the workflow file, so set this when the DF repo keeps its deploy
+  # workflow on main but its default branch is something else. Empty = default branch.
+  DF_DEPLOY_REF: ""
+  # Names of the workflow_dispatch inputs to send. GitHub REJECTS the dispatch
+  # (HTTP 422 "Unexpected inputs provided") if the payload carries an input the
+  # workflow does not declare, so this must match the target workflow's `inputs:`
+  # block. {image}, {tag} and {environment} are substituted; omit a key to not
+  # send it. For a workflow declaring module + binary_version:
+  #   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
+  DF_DISPATCH_INPUTS: '{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}'
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
   # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
   # EMPTY BQ_DATASET DISABLES the whole feature cleanly.

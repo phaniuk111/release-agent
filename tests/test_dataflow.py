@@ -26,8 +26,10 @@ def test_parse_df_payload():
 def test_df_preview_shows_dispatch_inputs():
     req = _try_parse_json_payload(_df_payload())
     preview = adk_deploy._build_preview(req)
+    # Labelled with the configured workflow file, and showing the inputs as they
+    # will actually be sent (DF_DISPATCH_INPUTS renames them per target workflow).
     assert preview == {
-        "workflow_dispatch (df-deploy)": [
+        "workflow_dispatch (df-deploy.yml)": [
             {"image": "order-enrichment", "tag": "1.4.2", "environment": "uat"}
         ]
     }
@@ -64,7 +66,8 @@ class _FakeWorkflow:
     def get_runs(self):
         return iter(self._runs)
 
-    def create_dispatch(self, ref, inputs):
+    def create_dispatch(self, ref, inputs, throw=False):
+        assert throw is True, "a rejected dispatch must raise, not return False"
         self.dispatched.append({"ref": ref, "inputs": inputs})
         self._runs = [_FakeRun(id=2, html_url="http://run/2", status="queued")] + self._runs
 

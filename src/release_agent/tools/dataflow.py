@@ -2,9 +2,14 @@
 
 The developer supplies the flex-template IMAGE NAME and TAG; deploying means
 triggering the DF repo's deploy workflow (``workflow_dispatch`` of
-``settings.df_deploy_workflow``, default ``df-deploy.yml``) with
-``{image, tag, environment}`` inputs. There is no state file — the workflow run
-IS the deploy. The run link is returned so the developer can watch it.
+``settings.df_deploy_workflow``) on ``settings.df_deploy_ref``. There is no state
+file — the workflow run IS the deploy. The run link is returned so the developer
+can watch it.
+
+The dispatch input NAMES are configured, not hardcoded: GitHub 422s a dispatch
+carrying an input the workflow does not declare, and DF workflows name theirs
+differently (``module``/``binary_version`` rather than ``image``/``tag``). See
+``settings.df_dispatch_inputs``.
 """
 from __future__ import annotations
 
@@ -46,10 +51,39 @@ def _find_dispatched_run(workflow, before_ids: set, tries: int = 6, delay: float
     return None
 
 
+def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
+    """Map our values onto the target workflow's declared input names.
+
+    Teams name workflow_dispatch inputs differently (module/binary_version vs
+    image/tag), and GitHub rejects a dispatch that carries an input the
+    workflow does not declare — so this cannot be hardcoded. DF_DISPATCH_INPUTS
+    is a JSON object of {workflow_input_name: template}; {image}, {tag} and
+    {environment} are substituted. Keys absent from the template are simply not
+    sent, which is how a workflow with no environment input is supported.
+    """
+    template = (settings.df_dispatch_inputs or "").strip()
+    if not template:
+        return {"image": image, "tag": tag, "environment": env}
+    try:
+        mapping = json.loads(template)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"DF_DISPATCH_INPUTS is not valid JSON ({e}): {template[:80]}")
+    if not isinstance(mapping, dict):
+        raise ValueError("DF_DISPATCH_INPUTS must be a JSON object")
+    values = {"image": image, "tag": tag, "environment": env}
+    out = {}
+    for key, raw in mapping.items():
+        text = str(raw)
+        for name, value in values.items():
+            text = text.replace("{" + name + "}", value)
+        out[str(key)] = text
+    return out
+
+
 @tool(args_schema=DeployDataflowInput)
 def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str = "") -> str:
     """Deploy a Dataflow flex template: dispatch the DF repo's deploy workflow with
-    {image, tag, environment} inputs and return the triggered run."""
+    the image/tag inputs it declares and return the triggered run."""
     from ..session_creds import _normalize_repo
 
     env = str(environment or "").strip().lower()
@@ -73,13 +107,32 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
         return "ERROR deploying dataflow: no Dataflow repo configured (set DF_DEPLOY_REPO)."
 
     try:
+        inputs = _dispatch_inputs(image, tag, env)
+    except ValueError as e:
+        return f"ERROR deploying dataflow: {e}"
+
+    try:
         repo = _get_github_client().get_repo(repo_full)
         workflow = repo.get_workflow(settings.df_deploy_workflow)
         before_ids = {r.id for r in itertools.islice(workflow.get_runs(), 5)}
-        inputs = {"image": image, "tag": tag, "environment": env}
-        workflow.create_dispatch(ref=repo.default_branch, inputs=inputs)
+        # The ref must be a branch that CONTAINS the workflow file, which is not
+        # necessarily the repo default branch.
+        ref = (settings.df_deploy_ref or "").strip() or repo.default_branch
     except Exception as e:
         return f"ERROR deploying dataflow: {e}"
+
+    try:
+        # throw=True is REQUIRED: PyGithub defaults to throw=False, which swallows
+        # GitHub's rejection and returns False — we would report a deploy that
+        # never ran. The raised error carries the actionable reason (an input the
+        # workflow does not declare, a value outside a choice input's options, or
+        # a ref that does not hold the workflow file).
+        workflow.create_dispatch(ref=ref, inputs=inputs, throw=True)
+    except Exception as e:
+        return (
+            f"ERROR deploying dataflow: dispatch of {settings.df_deploy_workflow} "
+            f"in {repo_full} on ref '{ref}' with inputs {inputs} was rejected: {e}"
+        )
 
     run = _find_dispatched_run(workflow, before_ids)
     note = (
@@ -98,6 +151,7 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
             "environment": env,
             "repo": repo_full,
             "workflow": settings.df_deploy_workflow,
+            "ref": ref,
             "inputs": inputs,
             "run": run,
             "note": note,

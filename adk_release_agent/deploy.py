@@ -96,11 +96,17 @@ def _build_preview(req: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     env = (req.get("environment") or "uat").lower()
     env = "prod" if env in ("prod", "prd", "production") else "uat"
     if req.get("deployment_type") == "dataflow":
-        # DF deploy = workflow_dispatch; preview the exact dispatch inputs.
+        # DF deploy = workflow_dispatch; preview the exact dispatch inputs. The
+        # input NAMES are configured per target workflow (DF_DISPATCH_INPUTS), so
+        # the preview has to render the mapping — not our internal image/tag
+        # wording — or the developer confirms something we do not send.
+        from release_agent.config import settings
+        from release_agent.tools.dataflow import _dispatch_inputs
+
         image = req["images"][0]
         return {
-            "workflow_dispatch (df-deploy)": [
-                {"image": image["name"], "tag": image["tag"], "environment": env}
+            f"workflow_dispatch ({settings.df_deploy_workflow})": [
+                _dispatch_inputs(image["name"], image["tag"], env)
             ]
         }
     entries = req.get("entries") or []

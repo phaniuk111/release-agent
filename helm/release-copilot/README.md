@@ -125,6 +125,38 @@ app still fails. `/api/diagnostics` checks from inside the running app.
 | `config.ARTIFACTORY_BASE_URL` | `""` | prepended when devs give bare `name:version` |
 | `config.DF_BUILD_REPO` | `""` | Dataflow images' build repo (empty = BUILD_REPO) |
 | `config.DF_DEPLOY_REPO` / `.DF_DEPLOY_WORKFLOW` | `""` / `df-deploy.yml` | Dataflow workflow-dispatch deploys |
+| `config.DF_DEPLOY_REF` | `""` | Branch to dispatch on; empty = repo default branch |
+| `config.DF_DISPATCH_INPUTS` | `{"image","tag","environment"}` | Maps our values onto the DF workflow's declared input names |
+
+### Pointing the DF deploy at your workflow
+
+A `workflow_dispatch` is rejected with **HTTP 422 `Unexpected inputs provided`**
+if it carries an input the workflow does not declare, and with a 404 if the ref
+does not contain the workflow file. So both the input names and the ref are
+configuration. For a DF workflow on `main` that declares:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      module: { type: choice, options: [svc-a, svc-b] }
+      binary_version: { type: string }
+```
+
+set:
+
+```yaml
+config:
+  DF_DEPLOY_REPO: "your-org/your-df-app"
+  DF_DEPLOY_WORKFLOW: "UAT.yaml"     # exact file name, case-sensitive
+  DF_DEPLOY_REF: "main"              # branch holding that file
+  DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
+```
+
+The confirmation preview renders the mapped inputs, so what the developer
+approves is exactly what gets dispatched. A `choice` input also constrains the
+value — an image name outside `options:` is refused by GitHub, and the error is
+surfaced verbatim.
 | `config.CONTROL_PREFIXES` | `RLFT,RFTL,RCTLD,xSecurity-Gatekeeper` | control step/JOB prefixes, case-insensitive; add `Xray and Prisma,CodeQL` to gate on scans |
 | `config.BQ_DATASET` / `.BQ_TABLE` / `.BQ_LOCATION` | `release_agent` / `release_intents` / `US` | must match the terraform-provisioned table; empty dataset disables |
 | `config.BQ_AUTO_CREATE` | `false` | keep false in cluster (table pre-provisioned) |

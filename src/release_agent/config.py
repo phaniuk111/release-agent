@@ -109,9 +109,29 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("DF_DEPLOY_REPO", "DATAFLOW_DEPLOY_REPO"),
     )
+    # File name as it appears under .github/workflows/ — matched exactly, incl. case
+    # and the .yml/.yaml suffix.
     df_deploy_workflow: str = Field(
         default="df-deploy.yml",
         validation_alias=AliasChoices("DF_DEPLOY_WORKFLOW", "DATAFLOW_DEPLOY_WORKFLOW"),
+    )
+    # Branch the dispatch runs on. GitHub only accepts a workflow_dispatch for a ref
+    # that ALREADY contains the workflow file, so this is not always the repo's
+    # default branch (DF repos keep the deploy workflow on main while the default
+    # branch may be a env branch). Empty = the repo's default branch.
+    df_deploy_ref: str = Field(
+        default="",
+        validation_alias=AliasChoices("DF_DEPLOY_REF", "DATAFLOW_DEPLOY_REF"),
+    )
+    # workflow_dispatch input names differ per team, and GitHub REJECTS a
+    # dispatch carrying inputs the workflow does not declare. Map our values
+    # onto the target workflow's input names with a JSON template; the
+    # placeholders {image}, {tag} and {environment} are substituted. Omit a key
+    # to not send it at all (e.g. a workflow with no environment input).
+    #   e.g. '{"module": "{image}", "binary_version": "{tag}"}'
+    df_dispatch_inputs: str = Field(
+        default='{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}',
+        validation_alias=AliasChoices("DF_DISPATCH_INPUTS", "DATAFLOW_DISPATCH_INPUTS"),
     )
     # GitHub Enterprise Server API root (e.g. https://github.corp.internal/api/v3).
     # Empty = public github.com. Egress proxies need no setting here — PyGithub

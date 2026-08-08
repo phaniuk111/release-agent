@@ -266,7 +266,9 @@ def retrigger_deployment_workflow(pr_number: int, simulate_closed_controls: str 
         if simulate_closed_controls:
             inputs["simulate_closed_controls"] = simulate_closed_controls
 
-        workflow.create_dispatch(ref=repo.default_branch, inputs=inputs)
+        # throw=True: PyGithub's default swallows a rejected dispatch and returns
+        # False, which would have us report "triggered" for a run GitHub refused.
+        workflow.create_dispatch(ref=repo.default_branch, inputs=inputs, throw=True)
 
         return json.dumps(
             {

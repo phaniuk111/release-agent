@@ -269,7 +269,9 @@ def dispatch_workflow(
         # Dispatch against the repo's actual default branch (not a hardcoded
         # "main") so repos on master/develop/etc. still fire — and so the ref
         # matches the default branch the manifest is read/written on.
-        workflow_obj.create_dispatch(ref=repo.default_branch, inputs=inputs)
+        # throw=True: PyGithub's default swallows a rejected dispatch and returns
+        # False, which would have us report "dispatched" for a run GitHub refused.
+        workflow_obj.create_dispatch(ref=repo.default_branch, inputs=inputs, throw=True)
 
         return json.dumps(
             {
