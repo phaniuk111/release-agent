@@ -20,7 +20,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest ruff
+        # ruff is pinned to the uv.lock version: 0.16 changed the default rule
+        # set and flags ~200 issues the repo's pinned linter does not.
+        run: pip install -r requirements.txt pytest "ruff==0.15.20"
       - name: Lint
         run: ruff check src adk_release_agent tests
       - name: Unit tests
