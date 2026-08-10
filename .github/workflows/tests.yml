@@ -1,0 +1,59 @@
+name: tests
+
+on:
+  push:
+    branches:
+      - adk-release-agent
+      - "claude/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest ruff
+      - name: Lint
+        run: ruff check src adk_release_agent tests
+      - name: Unit tests
+        run: PYTHONPATH=src:. python -m pytest -q
+
+  # Real scenario: the agent-side DF deploy path dispatches THIS repo's
+  # df-deploy.yml exactly as it would a DF team's workflow when a developer
+  # submits a UAT deploy. Needs actions:write so GITHUB_TOKEN may create the
+  # workflow_dispatch (dispatching workflow_dispatch with GITHUB_TOKEN is the
+  # documented exception to the no-recursive-runs rule).
+  df-uat-e2e:
+    needs: unit
+    runs-on: ubuntu-latest
+    # One at a time: deploy_dataflow detects "the run our dispatch created" by
+    # diffing recent run ids, which interleaved E2Es would confuse.
+    concurrency: df-uat-e2e
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GOOGLE_CLOUD_PROJECT: ci-e2e
+      DF_DEPLOY_REPO: ${{ github.repository }}
+      DF_DEPLOY_WORKFLOW: df-deploy.yml
+      # The dispatch ref must contain df-deploy.yml — this push's branch does.
+      DF_DEPLOY_REF: ${{ github.ref_name }}
+      DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}", "environment": "{environment}"}'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deploy-path dependencies
+        run: pip install PyGithub pydantic pydantic-settings
+      - name: DF UAT deploy E2E (dispatch + rejection)
+        run: PYTHONPATH=src python scripts/df_e2e.py

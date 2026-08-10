@@ -1,0 +1,47 @@
+name: df-deploy
+
+# Stand-in for a real Dataflow team's deploy workflow, with the input names DF
+# teams actually declare (module/binary_version, NOT image/tag). Release Copilot
+# dispatches this via deploy_dataflow() when a developer submits a DF UAT deploy;
+# the run below IS the deploy. GitHub rejects any dispatch whose inputs don't
+# match these declarations — which is exactly what the E2E rejection case pins.
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "Dataflow flex-template module (image name)"
+        required: true
+        type: string
+      binary_version:
+        description: "Module binary version (image tag)"
+        required: true
+        type: string
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - uat
+          - prd
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        run: |
+          test -n "${{ inputs.module }}"
+          test -n "${{ inputs.binary_version }}"
+          echo "inputs OK"
+
+      - name: Deploy flex template (simulated)
+        run: |
+          echo "Deploying Dataflow flex template"
+          echo "  module:          ${{ inputs.module }}"
+          echo "  binary_version:  ${{ inputs.binary_version }}"
+          echo "  environment:     ${{ inputs.environment }}"
+          echo
+          echo "gcloud dataflow flex-template run df-${{ inputs.module }} \\"
+          echo "  --template-file-gcs-location gs://df-templates/${{ inputs.module }}/${{ inputs.binary_version }}.json \\"
+          echo "  --region europe-west3   (simulated)"
