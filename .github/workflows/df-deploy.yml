@@ -7,6 +7,15 @@ name: df-deploy
 # match these declarations — which is exactly what the E2E rejection case pins.
 
 on:
+  # The push trigger registers this workflow with the Actions API: a
+  # workflow_dispatch-only workflow on a non-default branch 404s on lookup by
+  # filename until it has at least one run (and main is off-limits here).
+  push:
+    branches:
+      - adk-release-agent
+      - "claude/**"
+    paths:
+      - ".github/workflows/df-deploy.yml"
   workflow_dispatch:
     inputs:
       module:
@@ -27,6 +36,8 @@ on:
 
 jobs:
   deploy:
+    # Push events exist only to register the workflow — deploy solely on dispatch.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Validate inputs
