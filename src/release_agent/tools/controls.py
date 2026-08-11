@@ -235,17 +235,16 @@ _FAIL_CONCLUSIONS = {"failure", "timed_out", "cancelled", "startup_failure", "ac
 
 
 def _is_control_step(name: str) -> bool:
-    """Case-insensitive prefix match against CONTROL_PREFIXES — covers RLFT/RFTL
-    demo gates as well as live pipelines' RCTLDEF0001691-style SDLC controls
-    and xSecurity-Gatekeeper."""
+    """Case-insensitive prefix match against CONTROL_PREFIXES — the live gate is
+    RCTLD, covering RCTLDEF0001691-style SDLC controls; RLFT/RFTL are demo gates."""
     low = name.lower()
     return any(low.startswith(p.lower()) for p in settings.control_prefixes)
 
 
 def _collect_controls(run) -> list[dict]:
     """Enumerate a build run's release controls with pass/fail. Controls may be
-    STEPS inside a job (RCTLDEF…, xSecurity-Gatekeeper in build-deploy-publish)
-    or entire JOBS named like a control — both are collected; skipped controls
+    STEPS inside a job (RCTLDEF… in build-deploy-publish) or entire JOBS named
+    like a control — both are collected; skipped controls
     are neither passed nor failed (they make the gate UNKNOWN, not PASS)."""
     controls = []
     for job in run.jobs():

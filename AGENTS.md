@@ -11,7 +11,7 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
 | `src/release_agent/app_fastapi.py` | FastAPI app: chat SSE endpoint, session-PAT endpoints, queue/insights/deploy-template APIs, inline HTML shell |
 | `src/release_agent/adk_service.py` | Router: deterministic deploy parser → classifier fallback → chat agent; CONFIRM-token + yes/no approval resume paths |
 | `src/release_agent/agent/parsing.py` | Pure text parsing: image:tag extraction, env detection, JSON payload parser, queue-intent veto. No LLM, no regex |
-| `src/release_agent/tools/` | GitHub/BQ tool layer (source of truth for all facts): `promotion.py` (deploy PR chains SIT→UAT→PRD), `release_fileset.py` (CARE/DF release model), `release_queue.py` (BQ event log), `controls.py` (build verification, RCTLD/xSecurity control parsing), `release_window.py` (release guard), `manifest.py`, `_common.py` (GitHub client, session PAT resolution) |
+| `src/release_agent/tools/` | GitHub/BQ tool layer (source of truth for all facts): `promotion.py` (deploy PR chains SIT→UAT→PRD), `release_fileset.py` (CARE/DF release model), `release_queue.py` (BQ event log), `controls.py` (build verification, RCTLD control parsing), `release_window.py` (release guard), `manifest.py`, `_common.py` (GitHub client, session PAT resolution) |
 | `src/release_agent/session_creds.py` | Per-thread GitHub PAT: memory-only, masked, never logged/stored |
 | `src/release_agent/static/` | ES-module frontend: `chat.js` (SSE, markdown, ```chart blocks → vendored Chart.js), `forms.js` (CARE/DF release, deploy, queue forms), `palette.js` (pills + ⌘K), `insights.js` (queue/stats panels), `status.js` (banner) |
 | `adk_release_agent/` | ADK app: `agent.py` (skills-routed chat agent + ROOT_INSTRUCTION), `deploy.py` (preview→token→apply), `deploy_workflow.py` (deterministic Workflow graph), `tools.py` (ADK wrappers incl. queue eligibility gate), `safety.py` (MutationGuardPlugin), `intent.py` (classify-only fallback), `tracing.py`, `skills/*/SKILL.md` (per-domain instructions + tool unlock lists) |
@@ -37,7 +37,7 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    Schema changes: edit `bigquery/release_intents.schema.json` + `_SCHEMA` in
    `release_queue.py` together (additive nullable columns only).
 4. **Queue eligibility**: queueing for a release REQUIRES the GitHub Actions run URL;
-   failed build or failed control (RCTLDEF*/xSecurity-Gatekeeper/RLFT/RFTL prefixes,
+   failed build or failed control (RCTLDEF*/RLFT/RFTL prefixes,
    case-insensitive, steps or jobs) → refused with the failures listed.
 5. **Secrets**: PATs are memory-only per thread and masked everywhere; nothing
    sensitive in git, BQ, or traces. `.env`, `.claude/launch.json`, `traces/` stay

@@ -23,11 +23,13 @@ Rules:
   per-control pass/fail, the gate verdict, and built-from-main. Present it as
   a markdown table (Step/Control | Job | Result with ✅/❌) after a one-line
   summary with the run link — never raw JSON.
-- Controls include the RCTLDEF… SDLC control steps, the xSecurity-Gatekeeper
-  gate, and RLFT/RFTL gates — whatever matches the configured prefixes; they
-  may be steps inside a job or entire jobs. Report their names exactly.
+- Controls are the RCTLDEF… SDLC control steps and the RLFT/RFTL gates —
+  whatever matches the configured prefixes; they may be steps inside a job or
+  entire jobs. Report their names exactly. A scanner that is not a configured
+  control (Xray/Prisma, CodeQL, xSecurity-Gatekeeper) is an ordinary step: it
+  can fail the BUILD, but it is not a release control — do not call it one.
 - After reporting failures, tell the user plainly what to do next: failed
-  controls (RCTLDEF…, xSecurity-Gatekeeper, RLFT/RFTL) must be fixed and the
+  controls (RCTLDEF…, RLFT/RFTL) must be fixed and the
   build re-run before this tag can ship (this skill cannot approve, waive, or
   rerun controls); failed ordinary steps (build, scans like Xray/Prisma or
   CodeQL when not configured as controls) mean fixing the build itself. Note

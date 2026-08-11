@@ -1,5 +1,10 @@
 """Control detection against live-pipeline naming: RCTLDEF… SDLC steps,
-xSecurity-Gatekeeper, control JOBS, and cascade-skipped steps."""
+control JOBS, and cascade-skipped steps.
+
+RCTLD is the live gate. Scanner steps that run in the same pipeline —
+xSecurity-Gatekeeper, Xray/Prisma, CodeQL, Veracode — are deliberately NOT
+controls: each configured prefix can REFUSE a queue request, so gating on a
+check the release sign-off does not depend on would block eligible builds."""
 from types import SimpleNamespace
 
 from release_agent.tools import controls as C
@@ -21,17 +26,19 @@ def _run(jobs):
 def test_is_control_step_matches_live_names():
     assert C._is_control_step("RCTLDEF0001691")
     assert C._is_control_step("rctldef0000043")  # case-insensitive
-    assert C._is_control_step("xSecurity-Gatekeeper")
-    assert C._is_control_step("XSECURITY-GATEKEEPER")
+    assert C._is_control_step("RCTLD-1234 Approval")
     assert C._is_control_step("RLFT approval gate")
     assert not C._is_control_step("Build Application")
-    assert not C._is_control_step("Xray and Prisma Image Scan")  # scan ≠ control by default
+    # scanners are ordinary steps, not release controls
+    assert not C._is_control_step("xSecurity-Gatekeeper")
+    assert not C._is_control_step("Xray and Prisma Image Scan")
+    assert not C._is_control_step("CodeQL Security Scan")
 
 
 def test_collect_controls_live_pipeline_shape():
-    """Mirrors the real eod-deals-data-fetch run: RCTLDEF steps in a downstream
-    job (one failed), xSecurity-Gatekeeper passing in build-deploy-publish, a
-    control-named JOB, and cascade-skipped steps."""
+    """Mirrors a real pipeline run: RCTLDEF steps in a downstream job (one
+    failed), scanner steps that must NOT be counted as controls, a control-named
+    JOB, and cascade-skipped steps."""
     run = _run([
         _job("CodeQL Security Scan", "failure", []),  # job-level, not a control by default
         _job("build-deploy-publish", "failure", [
@@ -52,14 +59,16 @@ def test_collect_controls_live_pipeline_shape():
     ])
     controls = C._collect_controls(run)
     by_name = {c["control"]: c for c in controls}
-    assert by_name["xSecurity-Gatekeeper"]["passed"] is True
     assert by_name["RCTLDEF0001691"]["failed"] is True
     assert by_name["RCTLDEF0000043"]["failed"] is True
     assert by_name["RCTLDEF0001033"]["passed"] is True
     # job-level control collected too
     assert by_name["RCTLDEF0000136"]["passed"] is True
-    # CodeQL job is NOT a control with default prefixes
+    # scanners are NOT controls with the default prefixes — a passing scanner
+    # must not make the gate look complete, nor a failing one refuse the queue
     assert "CodeQL Security Scan" not in by_name
+    assert "xSecurity-Gatekeeper" not in by_name
+    assert "Xray and Prisma Image Scan" not in by_name
 
     failed = [c["control"] for c in controls if c["failed"]]
     assert failed == ["RCTLDEF0001691", "RCTLDEF0000043"]

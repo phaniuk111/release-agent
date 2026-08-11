@@ -96,9 +96,12 @@ config:
   # One release at a time: adds are blocked while an OPEN PR targets one of
   # these. Empty = just PRD_BRANCH. Recommended: "SIT,UAT,PRD,PRL1".
   RELEASE_GUARD_BRANCHES: ""
-  # Control step/JOB name prefixes (case-insensitive): RCTLDEF... SDLC controls,
-  # xSecurity-Gatekeeper. Add "Xray and Prisma,CodeQL" to gate on scans too.
-  CONTROL_PREFIXES: "RLFT,RFTL,RCTLD,xSecurity-Gatekeeper"
+  # Control step/JOB name prefixes (case-insensitive). RCTLD is the live gate —
+  # it covers the RCTLDEF0001691-style SDLC controls; RLFT/RFTL are demo names.
+  # A prefix here can REFUSE a queue request, so only add a name the release
+  # sign-off actually depends on (e.g. a scanner gate) — not every check that
+  # happens to run in the pipeline.
+  CONTROL_PREFIXES: "RCTLD,RLFT,RFTL"
   # Fail-closed: block a PRD release when any build control failed.
   PRD_REQUIRE_CONTROLS: "true"
   # Release window policy.

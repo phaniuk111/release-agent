@@ -163,7 +163,7 @@ The form reads the workflow's `inputs:` block from GitHub (cached 5 min). If tha
 read fails it falls back to plain *Image name* / *Tag* text fields rather than
 failing to open — a rejected dispatch is then reported as an error, never as a
 deploy.
-| `config.CONTROL_PREFIXES` | `RLFT,RFTL,RCTLD,xSecurity-Gatekeeper` | control step/JOB prefixes, case-insensitive; add `Xray and Prisma,CodeQL` to gate on scans |
+| `config.CONTROL_PREFIXES` | `RCTLD,RLFT,RFTL` | control step/JOB prefixes, case-insensitive. `RCTLD` is the live gate (covers `RCTLDEF…`). Adding a prefix lets that name REFUSE a queue request — only add checks the release sign-off depends on |
 | `config.BQ_DATASET` / `.BQ_TABLE` / `.BQ_LOCATION` | `release_agent` / `release_intents` / `US` | must match the terraform-provisioned table; empty dataset disables |
 | `config.BQ_AUTO_CREATE` | `false` | keep false in cluster (table pre-provisioned) |
 | `config.RELEASE_GUARD_BRANCHES` | `""` | e.g. `SIT,UAT,PRD,PRL1` — one release at a time |

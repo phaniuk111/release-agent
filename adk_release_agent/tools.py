@@ -112,7 +112,7 @@ def get_build_report(
     image: str = "", tag: str = "", workflow_url: str = "", repo: str = "", dataflow: bool = False
 ) -> dict[str, Any]:
     """Full build diagnosis for an image:tag OR a GitHub Actions run URL: which
-    STEPS failed, which controls (RCTLDEF/xSecurity-Gatekeeper/RLFT) passed or
+    STEPS failed, which controls (RCTLDEF…/RLFT) passed or
     failed (gate verdict), and whether the tag was built from the default
     branch. Use when a developer asks WHAT failed in their build/run and what
     to fix. A workflow_url carries its own repo; for image+tag lookups of
