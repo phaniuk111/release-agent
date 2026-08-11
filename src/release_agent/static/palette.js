@@ -24,7 +24,7 @@ export const CAPABILITIES = [
     {group:'Release', icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
     {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
     {group:'Release', icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (finalizes the release)',  send:true,  text:'release prod'},
-    {group:'Deploy',  icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
+    {group:'Deploy',  icon:'fa-flask',             label:'Deploy to CARE UAT',   desc:'deploy a Helm chart to CARE UAT',             form:'uat'},
     {group:'Deploy',  icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},
     // No "Deploy to PROD" pill: PROD is reached through the release ("Release to
     // PROD"), not by pushing a single chart. The form itself still exists and

@@ -667,12 +667,14 @@ export async function showDeployForm(env, name, version) {
     const accentT = isProd ? 'text-amber-300' : 'text-emerald-300';
     const accentBtn = isProd ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500';
     const icon = isProd ? 'fa-shield-halved' : 'fa-flask';
-    const heading = isProd ? 'Deploy to PROD' : 'Deploy to UAT';
+    // "CARE UAT" distinguishes the helm-chart lane from the Dataflow one, which
+    // deploys to the same environment by a different mechanism.
+    const heading = isProd ? 'Deploy to PROD' : 'Deploy to CARE UAT';
 
     // Pre-fill the editor with the WHOLE current deployment.json ({"include":[...]})
     // from the backend (the live uat/ or prd file) — edit entries, add more to deploy
     // several charts at once. The fallback below is only used if the fetch fails.
-    const _ph = _opening(env === 'prod' ? 'Deploy to PROD' : 'Deploy to UAT');
+    const _ph = _opening(heading);
     const qs = new URLSearchParams({ env: env, name: name || '', version: version || '' });
     const dctx = await _ctx('/api/deploy-template?' + qs.toString(), { deployment: null, deploy_repo: '' });
     _ph.remove();
