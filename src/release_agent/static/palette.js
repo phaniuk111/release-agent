@@ -25,8 +25,11 @@ export const CAPABILITIES = [
     {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
     {group:'Release', icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (finalizes the release)',  send:true,  text:'release prod'},
     {group:'Deploy',  icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
-    {group:'Deploy',  icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
     {group:'Deploy',  icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},
+    // No "Deploy to PROD" pill: PROD is reached through the release ("Release to
+    // PROD"), not by pushing a single chart. The form itself still exists and
+    // still opens for a typed "deploy <chart>:<version> to prod" — this only
+    // removes it from the offered actions.
     {group:'Check',   icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
     {group:'Check',   icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
     {group:'Check',   icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RLFT/RFTL gates for a tag',         send:false, text:'check build controls for <image>:<tag> before a PRD release'},
