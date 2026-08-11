@@ -4,24 +4,34 @@
 import { sendMessage } from './chat.js';
 import { showDeployForm } from './forms.js';
 
+// Capability categories: the single source of truth for grouping in BOTH the
+// in-chat catalog and the command palette. Ordered by a developer's day:
+// stage a release, deploy, then verify/track, then utilities.
+export const CATEGORIES = [
+    { key: 'release', label: 'Release',        icon: 'fa-box-open',         accent: 'text-amber-400/90' },
+    { key: 'deploy',  label: 'Deploy',         icon: 'fa-rocket',           accent: 'text-emerald-400/90' },
+    { key: 'inspect', label: 'Verify & Track', icon: 'fa-magnifying-glass', accent: 'text-sky-400/90' },
+    { key: 'ops',     label: 'Utilities',      icon: 'fa-wrench',           accent: 'text-slate-400' },
+];
+
 // Quick actions — what the agent can do. mode 'send' runs immediately;
 // otherwise the text is pre-filled so the user edits the image:tag first.
 export const CAPABILITIES = [
-    {icon:'fa-cart-plus',         label:'Add to next release',  desc:'queue your chart:version now — DevOps picks it up on release day', form:'queue'},
-    {icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
-    {icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
-    {icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
-    {icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
-    {icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},
-    {icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (finalizes the release)',  send:true,  text:'release prod'},
-    {icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
-    {icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
-    {icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
-    {icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RLFT/RFTL gates for a tag',         send:false, text:'check build controls for <image>:<tag> before a PRD release'},
-    {icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
-    {icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
-    {icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/RLFT',         send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
-    {icon:'fa-rotate',            label:'Re-run a step',        desc:'re-run apply or dispatch',                    send:false, text:'re-run dispatch_workflow'},
+    {cat:'release', icon:'fa-cart-plus',         label:'Add to next release',  desc:'queue your chart:version now — DevOps picks it up on release day', form:'queue'},
+    {cat:'release', icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
+    {cat:'release', icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
+    {cat:'release', icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (finalizes the release)',  send:true,  text:'release prod'},
+    {cat:'release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
+    {cat:'deploy',  icon:'fa-flask',             label:'Deploy to UAT',        desc:'deploy a Helm chart to UAT',                  form:'uat'},
+    {cat:'deploy',  icon:'fa-shield-halved',     label:'Deploy to PROD',       desc:'deploy a Helm chart to PROD',                  form:'prod'},
+    {cat:'deploy',  icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},
+    {cat:'inspect', icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
+    {cat:'inspect', icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RLFT controls for a tag',      send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
+    {cat:'inspect', icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RLFT/RFTL gates for a tag',         send:false, text:'check build controls for <image>:<tag> before a PRD release'},
+    {cat:'inspect', icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/RLFT',         send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
+    {cat:'ops',     icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
+    {cat:'ops',     icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
+    {cat:'ops',     icon:'fa-rotate',            label:'Re-run a step',        desc:'re-run apply or dispatch',                    send:false, text:'re-run dispatch_workflow'},
 ];
 
 export function runQuick(text, send) {
@@ -41,36 +51,50 @@ export function showCapabilities() {
     wrap.className = 'message bot rounded-2xl px-4 py-3 text-sm';
 
     const title = document.createElement('div');
-    title.className = 'mb-2 text-slate-400 text-xs';
+    title.className = 'mb-1 text-slate-400 text-xs';
     title.textContent = 'Pick one, or just type — hover for details:';
     wrap.appendChild(title);
 
-    const row = document.createElement('div');
-    row.className = 'flex flex-wrap gap-1.5';
-    CAPABILITIES.forEach(c => {
-        const btn = document.createElement('button');
-        btn.title = c.desc;
-        btn.className = 'border border-slate-700/80 hover:border-emerald-400/40 ' +
-            'hover:bg-slate-800/60 rounded-full px-3 py-1 text-xs text-slate-300 ' +
-            'flex items-center gap-1.5 transition-colors';
-        btn.innerHTML = '<i class="fa-solid ' + c.icon + ' text-emerald-400/90 text-[11px]"></i>' + c.label;
-        btn.addEventListener('click', () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send));
-        row.appendChild(btn);
+    CATEGORIES.forEach(cat => {
+        const caps = CAPABILITIES.filter(c => c.cat === cat.key);
+        if (!caps.length) return;
+
+        const head = document.createElement('div');
+        head.className = 'mt-2.5 mb-1.5 flex items-center gap-2';
+        head.innerHTML =
+            '<i class="fa-solid ' + cat.icon + ' ' + cat.accent + ' text-[10px]"></i>' +
+            '<span class="text-[10px] uppercase tracking-widest font-semibold text-slate-400">' + cat.label + '</span>' +
+            '<span class="flex-1 border-t border-slate-700/50"></span>';
+        wrap.appendChild(head);
+
+        const row = document.createElement('div');
+        row.className = 'flex flex-wrap gap-1.5';
+        caps.forEach(c => {
+            const btn = document.createElement('button');
+            btn.title = c.desc;
+            btn.className = 'border border-slate-700/80 hover:border-emerald-400/40 ' +
+                'hover:bg-slate-800/60 rounded-full px-3 py-1 text-xs text-slate-300 ' +
+                'flex items-center gap-1.5 transition-colors';
+            btn.innerHTML = '<i class="fa-solid ' + c.icon + ' ' + cat.accent + ' text-[11px]"></i>' + c.label;
+            btn.addEventListener('click', () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send));
+            row.appendChild(btn);
+        });
+        wrap.appendChild(row);
     });
-    wrap.appendChild(row);
+
     chat.appendChild(wrap);
     chat.scrollTop = chat.scrollHeight;
 }
 
 // ---- Command palette -----------------------------------------------------
-const CATEGORY_ORDER = ['Deploy', 'Release', 'Inspect', 'Ops'];
+// Grouping comes from each capability's explicit `cat` (same data as the
+// in-chat catalog) — no label heuristics.
+const CATEGORY_ORDER = CATEGORIES.map(c => c.label);
 function paletteActions() {
-    const cat = (c) =>
-        (c.form ? 'Deploy' :
-         /release/i.test(c.label) ? 'Release' :
-         /re-run/i.test(c.label) ? 'Ops' : 'Inspect');
+    const labelByKey = Object.fromEntries(CATEGORIES.map(c => [c.key, c.label]));
     return CAPABILITIES.map(c => ({
-        label: c.label, desc: c.desc, icon: c.icon, category: cat(c),
+        label: c.label, desc: c.desc, icon: c.icon,
+        category: labelByKey[c.cat] || 'Utilities',
         run: () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send),
     }));
 }
