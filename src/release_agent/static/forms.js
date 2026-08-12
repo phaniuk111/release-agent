@@ -159,7 +159,7 @@ export async function showQueueForm() {
     wrap.appendChild(grid);
     const runHint = document.createElement('div');
     runHint.className = 'text-[10px] text-slate-600 -mt-1 mb-2';
-    runHint.textContent = 'Required — the run that built this tag. I check the build + RLFT/RFTL controls NOW and only queue release-eligible builds.';
+    runHint.textContent = 'Required — the run that built this tag. I check the build + its RCTLD controls NOW, and name any that failed.';
     wrap.appendChild(runHint);
 
     // Change context: the dev's what-and-why becomes the CHG description draft
@@ -228,8 +228,14 @@ export async function showQueueForm() {
         if (result && result.eligible === false) {
             // The provided run failed its build or controls — NOT queued.
             // Show the verdict with exactly what to fix; the form stays usable.
-            const items = (result.failed_controls || []).map(c => '❌ control: ' + esc(c))
-                .concat((result.failed_steps || []).map(s => '❌ step: ' + esc(s.name || s) + (s.job ? ' (' + esc(s.job) + ')' : '')));
+            // Name the control AND the job it sits in — on a many-job run
+            // "a control failed" is not enough to go and fix it.
+            const detail = result.failed_controls_detail;
+            const ctrls = (detail && detail.length)
+                ? detail.map(c => '❌ control: ' + esc(c.control) + (c.job ? ' — in job ' + esc(c.job) : ''))
+                : (result.failed_controls || []).map(c => '❌ control: ' + esc(c));
+            const items = ctrls.concat((result.failed_steps || []).map(s =>
+                '❌ step: ' + esc(s.name || s) + (s.job ? ' — in job ' + esc(s.job) : '')));
             err.innerHTML = '';
             const box = document.createElement('div');
             box.className = 'w-full border border-red-500/40 bg-red-500/10 rounded-lg px-3 py-2 text-[11px] text-red-300';
@@ -246,15 +252,32 @@ export async function showQueueForm() {
         }
         // Replace the form with a human confirmation: eligibility verdict + last-time context.
         const verified = result.build_verified;
+        const open = result.open_controls || [];
         const vBadge = result.eligible === true
-            ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build + RLFT/RFTL controls passed — eligible for the release</span>'
-            : verified === true
-                ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build verified</span>'
-                : verified === false
-                    ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> no traceable build for this tag (queued anyway — is it built yet?)</span>'
-                    : '<span class="text-slate-500">build check skipped</span>';
-        const warn = (result.warnings || []).map(w =>
-            '<div class="text-[11px] text-amber-400 mt-1"><i class="fa-solid fa-triangle-exclamation"></i> ' + esc(w) + '</div>').join('');
+            ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build + controls passed — eligible for the release</span>'
+            : open.length
+                ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> queued, but ' +
+                  open.length + ' control' + (open.length > 1 ? 's have' : ' has') + ' not passed yet</span>'
+                : verified === true
+                    ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build verified</span>'
+                    : verified === false
+                        ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> no traceable build for this tag (queued anyway — is it built yet?)</span>'
+                        : '<span class="text-slate-500">build check skipped</span>';
+        // Controls that matched but have not passed: named, like the failures —
+        // "a control is open" is not actionable, "RCTLDEF0001691 is skipped" is.
+        const openBox = open.length
+            ? '<div class="mt-1.5 border border-amber-500/40 bg-amber-500/10 rounded-lg px-3 py-2 text-[11px] text-amber-200">' +
+              open.map(c => '<div class="font-mono">⚠ ' + esc(c.control) +
+                  (c.job ? ' — in job ' + esc(c.job) : '') +
+                  ' · ' + esc(c.conclusion || c.status || 'not run') + '</div>').join('') +
+              '<div class="mt-1">Queued anyway, but these must pass before release day — re-queue with a run where they do.' +
+              (result.run_url ? ' <a href="' + esc(result.run_url) + '" target="_blank" class="underline">open run</a>' : '') +
+              '</div></div>'
+            : '';
+        const warn = (result.warnings || [])
+            // the open-control sentence is already rendered as the box above
+            .filter(w => !(open.length && w.indexOf('had not passed in that run') !== -1))
+            .map(w => '<div class="text-[11px] text-amber-400 mt-1"><i class="fa-solid fa-triangle-exclamation"></i> ' + esc(w) + '</div>').join('');
         const last = result.last_shipped
             ? '<div class="text-[11px] text-slate-500 mt-1">Last shipped in “' + esc(result.last_shipped.release_name) +
               '” as ' + esc(result.last_shipped.version) + '.</div>' : '';
@@ -262,7 +285,7 @@ export async function showQueueForm() {
             '<div class="font-semibold text-emerald-300 mb-1"><i class="fa-solid fa-circle-check"></i> Queued for the next release</div>' +
             '<div class="text-xs text-slate-300 font-mono">' + esc(chart) + ':' + esc(ver) +
             (document.getElementById('q-prl1') && result.intent && result.intent.prl1_only ? ' · PRL1-only' : '') + '</div>' +
-            '<div class="text-[11px] mt-1">' + vBadge + '</div>' + warn + last +
+            '<div class="text-[11px] mt-1">' + vBadge + '</div>' + openBox + warn + last +
             '<div class="text-[11px] text-slate-500 mt-2">You\'re done — it will be in the ' +
             '<b>' + (document.getElementById('q-df').checked ? 'DF' : 'CARE') + ' Release</b> form automatically. ' +
             'Withdraw any time from the Insights panel or by asking me.</div>';

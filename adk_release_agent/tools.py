@@ -210,7 +210,20 @@ def queue_release_intent(
                 "(…/actions/runs/<id>) in the build repo. Nothing was queued."
             ),
         }
-    failed_controls = [c.get("control") for c in report.get("controls") or [] if c.get("failed")]
+    # `controls` is the source of truth for the VERDICT — deriving from it means a
+    # report without the convenience keys still refuses an ineligible build,
+    # rather than reading as "no failures" and queueing it.
+    controls = report.get("controls") or []
+    failed_detail = report.get("failed_controls") or [
+        {"control": c.get("control"), "job": c.get("job"), "conclusion": c.get("conclusion")}
+        for c in controls if c.get("failed")
+    ]
+    open_detail = report.get("open_controls") or [
+        {"control": c.get("control"), "job": c.get("job"),
+         "status": c.get("status"), "conclusion": c.get("conclusion")}
+        for c in controls if not c.get("passed") and not c.get("failed")
+    ]
+    failed_controls = [c.get("control") for c in failed_detail]
     failed_steps = report.get("failed_steps") or []
     if failed_controls or not report.get("run_succeeded"):
         return {
@@ -220,6 +233,7 @@ def queue_release_intent(
             "run_url": (report.get("run") or {}).get("url") or run_url,
             "run_conclusion": (report.get("run") or {}).get("conclusion"),
             "failed_controls": failed_controls,
+            "failed_controls_detail": failed_detail,   # name + job, for "which one, where"
             "failed_steps": failed_steps,
             "gate": report.get("gate"),
             "reason": (
@@ -229,7 +243,29 @@ def queue_release_intent(
         }
     verified = report.get("gate") == "PASS"
     if report.get("gate") == "UNKNOWN":
-        warnings.append("Run succeeded but no RLFT/RFTL control steps were found in it.")
+        # UNKNOWN has two very different causes and the developer's next step
+        # differs, so never report them with one message. Saying "no controls
+        # found" when controls exist but are open reads as the opposite of the
+        # truth; saying "still running" when NOTHING matched hides a naming
+        # mismatch that makes an ungated build look clean.
+        if open_detail:
+            named = ", ".join(
+                f"{c['control']} ({c.get('status') or c.get('conclusion') or 'not run'})"
+                for c in open_detail
+            )
+            warnings.append(
+                f"Queued, but {len(open_detail)} control(s) had not passed in that run: "
+                f"{named}. Re-queue with a run where they pass before release day."
+            )
+        elif not controls:
+            from release_agent.config import settings as _settings
+
+            prefixes = ", ".join(_settings.control_prefixes)
+            warnings.append(
+                f"Run succeeded but NO step or job matched the control prefixes "
+                f"({prefixes}) — this build is queued ungated. Check the control "
+                f"names in that workflow."
+            )
     run_tag = str(report.get("tag") or "")
     if version and run_tag and version not in run_tag and name not in run_tag:
         warnings.append(
@@ -250,6 +286,11 @@ def queue_release_intent(
         result["eligible"] = True if verified else None
         if warnings:
             result["warnings"] = warnings
+        # The UI lists these by name; the sentence in warnings is the chat lane's
+        # rendering of the same fact.
+        if open_detail:
+            result["open_controls"] = open_detail
+        result["run_url"] = (report.get("run") or {}).get("url") or run_url
     if result.get("ok"):
         result["build_verified"] = verified
         try:

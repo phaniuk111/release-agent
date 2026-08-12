@@ -87,3 +87,33 @@ def test_failed_steps_excludes_controls():
     ])
     failed = C._failed_steps(run)
     assert [s["name"] for s in failed] == ["Build Application"]  # control reported separately
+
+
+def test_control_names_are_stripped_before_matching():
+    """A stray leading space would otherwise un-match a control, and an
+    unmatched control is indistinguishable from a run that has none — the build
+    would read as clean while an SDLC gate went unchecked."""
+    assert C._is_control_step(" RCTLDEF0001691")
+    assert C._is_control_step("RCTLDEF0001691 ")
+    assert C._is_control_step("\tRCTLDEF0001691")
+
+
+def test_report_separates_failed_from_open_controls():
+    """The two need different words to the developer: a failure means fix and
+    re-run, an open control means wait (or chase it)."""
+    run = _run([
+        _job("publish-helm-chart", "failure", [
+            _step("RCTLDEF0001033", "success"),
+            _step("RCTLDEF0001691", "failure"),
+            _step("RCTLDEF0000043", "skipped"),
+            _step("RCTLDEF0001068", None),          # never ran
+        ]),
+    ])
+    controls = C._collect_controls(run)
+    failed = [c for c in controls if c["failed"]]
+    open_ = [c for c in controls if not c["passed"] and not c["failed"]]
+
+    assert [c["control"] for c in failed] == ["RCTLDEF0001691"]
+    assert [c["control"] for c in open_] == ["RCTLDEF0000043", "RCTLDEF0001068"]
+    # the job is carried so the dev knows where to look
+    assert failed[0]["job"] == "publish-helm-chart"

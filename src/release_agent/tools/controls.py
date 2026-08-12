@@ -236,9 +236,13 @@ _FAIL_CONCLUSIONS = {"failure", "timed_out", "cancelled", "startup_failure", "ac
 
 def _is_control_step(name: str) -> bool:
     """Case-insensitive prefix match against CONTROL_PREFIXES — the live gate is
-    RCTLD, covering RCTLDEF0001691-style SDLC controls; RLFT/RFTL are demo gates."""
-    low = name.lower()
-    return any(low.startswith(p.lower()) for p in settings.control_prefixes)
+    RCTLD, covering RCTLDEF0001691-style SDLC controls; RLFT/RFTL are demo gates.
+
+    Stripped before matching: a step named " RCTLDEF0001691" would otherwise stop
+    being a control, and an unmatched control is indistinguishable from a run
+    with no controls at all — the run would read as clean."""
+    low = name.strip().lower()
+    return any(low.startswith(p.strip().lower()) for p in settings.control_prefixes)
 
 
 def _collect_controls(run) -> list[dict]:
@@ -524,6 +528,17 @@ def get_build_report(image: str = "", tag: str = "", workflow_url: str = "", rep
     failed_controls = [c["control"] for c in controls if c["failed"]]
     other = [c["control"] for c in controls if not c["passed"] and not c["failed"]]
     gate = "PASS" if (controls and not failed_controls and not other) else ("FAIL" if failed_controls else "UNKNOWN")
+    # Named, with the job they live in — a developer looking at a 40-job run needs
+    # to know WHICH control and WHERE, not just that the gate is unhappy.
+    failed_detail = [
+        {"control": c["control"], "job": c["job"], "conclusion": c["conclusion"]}
+        for c in controls if c["failed"]
+    ]
+    open_detail = [
+        {"control": c["control"], "job": c["job"],
+         "status": c["status"], "conclusion": c["conclusion"]}
+        for c in controls if not c["passed"] and not c["failed"]
+    ]
     failed_steps = _failed_steps(run)
     run_succeeded = run.conclusion == "success"
 
@@ -561,6 +576,8 @@ def get_build_report(image: str = "", tag: str = "", workflow_url: str = "", rep
         "run_succeeded": run_succeeded,
         "failed_steps": failed_steps,
         "controls": controls,
+        "failed_controls": failed_detail,
+        "open_controls": open_detail,   # matched, but neither passed nor failed
         "gate": gate,
         "built_from_main": (
             _check_built_from_main(repo_obj, commit) if commit else {"result": None, "reason": "no commit on run"}
