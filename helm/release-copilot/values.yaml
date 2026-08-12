@@ -60,6 +60,10 @@ config:
   # a DF deploy is a workflow_dispatch in the DF deploy repo. DF_DEPLOY_REPO is
   # UI-overridable via the DF form's Advanced field.
   DF_BUILD_REPO: ""
+  # GitOps repo a DATAFLOW RELEASE is raised in — separate from the CARE release
+  # repo (DEPLOY_REPO) so the two releases have independent branch chains and
+  # independent in-flight guards. Empty = one repo for both.
+  DF_RELEASE_REPO: ""
   DF_DEPLOY_REPO: ""
   # Exact file name under .github/workflows/ (case- and suffix-sensitive).
   DF_DEPLOY_WORKFLOW: "df-deploy.yml"

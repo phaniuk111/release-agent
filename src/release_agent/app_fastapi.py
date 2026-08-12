@@ -449,6 +449,10 @@ def release_queue_get():
         result["default_repo"] = active_deploy_repo() or app_settings.deploy_repo
     except Exception:
         pass
+    # A Dataflow release is raised in its own repo. Falling back to the CARE repo
+    # keeps single-repo setups working — but where DF_RELEASE_REPO is set, the DF
+    # form must never default to the CARE one.
+    result["df_default_repo"] = app_settings.df_release_repo or result["default_repo"]
     result["known_charts"] = _known_charts()
     return result
 

@@ -169,6 +169,7 @@ licence to raise `replicaCount`** — those three need addressing first.
 | `config.RELEASE_UPDATER_SCRIPT` | `scripts/release/update_release_files.py` | deploy repo's file-set generator (CARE/DF releases) |
 | `config.ARTIFACTORY_BASE_URL` | `""` | prepended when devs give bare `name:version` |
 | `config.DF_BUILD_REPO` | `""` | Dataflow images' build repo (empty = BUILD_REPO) |
+| `config.DF_RELEASE_REPO` | `""` | repo a **DF release** is raised in (empty = DEPLOY_REPO). Separate from `DF_DEPLOY_REPO` |
 | `config.DF_DEPLOY_REPO` / `.DF_DEPLOY_WORKFLOW` | `""` / `df-deploy.yml` | Dataflow workflow-dispatch deploys |
 | `config.DF_DEPLOY_REF` | `""` | Branch to dispatch on; empty = repo default branch |
 | `config.DF_DISPATCH_INPUTS` | `{"image","tag","environment"}` | Maps our values onto the DF workflow's declared input names |

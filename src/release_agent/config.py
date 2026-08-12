@@ -103,6 +103,15 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("DF_BUILD_REPO", "DATAFLOW_BUILD_REPO"),
     )
+    # GitOps repo a DATAFLOW RELEASE file-set is raised in. Distinct from
+    # df_deploy_repo (which only hosts the deploy workflow) and from deploy_repo
+    # (the CARE release repo): DF releases are raised separately, so they get
+    # their own repo, their own release branch chain and their own in-flight
+    # guard. Empty = fall back to DEPLOY_REPO, i.e. one repo for both.
+    df_release_repo: str = Field(
+        default="",
+        validation_alias=AliasChoices("DF_RELEASE_REPO", "DATAFLOW_RELEASE_REPO"),
+    )
     # Dataflow flex-template deploys: repo hosting the DF deploy workflow. Deploying
     # means workflow_dispatch of df_deploy_workflow with {image, tag, environment}.
     df_deploy_repo: str = Field(
