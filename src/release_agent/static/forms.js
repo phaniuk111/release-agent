@@ -490,6 +490,56 @@ export async function showReleaseForm(kind) {
         });
         wrap.insertBefore(qBox, grid);
         qctx.queue.forEach(q => applyItem(q, true));
+
+        // Draft the change-request prose from the ticked items' own details.
+        // Button, not automatic: it costs a model call, and a governance field
+        // that fills itself silently stops being read. Everything it writes
+        // stays editable and nothing is submitted.
+        const draftRow = document.createElement('div');
+        draftRow.className = 'flex items-center gap-2 mb-2';
+        const draftBtn = document.createElement('button');
+        draftBtn.type = 'button';
+        draftBtn.className = 'border border-slate-600 hover:border-emerald-400/60 rounded-lg ' +
+            'px-2.5 py-1 text-[11px] text-slate-300 flex items-center gap-1.5';
+        draftBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-emerald-400"></i> Draft change request';
+        draftBtn.title = 'Writes summary/reason/risk/consequence/impact from the ticked items — review before submitting';
+        const draftMsg = document.createElement('span');
+        draftMsg.className = 'text-[11px] text-slate-500';
+        draftRow.appendChild(draftBtn); draftRow.appendChild(draftMsg);
+        wrap.insertBefore(draftRow, grid);
+
+        draftBtn.addEventListener('click', async () => {
+            const ticked = qctx.queue.filter(it => {
+                const cb = qBox.querySelector('input[data-q="' + it.artifact_name + '"]');
+                return cb && cb.checked;
+            }).map(it => it.artifact_name + ':' + it.artifact_version);
+            if (!ticked.length) { draftMsg.textContent = 'Tick at least one item first.'; return; }
+            draftBtn.disabled = true; draftMsg.textContent = 'Drafting…';
+            let res = null;
+            try {
+                const r = await fetch(API_BASE + '/api/release-draft', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ artifacts: ticked, kind: isDf ? 'df' : 'care' }),
+                });
+                res = await r.json();
+            } catch (e) { res = { ok: false, error: String(e) }; }
+            draftBtn.disabled = false;
+            if (!res || !res.ok) {
+                draftMsg.textContent = (res && res.error) || 'Could not draft — fill it in manually.';
+                return;
+            }
+            const d = res.draft || {};
+            const fill = (el, v) => { if (v) el.value = v; };
+            fill(sumEl, d.change_summary);
+            fill(descEl, d.change_description);
+            fill(reasonEl, d.change_reason);
+            fill(riskEl, d.associated_risk);
+            fill(consEl, d.consequence);
+            fill(impactEl, d.user_impact);
+            autoDesc = descEl.value; autoReason = reasonEl.value;   // keep tick-sync honest
+            draftMsg.innerHTML = '<span class="text-amber-300">Draft from ' + res.grounded_on +
+                ' item(s) — review every field before submitting.</span>';
+        });
     }
 
     const fmt = (v) => v ? v.replace('T', ' ') + (v.length === 16 ? ':00' : '') : '';

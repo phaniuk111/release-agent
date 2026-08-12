@@ -476,6 +476,34 @@ def release_queue_add(req: QueueAddRequest):
     )
 
 
+class ReleaseDraftRequest(BaseModel):
+    artifacts: list[str] = []   # "name:version" of the TICKED items
+    kind: str = "care"          # care | df
+
+
+@app.post("/api/release-draft")
+def release_draft(req: ReleaseDraftRequest):
+    """Draft the change-request prose from the queued items' own details.
+
+    Drafting only — the fields land in an editable form and the release still
+    runs the deterministic preview → CONFIRM path. Deliberately a separate,
+    button-triggered endpoint rather than part of the form context: it costs a
+    model call, and a field that fills itself silently stops being read.
+    """
+    from adk_release_agent.chg_draft import draft_change_request
+    from .tools import release_queue
+
+    wanted = {a.strip() for a in req.artifacts if a.strip()}
+    queue = (release_queue.current_queue().get("queue") or [])
+    items = [
+        q for q in queue
+        if f"{q.get('artifact_name')}:{q.get('artifact_version')}" in wanted
+    ] if wanted else []
+    if wanted and not items:
+        return {"ok": False, "error": "Those items are no longer in the queue — reopen the form."}
+    return draft_change_request(items, kind=req.kind)
+
+
 @app.post("/api/release-queue/withdraw")
 def release_queue_withdraw(req: QueueWithdrawRequest):
     """Withdraw a chart from the next-release queue (append-only: writes a
