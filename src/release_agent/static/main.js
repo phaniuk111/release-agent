@@ -6,6 +6,7 @@ import { renderConnectionStatus, refreshConnectionStatus, showConnectForm } from
 import { showCapabilities, openPalette } from './palette.js';
 import { toggleInsights, renderInsights } from './insights.js';
 import { loadReleaseStatus, toggleBannerDetail, startBannerAgeTicker, showBannerIdle } from './status.js';
+import { renderConsoleLinks } from './links.js';
 
 // Inline onclick handlers in the served HTML (and interrupt-box templates).
 Object.assign(window, {
@@ -31,6 +32,9 @@ window.onload = () => {
     refreshConnectionStatus();
     showBannerIdle();
     startBannerAgeTicker();
+    // Static config read — unlike the release banner this costs no GitHub call,
+    // so it can load on every page view.
+    renderConsoleLinks();
     // Keep it fresh so a release raised in another session shows up here.
 };
 

@@ -230,6 +230,14 @@ async def chat_page():
             <div id="rb-detail" class="hidden text-slate-400 mt-1 pl-4"></div>
         </div>
 
+        <!-- Console links: where to LOOK at a release (GKE per env, Grafana).
+             Sits outside #chat so it survives New Thread and never scrolls away.
+             Filled by links.js from /api/console-links; hidden if none exist. -->
+        <div id="console-links"
+             class="mb-3 rounded-xl border px-3 py-1.5 text-xs hidden border-slate-800 bg-slate-900/60">
+            <div id="cl-row" class="flex flex-wrap items-center gap-x-3 gap-y-1.5"></div>
+        </div>
+
         <!-- Chat Area -->
         <div id="chat"
              class="chat-container overflow-y-auto glass rounded-2xl p-5 mb-4 space-y-4">
@@ -521,6 +529,92 @@ def release_insights(pattern: str = "", days: int = 90, event_type: str = "relea
     from .tools import release_queue
 
     return release_queue.history_stats(pattern=pattern, days=days, event_type=event_type)
+
+
+# The links are served as JSON (not baked into the HTML shell) so an operator's
+# configured URL never reaches the page as unescaped markup, and so the section
+# follows the same static-module + /api/* shape as every other panel.
+#
+# Shown when CONSOLE_LINKS is unset: the shape an operator has to fill in, with
+# the promotion chain's environments and one cluster + one dashboard link each.
+# Rendering it (rather than hiding the strip) makes the section its own to-do list.
+_PLACEHOLDER_CONSOLE_LINKS = {
+    "UAT": [{"label": "GKE"}, {"label": "Grafana"}],
+    "PRL1": [{"label": "GKE"}, {"label": "Grafana"}],
+    "PRD": [{"label": "GKE"}, {"label": "Grafana"}],
+}
+_CONSOLE_LINKS_VAR = "CONSOLE_LINKS"
+
+# Only http(s) is renderable as a link; anything else (javascript:, data:, a
+# typo'd host with no scheme) is reported unconfigured rather than turned into
+# an anchor the browser would treat as script.
+_LINK_SCHEMES = ("https://", "http://")
+
+# Two shapes of link, two icons. The operator may say so explicitly with
+# "kind": "cluster"; otherwise the label decides, so the common case needs no
+# extra key. Substring checks, not regex — same rule as the parsing layer.
+_CLUSTER_WORDS = ("gke", "cluster", "kubernetes", "k8s", "workload")
+
+
+def _link_icon(label: str, kind: str) -> str:
+    if kind:
+        return "fa-cubes" if kind.strip().lower() == "cluster" else "fa-chart-line"
+    low = label.lower()
+    return "fa-cubes" if any(w in low for w in _CLUSTER_WORDS) else "fa-chart-line"
+
+
+def _console_link_envs(raw: str) -> tuple[list[dict], str]:
+    """Parse CONSOLE_LINKS into the per-environment tabs the UI renders.
+
+    Returns (envs, error). A malformed value is NOT fatal: the strip falls back to
+    the placeholder set and the error rides along so the UI can say why, matching
+    how the rest of the app degrades rather than blocking on optional config.
+    """
+    error = ""
+    parsed = None
+    raw = (raw or "").strip()
+    if raw:
+        try:
+            candidate = json.loads(raw)
+            if not isinstance(candidate, dict):
+                raise ValueError("expected an object of environment -> [links]")
+            parsed = candidate
+        except (ValueError, TypeError) as exc:
+            error = f"{_CONSOLE_LINKS_VAR} could not be read ({exc}); showing placeholders"
+
+    envs = []
+    for env_name, entries in (parsed if parsed is not None else _PLACEHOLDER_CONSOLE_LINKS).items():
+        links = []
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label") or "").strip()
+            if not label:
+                continue
+            url = str(entry.get("url") or "").strip()
+            if not url.lower().startswith(_LINK_SCHEMES):
+                url = ""          # unrenderable (or unset) -> a disabled chip
+            links.append({
+                "label": label,
+                "url": url,
+                "configured": bool(url),
+                "icon": _link_icon(label, str(entry.get("kind") or "")),
+            })
+        envs.append({"name": str(env_name), "links": links})
+    return envs, error
+
+
+@app.get("/api/console-links")
+def console_links_endpoint():
+    """Read-only deep links per environment — the GKE workload view and that
+    environment's dashboards. The UI shows one environment at a time."""
+    envs, error = _console_link_envs(app_settings.console_links)
+    return {
+        "envs": envs,
+        "env_var": _CONSOLE_LINKS_VAR,
+        "configured": any(link["configured"] for env in envs for link in env["links"]),
+        "error": error,
+    }
 
 
 @app.get("/api/deployment-types")

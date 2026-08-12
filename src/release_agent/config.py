@@ -441,6 +441,26 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("BQ_AUTO_CREATE", "RELEASE_BQ_AUTO_CREATE"),
     )
 
+    # --- Console links (read-only deep links shown in the UI) --------------------
+    # Where a human goes to LOOK at what a release produced: the GKE workload view
+    # and the Grafana dashboards, PER ENVIRONMENT. The portal never calls these —
+    # it only renders them.
+    #
+    # JSON, environment name -> ordered list of links (same convention as
+    # DF_DISPATCH_INPUTS). A per-env LIST rather than one field per link because
+    # each environment carries its own handful of dashboards, and that set grows
+    # without a code change:
+    #   {"UAT": [{"label": "GKE", "url": "https://..."},
+    #            {"label": "Latency", "url": "https://..."}],
+    #    "PRD": [...]}
+    # Key order is the tab order. Empty = the placeholder set below, so the strip
+    # still renders and names what is left to fill in. Parsed lazily by the
+    # endpoint, never at import: a typo here must not stop the app from booting.
+    console_links: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONSOLE_LINKS", "RELEASE_CONSOLE_LINKS"),
+    )
+
     # App metadata (used by FastAPI)
     app_title: str = "Dev Portal"
     # NoDecode: skip pydantic-settings' built-in JSON decoding so the validator

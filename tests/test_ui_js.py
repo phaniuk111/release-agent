@@ -10,7 +10,7 @@ import pytest
 
 STATIC = Path(__file__).resolve().parents[1] / "src" / "release_agent" / "static"
 MODULES = ["state.js", "chat.js", "connect.js", "forms.js", "palette.js",
-           "insights.js", "status.js", "main.js"]
+           "insights.js", "status.js", "links.js", "main.js"]
 
 
 def test_ui_modules_present():

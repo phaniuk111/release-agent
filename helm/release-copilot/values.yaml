@@ -94,6 +94,20 @@ config:
   ARTIFACTORY_BASE_URL: ""
   # GitHub Enterprise Server API root. Empty = public github.com (api.github.com).
   GITHUB_BASE_URL: ""
+  # Console links: the strip above the chat, where a human goes to LOOK at what a
+  # release produced. JSON, environment -> ordered list of links; key order is the
+  # tab order and the UI shows one environment at a time. Read-only deep links —
+  # the portal never calls them. Each url must be http(s); anything else (and any
+  # entry left empty) renders as a disabled chip naming this variable, so the row
+  # doubles as a to-do list. Empty = placeholder tabs for UAT/PRL1/PRD.
+  #   CONSOLE_LINKS: |
+  #     {"UAT": [{"label": "GKE", "url": "https://console.cloud.google.com/kubernetes/workload?project=uat"},
+  #              {"label": "Latency", "url": "https://grafana.example.com/d/abc/uat-latency"}],
+  #      "PRL1": [{"label": "GKE", "url": "..."}],
+  #      "PRD": [{"label": "GKE", "url": "..."}, {"label": "Errors", "url": "..."}]}
+  # Optional per-entry "kind": "cluster" or "dashboard" picks the icon; without it
+  # the label decides (anything naming GKE/cluster/k8s gets the cluster icon).
+  CONSOLE_LINKS: ""
 
   # ================== [OPTIONAL] safe defaults — tune to process =============
   # Promotion branches in DEPLOY_REPO; prl1_only charts stop at UAT/PRL1.
