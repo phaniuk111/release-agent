@@ -103,6 +103,32 @@ app still fails. `/api/diagnostics` checks from inside the running app.
 (the client then uses `api.github.com`); set it only for GitHub Enterprise Server
 (`https://<ghe-host>/api/v3`).
 
+## JIRA ticket verification (optional)
+
+The ticket a developer types when queueing goes straight into the change record,
+so a typo is only found by whoever audits it later. With a read-only technical
+account configured, the key is resolved at queue time:
+
+- **key does not exist** → refused, nothing queued (developer error)
+- **JIRA unreachable / token rejected** → queued with a warning (an outage must
+  never block a release)
+- **resolved** → the ticket summary fills the change details when the developer
+  left them blank, rather than asking them to retype what JIRA already knows
+
+```yaml
+config:
+  JIRA_BASE_URL: "https://your-org.atlassian.net"
+  JIRA_USER_EMAIL: "release-svc@your-org.com"   # the account the token belongs to
+jiraToken:
+  existingSecret: "release-copilot-jira"        # managed outside the chart
+  existingSecretKey: "jira-api-token"
+```
+
+The token is referenced from the Secret, never templated into the chart, and
+never appears in a log or an error message — including the 401/403 path, which
+is pinned by a test. Leave `JIRA_BASE_URL` empty to disable the lookup entirely;
+the ticket is then stored exactly as typed.
+
 ## Persistent chat sessions (surviving pod restarts)
 
 By default ADK sessions are in-memory: a restart or a rollout loses every
@@ -170,6 +196,8 @@ licence to raise `replicaCount`** — those three need addressing first.
 | `config.ARTIFACTORY_BASE_URL` | `""` | prepended when devs give bare `name:version` |
 | `config.DF_BUILD_REPO` | `""` | Dataflow images' build repo (empty = BUILD_REPO) |
 | `config.DF_RELEASE_REPO` | `""` | repo a **DF release** is raised in (empty = DEPLOY_REPO). Separate from `DF_DEPLOY_REPO` |
+| `config.JIRA_BASE_URL` / `.JIRA_USER_EMAIL` | `""` | read-only JIRA lookup at queue time; empty = disabled |
+| `jiraToken.existingSecret` / `.existingSecretKey` | `""` / `jira-api-token` | Secret holding the technical-account API token |
 | `config.DF_DEPLOY_REPO` / `.DF_DEPLOY_WORKFLOW` | `""` / `df-deploy.yml` | Dataflow workflow-dispatch deploys |
 | `config.DF_DEPLOY_REF` | `""` | Branch to dispatch on; empty = repo default branch |
 | `config.DF_DISPATCH_INPUTS` | `{"image","tag","environment"}` | Maps our values onto the DF workflow's declared input names |

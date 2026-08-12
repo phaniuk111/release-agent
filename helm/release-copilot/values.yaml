@@ -78,6 +78,10 @@ config:
   # send it. For a workflow declaring module + binary_version:
   #   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
   DF_DISPATCH_INPUTS: '{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}'
+  # JIRA (read-only). Empty base URL = no lookup; the ticket is stored as typed.
+  # The token itself is NOT here — it comes from jiraToken.existingSecret below.
+  JIRA_BASE_URL: ""           # e.g. https://your-org.atlassian.net
+  JIRA_USER_EMAIL: ""         # technical account the token belongs to
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
   # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
   # EMPTY BQ_DATASET DISABLES the whole feature cleanly.
@@ -165,6 +169,13 @@ githubToken:
   # Dev convenience only: have the chart create the Secret from this value.
   # Prefer existingSecret in production. Set via --set-string or a private values file.
   value: ""
+
+# --- JIRA technical account (optional; read-only ticket lookup at queue time) ---
+# Leave existingSecret empty to disable the lookup — the ticket is then stored as
+# typed, unverified. Set config.JIRA_BASE_URL and config.JIRA_USER_EMAIL too.
+jiraToken:
+  existingSecret: ""          # e.g. "release-copilot-jira" (external-secrets etc.)
+  existingSecretKey: "jira-api-token"
 
 serviceAccount:
   create: true

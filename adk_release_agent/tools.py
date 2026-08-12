@@ -196,6 +196,34 @@ def queue_release_intent(
                 "queued. Ask the developer for the run URL (…/actions/runs/<id>)."
             ),
         }
+    # Resolve the JIRA key before anything is written. A typo'd key would
+    # otherwise be copied verbatim into the change record and only be noticed by
+    # whoever audits it — so a key that does not exist is refused, while an
+    # unreachable JIRA is only a warning (an outage must not stop a release).
+    jira_issue = None
+    ticket = str(jira_ticket or "").strip()
+    if ticket:
+        from release_agent.tools import jira as _jira
+
+        if _jira.jira_configured():
+            try:
+                jira_issue = _jira.get_issue(ticket)
+            except _jira.JiraIssueNotFound as e:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"JIRA ticket {ticket} could not be found ({e}). Check the key — "
+                        "it goes into the change record. Nothing was queued."
+                    ),
+                }
+            except _jira.JiraUnavailable as e:
+                warnings.append(f"Could not verify {ticket} against JIRA ({e}) — queued unverified.")
+            else:
+                # The developer already told JIRA what changed; don't make them
+                # type it twice.
+                if not str(change_details or "").strip() and jira_issue.get("summary"):
+                    change_details = jira_issue["summary"]
+
     # Eligibility gate: the dev pointed at the exact run — judge it.
     try:
         report = _invoke_tool("get_build_report", {"workflow_url": run_url})
@@ -291,6 +319,8 @@ def queue_release_intent(
         if open_detail:
             result["open_controls"] = open_detail
         result["run_url"] = (report.get("run") or {}).get("url") or run_url
+        if jira_issue:
+            result["jira"] = jira_issue
     if result.get("ok"):
         result["build_verified"] = verified
         try:

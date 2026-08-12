@@ -142,6 +142,27 @@ class Settings(BaseSettings):
         default='{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}',
         validation_alias=AliasChoices("DF_DISPATCH_INPUTS", "DATAFLOW_DISPATCH_INPUTS"),
     )
+    # JIRA (read-only) — a technical account resolves the ticket a developer
+    # types at queue time, so a typo'd key cannot reach the change record and the
+    # ticket summary can be reused in the CHG draft. Leave the base URL empty to
+    # disable the lookup entirely. The token comes from a Secret and is never
+    # logged or returned to a client.
+    jira_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("JIRA_BASE_URL", "JIRA_URL"),
+    )
+    jira_user_email: str = Field(
+        default="",
+        validation_alias=AliasChoices("JIRA_USER_EMAIL", "JIRA_EMAIL"),
+    )
+    jira_api_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("JIRA_API_TOKEN", "JIRA_TOKEN"),
+    )
+    jira_timeout_seconds: float = Field(
+        default=8.0,
+        validation_alias=AliasChoices("JIRA_TIMEOUT_SECONDS",),
+    )
     # GitHub Enterprise Server API root (e.g. https://github.corp.internal/api/v3).
     # Empty = public github.com. Egress proxies need no setting here — PyGithub
     # rides on requests, which honors HTTPS_PROXY/NO_PROXY/REQUESTS_CA_BUNDLE.

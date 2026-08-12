@@ -42,8 +42,9 @@ spec:
             - configMapRef:
                 name: {{ include "release-copilot.fullname" . }}-env
           {{- $hasToken := or .Values.githubToken.existingSecret .Values.githubToken.value }}
+          {{- $jira := .Values.jiraToken | default dict }}
           {{- $prx := .Values.proxy | default dict }}
-          {{- if or $hasToken .Values.extraEnv $prx.httpsProxy $prx.httpProxy $prx.caBundle }}
+          {{- if or $hasToken $jira.existingSecret .Values.extraEnv $prx.httpsProxy $prx.httpProxy $prx.caBundle }}
           env:
             {{- if $hasToken }}
             - name: GH_TOKEN
@@ -51,6 +52,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "release-copilot.secretName" . }}
                   key: {{ .Values.githubToken.existingSecretKey }}
+            {{- end }}
+            {{- if $jira.existingSecret }}
+            # Read-only technical account. Referenced, never templated into the
+            # chart — the Secret is managed outside it (external-secrets etc.).
+            - name: JIRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $jira.existingSecret }}
+                  key: {{ $jira.existingSecretKey | default "jira-api-token" }}
             {{- end }}
             {{- if $prx.httpsProxy }}
             - name: HTTPS_PROXY
