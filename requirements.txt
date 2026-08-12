@@ -20,6 +20,7 @@ authlib==1.7.2
     # via google-adk
 certifi==2026.6.17
     # via
+    #   google-cloud-aiplatform
     #   httpcore
     #   httpx
     #   requests
@@ -46,6 +47,8 @@ cryptography==49.0.0
     #   pyopenssl
 distro==1.9.0
     # via google-genai
+docstring-parser==0.18.0
+    # via google-cloud-aiplatform
 fastapi==0.138.1
     # via
     #   google-adk
@@ -54,38 +57,65 @@ google-adk==2.5.0
     # via release-copilot
 google-api-core==2.32.0
     # via
+    #   google-cloud-aiplatform
     #   google-cloud-bigquery
     #   google-cloud-core
+    #   google-cloud-resource-manager
+    #   google-cloud-storage
 google-auth==2.55.0
     # via
     #   google-adk
     #   google-api-core
+    #   google-cloud-aiplatform
     #   google-cloud-bigquery
     #   google-cloud-core
+    #   google-cloud-resource-manager
+    #   google-cloud-storage
     #   google-genai
-google-cloud-bigquery==3.42.2
+google-cloud-aiplatform==1.163.0
     # via release-copilot
+google-cloud-bigquery==3.42.2
+    # via
+    #   google-cloud-aiplatform
+    #   release-copilot
 google-cloud-core==2.6.0
-    # via google-cloud-bigquery
+    # via
+    #   google-cloud-bigquery
+    #   google-cloud-storage
+google-cloud-resource-manager==1.18.0
+    # via google-cloud-aiplatform
+google-cloud-storage==3.13.1
+    # via google-cloud-aiplatform
 google-crc32c==1.8.0
-    # via google-resumable-media
+    # via
+    #   google-cloud-storage
+    #   google-resumable-media
 google-genai==2.10.0
     # via
     #   google-adk
+    #   google-cloud-aiplatform
     #   release-copilot
 google-resumable-media==2.10.0
-    # via google-cloud-bigquery
+    # via
+    #   google-cloud-bigquery
+    #   google-cloud-storage
 googleapis-common-protos==1.75.0
     # via
     #   google-api-core
+    #   grpc-google-iam-v1
     #   grpcio-status
 graphviz==0.21
     # via google-adk
+grpc-google-iam-v1==0.14.5
+    # via google-cloud-resource-manager
 grpcio==1.82.1
     # via
     #   google-api-core
+    #   google-cloud-resource-manager
+    #   googleapis-common-protos
+    #   grpc-google-iam-v1
     #   grpcio-status
-grpcio-status==1.82.1
+grpcio-status==1.81.1
     # via google-api-core
 h11==0.16.0
     # via
@@ -126,13 +156,20 @@ opentelemetry-semantic-conventions==0.63b1
 packaging==26.2
     # via
     #   google-adk
+    #   google-cloud-aiplatform
     #   google-cloud-bigquery
 proto-plus==1.28.1
-    # via google-api-core
-protobuf==7.35.1
     # via
     #   google-api-core
+    #   google-cloud-aiplatform
+    #   google-cloud-resource-manager
+protobuf==6.33.6
+    # via
+    #   google-api-core
+    #   google-cloud-aiplatform
+    #   google-cloud-resource-manager
     #   googleapis-common-protos
+    #   grpc-google-iam-v1
     #   grpcio-status
     #   proto-plus
 pyasn1==0.6.3
@@ -145,6 +182,7 @@ pydantic==2.13.4
     # via
     #   fastapi
     #   google-adk
+    #   google-cloud-aiplatform
     #   google-genai
     #   pydantic-settings
     #   release-copilot
@@ -187,6 +225,7 @@ requests==2.34.2
     #   google-api-core
     #   google-auth
     #   google-cloud-bigquery
+    #   google-cloud-storage
     #   google-genai
     #   pygithub
 rich==15.0.0
@@ -214,6 +253,7 @@ typing-extensions==4.15.0
     #   anyio
     #   fastapi
     #   google-adk
+    #   google-cloud-aiplatform
     #   google-genai
     #   grpcio
     #   opentelemetry-api

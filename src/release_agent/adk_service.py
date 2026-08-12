@@ -47,6 +47,56 @@ _REQUEST_INPUT_NAME = "adk_request_input"
 _REQUEST_CONFIRMATION = "adk_request_confirmation"
 
 
+def _session_id(thread_id: str, lane: str) -> str:
+    """Session id for one thread within one runner lane.
+
+    The chat agent and the deploy Workflow are different agents sharing one
+    session service. In memory they stay apart because sessions are keyed by
+    app_name too — but VertexAiSessionService resolves everything to the single
+    configured Agent Engine and IGNORES app_name, so both lanes would append to
+    one session and each agent would replay the other's events. Scoping the id
+    keeps them separate under either backend.
+
+    Vertex session ids must match ^[A-Za-z0-9_-]+$, which our
+    'fastapi-<random>' thread ids and this suffix both satisfy.
+    """
+    return f"{thread_id}-{lane}"
+
+
+def _build_session_service():
+    """The configured session store. Defaults to in-memory (per-pod)."""
+    backend = (settings.adk_session_backend or "memory").strip().lower()
+    if backend in ("", "memory", "inmemory", "in-memory"):
+        return InMemorySessionService()
+    if backend != "vertex":
+        raise RuntimeError(
+            f"ADK_SESSION_BACKEND={backend!r} is not supported (use 'memory' or 'vertex')."
+        )
+
+    engine_id = (settings.vertex_agent_engine_id or "").strip().rsplit("/", 1)[-1]
+    if not engine_id:
+        # Failing at startup is the point: silently falling back to in-memory
+        # would look like it worked until a pod restart lost every conversation.
+        raise RuntimeError(
+            "ADK_SESSION_BACKEND=vertex requires VERTEX_AGENT_ENGINE_ID "
+            "(the Agent Engine holding the sessions). Create one first — see "
+            "the chart README — or set ADK_SESSION_BACKEND=memory."
+        )
+    try:
+        from google.adk.sessions import VertexAiSessionService
+    except ImportError as e:      # pragma: no cover - dependency wiring
+        raise RuntimeError(
+            "ADK_SESSION_BACKEND=vertex needs google-cloud-aiplatform installed."
+        ) from e
+
+    logger.info("ADK sessions: Vertex Agent Engine %s", engine_id)
+    return VertexAiSessionService(
+        project=settings.gcp_project or None,
+        location=settings.gcp_location or None,
+        agent_engine_id=engine_id,
+    )
+
+
 @dataclass
 class PendingAdkCall:
     """A paused chat-agent tool call awaiting the user's confirmation reply."""
@@ -253,7 +303,7 @@ class AdkChatService:
     def __init__(self):
         if chat_app is None:
             raise RuntimeError("google-adk is not installed; cannot start ADK chat service")
-        self.session_service = InMemorySessionService()
+        self.session_service = _build_session_service()
         self.artifact_service = InMemoryArtifactService()
         self.memory_service = InMemoryMemoryService()
         self.chat_runner = Runner(
@@ -336,7 +386,9 @@ class AdkChatService:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Run the deploy Workflow's preview turn and surface the confirmation interrupt."""
         async for event in self.deploy_runner.run_async(
-            user_id=_USER_ID, session_id=thread_id, new_message=_content_from_text(message)
+            user_id=_USER_ID,
+            session_id=_session_id(thread_id, "deploy"),
+            new_message=_content_from_text(message),
         ):
             for label in _progress_events(event):
                 yield {"type": "progress", "content": label}
@@ -370,7 +422,7 @@ class AdkChatService:
         result: dict[str, Any] | None = None
         async for event in self.deploy_runner.run_async(
             user_id=_USER_ID,
-            session_id=thread_id,
+            session_id=_session_id(thread_id, "deploy"),
             new_message=_confirmation_response(token, confirmed),
         ):
             output = getattr(event, "output", None)
@@ -396,7 +448,7 @@ class AdkChatService:
         mutated = False          # did this turn change release/deploy state?
         async for event in self.chat_runner.run_async(
             user_id=_USER_ID,
-            session_id=thread_id,
+            session_id=_session_id(thread_id, "chat"),
             invocation_id=invocation_id,
             new_message=content,
         ):
@@ -422,7 +474,9 @@ class AdkChatService:
         """Best-effort: add the finished chat session to the memory service."""
         try:
             session = await self.session_service.get_session(
-                app_name=chat_app.name, user_id=_USER_ID, session_id=thread_id
+                app_name=chat_app.name,
+                user_id=_USER_ID,
+                session_id=_session_id(thread_id, "chat"),
             )
             if session is not None:
                 await self.memory_service.add_session_to_memory(session)

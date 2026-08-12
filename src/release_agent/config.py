@@ -351,6 +351,25 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("ADK_MEMORY_ENABLED", "RELEASE_ADK_MEMORY_ENABLED"),
     )
+    # Where ADK chat sessions live. "memory" is per-pod: a restart loses the
+    # conversation and a second replica sees a different history, which is why
+    # the chart pins replicaCount: 1. "vertex" stores them in a Vertex AI Agent
+    # Engine, so history survives restarts and is shared across pods.
+    #
+    # NOTE this covers CONVERSATION HISTORY ONLY. The pending-CONFIRM maps and
+    # the per-thread GitHub PAT are still process-local, so switching this alone
+    # does NOT make the app safe to run with replicaCount > 1.
+    adk_session_backend: str = Field(
+        default="memory",
+        validation_alias=AliasChoices("ADK_SESSION_BACKEND", "RELEASE_ADK_SESSION_BACKEND"),
+    )
+    # Numeric id of the Agent Engine (reasoning engine) holding the sessions —
+    # REQUIRED when adk_session_backend="vertex". Create one first; see the
+    # chart README. Accepts the bare id or the full resource name.
+    vertex_agent_engine_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("VERTEX_AGENT_ENGINE_ID", "AGENT_ENGINE_ID"),
+    )
     # Require human confirmation before high-impact prod ops (prod remove / merge
     # PRD release) via ADK tool confirmation.
     adk_confirm_prod_ops: bool = Field(

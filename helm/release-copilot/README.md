@@ -103,6 +103,49 @@ app still fails. `/api/diagnostics` checks from inside the running app.
 (the client then uses `api.github.com`); set it only for GitHub Enterprise Server
 (`https://<ghe-host>/api/v3`).
 
+## Persistent chat sessions (surviving pod restarts)
+
+By default ADK sessions are in-memory: a restart or a rollout loses every
+conversation, and a second replica would answer from a different history. That
+is why `replicaCount` is pinned to 1.
+
+`ADK_SESSION_BACKEND: "vertex"` moves sessions into a **Vertex AI Agent Engine**,
+which is a real GCP resource you create once:
+
+```bash
+pip install google-cloud-aiplatform
+python - <<'PY'
+import vertexai
+client = vertexai.Client(project="<PROJECT_ID>", location="us-central1")
+engine = client.agent_engines.create()          # a session store; no agent code deployed
+print(engine.api_resource.name)                 # projects/…/reasoningEngines/<ID>
+PY
+```
+
+Then set both values — the pod **fails to start** if the backend is `vertex`
+and the id is missing, because falling back to in-memory would look like it
+worked until a restart quietly dropped everything:
+
+```yaml
+config:
+  ADK_SESSION_BACKEND: "vertex"
+  VERTEX_AGENT_ENGINE_ID: "<ID>"     # bare id or the full resource name
+```
+
+The pod's service account needs `roles/aiplatform.user` on the project.
+
+**What this does and does not fix.** Conversation history survives restarts and
+is shared across pods. Three pieces of state are still process-local:
+
+| still per-pod | effect |
+|---|---|
+| pending `CONFIRM-…` previews | a preview served by pod A cannot be confirmed on pod B |
+| paused yes/no prod-op confirmations | same |
+| the per-thread GitHub PAT (memory-only by design) | user must reconnect after a restart |
+
+So this is a real improvement to restart behaviour, but **not on its own a
+licence to raise `replicaCount`** — those three need addressing first.
+
 ## Key values
 
 | Key | Default | Notes |
@@ -119,6 +162,8 @@ app still fails. `/api/diagnostics` checks from inside the running app.
 | `config.ADK_CONTEXT_CACHE` | `true` | cache the static prompt prefix (root instruction + skills) |
 | `config.ADK_EVENT_COMPACTION` | `true` | summarize old events on long chat sessions |
 | `config.ADK_MEMORY_ENABLED` | `true` | preload memories + persist sessions (in-memory / per-pod) |
+| `config.ADK_SESSION_BACKEND` | `memory` | `memory` (per-pod) or `vertex` (Agent Engine — survives restarts) |
+| `config.VERTEX_AGENT_ENGINE_ID` | `""` | **required** when the backend is `vertex`; bare id or full resource name |
 | `config.ADK_CONFIRM_PROD_OPS` | `true` | require confirmation before prod remove / PRD release |
 | `config.PRL1_BRANCH` | `PRL1` | second terminal env branch (prl1_only charts never reach PRD) |
 | `config.RELEASE_UPDATER_SCRIPT` | `scripts/release/update_release_files.py` | deploy repo's file-set generator (CARE/DF releases) |

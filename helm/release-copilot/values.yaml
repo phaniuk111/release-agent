@@ -120,6 +120,14 @@ config:
   ADK_EVENT_COMPACTION: "true"
   ADK_MEMORY_ENABLED: "true"    # in-memory / per-pod — keep replicaCount: 1
   ADK_CONFIRM_PROD_OPS: "true"
+  # Where chat sessions live. "memory" = per-pod (a restart loses the
+  # conversation). "vertex" stores them in a Vertex AI Agent Engine so they
+  # survive restarts — VERTEX_AGENT_ENGINE_ID is then REQUIRED and the pod
+  # fails fast without it. See "Persistent chat sessions" in the README.
+  # This covers CONVERSATION HISTORY ONLY: pending CONFIRM tokens and connected
+  # PATs remain per-pod, so it is not on its own a licence to raise replicaCount.
+  ADK_SESSION_BACKEND: "memory"
+  VERTEX_AGENT_ENGINE_ID: ""
   # Deploy-target specifics (code defaults are generic; set your real values):
   # UAT_NAMESPACE: "default"
   # PRD_NAMESPACE: "default"

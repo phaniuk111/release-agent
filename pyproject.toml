@@ -25,6 +25,11 @@ dependencies = [
     # The deployment repo's release updater script (run via sys.executable in
     # prepare_release_fileset) round-trips workflow YAML with ruamel.
     "ruamel.yaml>=0.18",
+    # VertexAiSessionService (ADK_SESSION_BACKEND=vertex) imports `vertexai`, so
+    # chat history can outlive a pod. Kept a hard dependency rather than an extra:
+    # the alternative is an image that boots and only fails once someone turns
+    # the backend on.
+    "google-cloud-aiplatform>=1.71",
 ]
 
 [project.optional-dependencies]
