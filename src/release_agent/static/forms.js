@@ -154,7 +154,7 @@ export async function showQueueForm() {
     const verEl = mk('Version *', 'q-version', 'e.g. 4.0.154');
     const emailEl = mk('Your email *', 'q-email', 'you@company.com');
     emailEl.value = localStorage.getItem('queue_email') || '';
-    const jiraEl = mk('JIRA / ticket (optional)', 'q-jira', 'e.g. REL-1234');
+    const jiraEl = mk('JIRA / ticket *', 'q-jira', 'e.g. REL-1234');
     const runEl = mk('Build run URL *', 'q-run', 'https://github.com/…/actions/runs/…');
     wrap.appendChild(grid);
     const runHint = document.createElement('div');
@@ -167,7 +167,7 @@ export async function showQueueForm() {
     // than anyone reconstructing it on Thursday.
     const detailsLabel = document.createElement('label');
     detailsLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
-    detailsLabel.textContent = 'Change details (optional) — what changed & why; pre-drafts the CHG for DevOps';
+    detailsLabel.textContent = 'Change details * — what changed & why; pre-drafts the CHG for DevOps';
     const detailsEl = document.createElement('textarea');
     detailsEl.id = 'q-details'; detailsEl.rows = 2;
     detailsEl.placeholder = 'e.g. fixes schema drift in position feed after upstream v4 migration';
@@ -176,7 +176,7 @@ export async function showQueueForm() {
 
     const noteLabel = document.createElement('label');
     noteLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
-    noteLabel.textContent = 'Note for DevOps (optional)';
+    noteLabel.textContent = 'Note for DevOps *';
     const noteEl = document.createElement('input');
     noteEl.id = 'q-note'; noteEl.type = 'text';
     noteEl.placeholder = 'e.g. ship together with workflow-service';
@@ -200,7 +200,18 @@ export async function showQueueForm() {
     submit.addEventListener('click', async () => {
         err.textContent = '';
         const chart = chartEl.value.trim(), ver = verEl.value.trim(), email = emailEl.value.trim();
-        if (!chart || !ver || !email) { err.textContent = 'Chart, version and your email are required.'; return; }
+        // Every field is required: what is not captured here is reconstructed by
+        // DevOps on release day, which is the guesswork this form exists to end.
+        const missing = [
+            [chart, 'chart name'], [ver, 'version'], [email, 'your email'],
+            [jiraEl.value.trim(), 'JIRA ticket'],
+            [detailsEl.value.trim(), 'change details'],
+            [noteEl.value.trim(), 'note for DevOps'],
+        ].filter(pair => !pair[0]).map(pair => pair[1]);
+        if (missing.length) {
+            err.textContent = 'Still needed: ' + missing.join(', ') + '.';
+            return;
+        }
         if (!runEl.value.trim() || runEl.value.indexOf('/actions/runs/') === -1) {
             err.textContent = 'The build run URL is required (…/actions/runs/<id>) — it proves the tag is release-eligible.'; return;
         }

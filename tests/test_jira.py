@@ -111,7 +111,9 @@ def queue(monkeypatch):
         monkeypatch.setattr(RQ, "_fetch_events", lambda: [])
         out = T.queue_release_intent(
             artifact="payments-api:1.4.2", requested_by="dev@acme.com",
-            build_run_url="https://github.com/o/r/actions/runs/1", **kwargs,
+            build_run_url="https://github.com/o/r/actions/runs/1",
+            note=kwargs.pop("note", "n"),
+            change_details=kwargs.pop("change_details", "d"), **kwargs,
         )
         return out, inserted
 
@@ -148,7 +150,46 @@ def test_the_developers_own_words_are_never_overwritten(jira, queue):
     assert inserted["change_details"] == "mine, keep it"
 
 
-def test_no_ticket_means_no_jira_call(jira, queue):
+def test_a_missing_ticket_is_refused_without_calling_jira(jira, queue):
+    """The ticket is mandatory, so an empty one is refused by name — and there is
+    nothing to look up, so JIRA is never called."""
     jira(error=AssertionError("JIRA must not be called without a ticket"))
-    out, _ = queue(jira_ticket="")
+    out, inserted = queue(jira_ticket="")
+    assert out["ok"] is False
+    assert "JIRA ticket" in out["error"]
+    assert inserted == {}
+
+
+# ------------------------------------------------- every field is mandatory
+
+def test_a_missing_note_is_refused_by_name(jira, queue):
+    jira(_Response(200, {"fields": {"summary": "s"}}))
+    out, inserted = queue(jira_ticket="ABC-1", note="")
+    assert out["ok"] is False
+    assert "note for DevOps" in out["error"]
+    assert inserted == {}
+
+
+def test_missing_change_details_are_refused_when_jira_cannot_supply_them(jira, queue):
+    """Nothing describes the change, so release day would be guesswork again."""
+    jira(_Response(200, {"fields": {"summary": ""}}))
+    out, inserted = queue(jira_ticket="ABC-1", change_details="")
+    assert out["ok"] is False
+    assert "what changed and why" in out["error"]
+    assert inserted == {}
+
+
+def test_a_resolvable_ticket_satisfies_the_change_details_requirement(jira, queue):
+    """The developer already described it once, in JIRA — requiring them to
+    retype it would only invite the two records to disagree."""
+    jira(_Response(200, {"fields": {"summary": "Retry settlement callback"}}))
+    out, inserted = queue(jira_ticket="ABC-4471", change_details="")
     assert out["ok"] is True
+    assert inserted["change_details"] == "Retry settlement callback"
+
+
+def test_every_missing_field_is_named_at_once(jira, queue):
+    """One round trip per submission, not one per field."""
+    jira(_Response(200, {"fields": {"summary": "s"}}))
+    out, _ = queue(jira_ticket="", note="")
+    assert "JIRA ticket" in out["error"] and "note for DevOps" in out["error"]

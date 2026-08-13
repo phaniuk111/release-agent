@@ -27,6 +27,9 @@ def queue(monkeypatch):
             artifact=kwargs.pop("artifact", "payments-api:1.4.2"),
             requested_by="dev@example.com",
             build_run_url="https://github.com/o/r/actions/runs/1",
+            jira_ticket=kwargs.pop("jira_ticket", "ABC-1"),
+            note=kwargs.pop("note", "n"),
+            change_details=kwargs.pop("change_details", "d"),
             **kwargs,
         )
 

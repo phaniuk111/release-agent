@@ -268,7 +268,7 @@ def test_queue_intent_requires_run_url(monkeypatch):
 
     # Uninspectable URL is also a refusal, not a silent queue.
     monkeypatch.setattr(T, "_invoke_tool", lambda *a, **k: {"found": False, "reason": "404"})
-    out = T.queue_release_intent("svc-a:1.0.0", "dev@db.com", build_run_url="https://x/actions/runs/1")
+    out = T.queue_release_intent("svc-a:1.0.0", "dev@db.com", build_run_url="https://x/actions/runs/1", jira_ticket="ABC-1", note="n", change_details="d")
     assert out["ok"] is False and "Nothing was queued" in out["error"]
     assert inserted == []
 
@@ -295,7 +295,7 @@ def test_queue_intent_blocks_ineligible_build(monkeypatch):
 
     monkeypatch.setattr(T, "_invoke_tool", _report)
     out = T.queue_release_intent(
-        "svc-a:1.0.0", "dev@db.com", build_run_url="https://gh/actions/runs/1"
+        "svc-a:1.0.0", "dev@db.com", build_run_url="https://gh/actions/runs/1", jira_ticket="ABC-1", note="n", change_details="d"
     )
     assert out["ok"] is False and out["eligible"] is False
     assert out["failed_controls"] == ["RFTL deploy control"]
@@ -315,7 +315,7 @@ def test_queue_intent_eligible_build_queues_verified(monkeypatch):
         "failed_steps": [], "tag": "svc-a-1.0.0",
     })
     out = T.queue_release_intent(
-        "svc-a:1.0.0", "dev@db.com", build_run_url="https://gh/actions/runs/2"
+        "svc-a:1.0.0", "dev@db.com", build_run_url="https://gh/actions/runs/2", jira_ticket="ABC-1", note="n", change_details="d"
     )
     assert out["ok"] is True and out["eligible"] is True
     assert inserted["build_verified"] is True

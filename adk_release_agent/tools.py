@@ -196,6 +196,24 @@ def queue_release_intent(
                 "queued. Ask the developer for the run URL (…/actions/runs/<id>)."
             ),
         }
+    # Every field is required, in BOTH lanes — the form enforcing it while the
+    # chat tool did not would just move the gap. Asked for by name so the agent
+    # can prompt for exactly what is missing.
+    missing = [
+        label for value, label in (
+            (jira_ticket, "the JIRA ticket"),
+            (note, "a note for DevOps"),
+        ) if not str(value or "").strip()
+    ]
+    if missing:
+        return {
+            "ok": False,
+            "error": (
+                f"Still needed before this can be queued: {', '.join(missing)}. "
+                "Ask the developer for it — nothing was queued."
+            ),
+        }
+
     # Resolve the JIRA key before anything is written. A typo'd key would
     # otherwise be copied verbatim into the change record and only be noticed by
     # whoever audits it — so a key that does not exist is refused, while an
@@ -223,6 +241,18 @@ def queue_release_intent(
                 # type it twice.
                 if not str(change_details or "").strip() and jira_issue.get("summary"):
                     change_details = jira_issue["summary"]
+
+    # Checked AFTER the JIRA lookup, so a resolvable ticket satisfies it: the
+    # developer already described the change once, in JIRA.
+    if not str(change_details or "").strip():
+        return {
+            "ok": False,
+            "error": (
+                "Still needed before this can be queued: what changed and why. "
+                "It drafts the change request on release day, so DevOps is not "
+                "guessing. Nothing was queued."
+            ),
+        }
 
     # Eligibility gate: the dev pointed at the exact run — judge it.
     try:
