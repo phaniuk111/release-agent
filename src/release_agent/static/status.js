@@ -74,8 +74,8 @@ function _dfSummary(s) {
     }
     return {
         title: ' · DF: none open',
-        detail: '<br><span class="text-sky-300">DF release:</span> none open' +
-            ((df.prd_charts || []).length ? ' · PRD: ' + df.prd_charts.length + ' images' : ''),
+        // No image count here either — same reason as the CARE title.
+        detail: '<br><span class="text-sky-300">DF release:</span> none open',
     };
 }
 
@@ -131,7 +131,10 @@ export async function loadReleaseStatus(fresh) {
         dot.className = blk
             ? 'w-2 h-2 rounded-full bg-amber-400 inline-block'
             : 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
-        title.textContent = 'CARE: no release open · PRD: ' + (s.prd_charts || []).length + ' charts' + df.title + blkTitle + qTitle;
+        // No installed-chart count in the title: it is the size of the deployed
+        // SET, which barely moves release to release, so it read as activity while
+        // reporting none. The full PRD list is still one click away under details.
+        title.textContent = 'CARE: no release open' + df.title + blkTitle + qTitle;
         detail.innerHTML = (s.reason ? esc(s.reason) + ' · ' : '') + foot + _envLists(s) + df.detail + blkDetail;
     } catch (e) {
         banner.classList.remove('hidden');
