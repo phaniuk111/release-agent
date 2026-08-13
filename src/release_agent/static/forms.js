@@ -176,7 +176,7 @@ export async function showQueueForm() {
 
     const noteLabel = document.createElement('label');
     noteLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
-    noteLabel.textContent = 'Note for DevOps *';
+    noteLabel.textContent = 'Note for DevOps (optional)';
     const noteEl = document.createElement('input');
     noteEl.id = 'q-note'; noteEl.type = 'text';
     noteEl.placeholder = 'e.g. ship together with workflow-service';
@@ -206,7 +206,8 @@ export async function showQueueForm() {
             [chart, 'chart name'], [ver, 'version'], [email, 'your email'],
             [jiraEl.value.trim(), 'JIRA ticket'],
             [detailsEl.value.trim(), 'change details'],
-            [noteEl.value.trim(), 'note for DevOps'],
+            // The note stays optional: it is a hint to DevOps ("ship with X"),
+            // and requiring it only harvests "n/a".
         ].filter(pair => !pair[0]).map(pair => pair[1]);
         if (missing.length) {
             err.textContent = 'Still needed: ' + missing.join(', ') + '.';

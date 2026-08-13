@@ -162,12 +162,13 @@ def test_a_missing_ticket_is_refused_without_calling_jira(jira, queue):
 
 # ------------------------------------------------- every field is mandatory
 
-def test_a_missing_note_is_refused_by_name(jira, queue):
+def test_the_devops_note_stays_optional(jira, queue):
+    """A routing hint ("ship with X"), not a description of the change —
+    requiring it would only harvest "n/a"."""
     jira(_Response(200, {"fields": {"summary": "s"}}))
     out, inserted = queue(jira_ticket="ABC-1", note="")
-    assert out["ok"] is False
-    assert "note for DevOps" in out["error"]
-    assert inserted == {}
+    assert out["ok"] is True
+    assert inserted["note"] == ""
 
 
 def test_missing_change_details_are_refused_when_jira_cannot_supply_them(jira, queue):
@@ -188,8 +189,7 @@ def test_a_resolvable_ticket_satisfies_the_change_details_requirement(jira, queu
     assert inserted["change_details"] == "Retry settlement callback"
 
 
-def test_every_missing_field_is_named_at_once(jira, queue):
-    """One round trip per submission, not one per field."""
+def test_a_missing_mandatory_field_is_named(jira, queue):
     jira(_Response(200, {"fields": {"summary": "s"}}))
     out, _ = queue(jira_ticket="", note="")
-    assert "JIRA ticket" in out["error"] and "note for DevOps" in out["error"]
+    assert "JIRA ticket" in out["error"]

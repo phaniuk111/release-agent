@@ -202,7 +202,6 @@ def queue_release_intent(
     missing = [
         label for value, label in (
             (jira_ticket, "the JIRA ticket"),
-            (note, "a note for DevOps"),
         ) if not str(value or "").strip()
     ]
     if missing:
