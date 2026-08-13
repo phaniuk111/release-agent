@@ -383,10 +383,24 @@ def release_status_endpoint(fresh: int = 0):
     if not fresh and _status_cache["value"] is not None:
         if time.time() - _status_cache["at"] < _STATUS_TTL_SECONDS:
             return _status_cache["value"]
+    # CARE and DF live in different repos, so their reads are independent — run
+    # them together rather than paying ~6s twice. (This endpoint is a sync `def`,
+    # so it is already on a worker thread; these are two more.)
+    df_repo = (app_settings.df_release_repo or "").strip()
+    want_df = bool(df_repo) and df_repo != app_settings.deploy_repo
+    df_future = None
+    executor = None
+    if want_df:
+        from concurrent.futures import ThreadPoolExecutor
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        df_future = executor.submit(get_release_status, deployment_repo=df_repo)
     try:
         status = get_release_status()
     except Exception as e:
         logger.exception("Error computing release status")
+        if executor is not None:
+            executor.shutdown(wait=False)
         return {"error": str(e)}
     # Banner extra: how many charts are queued for the NEXT release (cached ≤1/min;
     # None/absent when the BQ queue is disabled or unreachable — never an error).
@@ -398,6 +412,24 @@ def release_status_endpoint(fresh: int = 0):
             status["queued_next"] = count
     except Exception:
         pass
+    # CARE and DF are separate releases with separate PRs and separate guards, so
+    # the banner reports them separately. A DF failure must never blank the CARE
+    # status — it is reported in its own slot instead.
+    if df_future is not None:
+        try:
+            df_status = df_future.result()
+            status["df"] = {
+                "repo": df_repo,
+                "prd_release_pr": df_status.get("prd_release_pr"),
+                "prd_charts": df_status.get("prd_charts") or [],
+                "blocking_pr": df_status.get("blocking_pr"),
+                "error": df_status.get("error"),
+            }
+        except Exception as e:
+            logger.exception("release-status: DF release status unavailable")
+            status["df"] = {"repo": df_repo, "error": str(e)}
+        finally:
+            executor.shutdown(wait=False)
     _status_cache["at"] = time.time()
     _status_cache["value"] = status
     return status

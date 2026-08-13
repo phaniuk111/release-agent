@@ -79,3 +79,60 @@ def test_the_in_flight_guard_is_checked_against_the_target_repo(monkeypatch, rep
             RF.prepare_release_fileset({"deployment_repo": repo})
 
     assert checked == ["acme/df-deploy", "acme/care-deploy"]
+
+
+def test_the_banner_reports_care_and_df_separately(monkeypatch):
+    """One release open must not be reported as the other's — they are different
+    repos with different PRs and different guards."""
+    calls = []
+
+    def _status(deployment_repo: str = ""):
+        calls.append(deployment_repo)
+        if deployment_repo == "acme/df-deploy":
+            return {"prd_release_pr": {"number": 7, "url": "u7", "charts": []},
+                    "prd_charts": [], "blocking_pr": None}
+        return {"prd_release_pr": None, "prd_charts": [{"helm_chart_name": "a"}],
+                "blocking_pr": None}
+
+    monkeypatch.setattr("release_agent.tools.gh_tools.get_release_status", _status)
+    monkeypatch.setattr(APP.app_settings, "deploy_repo", "acme/care-deploy", raising=False)
+    monkeypatch.setattr(APP.app_settings, "df_release_repo", "acme/df-deploy", raising=False)
+    monkeypatch.setattr(APP, "_status_cache", {"at": 0.0, "value": None}, raising=False)
+
+    out = APP.release_status_endpoint(fresh=1)
+    assert out["prd_release_pr"] is None                 # CARE has none open
+    assert out["df"]["prd_release_pr"]["number"] == 7    # DF does
+    assert sorted(c for c in calls) == ["", "acme/df-deploy"]
+
+
+def test_a_df_failure_does_not_blank_the_care_status(monkeypatch):
+    def _status(deployment_repo: str = ""):
+        if deployment_repo:
+            raise RuntimeError("DF repo unreachable")
+        return {"prd_release_pr": None, "prd_charts": [], "blocking_pr": None}
+
+    monkeypatch.setattr("release_agent.tools.gh_tools.get_release_status", _status)
+    monkeypatch.setattr(APP.app_settings, "deploy_repo", "acme/care-deploy", raising=False)
+    monkeypatch.setattr(APP.app_settings, "df_release_repo", "acme/df-deploy", raising=False)
+    monkeypatch.setattr(APP, "_status_cache", {"at": 0.0, "value": None}, raising=False)
+
+    out = APP.release_status_endpoint(fresh=1)
+    assert "error" not in out                            # CARE still reported
+    assert "unreachable" in out["df"]["error"]
+
+
+def test_single_repo_setups_do_not_pay_for_a_second_read(monkeypatch):
+    calls = []
+
+    def _status(deployment_repo: str = ""):
+        calls.append(deployment_repo)
+        return {"prd_release_pr": None, "prd_charts": [], "blocking_pr": None}
+
+    monkeypatch.setattr("release_agent.tools.gh_tools.get_release_status", _status)
+    monkeypatch.setattr(APP.app_settings, "deploy_repo", "acme/deploy", raising=False)
+    monkeypatch.setattr(APP.app_settings, "df_release_repo", "", raising=False)
+    monkeypatch.setattr(APP, "_status_cache", {"at": 0.0, "value": None}, raising=False)
+
+    out = APP.release_status_endpoint(fresh=1)
+    assert calls == [""]
+    assert "df" not in out

@@ -48,6 +48,37 @@ export function toggleBannerDetail() {
     if (d) d.classList.toggle('hidden');
 }
 
+// CARE and DF are separate releases in separate repos. The banner leads with
+// CARE (the weekly cut most people mean) and appends DF only when it is
+// configured separately — an unconfigured or unreachable DF must never make the
+// CARE status look wrong.
+function _dfSummary(s) {
+    const df = s.df;
+    if (!df) return { title: '', detail: '' };
+    if (df.error) {
+        return {
+            title: ' · DF: unavailable',
+            detail: '<br><span class="text-amber-400">DF release status unavailable (' +
+                esc(df.error) + ')</span>',
+        };
+    }
+    const pr = df.prd_release_pr;
+    if (pr) {
+        return {
+            title: ' · DF: PR #' + pr.number + ' open',
+            detail: '<br><span class="text-sky-300">DF release:</span> ' +
+                '<a href="' + esc(pr.url) + '" target="_blank" class="underline text-sky-400">PR #' +
+                esc(pr.number) + '</a>' +
+                ((pr.charts || []).length ? ' — staged: ' + _chartList(pr.charts) : ''),
+        };
+    }
+    return {
+        title: ' · DF: none open',
+        detail: '<br><span class="text-sky-300">DF release:</span> none open' +
+            ((df.prd_charts || []).length ? ' · PRD: ' + df.prd_charts.length + ' images' : ''),
+    };
+}
+
 export async function loadReleaseStatus(fresh) {
     const banner = document.getElementById('release-banner');
     const dot    = document.getElementById('rb-dot');
@@ -80,17 +111,19 @@ export async function loadReleaseStatus(fresh) {
               '<a href="' + esc(blk.url) + '" target="_blank" class="underline">PR #' + esc(blk.number) +
               '</a> (' + esc(blk.head) + ' → ' + esc(blk.base) + ') is open — merge or close it first.</span>'
             : '';
+        const df = _dfSummary(s);
         const pr = s.prd_release_pr;
         if (pr) {
             const n = (s.pending_to_prod || []).length;
             dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
-            title.textContent = 'Release PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged' + blkTitle + qTitle;
+            title.textContent = 'CARE: PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged' + df.title + blkTitle + qTitle;
             let html = (s.reason ? esc(s.reason) + ' · ' : '') + foot;
             if ((pr.charts || []).length) {
                 html += '<br><span>staged: ' + _chartList(pr.charts) + '</span>';
             }
             html += ' &nbsp;<a href="' + esc(pr.url) + '" target="_blank" class="underline text-emerald-400">open PR #' + esc(pr.number) + '</a>';
             html += _envLists(s);
+            html += df.detail;
             html += blkDetail;
             detail.innerHTML = html;
             return;
@@ -98,8 +131,8 @@ export async function loadReleaseStatus(fresh) {
         dot.className = blk
             ? 'w-2 h-2 rounded-full bg-amber-400 inline-block'
             : 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
-        title.textContent = 'No release open · PRD: ' + (s.prd_charts || []).length + ' charts' + blkTitle + qTitle;
-        detail.innerHTML = (s.reason ? esc(s.reason) + ' · ' : '') + foot + _envLists(s) + blkDetail;
+        title.textContent = 'CARE: no release open · PRD: ' + (s.prd_charts || []).length + ' charts' + df.title + blkTitle + qTitle;
+        detail.innerHTML = (s.reason ? esc(s.reason) + ' · ' : '') + foot + _envLists(s) + df.detail + blkDetail;
     } catch (e) {
         banner.classList.remove('hidden');
         dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';

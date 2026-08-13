@@ -77,10 +77,14 @@ def _today_prd_pr(repo):
     return None
 
 
-def get_release_status() -> dict:
+def get_release_status(deployment_repo: str = "") -> dict:
     """Current deploy status (UTC): charts live on UAT and PRD, today's accumulating PRD
     release PR (the charts staged for prod, shipped when someone releases).
-    GitHub is the cross-session source of truth, so every session sees the same answer."""
+    GitHub is the cross-session source of truth, so every session sees the same answer.
+
+    ``deployment_repo`` selects which release is being reported: CARE and DF are
+    raised in different repos, so each has its own PRs, branches and guard.
+    Empty = the configured CARE repo."""
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
@@ -93,7 +97,7 @@ def get_release_status() -> dict:
         "cutoff_passed": cutoff_passed,
     }
     try:
-        repo = _get_github_client().get_repo(active_deploy_repo())
+        repo = _get_github_client().get_repo(deployment_repo or active_deploy_repo())
         uat = _charts(repo, "uat")
         prd = _charts(repo, "prd")
         pr = _today_prd_pr(repo)
