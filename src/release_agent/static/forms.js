@@ -597,7 +597,7 @@ export async function showReleaseForm(kind) {
 export async function showDfDeployForm() {
     const _ph = _opening('Deploy to DF UAT');
     const ctx = await _ctx('/api/df-template?env=uat',
-        { recent_runs: [], deploy_repo: '', workflow: 'df-deploy.yml' });
+        { deploy_repo: '', workflow: 'df-deploy.yml' });
     _ph.remove();
 
     const chat = document.getElementById('chat');
@@ -610,23 +610,6 @@ export async function showDfDeployForm() {
         '</code> workflow. Nothing runs until you confirm the preview.</div>';
 
     const dfNote = _ctxNote(ctx, 'recent DF runs'); if (dfNote) wrap.appendChild(dfNote);
-
-    if ((ctx.recent_runs || []).length) {
-        const hdr = document.createElement('div');
-        hdr.className = 'text-[11px] text-slate-500 mb-1';
-        hdr.textContent = 'Recent DF deploys';
-        wrap.appendChild(hdr);
-        const list = document.createElement('div');
-        list.className = 'border border-slate-700 rounded-lg px-3 py-1.5 mb-3 text-[11px] font-mono text-slate-400';
-        ctx.recent_runs.forEach(r => {
-            const row = document.createElement('div');
-            row.className = 'flex justify-between py-0.5';
-            row.innerHTML = '<a href="' + r.url + '" target="_blank" class="underline">run #' + r.id + '</a>' +
-                '<span>' + (r.conclusion || r.status || '') + '</span>';
-            list.appendChild(row);
-        });
-        wrap.appendChild(list);
-    }
 
     // Fields are labelled with the TARGET WORKFLOW's own input names (module /
     // binary_version, not our internal image / tag) and a `choice` input becomes

@@ -690,34 +690,25 @@ def _df_form_fields(repo=None, workflow=None) -> dict:
 
 @app.get("/api/df-template")
 def df_template_endpoint(env: str = "uat"):
-    """Recent DF deploy workflow runs, the default repo, and the form's field spec
-    (labels + choice options taken from the workflow itself) — everything the DF
-    form renders from. (Deploy = workflow_dispatch; there is no state file.)"""
-    import itertools
+    """The default repo and the DF form's field spec (labels + choice options
+    taken from the workflow itself) — everything the form renders from.
+    (Deploy = workflow_dispatch; there is no state file.)
 
+    Deliberately does NOT list previous runs: the form is for starting a deploy,
+    and every extra GitHub call here is paid on the form's open latency, which
+    the frontend abandons at 5s behind a TLS-inspecting proxy.
+    """
     from .tools._common import _get_github_client
 
-    runs: list = []
     repo = workflow = None
     try:
         if app_settings.df_deploy_repo:
             repo = _get_github_client().get_repo(app_settings.df_deploy_repo)
             workflow = repo.get_workflow(app_settings.df_deploy_workflow)
-            for r in itertools.islice(workflow.get_runs(), 3):
-                runs.append(
-                    {
-                        "id": r.id,
-                        "url": r.html_url,
-                        "status": r.status,
-                        "conclusion": r.conclusion,
-                        "created_at": r.created_at.isoformat() if r.created_at else "",
-                    }
-                )
     except Exception:
-        logger.exception("df-template: could not list DF workflow runs")
+        logger.exception("df-template: could not resolve the DF workflow")
     return {
         "environment": "uat",
-        "recent_runs": runs,
         "deploy_repo": app_settings.df_deploy_repo,
         "workflow": app_settings.df_deploy_workflow,
         "fields": _df_form_fields(repo, workflow),
