@@ -12,7 +12,14 @@ import { loadReleaseStatus } from './status.js';
 // proxy, no token) previously left the pill looking dead: the click awaited a
 // fetch that never resolved, so nothing rendered and no error surfaced. Bounded
 // wait, then open the form with fallbacks and a visible note.
-const CTX_TIMEOUT_MS = 5000;
+//
+// 15s, not 5s: a COLD BigQuery query plus GitHub reads through a TLS-inspecting
+// proxy regularly exceeded 5s, and the failure was quiet in the worst way — the
+// form opened with an empty queue, so "Already queued" and the replaces-warning
+// simply were not there, and the developer had no reason to doubt it. Waiting
+// longer costs nothing visible: _opening() already shows "Opening …" from the
+// click, so the wait reads as loading rather than as a dead pill.
+const CTX_TIMEOUT_MS = 15000;
 
 async function _ctx(path, fallback) {
     const ctl = new AbortController();
