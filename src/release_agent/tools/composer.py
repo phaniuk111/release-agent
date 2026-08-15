@@ -208,10 +208,19 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
         updated.append({"file": path, "from": replaced, "to": version, "unchanged": False})
 
     if not any(not u["unchanged"] for u in updated):
+        # Nothing to propose, so leave no trace: the branch was created before we
+        # knew that, and an empty dag-version/* branch per attempt would silt up
+        # the repo and look like a half-finished bump to anyone browsing it.
+        try:
+            repo_ref = gh_repo.get_git_ref(f"heads/{branch}")
+            if repo_ref.object.sha == base.commit.sha:
+                repo_ref.delete()
+        except Exception:
+            pass          # tidiness only — never fail a deploy over a stray branch
         return {
-            "ok": True, "action": "dag_bump_not_needed", "branch": branch,
+            "ok": True, "action": "dag_bump_not_needed", "branch": "",
             "updated": updated, "problems": problems,
-            "note": f"Every selected DAG already points at {version} — no PR raised.",
+            "note": f"No DAG needed a change to {version} — no PR raised.",
         }
 
     changed = [u["file"] for u in updated if not u["unchanged"]]

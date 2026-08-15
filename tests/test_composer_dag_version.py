@@ -197,3 +197,49 @@ def test_the_payload_carries_the_named_repo():
         "dag_files": ["acme-svc-alpha.py"], "composer_repo": " acme/other-dags ",
     }))
     assert req["composer_repo"] == "acme/other-dags"
+
+
+def test_no_change_leaves_no_branch_behind(monkeypatch):
+    """The branch is created before we know whether anything will change, so a
+    no-op has to clean up after itself — otherwise every attempt silts a
+    dag-version/* branch into the repo that looks like a half-finished bump."""
+    from release_agent.config import settings
+
+    monkeypatch.setattr(settings, "composer_repo", "acme/dags")
+    monkeypatch.setattr(settings, "composer_branch", "main")
+    deleted = []
+
+    class _Ref:
+        object = type("O", (), {"sha": "base-sha"})()
+
+        def delete(self):
+            deleted.append(True)
+
+    class _Repo:
+        def get_branch(self, name):
+            return type("B", (), {"commit": type("C", (), {"sha": "base-sha"})()})()
+
+        def create_git_ref(self, ref, sha):
+            return None
+
+        def get_contents(self, path, ref):
+            # already on the target version -> nothing to change
+            return type("Blob", (), {
+                "decoded_content": DAG.replace("0.0.494", "0.0.500").encode(),
+                "sha": "blob-sha",
+            })()
+
+        def get_git_ref(self, ref):
+            return _Ref()
+
+        def create_pull(self, **kw):
+            raise AssertionError("no PR should be opened when nothing changed")
+
+    monkeypatch.setattr(
+        C, "_get_github_client",
+        lambda: type("C", (), {"get_repo": staticmethod(lambda full: _Repo())})(),
+    )
+    out = C.apply_dag_bump(["acme-svc-alpha.py"], "0.0.500", "uat")
+    assert out["action"] == "dag_bump_not_needed"
+    assert out["branch"] == ""          # nothing for the caller to link to
+    assert deleted == [True]

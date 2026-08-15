@@ -490,8 +490,24 @@ class AdkChatService:
             # guard's note naming the blocking PR) over a generic failure line.
             detail = result.get("note") or result.get("error") or result.get("status") or "confirmation failed"
             return f"Not applied: {detail}"
-        if result.get("note"):
-            return str(result["note"])
+        note = str(result.get("note") or "")
+        # A DF deploy can carry a SECOND mutation (the Composer DAG PR). The
+        # dispatch note alone would report half the action, and the half it hid
+        # is the one still needing a human to merge it.
+        bump = result.get("dag_bump")
+        if isinstance(bump, dict):
+            if bump.get("ok") and bump.get("pr_url"):
+                note += (f"\n\nComposer DAGs: PR #{bump.get('pr_number')} raised "
+                         f"({bump['pr_url']}) — merge it once the run above is green.")
+            elif bump.get("ok"):
+                note += f"\n\nComposer DAGs: {bump.get('note') or 'no change needed'}."
+            else:
+                note += (f"\n\nComposer DAGs NOT updated: {bump.get('error')} "
+                         "— the template was still dispatched; bump the DAGs manually.")
+            for problem in bump.get("problems") or []:
+                note += f"\n  - skipped {problem.get('file')}: {problem.get('error')}"
+        if note:
+            return note
         return "Deploy applied:\n\n```json\n" + json.dumps(result, indent=2) + "\n```"
 
 
