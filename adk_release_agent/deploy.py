@@ -104,11 +104,28 @@ def _build_preview(req: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         from release_agent.tools.dataflow import _dispatch_inputs
 
         image = req["images"][0]
-        return {
+        preview = {
             f"workflow_dispatch ({settings.df_deploy_workflow})": [
                 _dispatch_inputs(image["name"], image["tag"], env)
             ]
         }
+        # A DF deploy is only half-done until the Composer DAGs point at the new
+        # template, so the version bump is previewed in the SAME confirmation —
+        # approving a deploy must mean approving both mutations, not just one.
+        dags = req.get("dag_files") or []
+        if dags:
+            from release_agent.tools import composer as _composer
+
+            bump = _composer.preview_dag_bump(dags, image["tag"], env)
+            rows = [
+                {"file": c["file"], "version": " → ".join([", ".join(c["from"]), c["to"]])
+                 if not c["unchanged"] else f"{c['to']} (already)"}
+                for c in bump.get("changes") or []
+            ]
+            rows += [{"file": p["file"], "version": f"PROBLEM: {p['error']}"}
+                     for p in bump.get("problems") or []]
+            preview[f"Composer DAG bump ({bump.get('repo')} @ {bump.get('branch')} → PR)"] = rows
+        return preview
     entries = req.get("entries") or []
     if entries:
         target_entries = [_normalize_entry(entry, env) for entry in entries]
@@ -252,6 +269,17 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
         _PENDING_PREVIEWS.pop(token, None)
         result.setdefault("ok", True)
         result["confirmed_token"] = token
+        # DISPATCH FIRST, then bump. The other order would leave the DAGs
+        # pointing at a template that does not exist yet if the build fails;
+        # this order leaves a template nothing uses, which is recoverable.
+        dags = req.get("dag_files") or []
+        if dags and result.get("ok"):
+            from release_agent.tools import composer as _composer
+
+            result["dag_bump"] = _composer.apply_dag_bump(
+                dags, image["tag"], env, image=image["name"],
+                run_url=((result.get("run") or {}) or {}).get("url") or "",
+            )
         _record_deploy_event(req, f"dataflow-{env}", result)
         return result
     if req.get("entries"):

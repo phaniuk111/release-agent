@@ -321,6 +321,11 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
             "entries": [],
             "environment": "prod" if env in ("prod", "prd", "production") else "uat",
             "deployment_repo": str(data.get("deployment_repo") or ""),
+            # Composer DAGs to point at the new template version, in the same
+            # confirmed action as the dispatch.
+            "dag_files": [
+                str(f).strip() for f in (data.get("dag_files") or []) if str(f).strip()
+            ],
             "raw": "json-paste",
         }
 

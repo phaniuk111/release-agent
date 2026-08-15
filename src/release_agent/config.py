@@ -112,6 +112,24 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("DF_RELEASE_REPO", "DATAFLOW_RELEASE_REPO"),
     )
+    # Composer DAGs repo. A DF deploy builds a flex template under a VERSION path
+    # in a bucket; the DAGs that launch it carry that version as the fallback of
+    # `dag_run.conf['version'] | default('…')`, so the deploy is only half-done
+    # until they are bumped. Empty = the DAG bump is not offered at all.
+    composer_repo: str = Field(
+        default="",
+        validation_alias=AliasChoices("COMPOSER_REPO", "COMPOSER_DAGS_REPO"),
+    )
+    # Branch the DAGs live on and the bump PR targets.
+    composer_branch: str = Field(
+        default="main",
+        validation_alias=AliasChoices("COMPOSER_BRANCH", "COMPOSER_DAGS_BRANCH"),
+    )
+    # Folder holding an environment's DAGs, e.g. "uat" -> uat/<dag>.py.
+    composer_dag_dir_pattern: str = Field(
+        default="{env}",
+        validation_alias=AliasChoices("COMPOSER_DAG_DIR_PATTERN", "COMPOSER_DAG_DIR"),
+    )
     # Dataflow flex-template deploys: repo hosting the DF deploy workflow. Deploying
     # means workflow_dispatch of df_deploy_workflow with {image, tag, environment}.
     df_deploy_repo: str = Field(

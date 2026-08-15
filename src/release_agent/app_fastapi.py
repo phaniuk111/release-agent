@@ -744,6 +744,15 @@ def df_template_endpoint(env: str = "uat"):
         "deploy_repo": app_settings.df_deploy_repo,
         "workflow": app_settings.df_deploy_workflow,
         "fields": _df_form_fields(repo, workflow),
+        # The developer names the DAG files; we do not enumerate the Composer
+        # repo here. A listing would be one more GitHub call on the form's open
+        # latency, and it would not make the answer safer — the preview reads
+        # each named file and reports a typo or a non-Dataflow DAG by name
+        # before anything is confirmed.
+        "composer_repo": app_settings.composer_repo,
+        "composer_dir": (app_settings.composer_dag_dir_pattern or "{env}").format(
+            env=(env or "uat").strip().lower()
+        ) if app_settings.composer_repo else "",
     }
 
 

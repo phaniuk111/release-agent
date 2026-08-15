@@ -65,6 +65,16 @@ config:
   # independent in-flight guards. Empty = one repo for both.
   DF_RELEASE_REPO: ""
   DF_DEPLOY_REPO: ""
+  # Composer DAGs repo. A DF deploy builds a flex template under a VERSION path
+  # in a bucket; the DAGs that launch it carry that version as the fallback of
+  #   {{dag_run.conf['version'] | default('0.0.494')}}
+  # so the deploy is only half-done until they are bumped. The developer names
+  # the DAG files on the deploy form; a PR is raised against COMPOSER_BRANCH and
+  # is never auto-merged — the flex-template build takes minutes and can fail.
+  # Empty COMPOSER_REPO = the DAG bump is not offered.
+  COMPOSER_REPO: ""
+  COMPOSER_BRANCH: "main"
+  COMPOSER_DAG_DIR_PATTERN: "{env}"   # uat -> uat/<dag>.py
   # Exact file name under .github/workflows/ (case- and suffix-sensitive).
   DF_DEPLOY_WORKFLOW: "df-deploy.yml"
   # Branch to dispatch on. GitHub only accepts a dispatch for a ref that ALREADY

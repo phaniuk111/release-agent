@@ -719,6 +719,30 @@ export async function showDfDeployForm() {
     });
     updateEcho();
 
+    // Composer DAGs to point at the new template version. The developer names
+    // the files — no picker to keep in sync with the repo, and a typo is caught
+    // by the preview, which reads each file and reports it by name before the
+    // CONFIRM token is issued.
+    const dagLabel = document.createElement('label');
+    dagLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
+    dagLabel.textContent = 'Composer DAG file(s) (optional) — one .py per line; ' +
+        'their default template version is bumped to this tag via a PR';
+    const dagEl = document.createElement('textarea');
+    dagEl.id = 'df-dags'; dagEl.rows = 3; dagEl.spellcheck = false;
+    dagEl.placeholder = ctx.composer_dir
+        ? (ctx.composer_dir + '/…  e.g.\nacme-svc-alpha.py\nacme-svc-beta.py')
+        : 'acme-svc-alpha.py';
+    dagEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 ' +
+        'text-xs text-white font-mono focus:outline-none mb-1';
+    wrap.appendChild(dagLabel); wrap.appendChild(dagEl);
+    if (ctx.composer_repo) {
+        const dagHint = document.createElement('div');
+        dagHint.className = 'text-[10px] text-slate-600 mb-2';
+        dagHint.textContent = 'From ' + ctx.composer_repo + ' · ' + ctx.composer_dir +
+            '/ — a PR is raised against the DAG branch; nothing is merged for you.';
+        wrap.appendChild(dagHint);
+    }
+
     // Advanced (collapsed): repo override.
     const adv = document.createElement('div');
     adv.className = 'mb-2';
@@ -752,6 +776,8 @@ export async function showDfDeployForm() {
             return;
         }
         const payload = { deployment_type: 'dataflow', environment: 'uat', image: image, tag: tag };
+        const dags = dagEl.value.split('\n').map(l => l.trim()).filter(Boolean);
+        if (dags.length) payload.dag_files = dags;
         const repoOverride = repoInput.value.trim();
         if (repoOverride) payload.deployment_repo = repoOverride;
         sendMessage(JSON.stringify(payload));

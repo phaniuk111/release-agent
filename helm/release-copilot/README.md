@@ -201,6 +201,8 @@ licence to raise `replicaCount`** — those three need addressing first.
 | `config.DF_DEPLOY_REPO` / `.DF_DEPLOY_WORKFLOW` | `""` / `df-deploy.yml` | Dataflow workflow-dispatch deploys |
 | `config.DF_DEPLOY_REF` | `""` | Branch to dispatch on; empty = repo default branch |
 | `config.DF_DISPATCH_INPUTS` | `{"image","tag","environment"}` | Maps our values onto the DF workflow's declared input names |
+| `config.COMPOSER_REPO` | `""` | Composer DAGs repo; empty = no DAG version bump offered |
+| `config.COMPOSER_BRANCH` / `.COMPOSER_DAG_DIR_PATTERN` | `main` / `{env}` | branch the bump PR targets, and the per-env DAG folder |
 
 ### Pointing the DF deploy at your workflow
 
