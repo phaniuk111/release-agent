@@ -116,7 +116,8 @@ def _build_preview(req: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         if dags:
             from release_agent.tools import composer as _composer
 
-            bump = _composer.preview_dag_bump(dags, image["tag"], env)
+            bump = _composer.preview_dag_bump(
+                dags, image["tag"], env, repo=req.get("composer_repo") or "")
             rows = [
                 {"file": c["file"], "version": " → ".join([", ".join(c["from"]), c["to"]])
                  if not c["unchanged"] else f"{c['to']} (already)"}
@@ -279,6 +280,7 @@ def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
             result["dag_bump"] = _composer.apply_dag_bump(
                 dags, image["tag"], env, image=image["name"],
                 run_url=((result.get("run") or {}) or {}).get("url") or "",
+                repo=req.get("composer_repo") or "",
             )
         _record_deploy_event(req, f"dataflow-{env}", result)
         return result

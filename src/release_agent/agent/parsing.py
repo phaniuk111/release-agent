@@ -326,6 +326,7 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
             "dag_files": [
                 str(f).strip() for f in (data.get("dag_files") or []) if str(f).strip()
             ],
+            "composer_repo": str(data.get("composer_repo") or "").strip(),
             "raw": "json-paste",
         }
 

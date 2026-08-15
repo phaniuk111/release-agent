@@ -116,7 +116,7 @@ def test_the_dag_bump_is_previewed_with_the_dispatch(monkeypatch):
     monkeypatch.setattr(settings, "df_deploy_workflow", "UAT.yaml")
     monkeypatch.setattr(
         C, "preview_dag_bump",
-        lambda files, version, env: {
+        lambda files, version, env, repo="": {
             "repo": "acme/composer-dags", "branch": "main", "dir": "uat",
             "changes": [{"file": "uat/acme-svc-beta.py", "from": ["0.0.494"],
                          "to": version, "unchanged": False}],
@@ -148,3 +148,52 @@ def test_no_dag_files_means_no_dag_section(monkeypatch):
         "images": [{"name": "acme-svc", "tag": "0.0.495"}],
     })
     assert not any(k.startswith("Composer DAG bump") for k in preview)
+
+
+def test_a_named_repo_overrides_the_configured_one(monkeypatch):
+    """Teams whose DAGs are not all in one repo name it per deploy; empty falls
+    back to COMPOSER_REPO."""
+    from release_agent.config import settings
+
+    monkeypatch.setattr(settings, "composer_repo", "acme/default-dags")
+    assert C._resolve_repo("") == "acme/default-dags"
+    assert C._resolve_repo("  ") == "acme/default-dags"
+    assert C._resolve_repo("acme/other-dags") == "acme/other-dags"
+
+
+def test_the_override_reaches_github_and_the_preview_reports_it(monkeypatch):
+    from release_agent.config import settings
+
+    monkeypatch.setattr(settings, "composer_repo", "acme/default-dags")
+    monkeypatch.setattr(settings, "composer_branch", "main")
+    asked = []
+
+    class _Blob:
+        decoded_content = DAG.encode()
+
+    class _Repo:
+        def get_contents(self, path, ref):
+            return _Blob()
+
+    def _client():
+        return type("C", (), {"get_repo": staticmethod(
+            lambda full: asked.append(full) or _Repo())})()
+
+    monkeypatch.setattr(C, "_get_github_client", _client)
+    out = C.preview_dag_bump(["acme-svc-alpha.py"], "0.0.495", "uat", repo="acme/other-dags")
+    assert asked == ["acme/other-dags"]
+    assert out["repo"] == "acme/other-dags"
+    assert out["changes"][0]["from"] == ["0.0.494"]
+
+
+def test_the_payload_carries_the_named_repo():
+    import json
+
+    from release_agent.agent.parsing import _try_parse_json_payload
+
+    req = _try_parse_json_payload(json.dumps({
+        "deployment_type": "dataflow", "environment": "uat",
+        "image": "acme-svc", "tag": "0.0.495",
+        "dag_files": ["acme-svc-alpha.py"], "composer_repo": " acme/other-dags ",
+    }))
+    assert req["composer_repo"] == "acme/other-dags"

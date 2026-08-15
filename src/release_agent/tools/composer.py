@@ -103,14 +103,20 @@ def _dag_dir(environment: str) -> str:
     return (settings.composer_dag_dir_pattern or "{env}").format(env=environment.strip().lower())
 
 
-def _repo():
-    if not settings.composer_repo:
-        raise RuntimeError("No Composer DAGs repo configured (set COMPOSER_REPO).")
-    return _get_github_client().get_repo(settings.composer_repo)
+def _resolve_repo(repo: str = "") -> str:
+    """Form-supplied repo wins; empty falls back to the configured default."""
+    return str(repo or "").strip() or settings.composer_repo
+
+
+def _repo(repo: str = ""):
+    full = _resolve_repo(repo)
+    if not full:
+        raise RuntimeError("No Composer DAGs repo given (set COMPOSER_REPO or name one).")
+    return _get_github_client().get_repo(full)
 
 
 def preview_dag_bump(dag_files: list[str], new_version: str,
-                     environment: str = "uat") -> dict[str, Any]:
+                     environment: str = "uat", repo: str = "") -> dict[str, Any]:
     """What the DAG bump WOULD change — read-only, for the confirmation preview.
 
     Reports per file: the versions found and what they become. A file with no
@@ -122,7 +128,7 @@ def preview_dag_bump(dag_files: list[str], new_version: str,
     for name in dag_files:
         path = f"{directory}/{name}"
         try:
-            blob = _repo().get_contents(path, ref=settings.composer_branch)
+            blob = _repo(repo).get_contents(path, ref=settings.composer_branch)
             text = blob.decoded_content.decode()
         except Exception as e:
             problems.append({"file": path, "error": str(e)})
@@ -138,12 +144,12 @@ def preview_dag_bump(dag_files: list[str], new_version: str,
             "to": new_version,
             "unchanged": all(v == new_version for v in replaced),
         })
-    return {"repo": settings.composer_repo, "branch": settings.composer_branch,
+    return {"repo": _resolve_repo(repo), "branch": settings.composer_branch,
             "dir": directory, "changes": changes, "problems": problems}
 
 
 def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "uat",
-                   image: str = "", run_url: str = "") -> dict[str, Any]:
+                   image: str = "", run_url: str = "", repo: str = "") -> dict[str, Any]:
     """Open a PR bumping the named DAGs to ``new_version``.
 
     A PR, not a direct commit: the flex-template build this version refers to is
@@ -158,16 +164,17 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
         return {"ok": False, "error": "No version given for the DAG bump."}
 
     directory = _dag_dir(environment)
+    repo_full = _resolve_repo(repo)
     try:
-        repo = _repo()
-        base = repo.get_branch(settings.composer_branch)
+        gh_repo = _repo(repo)
+        base = gh_repo.get_branch(settings.composer_branch)
     except Exception as e:
-        return {"ok": False, "error": f"Could not reach {settings.composer_repo}: {e}"}
+        return {"ok": False, "error": f"Could not reach {repo_full or '<unset>'}: {e}"}
 
     slug = "".join(c if c.isalnum() or c in "-._" else "-" for c in f"{image or 'df'}-{version}")
     branch = f"dag-version/{environment.strip().lower()}-{slug}"
     try:
-        repo.create_git_ref(f"refs/heads/{branch}", base.commit.sha)
+        gh_repo.create_git_ref(f"refs/heads/{branch}", base.commit.sha)
     except Exception as e:
         # An existing branch means a previous attempt for this exact version;
         # reuse it rather than failing the deploy that already dispatched.
@@ -178,7 +185,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
     for name in dag_files:
         path = f"{directory}/{name}"
         try:
-            blob = repo.get_contents(path, ref=branch)
+            blob = gh_repo.get_contents(path, ref=branch)
             text = blob.decoded_content.decode()
             new_text, replaced = set_default_version(text, version)
         except Exception as e:
@@ -188,7 +195,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
             updated.append({"file": path, "from": replaced, "to": version, "unchanged": True})
             continue
         try:
-            repo.update_file(
+            gh_repo.update_file(
                 path,
                 f"Bump {name} DF template version to {version}",
                 new_text,
@@ -217,7 +224,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
            "is not in the bucket until it finishes." if run_url else "")
     )
     try:
-        pr = repo.create_pull(
+        pr = gh_repo.create_pull(
             title=f"Bump {environment.upper()} DAG DF template version to {version}",
             body=body, head=branch, base=settings.composer_branch,
         )

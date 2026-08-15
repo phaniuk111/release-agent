@@ -735,13 +735,25 @@ export async function showDfDeployForm() {
     dagEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 ' +
         'text-xs text-white font-mono focus:outline-none mb-1';
     wrap.appendChild(dagLabel); wrap.appendChild(dagEl);
-    if (ctx.composer_repo) {
-        const dagHint = document.createElement('div');
-        dagHint.className = 'text-[10px] text-slate-600 mb-2';
-        dagHint.textContent = 'From ' + ctx.composer_repo + ' · ' + ctx.composer_dir +
-            '/ — a PR is raised against the DAG branch; nothing is merged for you.';
-        wrap.appendChild(dagHint);
-    }
+    // Which Composer repo those DAGs live in. Pre-filled from config, editable
+    // for teams whose DAGs are not all in one place — same pattern as the
+    // deployment-repo override on the release forms.
+    const dagRepoLabel = document.createElement('label');
+    dagRepoLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
+    dagRepoLabel.textContent = 'Composer DAGs repo (owner/repo)';
+    const dagRepoEl = document.createElement('input');
+    dagRepoEl.id = 'df-composer-repo'; dagRepoEl.type = 'text';
+    dagRepoEl.value = ctx.composer_repo || '';
+    dagRepoEl.placeholder = 'e.g. my-org/composer-dags';
+    dagRepoEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 ' +
+        'text-xs text-white focus:outline-none mb-1';
+    wrap.appendChild(dagRepoLabel); wrap.appendChild(dagRepoEl);
+
+    const dagHint = document.createElement('div');
+    dagHint.className = 'text-[10px] text-slate-600 mb-2';
+    dagHint.textContent = 'Files are read from ' + (ctx.composer_dir || '<env>') +
+        '/ on the DAG branch. A PR is raised — nothing is merged for you.';
+    wrap.appendChild(dagHint);
 
     // Advanced (collapsed): repo override.
     const adv = document.createElement('div');
@@ -777,7 +789,15 @@ export async function showDfDeployForm() {
         }
         const payload = { deployment_type: 'dataflow', environment: 'uat', image: image, tag: tag };
         const dags = dagEl.value.split('\n').map(l => l.trim()).filter(Boolean);
-        if (dags.length) payload.dag_files = dags;
+        if (dags.length) {
+            payload.dag_files = dags;
+            const dagRepo = dagRepoEl.value.trim();
+            if (!dagRepo) {
+                err.textContent = 'Name the Composer DAGs repo (owner/repo) for those DAG files.';
+                return;
+            }
+            payload.composer_repo = dagRepo;
+        }
         const repoOverride = repoInput.value.trim();
         if (repoOverride) payload.deployment_repo = repoOverride;
         sendMessage(JSON.stringify(payload));
