@@ -183,6 +183,35 @@ export async function showQueueForm() {
     noteEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none mb-2';
     wrap.appendChild(noteLabel); wrap.appendChild(noteEl);
 
+    // Re-queueing a chart REPLACES its queue entry — the queue is keyed by chart
+    // name and the latest event wins. Silently swapping someone's 1.4.2 for a
+    // 1.4.3 is the kind of thing you only notice on release day, so say it while
+    // they type. Withdrawing is the other option, hence the hint.
+    const replaceNote = document.createElement('div');
+    replaceNote.className = 'text-[11px] text-amber-300/90 mb-2 hidden';
+    wrap.appendChild(replaceNote);
+    const checkReplaces = () => {
+        const typed = chartEl.value.trim().toLowerCase();
+        const existing = (ctx.queue || []).find(
+            q => String(q.artifact_name || '').toLowerCase() === typed);
+        if (!typed || !existing) { replaceNote.className = 'text-[11px] text-amber-300/90 mb-2 hidden'; return; }
+        const sameVersion = String(existing.artifact_version || '').trim() === verEl.value.trim();
+        replaceNote.className = 'text-[11px] text-amber-300/90 mb-2';
+        replaceNote.innerHTML = '<i class="fa-solid fa-arrows-rotate mr-1"></i>' +
+            (sameVersion
+                ? 'Already queued as <b>' + esc(existing.artifact_name) + ':' +
+                  esc(existing.artifact_version) + '</b> — submitting again just refreshes it.'
+                : 'This <b>replaces</b> the queued <b>' + esc(existing.artifact_name) + ':' +
+                  esc(existing.artifact_version) + '</b>' +
+                  (existing.requested_by ? ' (queued by ' + esc(existing.requested_by.split('@')[0]) + ')' : '') +
+                  '. To take it out of the release instead, withdraw it.');
+    };
+    ['input', 'change'].forEach(ev => {
+        chartEl.addEventListener(ev, checkReplaces);
+        verEl.addEventListener(ev, checkReplaces);
+    });
+    checkReplaces();
+
     const flagRow = document.createElement('div');
     flagRow.className = 'flex items-center gap-4 text-[11px] text-slate-400 mb-2';
     flagRow.innerHTML =
