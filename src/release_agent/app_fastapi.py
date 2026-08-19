@@ -447,6 +447,27 @@ class QueueAddRequest(BaseModel):
     build_run_url: str = ""  # Actions run that built the tag → eligibility check at queue time
 
 
+class QueueRow(BaseModel):
+    """One chart in a submission. Each has its own build run (one run builds one
+    tag) and may carry its own ticket — a change spanning three charts often
+    spans two tickets."""
+
+    artifact: str            # chart:version
+    build_run_url: str = ""
+    jira_ticket: str = ""
+    prl1_only: bool = False
+    df_only: bool = False
+
+
+class QueueBatchRequest(BaseModel):
+    """A whole change: several charts sharing one description and one requester."""
+
+    rows: list[QueueRow] = []
+    requested_by: str
+    change_details: str = ""
+    note: str = ""
+
+
 class QueueWithdrawRequest(BaseModel):
     artifact_name: str
     requested_by: str = ""
@@ -514,6 +535,62 @@ def release_queue_add(req: QueueAddRequest):
         change_details=req.change_details,
         build_run_url=req.build_run_url,
     )
+
+
+@app.post("/api/release-queue/batch")
+def release_queue_add_batch(req: QueueBatchRequest):
+    """Queue several charts in one submission.
+
+    Each row is gated independently and PARTIAL SUCCESS is the point: a failed
+    control on one chart must not discard the developer's other rows, so the
+    eligible ones are queued and the rest are reported by name. The caller is
+    told when that splits a change, because two charts shipping without the
+    third is a decision, not a detail.
+
+    Rows are checked CONCURRENTLY — each gate is a few seconds of GitHub reads
+    and they are independent, so three rows should cost one round trip, not
+    three.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from adk_release_agent.tools import queue_release_intent
+
+    rows = [r for r in req.rows if (r.artifact or "").strip()]
+    if not rows:
+        return {"ok": False, "error": "No charts given — add at least one row."}
+
+    def _queue(row: QueueRow) -> dict:
+        try:
+            return queue_release_intent(
+                artifact=row.artifact.strip(),
+                requested_by=req.requested_by,
+                prl1_only=row.prl1_only,
+                df_only=row.df_only,
+                note=req.note,
+                jira_ticket=row.jira_ticket,
+                change_details=req.change_details,
+                build_run_url=row.build_run_url,
+            )
+        except Exception as e:                       # one bad row never kills the batch
+            logger.exception("batch queue failed for %s", row.artifact)
+            return {"ok": False, "error": str(e)}
+
+    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
+        outcomes = list(pool.map(_queue, rows))
+
+    results = [
+        {"artifact": row.artifact.strip(), **outcome}
+        for row, outcome in zip(rows, outcomes)
+    ]
+    queued = [r for r in results if r.get("ok")]
+    refused = [r for r in results if not r.get("ok")]
+    return {
+        "ok": bool(queued),
+        "queued": queued,
+        "refused": refused,
+        # Only a partial outcome splits a change; all-or-nothing does not.
+        "split": bool(queued and refused),
+    }
 
 
 class ReleaseDraftRequest(BaseModel):

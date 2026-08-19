@@ -133,22 +133,10 @@ export async function showQueueForm() {
         wrap.appendChild(list);
     }
 
-    const grid = document.createElement('div');
-    grid.className = 'grid grid-cols-2 gap-2 mb-2';
-    const mk = (labelText, id, placeholder, listId) => {
-        const l = document.createElement('label');
-        l.className = 'text-[11px] text-slate-400 block mb-0.5';
-        l.textContent = labelText;
-        const el = document.createElement('input');
-        el.id = id; el.type = 'text'; if (placeholder) el.placeholder = placeholder;
-        if (listId) el.setAttribute('list', listId);
-        el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
-        const box = document.createElement('div');
-        box.appendChild(l); box.appendChild(el);
-        grid.appendChild(box);
-        return el;
-    };
-    // Known charts from the build catalog → typo-proof picking, still free-text.
+    // One ROW per chart, because one build run produces exactly one tag: chart,
+    // version, its own run URL and its own ticket. A change spanning three
+    // charts often spans two tickets, so the ticket cannot be a shared field.
+    // Everything genuinely shared — who, what changed, the note — is asked once.
     if ((ctx.known_charts || []).length) {
         const dl = document.createElement('datalist');
         dl.id = 'q-charts-list';
@@ -157,21 +145,89 @@ export async function showQueueForm() {
         });
         wrap.appendChild(dl);
     }
-    const chartEl = mk('Chart name *', 'q-chart', 'e.g. acme-risk-fetcher', 'q-charts-list');
-    const verEl = mk('Version *', 'q-version', 'e.g. 4.0.154');
-    const emailEl = mk('Your email *', 'q-email', 'you@company.com');
-    emailEl.value = localStorage.getItem('queue_email') || '';
-    const jiraEl = mk('JIRA / ticket *', 'q-jira', 'e.g. REL-1234');
-    const runEl = mk('Build run URL *', 'q-run', 'https://github.com/…/actions/runs/…');
-    wrap.appendChild(grid);
+
+    const rowsLabel = document.createElement('div');
+    rowsLabel.className = 'text-[11px] text-slate-400 mb-1';
+    rowsLabel.textContent = 'Charts * — one row per chart; each build run builds one tag';
+    wrap.appendChild(rowsLabel);
+
+    const rowsBox = document.createElement('div');
+    rowsBox.className = 'mb-1';
+    wrap.appendChild(rowsBox);
+
+    const rows = [];
+    const fld = (ph, cls, listId) => {
+        const el = document.createElement('input');
+        el.type = 'text'; el.placeholder = ph;
+        if (listId) el.setAttribute('list', listId);
+        el.className = 'bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 ' +
+            'text-xs text-white focus:outline-none ' + cls;
+        return el;
+    };
+    const addRow = (focus) => {
+        const row = document.createElement('div');
+        row.className = 'flex gap-1.5 mb-1 items-center';
+        const chart = fld('chart name', 'flex-1 min-w-0', 'q-charts-list');
+        const ver = fld('version', 'w-24 shrink-0');
+        const run = fld('build run URL', 'flex-1 min-w-0');
+        const jira = fld('JIRA', 'w-28 shrink-0');
+        // First row keeps the original ids so the chat/tests and the
+        // replaces-warning keep working against a known handle.
+        if (!rows.length) { chart.id = 'q-chart'; ver.id = 'q-version'; run.id = 'q-run'; jira.id = 'q-jira'; }
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'text-slate-600 hover:text-red-400 text-xs px-1 shrink-0';
+        del.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+        del.title = 'Remove this chart';
+        const entry = { row: row, chart: chart, ver: ver, run: run, jira: jira };
+        del.addEventListener('click', () => {
+            if (rows.length === 1) { chart.value = ver.value = run.value = jira.value = ''; checkReplaces(); return; }
+            rows.splice(rows.indexOf(entry), 1);
+            row.remove();
+            checkReplaces();
+        });
+        [chart, ver].forEach(el => el.addEventListener('input', () => checkReplaces()));
+        row.appendChild(chart); row.appendChild(ver); row.appendChild(run); row.appendChild(jira); row.appendChild(del);
+        rowsBox.appendChild(row);
+        rows.push(entry);
+        if (focus) chart.focus();
+        return entry;
+    };
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'text-[11px] text-slate-400 hover:text-emerald-300 mb-2';
+    addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add another chart';
+    addBtn.addEventListener('click', () => addRow(true));
+    wrap.appendChild(addBtn);
+
     const runHint = document.createElement('div');
     runHint.className = 'text-[10px] text-slate-600 -mt-1 mb-2';
-    runHint.textContent = 'Required — the run that built this tag. I check the build + its RCTLD controls NOW, and name any that failed.';
+    runHint.textContent = 'Each row needs the run that built THAT tag — I check the build + its ' +
+        'RCTLD controls NOW, and name any that failed. Rows are checked together.';
     wrap.appendChild(runHint);
+
+    const grid = document.createElement('div');
+    grid.className = 'grid grid-cols-2 gap-2 mb-2';
+    const mk = (labelText, id, placeholder) => {
+        const l = document.createElement('label');
+        l.className = 'text-[11px] text-slate-400 block mb-0.5';
+        l.textContent = labelText;
+        const el = document.createElement('input');
+        el.id = id; el.type = 'text'; if (placeholder) el.placeholder = placeholder;
+        el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+        const box = document.createElement('div');
+        box.appendChild(l); box.appendChild(el);
+        grid.appendChild(box);
+        return el;
+    };
+    const emailEl = mk('Your email *', 'q-email', 'you@company.com');
+    emailEl.value = localStorage.getItem('queue_email') || '';
+    wrap.appendChild(grid);
 
     // Change context: the dev's what-and-why becomes the CHG description draft
     // when DevOps opens Create release — the dev knows this better on Monday
-    // than anyone reconstructing it on Thursday.
+    // than anyone reconstructing it on Thursday. Shared: it is ONE change.
     const detailsLabel = document.createElement('label');
     detailsLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
     detailsLabel.textContent = 'Change details * — what changed & why; pre-drafts the CHG for DevOps';
@@ -198,26 +254,30 @@ export async function showQueueForm() {
     replaceNote.className = 'text-[11px] text-amber-300/90 mb-2 hidden';
     wrap.appendChild(replaceNote);
     const checkReplaces = () => {
-        const typed = chartEl.value.trim().toLowerCase();
-        const existing = (ctx.queue || []).find(
-            q => String(q.artifact_name || '').toLowerCase() === typed);
-        if (!typed || !existing) { replaceNote.className = 'text-[11px] text-amber-300/90 mb-2 hidden'; return; }
-        const sameVersion = String(existing.artifact_version || '').trim() === verEl.value.trim();
+        const hits = [];
+        rows.forEach(r => {
+            const typed = r.chart.value.trim().toLowerCase();
+            if (!typed) return;
+            const existing = (ctx.queue || []).find(
+                q => String(q.artifact_name || '').toLowerCase() === typed);
+            if (!existing) return;
+            const same = String(existing.artifact_version || '').trim() === r.ver.value.trim();
+            hits.push({ existing: existing, same: same });
+        });
+        if (!hits.length) { replaceNote.className = 'text-[11px] text-amber-300/90 mb-2 hidden'; return; }
         replaceNote.className = 'text-[11px] text-amber-300/90 mb-2';
-        replaceNote.innerHTML = '<i class="fa-solid fa-arrows-rotate mr-1"></i>' +
-            (sameVersion
-                ? 'Already queued as <b>' + esc(existing.artifact_name) + ':' +
-                  esc(existing.artifact_version) + '</b> — submitting again just refreshes it.'
-                : 'This <b>replaces</b> the queued <b>' + esc(existing.artifact_name) + ':' +
-                  esc(existing.artifact_version) + '</b>' +
-                  (existing.requested_by ? ' (queued by ' + esc(existing.requested_by.split('@')[0]) + ')' : '') +
-                  '. To take it out of the release instead, withdraw it.');
+        replaceNote.innerHTML = hits.map(h =>
+            '<i class="fa-solid fa-arrows-rotate mr-1"></i>' +
+            (h.same
+                ? 'Already queued as <b>' + esc(h.existing.artifact_name) + ':' +
+                  esc(h.existing.artifact_version) + '</b> — submitting again just refreshes it.'
+                : 'This <b>replaces</b> the queued <b>' + esc(h.existing.artifact_name) + ':' +
+                  esc(h.existing.artifact_version) + '</b>' +
+                  (h.existing.requested_by ? ' (queued by ' + esc(h.existing.requested_by.split('@')[0]) + ')' : '') +
+                  '. To take it out of the release instead, withdraw it.')
+        ).join('<br>');
     };
-    ['input', 'change'].forEach(ev => {
-        chartEl.addEventListener(ev, checkReplaces);
-        verEl.addEventListener(ev, checkReplaces);
-    });
-    checkReplaces();
+    addRow(false);          // start with one row; listeners are wired per row
 
     const flagRow = document.createElement('div');
     flagRow.className = 'flex items-center gap-4 text-[11px] text-slate-400 mb-2';
@@ -235,106 +295,130 @@ export async function showQueueForm() {
     err.className = 'text-[11px] text-red-400';
     submit.addEventListener('click', async () => {
         err.textContent = '';
-        const chart = chartEl.value.trim(), ver = verEl.value.trim(), email = emailEl.value.trim();
-        // Every field is required: what is not captured here is reconstructed by
-        // DevOps on release day, which is the guesswork this form exists to end.
-        const missing = [
-            [chart, 'chart name'], [ver, 'version'], [email, 'your email'],
-            [jiraEl.value.trim(), 'JIRA ticket'],
-            [detailsEl.value.trim(), 'change details'],
-            // The note stays optional: it is a hint to DevOps ("ship with X"),
-            // and requiring it only harvests "n/a".
-        ].filter(pair => !pair[0]).map(pair => pair[1]);
-        if (missing.length) {
-            err.textContent = 'Still needed: ' + missing.join(', ') + '.';
-            return;
-        }
-        if (!runEl.value.trim() || runEl.value.indexOf('/actions/runs/') === -1) {
-            err.textContent = 'The build run URL is required (…/actions/runs/<id>) — it proves the tag is release-eligible.'; return;
-        }
+        wrap.querySelectorAll('.batch-result').forEach(n => n.remove());
+        const email = emailEl.value.trim();
+        const details = detailsEl.value.trim();
+
+        // Rows with nothing in them are simply not part of the submission — an
+        // empty spare row is how the form invites another chart, not an error.
+        const filled = rows.filter(r => r.chart.value.trim() || r.ver.value.trim() ||
+                                        r.run.value.trim() || r.jira.value.trim());
+        if (!filled.length) { err.textContent = 'Add at least one chart.'; return; }
+
+        // Every field is required per row: what is not captured here is
+        // reconstructed by DevOps on release day, which is the guesswork this
+        // form exists to end. Report EVERY bad row at once, named by chart, so
+        // one submission tells the developer everything to fix.
+        const problems = [];
+        filled.forEach((r, i) => {
+            const label = r.chart.value.trim() || ('row ' + (i + 1));
+            const miss = [
+                [r.chart.value.trim(), 'chart name'], [r.ver.value.trim(), 'version'],
+                [r.jira.value.trim(), 'JIRA ticket'],
+            ].filter(pair => !pair[0]).map(pair => pair[1]);
+            const run = r.run.value.trim();
+            if (!run || run.indexOf('/actions/runs/') === -1) miss.push('build run URL (…/actions/runs/<id>)');
+            if (miss.length) problems.push(label + ': ' + miss.join(', '));
+        });
+        const sharedMissing = [[email, 'your email'], [details, 'change details']]
+            .filter(pair => !pair[0]).map(pair => pair[1]);
+        if (sharedMissing.length) problems.push('Still needed: ' + sharedMissing.join(', '));
+        if (problems.length) { err.innerHTML = problems.map(esc).join('<br>'); return; }
+
         localStorage.setItem('queue_email', email);
-        submit.disabled = true; submit.textContent = 'Queueing…';
+        submit.disabled = true;
+        submit.textContent = filled.length > 1 ? 'Checking ' + filled.length + ' builds…' : 'Queueing…';
         let result = null;
         try {
-            const r = await fetch(API_BASE + '/api/release-queue', {
+            const r = await fetch(API_BASE + '/api/release-queue/batch', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    artifact: chart + ':' + ver,
                     requested_by: email,
-                    prl1_only: document.getElementById('q-prl1').checked,
-                    df_only: document.getElementById('q-df').checked,
+                    change_details: details,
                     note: noteEl.value.trim(),
-                    jira_ticket: jiraEl.value.trim(),
-                    change_details: detailsEl.value.trim(),
-                    build_run_url: runEl.value.trim(),
+                    rows: filled.map(r => ({
+                        artifact: r.chart.value.trim() + ':' + r.ver.value.trim(),
+                        build_run_url: r.run.value.trim(),
+                        jira_ticket: r.jira.value.trim(),
+                        prl1_only: document.getElementById('q-prl1').checked,
+                        df_only: document.getElementById('q-df').checked,
+                    })),
                 }),
             });
             result = await r.json();
         } catch (e) { result = { ok: false, error: String(e) }; }
         submit.disabled = false; submit.textContent = 'Queue it';
-        if (result && result.eligible === false) {
-            // The provided run failed its build or controls — NOT queued.
-            // Show the verdict with exactly what to fix; the form stays usable.
-            // Name the control AND the job it sits in — on a many-job run
-            // "a control failed" is not enough to go and fix it.
-            const detail = result.failed_controls_detail;
-            const ctrls = (detail && detail.length)
-                ? detail.map(c => '❌ control: ' + esc(c.control) + (c.job ? ' — in job ' + esc(c.job) : ''))
-                : (result.failed_controls || []).map(c => '❌ control: ' + esc(c));
-            const items = ctrls.concat((result.failed_steps || []).map(s =>
-                '❌ step: ' + esc(s.name || s) + (s.job ? ' — in job ' + esc(s.job) : '')));
-            err.innerHTML = '';
-            const box = document.createElement('div');
-            box.className = 'w-full border border-red-500/40 bg-red-500/10 rounded-lg px-3 py-2 text-[11px] text-red-300';
-            box.innerHTML = '<b>Not eligible for the release — not queued.</b><br>' +
-                items.map(i => '<span class="font-mono">' + i + '</span>').join('<br>') +
-                '<br>Fix these, re-run the build, then queue again with the new run. ' +
-                (result.run_url ? '<a href="' + esc(result.run_url) + '" target="_blank" class="underline">open run</a>' : '');
-            row.parentNode.insertBefore(box, row);
-            return;
-        }
-        if (!result || !result.ok) {
+
+        if (!result || (!result.queued && !result.refused)) {
             err.textContent = (result && result.error) || 'Could not queue — try again.';
             return;
         }
-        // Replace the form with a human confirmation: eligibility verdict + last-time context.
-        const verified = result.build_verified;
-        const open = result.open_controls || [];
-        const vBadge = result.eligible === true
-            ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build + controls passed — eligible for the release</span>'
-            : open.length
-                ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> queued, but ' +
-                  open.length + ' control' + (open.length > 1 ? 's have' : ' has') + ' not passed yet</span>'
-                : verified === true
-                    ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> build verified</span>'
-                    : verified === false
-                        ? '<span class="text-amber-400"><i class="fa-solid fa-triangle-exclamation"></i> no traceable build for this tag (queued anyway — is it built yet?)</span>'
-                        : '<span class="text-slate-500">build check skipped</span>';
-        // Controls that matched but have not passed: named, like the failures —
-        // "a control is open" is not actionable, "RCTLDEF0001691 is skipped" is.
-        const openBox = open.length
-            ? '<div class="mt-1.5 border border-amber-500/40 bg-amber-500/10 rounded-lg px-3 py-2 text-[11px] text-amber-200">' +
-              open.map(c => '<div class="font-mono">⚠ ' + esc(c.control) +
-                  (c.job ? ' — in job ' + esc(c.job) : '') +
-                  ' · ' + esc(c.conclusion || c.status || 'not run') + '</div>').join('') +
-              '<div class="mt-1">Queued anyway, but these must pass before release day — re-queue with a run where they do.' +
-              (result.run_url ? ' <a href="' + esc(result.run_url) + '" target="_blank" class="underline">open run</a>' : '') +
-              '</div></div>'
-            : '';
-        const warn = (result.warnings || [])
-            // the open-control sentence is already rendered as the box above
-            .filter(w => !(open.length && w.indexOf('had not passed in that run') !== -1))
-            .map(w => '<div class="text-[11px] text-amber-400 mt-1"><i class="fa-solid fa-triangle-exclamation"></i> ' + esc(w) + '</div>').join('');
-        const last = result.last_shipped
-            ? '<div class="text-[11px] text-slate-500 mt-1">Last shipped in “' + esc(result.last_shipped.release_name) +
-              '” as ' + esc(result.last_shipped.version) + '.</div>' : '';
+
+        const queued = result.queued || [];
+        const refused = result.refused || [];
+
+        // A refusal names the control AND its job — on a many-job run "a control
+        // failed" is not enough to go and fix it.
+        const refusedRow = (r) => {
+            const detail = r.failed_controls_detail;
+            const parts = (detail && detail.length)
+                ? detail.map(c => 'control ' + esc(c.control) + (c.job ? ' in job ' + esc(c.job) : ''))
+                : (r.failed_controls || []).map(c => 'control ' + esc(c));
+            (r.failed_steps || []).forEach(st => parts.push('step ' + esc(st.name || st) +
+                (st.job ? ' in job ' + esc(st.job) : '')));
+            const why = parts.length ? parts.join('; ') : esc(r.error || 'not eligible');
+            return '<div class="font-mono">❌ ' + esc(r.artifact) + ' — ' + why +
+                (r.run_url ? ' <a href="' + esc(r.run_url) + '" target="_blank" class="underline">open run</a>' : '') +
+                '</div>';
+        };
+
+        // PARTIAL SUCCESS: eligible rows are queued even when a sibling fails.
+        // Losing good work because one control failed is the worse outcome — but
+        // it does split one change across releases, so say so plainly.
+        if (refused.length) {
+            const box = document.createElement('div');
+            box.className = 'batch-result w-full border border-red-500/40 bg-red-500/10 ' +
+                'rounded-lg px-3 py-2 text-[11px] text-red-300 mt-2';
+            box.innerHTML =
+                (queued.length
+                    ? '<b>Queued ' + queued.length + ', refused ' + refused.length + '.</b><br>'
+                    : '<b>Not eligible for the release — nothing queued.</b><br>') +
+                refused.map(refusedRow).join('') +
+                (queued.length
+                    ? '<div class="mt-1 text-amber-300">⚠ This splits your change — ' +
+                      queued.map(q => esc(q.artifact)).join(', ') +
+                      ' will ship without the above unless you fix and re-queue before release day.</div>'
+                    : '<div class="mt-1">Fix these, re-run the build, then queue again with the new run.</div>');
+            row.parentNode.insertBefore(box, row);
+            if (!queued.length) return;
+        }
+
+        if (!queued.length) return;
+        const line = (q) => {
+            const open = q.open_controls || [];
+            const badge = q.eligible === true
+                ? '<span class="text-emerald-400">✓ build + controls passed</span>'
+                : open.length
+                    ? '<span class="text-amber-400">⚠ ' + open.length + ' control(s) not passed yet: ' +
+                      open.map(c => esc(c.control)).join(', ') + '</span>'
+                    : '<span class="text-amber-400">⚠ no traceable build</span>';
+            return '<div class="text-[11px] font-mono mt-0.5">' + esc(q.artifact) + ' — ' + badge + '</div>';
+        };
         wrap.innerHTML =
-            '<div class="font-semibold text-emerald-300 mb-1"><i class="fa-solid fa-circle-check"></i> Queued for the next release</div>' +
-            '<div class="text-xs text-slate-300 font-mono">' + esc(chart) + ':' + esc(ver) +
-            (document.getElementById('q-prl1') && result.intent && result.intent.prl1_only ? ' · PRL1-only' : '') + '</div>' +
-            '<div class="text-[11px] mt-1">' + vBadge + '</div>' + openBox + warn + last +
-            '<div class="text-[11px] text-slate-500 mt-2">You\'re done — it will be in the ' +
+            '<div class="font-semibold text-emerald-300 mb-1"><i class="fa-solid fa-circle-check"></i> Queued for the next release (' +
+            queued.length + ')</div>' + queued.map(line).join('') +
+            // The refusal REASON has to survive into this card: the red box above
+            // was rendered into `wrap`, which this innerHTML replaces, and
+            // "not queued" without the control name sends nobody anywhere.
+            (refused.length
+                ? '<div class="border border-red-500/40 bg-red-500/10 rounded-lg px-3 py-2 ' +
+                  'text-[11px] text-red-300 mt-2"><b>Not queued (' + refused.length + ')</b>' +
+                  refused.map(refusedRow).join('') +
+                  '<div class="mt-1 text-amber-300">⚠ Your change is split — fix these and ' +
+                  're-queue before release day.</div></div>'
+                : '') +
+            '<div class="text-[11px] text-slate-500 mt-2">You\'re done — they will be in the ' +
             '<b>' + (document.getElementById('q-df').checked ? 'DF' : 'CARE') + ' Release</b> form automatically. ' +
             'Withdraw any time from the Insights panel or by asking me.</div>';
         _withDismiss(wrap);          // innerHTML above wiped the original ✕

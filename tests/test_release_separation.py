@@ -136,3 +136,87 @@ def test_single_repo_setups_do_not_pay_for_a_second_read(monkeypatch):
     out = APP.release_status_endpoint(fresh=1)
     assert calls == [""]
     assert "df" not in out
+
+
+# ---------------------------------------------- multi-chart intake (batch)
+
+def _row(artifact, run="https://gh/actions/runs/1", jira="ABC-1"):
+    return {"artifact": artifact, "build_run_url": run, "jira_ticket": jira}
+
+
+def _batch(monkeypatch, outcomes):
+    """POST /api/release-queue/batch with queue_release_intent stubbed per artifact."""
+    calls = []
+
+    def _queue(**kw):
+        calls.append(kw)
+        return outcomes[kw["artifact"]]
+
+    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent", _queue)
+    return calls
+
+
+def test_a_failed_control_on_one_row_does_not_discard_the_others(monkeypatch):
+    """Partial success: losing a developer's good rows because a sibling failed
+    a control is the worse outcome — but it splits one change, so say so."""
+    _batch(monkeypatch, {
+        "a:1": {"ok": True, "eligible": True},
+        "b:2": {"ok": False, "eligible": False,
+                "failed_controls": ["RCTLDEF0000043"],
+                "failed_controls_detail": [{"control": "RCTLDEF0000043", "job": "build"}]},
+    })
+    out = APP.release_queue_add_batch(APP.QueueBatchRequest(
+        rows=[APP.QueueRow(**_row("a:1")), APP.QueueRow(**_row("b:2"))],
+        requested_by="dev@acme.com", change_details="d",
+    ))
+    assert out["ok"] is True
+    assert [q["artifact"] for q in out["queued"]] == ["a:1"]
+    assert [r["artifact"] for r in out["refused"]] == ["b:2"]
+    assert out["split"] is True          # the caller must be able to say so
+
+
+def test_all_rows_refused_is_not_reported_as_a_split(monkeypatch):
+    _batch(monkeypatch, {"a:1": {"ok": False, "error": "nope"}})
+    out = APP.release_queue_add_batch(APP.QueueBatchRequest(
+        rows=[APP.QueueRow(**_row("a:1"))], requested_by="d@e.com", change_details="d"))
+    assert out["ok"] is False and out["split"] is False
+
+
+def test_each_row_carries_its_own_ticket_and_run(monkeypatch):
+    """One build run builds one tag, and a change spanning charts often spans
+    tickets — so neither can be a shared field."""
+    calls = _batch(monkeypatch, {"a:1": {"ok": True}, "b:2": {"ok": True}})
+    APP.release_queue_add_batch(APP.QueueBatchRequest(
+        rows=[
+            APP.QueueRow(**_row("a:1", run="https://gh/actions/runs/11", jira="ABC-1")),
+            APP.QueueRow(**_row("b:2", run="https://gh/actions/runs/22", jira="ABC-2")),
+        ],
+        requested_by="dev@acme.com", change_details="one change, two charts", note="n",
+    ))
+    by_artifact = {c["artifact"]: c for c in calls}
+    assert by_artifact["a:1"]["build_run_url"].endswith("/11")
+    assert by_artifact["b:2"]["build_run_url"].endswith("/22")
+    assert by_artifact["a:1"]["jira_ticket"] == "ABC-1"
+    assert by_artifact["b:2"]["jira_ticket"] == "ABC-2"
+    # shared context reaches every row
+    assert all(c["change_details"] == "one change, two charts" for c in calls)
+
+
+def test_one_exploding_row_does_not_kill_the_batch(monkeypatch):
+    def _queue(**kw):
+        if kw["artifact"] == "boom:1":
+            raise RuntimeError("github exploded")
+        return {"ok": True}
+
+    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent", _queue)
+    out = APP.release_queue_add_batch(APP.QueueBatchRequest(
+        rows=[APP.QueueRow(**_row("boom:1")), APP.QueueRow(**_row("fine:1"))],
+        requested_by="d@e.com", change_details="d"))
+    assert [q["artifact"] for q in out["queued"]] == ["fine:1"]
+    assert "github exploded" in out["refused"][0]["error"]
+
+
+def test_an_empty_submission_is_refused():
+    out = APP.release_queue_add_batch(APP.QueueBatchRequest(
+        rows=[], requested_by="d@e.com", change_details="d"))
+    assert out["ok"] is False and "at least one" in out["error"]
