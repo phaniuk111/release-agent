@@ -86,3 +86,52 @@ def test_a_rejected_release_cleans_up_from_the_session_copy(monkeypatch):
     W._cancel_deploy({"token": "CONFIRM-X"},
                      deploy_pending={"request": {"release_prep": {"workdir": "/tmp/x"}}})
     assert cleaned == [{"workdir": "/tmp/x"}]
+
+
+# ------------------------------------------------ Change C: release file-set
+
+def test_prepare_returns_data_not_a_directory(monkeypatch):
+    """The prepared release used to be a directory on one machine, which tied
+    the confirmation to that process. It must now be plain data."""
+    from release_agent.tools import release_fileset as RF
+
+    captured = {}
+
+    def _fake_generate(payload):
+        captured["called"] = True
+        return {"ok": True, "release_name": "R", "branch": "release/r",
+                "details": payload, "fileset_hash": "abc", "deployment_repo": "o/r",
+                "artifacts": [], "preview": {"changed_files": ["a.json"]}}
+
+    monkeypatch.setattr(RF, "prepare_release_fileset", _fake_generate)
+    prep = RF.prepare_release_fileset({"release_name": "R"})
+    assert "workdir" not in prep
+    assert prep["details"] and prep["fileset_hash"]
+
+
+def test_apply_refuses_when_the_regenerated_set_differs(monkeypatch):
+    """The whole point of the fingerprint: what gets pushed is what was
+    approved, or nothing is."""
+    from release_agent.tools import release_fileset as RF
+
+    monkeypatch.setattr(
+        RF, "prepare_release_fileset",
+        lambda details, _keep_workdir=False: {"ok": True, "fileset_hash": "DIFFERENT",
+                         "preview": {"changed_files": ["b.json"]},
+                         "workdir": "/tmp/nope", "branch": "release/r"},
+    )
+    out = RF.apply_release_fileset({
+        "details": {"release_name": "R"}, "fileset_hash": "APPROVED",
+        "preview": {"changed_files": ["a.json"]},
+    })
+    assert out["ok"] is False
+    assert "no longer matches what you approved" in out["error"]
+    # and it names what moved, so the operator can see why
+    assert "a.json" in out["error"] or "b.json" in out["error"]
+
+
+def test_apply_without_the_inputs_refuses_rather_than_guessing():
+    from release_agent.tools import release_fileset as RF
+
+    out = RF.apply_release_fileset({"fileset_hash": "x"})
+    assert out["ok"] is False and "incomplete" in out["error"]

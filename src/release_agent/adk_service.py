@@ -329,7 +329,14 @@ class AdkChatService:
         """Yield UI-compatible SSE event payloads."""
         # A paused prod-ops confirmation takes precedence: this reply approves/rejects it.
         pending_call = self._pending_adk_calls.pop(thread_id, None)
+        if pending_call is None:
+            # Same reasoning as the deploy token below: the pause may have been
+            # served by another replica, or by this one before a restart.
+            pending_call = await self._pending_call_from_session(thread_id)
         if pending_call is not None:
+            # Consumed — clear it in both places, or a later message would be
+            # read as answering an approval that has already been decided.
+            await self._persist_pending_call(thread_id, None)
             async for event in self._run_chat_agent(
                 _content_from_pending_reply(message, pending_call),
                 thread_id,
@@ -467,6 +474,7 @@ class AdkChatService:
             pending = _pending_call_from_event(event)
             if pending is not None:
                 self._pending_adk_calls[thread_id] = pending
+                await self._persist_pending_call(thread_id, pending)
                 yield {"type": "interrupt", "data": _confirmation_interrupt_payload(pending)}
                 interrupted = True
                 break
@@ -474,6 +482,69 @@ class AdkChatService:
         if not interrupted and settings.adk_memory_enabled:
             await self._persist_session_to_memory(thread_id)
         yield {"type": "done", "mutated": mutated}
+
+    # A paused prod-op approval is four strings, so it travels as plain data —
+    # the same reasoning that let the deploy preview move into session state.
+    # It is written on the CHAT session because that is the lane that paused.
+    _PENDING_CALL_KEY = "pending_tool_confirmation"
+
+    async def _chat_session(self, thread_id: str):
+        return await self.session_service.get_session(
+            app_name=self.chat_runner.app_name,
+            user_id=_USER_ID,
+            session_id=_session_id(thread_id, "chat"),
+        )
+
+    async def _persist_pending_call(
+        self, thread_id: str, pending: PendingAdkCall | None
+    ) -> None:
+        """Record the paused approval in session state.
+
+        The chat agent is an LlmAgent, not a Workflow, so there is no node to
+        yield state from — the supported way to write state outside a node is an
+        event carrying a state_delta, which is what the Workflow does internally.
+        Best-effort: failing to persist must not break the turn that paused.
+        """
+        try:
+            from google.adk.events.event import Event
+            from google.adk.events.event_actions import EventActions
+
+            session = await self._chat_session(thread_id)
+            if session is None:
+                return
+            await self.session_service.append_event(
+                session=session,
+                event=Event(
+                    author="release_copilot",
+                    actions=EventActions(state_delta={
+                        self._PENDING_CALL_KEY: {
+                            "invocation_id": pending.invocation_id,
+                            "function_call_id": pending.function_call_id,
+                            "function_name": pending.function_name,
+                            "args": pending.args,
+                        } if pending is not None else None,
+                    }),
+                ),
+            )
+        except Exception:
+            logger.debug("could not persist paused approval for %s", thread_id, exc_info=True)
+
+    async def _pending_call_from_session(self, thread_id: str) -> PendingAdkCall | None:
+        """The paused approval this thread is waiting on, from session state."""
+        try:
+            session = await self._chat_session(thread_id)
+        except Exception:
+            logger.debug("paused-approval lookup failed for %s", thread_id, exc_info=True)
+            return None
+        raw = ((session.state if session else None) or {}).get(self._PENDING_CALL_KEY)
+        if not isinstance(raw, dict) or not raw.get("function_call_id"):
+            return None
+        return PendingAdkCall(
+            invocation_id=str(raw.get("invocation_id") or ""),
+            function_call_id=str(raw["function_call_id"]),
+            function_name=str(raw.get("function_name") or ""),
+            args=dict(raw.get("args") or {}),
+        )
 
     async def _pending_token_from_session(self, thread_id: str) -> str | None:
         """The CONFIRM token this thread is waiting on, read from session state.

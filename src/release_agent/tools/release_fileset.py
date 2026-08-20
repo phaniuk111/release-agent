@@ -23,6 +23,7 @@ release_details.json is never committed anywhere, matching the live process.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -180,7 +181,7 @@ def _authed_clone_url(repo_full: str) -> str:
     return f"https://x-access-token:{token}@{host}/{repo_full}.git"
 
 
-def prepare_release_fileset(payload: dict) -> dict:
+def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
     """Generate the release file-set locally (no push). Returns preview or errors."""
     details, errors = validate_release(payload)
     if errors:
@@ -268,11 +269,26 @@ def prepare_release_fileset(payload: dict) -> dict:
         for a in details["artefact"]
         if (nv := _artifact_name_version(a))
     ]
+    # Fingerprint what was generated, then THROW THE CLONE AWAY. The prepared
+    # file-set used to survive as a directory on this machine, which tied the
+    # confirmation to this process: another replica — or this one after a
+    # restart — had a valid token and no files. Apply regenerates from
+    # ``details`` (pure data) and refuses unless it reproduces this fingerprint,
+    # which also catches SIT moving between preview and confirm: previously that
+    # pushed a branch built on an older SIT and said nothing.
+    fileset_hash = _fileset_fingerprint(repo_dir, changed_files)
+    # apply regenerates and needs the clone it just made; preview does not and
+    # must not leave one behind, because that is the state that pinned a
+    # confirmation to one process.
+    if not _keep_workdir:
+        shutil.rmtree(workdir, ignore_errors=True)
     return {
         "ok": True,
         "release_name": details["release_name"],
         "branch": branch,
-        "workdir": workdir,
+        **({"workdir": workdir} if _keep_workdir else {}),
+        "details": details,             # the inputs apply regenerates from
+        "fileset_hash": fileset_hash,
         "deployment_repo": repo_full,
         "artifacts": artifact_pairs,
         "preview": {
@@ -287,9 +303,55 @@ def prepare_release_fileset(payload: dict) -> dict:
     }
 
 
+def _fileset_fingerprint(repo_dir: str, changed_files: list[str]) -> str:
+    """A stable hash of the generated file-set: path + content, in path order.
+
+    The deploy repo's updater script is deterministic — verified by generating
+    the same release twice and diffing every file — so an identical input must
+    reproduce an identical hash. Anything else means the inputs or the base
+    branch moved, and the approval no longer describes what would be pushed.
+    """
+    digest = hashlib.sha256()
+    for rel in sorted(changed_files):
+        digest.update(rel.encode())
+        path = os.path.join(repo_dir, rel)
+        if os.path.isfile(path):
+            with open(path, "rb") as handle:
+                digest.update(handle.read())
+    return digest.hexdigest()
+
+
 def apply_release_fileset(prep: dict) -> dict:
-    """Push the prepared branch, open + auto-merge the release PR into SIT."""
-    workdir, branch = prep.get("workdir"), prep.get("branch")
+    """Push the release branch, open + auto-merge the release PR into SIT.
+
+    Regenerates the file-set from the prepared inputs rather than relying on a
+    directory this process happens to still hold, so the confirmation can be
+    applied by any replica. Refuses if the regenerated set does not match the
+    fingerprint taken at preview time — what gets pushed is then exactly what
+    was approved, or nothing is pushed at all.
+    """
+    workdir = prep.get("workdir")
+    branch = prep.get("branch")
+    if not workdir or not os.path.isdir(os.path.join(workdir, "repo")):
+        details, expected = prep.get("details"), prep.get("fileset_hash")
+        if not details:
+            return {"ok": False, "error": "Prepared release is incomplete — start the release again."}
+        regenerated = prepare_release_fileset(dict(details), _keep_workdir=True)
+        if not regenerated.get("ok"):
+            return {"ok": False,
+                    "error": "; ".join(regenerated.get("errors", ["could not regenerate the release"]))}
+        if expected and regenerated.get("fileset_hash") != expected:
+            before = set(prep.get("preview", {}).get("changed_files") or [])
+            after = set(regenerated.get("preview", {}).get("changed_files") or [])
+            moved = sorted((before ^ after)) or ["file contents changed"]
+            return {
+                "ok": False,
+                "error": ("The release no longer matches what you approved — "
+                          f"{', '.join(moved[:6])}. The base branch or the inputs moved "
+                          "since the preview. Start the release again."),
+            }
+        prep = {**prep, **regenerated}
+        workdir, branch = prep.get("workdir"), prep.get("branch")
     repo_dir = os.path.join(workdir or "", "repo")
     if not workdir or not os.path.isdir(repo_dir):
         return {"ok": False, "error": "Prepared release workdir is gone — start the release again."}
