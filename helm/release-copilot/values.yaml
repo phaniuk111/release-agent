@@ -4,6 +4,31 @@
 replicaCount: 1   # In-memory ADK session/artifact services are per-pod; keep 1
                   # unless you add shared ADK storage.
 
+# --- Restart behaviour -------------------------------------------------------
+# What makes a restart cheap at ONE replica: the new pod must be ready before
+# the old one is killed, so `helm upgrade` is a handover, not a gap.
+updateStrategy:
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+# Long enough for an in-flight SSE turn (a promote can stream for a minute) to
+# finish after the pod stops taking new traffic.
+terminationGracePeriodSeconds: 60
+
+# A PodDisruptionBudget guards VOLUNTARY disruption only — node drains and
+# cluster upgrades. It does nothing for crashes or for `helm upgrade`.
+#
+# Leave this DISABLED while replicaCount is 1: with a single pod, minAvailable:1
+# means the pod can never be evicted, so a node drain blocks indefinitely and
+# cluster maintenance wedges on this app. The template refuses that combination
+# rather than letting you find out during a node upgrade.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1        # used when set; otherwise maxUnavailable applies
+  maxUnavailable: ""
+  force: false           # bypass the replicaCount>1 guard (you asked for it)
+
 image:
   repository: ghcr.io/phaniuk111/release-copilot
   tag: ""                # defaults to .Chart.AppVersion when empty

@@ -6,6 +6,14 @@ metadata:
     {{- include "release-copilot.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  # maxUnavailable: 0 is what actually makes a restart cheap at replicaCount 1:
+  # the replacement pod must pass its readiness probe BEFORE the old one is
+  # killed, so `helm upgrade` costs a handover rather than a gap. maxSurge: 1
+  # is what allows the extra pod to exist while that happens.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      {{- toYaml .Values.updateStrategy.rollingUpdate | nindent 6 }}
   selector:
     matchLabels:
       {{- include "release-copilot.selectorLabels" . | nindent 6 }}
@@ -23,6 +31,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      # In-flight SSE turns (a promote can stream for a minute) get this long to
+      # finish before SIGKILL; the pod stops receiving new traffic immediately.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "release-copilot.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

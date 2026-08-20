@@ -1,0 +1,29 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+{{- /*
+A PDB protects against VOLUNTARY disruption (node drains, cluster upgrades) —
+not crashes and not `helm upgrade`, which the rollout strategy covers.
+
+At replicaCount 1 it is a trap rather than a safeguard: minAvailable: 1 means
+the single pod can never be evicted, so a node drain blocks forever and cluster
+maintenance wedges on this release tool. That is why this is disabled by
+default and guarded below — enable it once you actually run 2+ replicas.
+*/ -}}
+{{- if and (le (int .Values.replicaCount) 1) (not .Values.podDisruptionBudget.force) }}
+{{- fail "podDisruptionBudget.enabled requires replicaCount > 1 — at 1 replica a PDB blocks node drains instead of protecting anything. Set podDisruptionBudget.force=true only if you understand that." }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "release-copilot.fullname" . }}
+  labels:
+    {{- include "release-copilot.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "release-copilot.selectorLabels" . | nindent 6 }}
+{{- end }}

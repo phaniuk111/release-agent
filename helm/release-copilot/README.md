@@ -129,6 +129,34 @@ never appears in a log or an error message — including the 401/403 path, which
 is pinned by a test. Leave `JIRA_BASE_URL` empty to disable the lookup entirely;
 the ticket is then stored exactly as typed.
 
+## Surviving restarts
+
+Two different mechanisms, often confused:
+
+**`helm upgrade` and pod replacement** are covered by the rollout strategy. With
+`maxUnavailable: 0` / `maxSurge: 1` the replacement pod must pass its readiness
+probe *before* the old one is killed, so an upgrade is a handover rather than a
+gap — which matters precisely because `replicaCount` is 1.
+`terminationGracePeriodSeconds: 60` then lets an in-flight SSE turn (a promote
+can stream for a minute) finish after the pod stops taking new traffic.
+
+**A PodDisruptionBudget covers something else entirely**: voluntary disruption —
+node drains and cluster upgrades. It does nothing for crashes or for
+`helm upgrade`.
+
+At `replicaCount: 1` a PDB is a trap, not a safeguard. `minAvailable: 1` with one
+pod means that pod can never be evicted, so a node drain blocks indefinitely and
+cluster maintenance wedges on this app. The chart refuses that combination:
+
+```
+Error: podDisruptionBudget.enabled requires replicaCount > 1 — at 1 replica a
+PDB blocks node drains instead of protecting anything.
+```
+
+Enable it once you genuinely run 2+ replicas — which needs the per-pod state
+dealt with first (see the section above). `podDisruptionBudget.force=true`
+bypasses the guard if you have a reason.
+
 ## Persistent chat sessions (surviving pod restarts)
 
 By default ADK sessions are in-memory: a restart or a rollout loses every
@@ -188,6 +216,9 @@ licence to raise `replicaCount`** — those three need addressing first.
 | `config.ADK_CONTEXT_CACHE` | `true` | cache the static prompt prefix (root instruction + skills) |
 | `config.ADK_EVENT_COMPACTION` | `true` | summarize old events on long chat sessions |
 | `config.ADK_MEMORY_ENABLED` | `true` | preload memories + persist sessions (in-memory / per-pod) |
+| `updateStrategy.rollingUpdate` | `maxUnavailable: 0`, `maxSurge: 1` | new pod ready before the old is killed — what makes a restart cheap at 1 replica |
+| `terminationGracePeriodSeconds` | `60` | lets an in-flight SSE turn finish after traffic stops |
+| `podDisruptionBudget.enabled` | `false` | **leave off at 1 replica** — see below |
 | `config.ADK_SESSION_BACKEND` | `memory` | `memory` (per-pod) or `vertex` (Agent Engine — survives restarts) |
 | `config.VERTEX_AGENT_ENGINE_ID` | `""` | **required** when the backend is `vertex`; bare id or full resource name |
 | `config.ADK_CONFIRM_PROD_OPS` | `true` | require confirmation before prod remove / PRD release |
