@@ -202,9 +202,16 @@ def prepare_deploy_preview(
             return {"ok": False, "error": "; ".join(prep.get("errors", ["release preparation failed"]))}
         req["release_prep"] = prep
         token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
-        _PENDING_PREVIEWS[token] = {"request": req, "preview": prep["preview"], "created_at": time.time()}
+        pending = {"token": token, "request": req, "preview": prep["preview"],
+                   "created_at": time.time()}
+        _PENDING_PREVIEWS[token] = pending
         return {
             "ok": True,
+            # Returned so the Workflow can persist it in ADK session state. The
+            # module dict above stays as the in-process path (single pod, and the
+            # non-Workflow fallback in adk_service); session state is what makes
+            # a confirmation survive a restart or land on another replica.
+            "pending": pending,
             "status": "awaiting_confirmation",
             "environment": env,
             "image_tags": prep["release_name"],
@@ -215,13 +222,12 @@ def prepare_deploy_preview(
         }
     preview = _build_preview(req)
     token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
-    _PENDING_PREVIEWS[token] = {
-        "request": req,
-        "preview": preview,
-        "created_at": time.time(),
-    }
+    pending = {"token": token, "request": req, "preview": preview, "created_at": time.time()}
+    _PENDING_PREVIEWS[token] = pending
     return {
         "ok": True,
+        "pending": pending,          # see the note above — persisted by the Workflow
+
         "status": "awaiting_confirmation",
         "environment": env,
         "image_tags": _image_tags(req),
@@ -233,16 +239,30 @@ def prepare_deploy_preview(
     }
 
 
-def apply_confirmed_deploy(confirmation_text: str) -> dict[str, Any]:
+def apply_confirmed_deploy(
+    confirmation_text: str, pending: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Apply a previously prepared deploy after exact token confirmation.
 
     This mutates GitHub by calling the existing open_release_pr tool. In the ADK
     agent this function is wrapped with ADK FunctionTool(require_confirmation=True)
     so the runtime also asks for human approval before executing it.
+
+    ``pending`` is the preview payload recovered from ADK session state by the
+    Workflow. Passing it is what lets a confirmation be applied by a process
+    that never served the preview — a replica, or the same pod after a restart.
+    Omitted, we fall back to the in-process dict.
     """
     _cleanup_expired_previews()
     token = _extract_confirmation_token(confirmation_text)
-    pending = _PENDING_PREVIEWS.get(token)
+    if pending is not None:
+        # A payload recovered from session state is keyed by THREAD, so it must
+        # still be checked against the token the human typed — otherwise passing
+        # a payload would be a way around the confirmation gate entirely.
+        if not token or str(pending.get("token") or "") != token:
+            pending = None
+    else:
+        pending = _PENDING_PREVIEWS.get(token)
     if not token or pending is None:
         return {
             "ok": False,

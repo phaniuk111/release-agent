@@ -341,6 +341,11 @@ class AdkChatService:
         token = adk_deploy._extract_confirmation_token(message)
         if token:
             pending_token = self._pending_deploy.get(thread_id)
+            if pending_token is None:
+                # Not in THIS process — the preview may have been served by
+                # another replica, or by this one before a restart. The Workflow
+                # persisted the token in session state; ask the session service.
+                pending_token = await self._pending_token_from_session(thread_id)
             if pending_token:
                 # Resume the paused deploy Workflow: exact match confirms, else cancels.
                 async for event in self._stream_deploy_resume(
@@ -469,6 +474,25 @@ class AdkChatService:
         if not interrupted and settings.adk_memory_enabled:
             await self._persist_session_to_memory(thread_id)
         yield {"type": "done", "mutated": mutated}
+
+    async def _pending_token_from_session(self, thread_id: str) -> str | None:
+        """The CONFIRM token this thread is waiting on, read from session state.
+
+        The deploy Workflow writes it there on every preview, so this answers
+        even when the preview was served by a different process. Returns None on
+        any failure: a routing hint must never break a chat turn.
+        """
+        try:
+            session = await self.session_service.get_session(
+                app_name=self.deploy_runner.app_name,
+                user_id=_USER_ID,
+                session_id=_session_id(thread_id, "deploy"),
+            )
+        except Exception:
+            logger.debug("pending-token lookup failed for %s", thread_id, exc_info=True)
+            return None
+        token = ((session.state if session else None) or {}).get("deploy_confirm_token")
+        return str(token) if token else None
 
     async def _persist_session_to_memory(self, thread_id: str) -> None:
         """Best-effort: add the finished chat session to the memory service."""

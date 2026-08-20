@@ -58,6 +58,12 @@ class DeployOutcome(BaseModel):
 # State key used to carry the minted confirmation token from the first (preview)
 # pass of the gate node to its resumed (decision) pass.
 _TOKEN_STATE_KEY = "deploy_confirm_token"
+# The preview payload the apply node needs on resume. Kept in ADK session state
+# rather than a module dict so the confirmation can be applied by a process that
+# never served the preview — another replica, or this one after a restart.
+# FunctionNode binds a node parameter of this name straight from ctx.state
+# (parameter_binding="state", the default), so nothing reads the key by hand.
+_PENDING_STATE_KEY = "deploy_pending"
 
 # App name for the standalone deploy Workflow runner.
 DEPLOY_APP_NAME = "release_deploy_workflow"
@@ -123,7 +129,10 @@ async def _deploy_gate(ctx: Any, node_input: str):
         )
         yield Event(
             content=types.Content(role="model", parts=[types.Part.from_text(text=text)]),
-            state={_TOKEN_STATE_KEY: token},
+            state={
+                _TOKEN_STATE_KEY: token,
+                _PENDING_STATE_KEY: result.get("pending") or {},
+            },
         )
         yield RequestInput(
             interrupt_id=token,
@@ -143,18 +152,33 @@ async def _deploy_gate(ctx: Any, node_input: str):
     )
 
 
-def _apply_deploy(node_input: dict[str, Any]) -> "DeployOutcome":
-    """Apply the confirmed deploy via the existing token-gated apply helper."""
+def _apply_deploy(node_input: dict[str, Any], deploy_pending: dict | None = None) -> "DeployOutcome":
+    """Apply the confirmed deploy via the existing token-gated apply helper.
+
+    ``deploy_pending`` is bound from ctx.state by ADK — it is the preview the
+    gate node persisted. Handing it to the apply helper is what removes the
+    dependency on the process that served the preview still being alive.
+    """
     token = (node_input or {}).get("token") or ""
-    return DeployOutcome(**deploy.apply_confirmed_deploy(token))
+    return DeployOutcome(**deploy.apply_confirmed_deploy(token, pending=deploy_pending or None))
 
 
-def _cancel_deploy(node_input: dict[str, Any]) -> "DeployOutcome":
-    """Discard the pending preview and report a non-mutating cancellation."""
+def _cancel_deploy(node_input: dict[str, Any], deploy_pending: dict | None = None) -> "DeployOutcome":
+    """Discard the pending preview and report a non-mutating cancellation.
+
+    A rejected release has a prepared workdir to clean up, and on a replica that
+    only exists in the session copy — so the cleanup works from ``deploy_pending``
+    as well as from the in-process dict.
+    """
     payload = node_input or {}
     token = payload.get("token") or ""
     if token:
         deploy._PENDING_PREVIEWS.pop(token, None)
+    prep = ((deploy_pending or {}).get("request") or {}).get("release_prep")
+    if prep:
+        from release_agent.tools import release_fileset as _rf
+
+        _rf.cleanup_prepared_release(prep)
     return DeployOutcome(
         ok=False, status="cancelled", token=token, error=payload.get("error")
     )
