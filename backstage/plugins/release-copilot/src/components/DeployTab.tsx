@@ -58,20 +58,23 @@ export function DeployTab(props: { onSend: (text: string) => Promise<void> }) {
 
   const isProd = env === 'prod';
 
-  const loadTemplate = useCallback(async (target: 'uat' | 'prod') => {
-    setError(null);
-    setSent(false);
-    try {
-      const t = await apiGet<DeployTemplate>(
-        apiBase,
-        `/api/deploy-template?env=${target}`,
-      );
-      setJson(JSON.stringify(t.deployment ?? { include: [] }, null, 2));
-      setRepo(t.deploy_repo ?? '');
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [apiBase]);
+  const loadTemplate = useCallback(
+    async (target: 'uat' | 'prod') => {
+      setError(null);
+      setSent(false);
+      try {
+        const t = await apiGet<DeployTemplate>(
+          apiBase,
+          `/api/deploy-template?env=${target}`,
+        );
+        setJson(JSON.stringify(t.deployment ?? { include: [] }, null, 2));
+        setRepo(t.deploy_repo ?? '');
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    },
+    [apiBase],
+  );
 
   useEffect(() => {
     loadTemplate(env);
@@ -175,7 +178,9 @@ export function DeployTab(props: { onSend: (text: string) => Promise<void> }) {
               multiline
               minRows={8}
               variant="outlined"
-              label={`deployment.${env === 'prod' ? 'prd' : 'uat'} override JSON`}
+              label={`deployment.${
+                env === 'prod' ? 'prd' : 'uat'
+              } override JSON`}
               value={json}
               onChange={e => setJson(e.target.value)}
               InputProps={{ className: classes.jsonBox }}

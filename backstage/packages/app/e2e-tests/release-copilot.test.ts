@@ -10,7 +10,7 @@ test.describe('Release Copilot page', () => {
       await enterButton.click();
     }
     await expect(
-      page.getByRole('heading', { name: 'Release Copilot' }),
+      page.getByRole('main').getByRole('heading', { name: 'Release Copilot' }),
     ).toBeVisible();
   });
 
@@ -31,6 +31,20 @@ test.describe('Release Copilot page', () => {
     });
   });
 
+  test('dataflow tab loads defaults and submits to chat', async ({ page }) => {
+    await page.getByRole('tab', { name: 'Dataflow' }).click();
+    // deploy repo (last textbox) pre-filled from /api/df-template
+    await expect(page.getByRole('textbox').last()).toHaveValue(/\//, {
+      timeout: 30_000,
+    });
+    await page.getByRole('textbox').nth(0).fill('my-df-image');
+    await page.getByRole('textbox').nth(1).fill('1.2.3');
+    await page.getByRole('button', { name: 'Deploy to DF UAT' }).click();
+    await expect(
+      page.getByText(/Sent to the agent/i),
+    ).toBeVisible({ timeout: 15_000 });
+  });
+
   test('queue tab lists or shows empty queue', async ({ page }) => {
     await page.getByRole('tab', { name: 'Queue' }).click();
     await expect(page.getByRole('button', { name: 'Add items' })).toBeVisible();
@@ -38,9 +52,9 @@ test.describe('Release Copilot page', () => {
 
   test('chat round-trip answers a release status query', async ({ page }) => {
     test.setTimeout(120_000);
-    await page.getByPlaceholder(/Message the release agent/i).fill(
-      'what is the current release status?',
-    );
+    await page
+      .getByPlaceholder(/Message the release agent/i)
+      .fill('what is the current release status?');
     await page.getByRole('button', { name: 'Send' }).click();
     // streamed agent text should mention an environment or known charts
     // Real chart names from deployment state — cannot match the input hint.

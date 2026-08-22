@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Button,
   Card,
@@ -48,10 +48,9 @@ export function DataflowTab(props: {
     }
   }, [apiBase]);
 
-  if (!loaded && !error) {
-    // one-shot load on first mount
-    void loadDefaults();
-  }
+  useEffect(() => {
+    if (!loaded) void loadDefaults();
+  }, [loaded, loadDefaults]);
 
   const submit = useCallback(async () => {
     setError(null);
@@ -72,7 +71,9 @@ export function DataflowTab(props: {
       .filter(Boolean);
     if (dagList.length) {
       if (!composerRepo.trim()) {
-        setError('Name the Composer DAGs repo (owner/repo) for those DAG files.');
+        setError(
+          'Name the Composer DAGs repo (owner/repo) for those DAG files.',
+        );
         return;
       }
       payload.dag_files = dagList;

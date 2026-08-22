@@ -53,7 +53,10 @@ export function ReleaseCopilotPage() {
               text: '⚠ Confirmation required — reply with the exact CONFIRM token to proceed.',
             });
           } else if (ev.type === 'error') {
-            append({ role: 'system', text: `Error: ${ev.content ?? 'unknown'}` });
+            append({
+              role: 'system',
+              text: `Error: ${ev.content ?? 'unknown'}`,
+            });
           }
         });
       } catch (e) {
@@ -83,7 +86,9 @@ export function ReleaseCopilotPage() {
           ))}
         </Tabs>
         <Box mt={3}>
-          {tab === 0 && <ChatGrid messages={messages} busy={busy} onSend={send} />}
+          {tab === 0 && (
+            <ChatGrid messages={messages} busy={busy} onSend={send} />
+          )}
           {tab === 1 && <DeployTab onSend={send} />}
           {tab === 2 && <DataflowTab onSend={send} />}
           {tab === 3 && <ReleasesTab />}

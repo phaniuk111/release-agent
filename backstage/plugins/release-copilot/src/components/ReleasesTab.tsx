@@ -39,9 +39,7 @@ export function ReleasesTab() {
 
   const artifacts = (ctx?.queue ?? [])
     .map(r =>
-      r.artifact_name
-        ? `${r.artifact_name}:${r.artifact_version ?? ''}`
-        : null,
+      r.artifact_name ? `${r.artifact_name}:${r.artifact_version ?? ''}` : null,
     )
     .filter((a): a is string => !!a);
 
@@ -103,10 +101,7 @@ export function ReleasesTab() {
             <FormControlLabel
               key={a}
               control={
-                <Checkbox
-                  checked={!!selected[a]}
-                  onChange={() => toggle(a)}
-                />
+                <Checkbox checked={!!selected[a]} onChange={() => toggle(a)} />
               }
               label={a}
             />

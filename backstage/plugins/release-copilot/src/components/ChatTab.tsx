@@ -31,7 +31,11 @@ const useStyles = makeStyles(theme => ({
   userMsg: { color: theme.palette.primary.main },
   agentMsg: { color: theme.palette.text.primary },
   sysMsg: { color: theme.palette.text.secondary, fontStyle: 'italic' },
-  inputRow: { display: 'flex', gap: theme.spacing(1), marginTop: theme.spacing(1) },
+  inputRow: {
+    display: 'flex',
+    gap: theme.spacing(1),
+    marginTop: theme.spacing(1),
+  },
 }));
 
 export function ChatTab(props: {

@@ -74,7 +74,10 @@ export function QueueTab() {
   }, [refresh]);
 
   const addRow = useCallback(() => {
-    setRows(prev => [...prev, { artifact: '', prl1_only: false, df_only: false }]);
+    setRows(prev => [
+      ...prev,
+      { artifact: '', prl1_only: false, df_only: false },
+    ]);
   }, []);
 
   const updateRow = useCallback(
@@ -187,10 +190,7 @@ export function QueueTab() {
                   </TableCell>
                   <TableCell>{it.requested_by}</TableCell>
                   <TableCell>
-                    {[
-                      it.prl1_only ? 'PRL1' : '',
-                      it.df_only ? 'DF' : '',
-                    ]
+                    {[it.prl1_only ? 'PRL1' : '', it.df_only ? 'DF' : '']
                       .filter(Boolean)
                       .join(', ') || '—'}
                   </TableCell>
@@ -200,9 +200,7 @@ export function QueueTab() {
                       size="small"
                       color="secondary"
                       onClick={() =>
-                        withdraw(
-                          `${it.artifact_name}:${it.artifact_version}`,
-                        )
+                        withdraw(`${it.artifact_name}:${it.artifact_version}`)
                       }
                     >
                       Withdraw
@@ -295,7 +293,9 @@ export function QueueTab() {
                   control={
                     <Checkbox
                       checked={r.df_only}
-                      onChange={e => updateRow(idx, { df_only: e.target.checked })}
+                      onChange={e =>
+                        updateRow(idx, { df_only: e.target.checked })
+                      }
                     />
                   }
                   label="DF image"
