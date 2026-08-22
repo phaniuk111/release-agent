@@ -20,7 +20,7 @@ import time
 import uuid
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -884,8 +884,81 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
     }
 
 
+# Headers a fronting proxy / mesh external-auth typically injects once it has
+# authenticated the caller. Listed longest-first only for readable output; the
+# point of reporting ALL of them is that we do not yet know which one this
+# cluster sends — that is what /api/diagnostics is for.
+_IDENTITY_HEADER_HINTS = (
+    "x-goog-authenticated-user-email",
+    "x-goog-authenticated-user-id",
+    "x-forwarded-email",
+    "x-forwarded-user",
+    "x-forwarded-preferred-username",
+    "x-auth-request-email",
+    "x-auth-request-user",
+    "x-authenticated-user",
+    "x-user-email",
+    "x-remote-user",
+    "cf-access-authenticated-user-email",
+)
+
+
+def _mask_identity(value: str) -> str:
+    """Enough to recognise the value, not enough to be a directory of staff.
+
+    These headers carry personal data, and /api/diagnostics is a page someone
+    may screenshot into a ticket — so an address is reduced to its first
+    character and domain, and anything token-shaped is reported by length only.
+    """
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if len(value) > 100:                       # a JWT or similar — never echo it
+        return f"<{len(value)} chars>"
+    if "@" in value:
+        local, _, domain = value.rpartition("@")
+        prefix = local.split(":")[-1]          # "accounts.google.com:alice" -> "alice"
+        return f"{prefix[:1]}***@{domain}"
+    return f"{value[:2]}***" if len(value) > 4 else "***"
+
+
+def _identity_report(request: Request) -> dict:
+    """What the mesh tells us about the caller — discovery only, nothing consumes it.
+
+    The app authenticates nobody: ASM does that at the edge. But the identity it
+    established stops at the sidecar unless a header carries it in, and nothing
+    here reads headers yet. This reports what actually arrives so the header can
+    be identified before any code depends on it.
+    """
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    found = {
+        name: _mask_identity(headers[name])
+        for name in _IDENTITY_HEADER_HINTS
+        if headers.get(name)
+    }
+    # Anything else that smells like identity but is not on the list above —
+    # this is the case that matters, since a corporate mesh may use its own name.
+    other = sorted(
+        k for k in headers
+        if k not in _IDENTITY_HEADER_HINTS
+        and any(word in k for word in ("user", "email", "auth", "identity", "subject"))
+        and k not in ("authorization", "user-agent")
+    )
+    return {
+        "identity_headers": found,
+        "other_candidate_headers": {k: _mask_identity(headers[k]) for k in other},
+        "all_header_names": sorted(headers),
+        "authorization_present": "authorization" in headers,
+        "via_gateway": bool(headers.get("x-forwarded-for") or headers.get("x-envoy-external-address")),
+        "note": (
+            "Discovery only — nothing in the app reads these yet. If a header here "
+            "carries the signed-in user, it can replace the typed 'requested_by' "
+            "and the hardcoded session user. Values are masked."
+        ),
+    }
+
 @app.get("/api/diagnostics")
-def diagnostics():
+def diagnostics(request: Request):
     """One-shot dependency report for a fresh deployment: what is configured and
     whether each backend actually answers. Deliberately NOT part of /health —
     it makes live calls, so probes must not run it. Never returns secrets: the
@@ -1028,6 +1101,7 @@ def diagnostics():
         and report["github"].get("ok")
         and report["git_https"].get("ok")
     )
+    report["identity"] = _identity_report(request)
     return report
 
 
