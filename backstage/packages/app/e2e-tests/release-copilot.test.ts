@@ -40,14 +40,19 @@ test.describe('Release Copilot page', () => {
     await page.getByRole('textbox').nth(0).fill('my-df-image');
     await page.getByRole('textbox').nth(1).fill('1.2.3');
     await page.getByRole('button', { name: 'Deploy to DF UAT' }).click();
-    await expect(
-      page.getByText(/Sent to the agent/i),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Sent to the agent/i)).toBeVisible({
+      timeout: 15_000,
+    });
   });
 
-  test('queue tab lists or shows empty queue', async ({ page }) => {
+  test('queue tab lists items and add dialog has jira field', async ({
+    page,
+  }) => {
     await page.getByRole('tab', { name: 'Queue' }).click();
-    await expect(page.getByRole('button', { name: 'Add items' })).toBeVisible();
+    await page.getByRole('button', { name: 'Add items' }).click();
+    await expect(page.getByText('Jira ticket').first()).toBeVisible();
+    await expect(page.getByText('Build run URL').first()).toBeVisible();
+    await page.getByRole('button', { name: 'Cancel' }).click();
   });
 
   test('chat round-trip answers a release status query', async ({ page }) => {

@@ -50,8 +50,16 @@ export function QueueTab() {
   const [loading, setLoading] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [rows, setRows] = useState<
-    Array<{ artifact: string; prl1_only: boolean; df_only: boolean }>
-  >([{ artifact: '', prl1_only: false, df_only: false }]);
+    Array<{
+      artifact: string;
+      jira_ticket: string;
+      build_run_url: string;
+      prl1_only: boolean;
+      df_only: boolean;
+    }>
+  >([
+    { artifact: '', jira_ticket: '', build_run_url: '', prl1_only: false, df_only: false },
+  ]);
   const [requestedBy, setRequestedBy] = useState('');
   const [changeDetails, setChangeDetails] = useState('');
   const [note, setNote] = useState('');
@@ -76,7 +84,7 @@ export function QueueTab() {
   const addRow = useCallback(() => {
     setRows(prev => [
       ...prev,
-      { artifact: '', prl1_only: false, df_only: false },
+      { artifact: '', jira_ticket: '', build_run_url: '', prl1_only: false, df_only: false },
     ]);
   }, []);
 
@@ -107,6 +115,8 @@ export function QueueTab() {
       await apiPost(apiBase, '/api/release-queue/batch', {
         rows: valid.map(r => ({
           artifact: r.artifact.trim(),
+          jira_ticket: r.jira_ticket.trim(),
+          build_run_url: r.build_run_url.trim(),
           prl1_only: r.prl1_only,
           df_only: r.df_only,
         })),
@@ -115,7 +125,9 @@ export function QueueTab() {
         note: note.trim(),
       });
       setDialogOpen(false);
-      setRows([{ artifact: '', prl1_only: false, df_only: false }]);
+      setRows([
+        { artifact: '', jira_ticket: '', build_run_url: '', prl1_only: false, df_only: false },
+      ]);
       setChangeDetails('');
       setNote('');
       await refresh();
@@ -177,6 +189,7 @@ export function QueueTab() {
               <TableRow>
                 <TableCell>Artifact</TableCell>
                 <TableCell>Requested by</TableCell>
+                <TableCell>Jira</TableCell>
                 <TableCell>Flags</TableCell>
                 <TableCell>Note</TableCell>
                 <TableCell align="right">Actions</TableCell>
@@ -189,6 +202,7 @@ export function QueueTab() {
                     {it.artifact_name}:{it.artifact_version}
                   </TableCell>
                   <TableCell>{it.requested_by}</TableCell>
+                  <TableCell>{it.jira_ticket}</TableCell>
                   <TableCell>
                     {[it.prl1_only ? 'PRL1' : '', it.df_only ? 'DF' : '']
                       .filter(Boolean)
@@ -276,7 +290,25 @@ export function QueueTab() {
                   label="chart:version"
                   value={r.artifact}
                   onChange={e => updateRow(idx, { artifact: e.target.value })}
+                  style={{ flex: 2 }}
+                />
+                <TextField
+                  variant="outlined"
+                  size="small"
+                  label="Jira ticket"
+                  value={r.jira_ticket}
+                  onChange={e => updateRow(idx, { jira_ticket: e.target.value })}
                   style={{ flex: 1 }}
+                />
+                <TextField
+                  variant="outlined"
+                  size="small"
+                  label="Build run URL"
+                  value={r.build_run_url}
+                  onChange={e =>
+                    updateRow(idx, { build_run_url: e.target.value })
+                  }
+                  style={{ flex: 2 }}
                 />
                 <FormControlLabel
                   control={
