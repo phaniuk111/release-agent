@@ -49,3 +49,4 @@ release-manifest.json.bak
 .claude/
 traces/
 .vscode/
+.worktrees/

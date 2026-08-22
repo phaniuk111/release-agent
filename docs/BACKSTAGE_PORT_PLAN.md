@@ -53,9 +53,9 @@ stays a containerized service that Backstage talks to.
 
 1. **release-copilot service** — build the branch's own `Dockerfile` unmodified;
    run with env vars from `.env`.
-2. **Backstage backend plugin** `release-copilot-backend` — proxy routes
-   (`/api/release-copilot/*` → service) so the browser never needs CORS or the
-   service's auth; forwards SSE for chat.
+2. **Backend proxy** — uses the built-in `@backstage/plugin-proxy-backend`
+   (config-only, no custom plugin for the PoC): `/api/proxy/release-copilot/*`
+   → `RELEASE_COPILOT_URL`. Handles CORS and streams SSE chat.
 3. **Backstage frontend plugin** `release-copilot` — a page with:
    - a chat panel streaming from the SSE proxy, and
    - simple panels for release-status / release-queue (REST GET/POST).
@@ -70,10 +70,10 @@ stays a containerized service that Backstage talks to.
 
 ## 3. Build checklist (branch `backstage_poc`)
 
-- [ ] `docs/BACKSTAGE_PORT_PLAN.md` (this file)
-- [ ] Scaffold Backstage app under `backstage/` (`npx @backstage/create-app`, guest auth)
-- [ ] `plugins/release-copilot-backend`: proxy + SSE forwarding (config: `releaseCopilot.baseUrl`)
-- [ ] `plugins/release-copilot`: chat + status/queue page, route `/release-copilot`, nav item
-- [ ] `docker-compose.yml`: backstage + release-copilot services, shared `.env`
-- [ ] `README` PoC run instructions (`docker compose up`, open :3000/release-copilot)
-- [ ] Smoke test: chat round-trip + release-status render in container setup
+- [x] `docs/BACKSTAGE_PORT_PLAN.md` (this file)
+- [x] Scaffold Backstage app under `backstage/` (`npx @backstage/create-app`, guest auth)
+- [x] Proxy + SSE forwarding via built-in proxy backend (`proxy.endpoints` in `backstage/app-config.yaml`)
+- [x] `plugins/release-copilot`: chat + status/queue page, route `/release-copilot`, sidebar icon
+- [x] `docker-compose.backstage.yml`: backstage + release-copilot services, shared `.env`
+- [ ] `README` PoC run instructions (`docker compose up`, open :7007/release-copilot)
+- [x] Smoke test: chat round-trip + release-status through containers ✅ (SSE tokens streamed via proxy in docker compose)

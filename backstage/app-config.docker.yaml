@@ -1,0 +1,18 @@
+# Overrides for the docker-compose PoC. Loaded after app-config.yaml.
+app:
+  baseUrl: http://localhost:7007
+
+backend:
+  baseUrl: http://localhost:7007
+  listen: ':7007'
+  # SQLite in-memory: no Postgres container needed for the PoC.
+  database:
+    client: better-sqlite3
+    connection: ':memory:'
+
+auth:
+  providers:
+    guest: {}
+
+catalog:
+  locations: []

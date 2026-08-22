@@ -1,0 +1,39 @@
+# Local PoC: Backstage front door in front of the release-copilot ADK service.
+#
+#   docker compose -f docker-compose.backstage.yml up --build
+#
+# Then open http://localhost:7007/release-copilot (sign in as Guest).
+#
+# release-copilot needs GH_TOKEN / GOOGLE_CLOUD_PROJECT / BUILD_REPO /
+# DEPLOY_REPO etc. — copy .env.example to .env at the repo root and fill it in;
+# Compose passes it through. For a smoke test without real credentials the
+# container still boots and serves the UI; chat will fail until env is set.
+services:
+  # Built from the adk-release-agent branch via a read-only git worktree:
+  #   git worktree add .worktrees/adk adk-release-agent
+  release-copilot:
+    build: ./.worktrees/adk
+    image: release-copilot:poc
+    ports:
+      - '127.0.0.1:8000:8000'
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # GH token must come from the host (no `gh` CLI in the image).
+      GH_TOKEN: ${GH_TOKEN:-}
+      # Vertex ADC: mount your gcloud ADC (see volumes below).
+      GOOGLE_APPLICATION_CREDENTIALS: /var/run/adc/application_default_credentials.json
+    volumes:
+      - ~/.config/gcloud/application_default_credentials.json:/var/run/adc/application_default_credentials.json:ro
+
+  backstage:
+    build: ./backstage
+    image: backstage-release-copilot:poc
+    ports:
+      - '127.0.0.1:7007:7007'
+    environment:
+      # Backstage backend proxies /api/proxy/release-copilot/* to the service.
+      RELEASE_COPILOT_URL: http://release-copilot:8000
+    depends_on:
+      - release-copilot
