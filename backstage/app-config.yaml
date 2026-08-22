@@ -187,7 +187,8 @@ auth:
     #   - 'http://localhost:*'
     #   - 'https://*.example.com/*'
 
-scaffolder: {}
+scaffolder:
+  {}
   # see https://backstage.io/docs/features/software-templates/configuration for software template options
 
 catalog:
@@ -223,7 +224,8 @@ catalog:
     #   rules:
     #     - allow: [User, Group]
 
-kubernetes: {}
+kubernetes:
+  {}
   # see https://backstage.io/docs/features/kubernetes/configuration for kubernetes configuration options
 
 # see https://backstage.io/docs/permissions/getting-started for more on the permission framework
