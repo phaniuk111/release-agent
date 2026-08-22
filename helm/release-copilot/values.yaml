@@ -184,6 +184,12 @@ config:
   # This covers CONVERSATION HISTORY ONLY: pending CONFIRM tokens and connected
   # PATs remain per-pod, so it is not on its own a licence to raise replicaCount.
   ADK_SESSION_BACKEND: "memory"
+  # With backend "vertex" the engine is found by DISPLAY NAME in
+  # GOOGLE_CLOUD_LOCATION and CREATED if it does not exist — so the same values
+  # file works in every project and nobody pastes a numeric id. The pod's SA
+  # needs roles/aiplatform.user. Pin VERTEX_AGENT_ENGINE_ID instead to use one
+  # exact engine and never create anything.
+  VERTEX_AGENT_ENGINE_NAME: "release-copilot-sessions"
   VERTEX_AGENT_ENGINE_ID: ""
   # Deploy-target specifics (code defaults are generic; set your real values):
   # UAT_NAMESPACE: "default"

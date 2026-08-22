@@ -163,27 +163,27 @@ By default ADK sessions are in-memory: a restart or a rollout loses every
 conversation, and a second replica would answer from a different history. That
 is why `replicaCount` is pinned to 1.
 
-`ADK_SESSION_BACKEND: "vertex"` moves sessions into a **Vertex AI Agent Engine**,
-which is a real GCP resource you create once:
-
-```bash
-pip install google-cloud-aiplatform
-python - <<'PY'
-import vertexai
-client = vertexai.Client(project="<PROJECT_ID>", location="us-central1")
-engine = client.agent_engines.create()          # a session store; no agent code deployed
-print(engine.api_resource.name)                 # projects/…/reasoningEngines/<ID>
-PY
-```
-
-Then set both values — the pod **fails to start** if the backend is `vertex`
-and the id is missing, because falling back to in-memory would look like it
-worked until a restart quietly dropped everything:
+`ADK_SESSION_BACKEND: "vertex"` moves sessions into a **Vertex AI Agent Engine**.
+You do not have to create one: the app looks for an engine whose display name
+matches `VERTEX_AGENT_ENGINE_NAME` in `GOOGLE_CLOUD_LOCATION`, and creates it if
+absent. The same values file therefore works in every project.
 
 ```yaml
 config:
   ADK_SESSION_BACKEND: "vertex"
-  VERTEX_AGENT_ENGINE_ID: "<ID>"     # bare id or the full resource name
+  VERTEX_AGENT_ENGINE_NAME: "release-copilot-sessions"
+```
+
+Two pods starting together can each create one. That is tolerated rather than
+locked against: SELECTION is deterministic — every pod sorts the matches and
+takes the same one — so they converge on a single session store, and a duplicate
+is logged as a warning naming the extras to delete.
+
+To use one exact engine and create nothing, pin it instead:
+
+```yaml
+config:
+  VERTEX_AGENT_ENGINE_ID: "<bare id or full resource name>"   # wins over the name
 ```
 
 The pod's service account needs `roles/aiplatform.user` on the project.
@@ -220,7 +220,8 @@ licence to raise `replicaCount`** — those three need addressing first.
 | `terminationGracePeriodSeconds` | `60` | lets an in-flight SSE turn finish after traffic stops |
 | `podDisruptionBudget.enabled` | `false` | **leave off at 1 replica** — see below |
 | `config.ADK_SESSION_BACKEND` | `memory` | `memory` (per-pod) or `vertex` (Agent Engine — survives restarts) |
-| `config.VERTEX_AGENT_ENGINE_ID` | `""` | **required** when the backend is `vertex`; bare id or full resource name |
+| `config.VERTEX_AGENT_ENGINE_NAME` | `release-copilot-sessions` | engine display name; found in `GOOGLE_CLOUD_LOCATION`, **created if absent** |
+| `config.VERTEX_AGENT_ENGINE_ID` | `""` | pin one exact engine instead; nothing is created |
 | `config.ADK_CONFIRM_PROD_OPS` | `true` | require confirmation before prod remove / PRD release |
 | `config.PRL1_BRANCH` | `PRL1` | second terminal env branch (prl1_only charts never reach PRD) |
 | `config.RELEASE_UPDATER_SCRIPT` | `scripts/release/update_release_files.py` | deploy repo's file-set generator (CARE/DF releases) |

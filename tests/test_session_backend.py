@@ -50,11 +50,14 @@ def test_full_resource_name_is_accepted_for_the_engine_id(backend):
     assert svc._agent_engine_id == "987654321"
 
 
-def test_vertex_without_an_engine_id_fails_at_startup(backend):
-    """Falling back to in-memory here would look like it worked right up until a
-    restart silently dropped every conversation."""
-    with pytest.raises(RuntimeError, match="VERTEX_AGENT_ENGINE_ID"):
-        backend(adk_session_backend="vertex", vertex_agent_engine_id="")
+def test_vertex_with_neither_id_nor_name_fails_at_startup(backend):
+    """An id is no longer required — the engine is resolved by display name and
+    created if absent. But with NEITHER, there is nothing to resolve, and falling
+    back to in-memory would look like it worked right up until a restart silently
+    dropped every conversation."""
+    with pytest.raises(RuntimeError, match="VERTEX_AGENT_ENGINE_NAME"):
+        backend(adk_session_backend="vertex", vertex_agent_engine_id="",
+                vertex_agent_engine_name="")
 
 
 def test_an_unknown_backend_is_refused_rather_than_guessed(backend):

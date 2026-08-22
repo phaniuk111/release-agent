@@ -63,6 +63,85 @@ def _session_id(thread_id: str, lane: str) -> str:
     return f"{thread_id}-{lane}"
 
 
+def _resolve_agent_engine_id() -> str:
+    """The Agent Engine holding the sessions: pinned, found by name, or created.
+
+    An explicit VERTEX_AGENT_ENGINE_ID always wins. Otherwise the engine is
+    looked up by display name in the configured location and created if absent,
+    so the same values file works in every project and nobody has to paste an
+    opaque numeric id.
+
+    On the race: two pods starting together can both create one. That is
+    tolerable because SELECTION is deterministic — every pod sorts the matches
+    and takes the same one — so they converge on a single session store even
+    when a duplicate exists. The duplicate is inert, and logged loudly so it can
+    be removed.
+    """
+    pinned = (settings.vertex_agent_engine_id or "").strip()
+    if pinned:
+        return pinned.rsplit("/", 1)[-1]
+
+    display_name = (settings.vertex_agent_engine_name or "").strip()
+    if not display_name:
+        raise RuntimeError(
+            "ADK_SESSION_BACKEND=vertex needs VERTEX_AGENT_ENGINE_NAME "
+            "(or an explicit VERTEX_AGENT_ENGINE_ID)."
+        )
+    project, location = settings.gcp_project, settings.gcp_location
+    if not project:
+        raise RuntimeError("ADK_SESSION_BACKEND=vertex needs GOOGLE_CLOUD_PROJECT.")
+
+    try:
+        import vertexai
+
+        client = vertexai.Client(project=project, location=location)
+    except Exception as e:                      # pragma: no cover - dependency wiring
+        raise RuntimeError(f"Could not reach Vertex AI in {project}/{location}: {e}") from e
+
+    def _matching() -> list[str]:
+        found = []
+        for engine in client.agent_engines.list():
+            resource = getattr(engine, "api_resource", engine)
+            if (getattr(resource, "display_name", None) or "") == display_name:
+                name = getattr(resource, "name", "") or ""
+                if name:
+                    found.append(name.rsplit("/", 1)[-1])
+        # deterministic: same order in every pod, so all converge on one engine
+        return sorted(found)
+
+    existing = _matching()
+    if existing:
+        if len(existing) > 1:
+            logger.warning(
+                "%d Agent Engines are named %r in %s/%s — using %s. Delete the "
+                "extras; they hold sessions nothing reads.",
+                len(existing), display_name, project, location, existing[0],
+            )
+        return existing[0]
+
+    logger.info("No Agent Engine named %r in %s/%s — creating it.",
+                display_name, project, location)
+    try:
+        client.agent_engines.create(config={"display_name": display_name})
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not create the Agent Engine {display_name!r} in "
+            f"{project}/{location}: {e}. The service account needs "
+            "roles/aiplatform.user, or pin an existing one with "
+            "VERTEX_AGENT_ENGINE_ID."
+        ) from e
+
+    # Re-list rather than trusting the create response: if another pod created
+    # one at the same moment, this is where both pods agree which to use.
+    created = _matching()
+    if not created:
+        raise RuntimeError(
+            f"Created an Agent Engine named {display_name!r} but it did not appear "
+            "in the listing — retry, or pin VERTEX_AGENT_ENGINE_ID."
+        )
+    return created[0]
+
+
 def _build_session_service():
     """The configured session store. Defaults to in-memory (per-pod)."""
     backend = (settings.adk_session_backend or "memory").strip().lower()
@@ -73,15 +152,7 @@ def _build_session_service():
             f"ADK_SESSION_BACKEND={backend!r} is not supported (use 'memory' or 'vertex')."
         )
 
-    engine_id = (settings.vertex_agent_engine_id or "").strip().rsplit("/", 1)[-1]
-    if not engine_id:
-        # Failing at startup is the point: silently falling back to in-memory
-        # would look like it worked until a pod restart lost every conversation.
-        raise RuntimeError(
-            "ADK_SESSION_BACKEND=vertex requires VERTEX_AGENT_ENGINE_ID "
-            "(the Agent Engine holding the sessions). Create one first — see "
-            "the chart README — or set ADK_SESSION_BACKEND=memory."
-        )
+    engine_id = _resolve_agent_engine_id()
     try:
         from google.adk.sessions import VertexAiSessionService
     except ImportError as e:      # pragma: no cover - dependency wiring

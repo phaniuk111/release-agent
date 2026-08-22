@@ -411,12 +411,18 @@ class Settings(BaseSettings):
         default="memory",
         validation_alias=AliasChoices("ADK_SESSION_BACKEND", "RELEASE_ADK_SESSION_BACKEND"),
     )
-    # Numeric id of the Agent Engine (reasoning engine) holding the sessions —
-    # REQUIRED when adk_session_backend="vertex". Create one first; see the
-    # chart README. Accepts the bare id or the full resource name.
+    # Agent Engine (reasoning engine) holding the sessions. Pin an exact one with
+    # VERTEX_AGENT_ENGINE_ID (bare id or full resource name) — otherwise the
+    # engine is resolved BY DISPLAY NAME in gcp_location and created if absent,
+    # so the same values file works in every project without anyone pasting an
+    # opaque numeric id.
     vertex_agent_engine_id: str = Field(
         default="",
         validation_alias=AliasChoices("VERTEX_AGENT_ENGINE_ID", "AGENT_ENGINE_ID"),
+    )
+    vertex_agent_engine_name: str = Field(
+        default="release-copilot-sessions",
+        validation_alias=AliasChoices("VERTEX_AGENT_ENGINE_NAME", "AGENT_ENGINE_NAME"),
     )
     # Require human confirmation before high-impact prod ops (prod remove / merge
     # PRD release) via ADK tool confirmation.
