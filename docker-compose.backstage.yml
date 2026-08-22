@@ -15,7 +15,7 @@ services:
     build: ./.worktrees/adk
     image: release-copilot:poc
     ports:
-      - '127.0.0.1:8000:8000'
+      - "127.0.0.1:8000:8000"
     env_file:
       - path: .env
         required: false
@@ -31,7 +31,7 @@ services:
     build: ./backstage
     image: backstage-release-copilot:poc
     ports:
-      - '127.0.0.1:7007:7007'
+      - "127.0.0.1:7007:7007"
     environment:
       # Backstage backend proxies /api/proxy/release-copilot/* to the service.
       RELEASE_COPILOT_URL: http://release-copilot:8000
