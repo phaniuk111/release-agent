@@ -58,7 +58,13 @@ export function QueueTab() {
       df_only: boolean;
     }>
   >([
-    { artifact: '', jira_ticket: '', build_run_url: '', prl1_only: false, df_only: false },
+    {
+      artifact: '',
+      jira_ticket: '',
+      build_run_url: '',
+      prl1_only: false,
+      df_only: false,
+    },
   ]);
   const [requestedBy, setRequestedBy] = useState('');
   const [changeDetails, setChangeDetails] = useState('');
@@ -84,7 +90,13 @@ export function QueueTab() {
   const addRow = useCallback(() => {
     setRows(prev => [
       ...prev,
-      { artifact: '', jira_ticket: '', build_run_url: '', prl1_only: false, df_only: false },
+      {
+        artifact: '',
+        jira_ticket: '',
+        build_run_url: '',
+        prl1_only: false,
+        df_only: false,
+      },
     ]);
   }, []);
 
@@ -126,7 +138,13 @@ export function QueueTab() {
       });
       setDialogOpen(false);
       setRows([
-        { artifact: '', jira_ticket: '', build_run_url: '', prl1_only: false, df_only: false },
+        {
+          artifact: '',
+          jira_ticket: '',
+          build_run_url: '',
+          prl1_only: false,
+          df_only: false,
+        },
       ]);
       setChangeDetails('');
       setNote('');
@@ -297,7 +315,9 @@ export function QueueTab() {
                   size="small"
                   label="Jira ticket"
                   value={r.jira_ticket}
-                  onChange={e => updateRow(idx, { jira_ticket: e.target.value })}
+                  onChange={e =>
+                    updateRow(idx, { jira_ticket: e.target.value })
+                  }
                   style={{ flex: 1 }}
                 />
                 <TextField

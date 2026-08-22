@@ -45,6 +45,23 @@ test.describe('Release Copilot page', () => {
     });
   });
 
+  test('deploy tab submit renders agent preview with CONFIRM token', async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await page.getByRole('tab', { name: 'Deploy' }).click();
+    await expect(page.locator('textarea').first()).toHaveValue(/include/, {
+      timeout: 30_000,
+    });
+    await page.getByRole('button', { name: 'Deploy to UAT' }).click();
+    await page.getByRole('tab', { name: 'Chat' }).click();
+    // Read-side assertion only: the preview + CONFIRM token appear; we never
+    // send the token, so no workflow is dispatched.
+    await expect(
+      page.getByText(/CONFIRM-[a-z0-9]+/i).last(),
+    ).toBeVisible({ timeout: 150_000 });
+  });
+
   test('queue tab lists items and add dialog has jira field', async ({
     page,
   }) => {
