@@ -7,6 +7,7 @@ import { DeployTab } from './DeployTab';
 import { DataflowTab } from './DataflowTab';
 import { ReleasesTab } from './ReleasesTab';
 import { QueueTab } from './QueueTab';
+import { InsightsTab } from './InsightsTab';
 
 export type ChatMessage = { role: 'user' | 'agent' | 'system'; text: string };
 
@@ -14,7 +15,7 @@ const useStyles = makeStyles(theme => ({
   tabsBar: { borderBottom: `1px solid ${theme.palette.divider}` },
 }));
 
-const TABS = ['Chat', 'Deploy', 'Dataflow', 'Releases', 'Queue'] as const;
+const TABS = ['Chat', 'Deploy', 'Dataflow', 'Releases', 'Queue', 'Insights'] as const;
 
 export function ReleaseCopilotPage() {
   const classes = useStyles();
@@ -93,6 +94,7 @@ export function ReleaseCopilotPage() {
           {tab === 2 && <DataflowTab onSend={send} />}
           {tab === 3 && <ReleasesTab />}
           {tab === 4 && <QueueTab />}
+          {tab === 5 && <InsightsTab />}
         </Box>
       </Content>
     </Page>

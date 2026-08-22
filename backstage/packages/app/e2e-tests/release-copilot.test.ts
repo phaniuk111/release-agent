@@ -15,7 +15,14 @@ test.describe('Release Copilot page', () => {
   });
 
   test('renders all five tabs', async ({ page }) => {
-    for (const name of ['Chat', 'Deploy', 'Dataflow', 'Releases', 'Queue']) {
+    for (const name of [
+      'Chat',
+      'Deploy',
+      'Dataflow',
+      'Releases',
+      'Queue',
+      'Insights',
+    ]) {
       await expect(page.getByRole('tab', { name })).toBeVisible();
     }
   });
@@ -43,6 +50,18 @@ test.describe('Release Copilot page', () => {
     await expect(page.getByText(/Sent to the agent/i)).toBeVisible({
       timeout: 15_000,
     });
+  });
+
+  test('insights tab shows real release history from BigQuery log', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Insights' }).click();
+    await expect(page.getByText('Release history')).toBeVisible();
+    // known released chart in the event log
+    await expect(page.getByText('orders-svc').first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText('#999').first()).toBeVisible();
   });
 
   test('deploy tab submit renders agent preview with CONFIRM token', async ({
