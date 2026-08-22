@@ -52,7 +52,11 @@ type Row = {
 };
 
 const useStyles = makeStyles(theme => ({
-  filters: { display: 'flex', gap: theme.spacing(2), marginBottom: theme.spacing(2) },
+  filters: {
+    display: 'flex',
+    gap: theme.spacing(2),
+    marginBottom: theme.spacing(2),
+  },
   muted: { color: theme.palette.text.secondary },
 }));
 
@@ -146,7 +150,11 @@ export function InsightsTab() {
       <Grid item xs={12}>
         <InfoCard title="Release history">
           <div className={classes.filters}>
-            <FormControl variant="outlined" size="small" style={{ minWidth: 160 }}>
+            <FormControl
+              variant="outlined"
+              size="small"
+              style={{ minWidth: 160 }}
+            >
               <InputLabel>Window</InputLabel>
               <Select
                 value={days}
@@ -160,7 +168,11 @@ export function InsightsTab() {
                 ))}
               </Select>
             </FormControl>
-            <FormControl variant="outlined" size="small" style={{ minWidth: 160 }}>
+            <FormControl
+              variant="outlined"
+              size="small"
+              style={{ minWidth: 160 }}
+            >
               <InputLabel>Event</InputLabel>
               <Select
                 value={eventType}

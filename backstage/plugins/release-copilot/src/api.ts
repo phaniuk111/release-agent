@@ -29,6 +29,7 @@ export async function apiPost<T>(
   base: string,
   path: string,
   body: unknown,
+  opts?: { allowFailure?: boolean },
 ): Promise<T> {
   const resp = await fetch(`${base}${path}`, {
     method: 'POST',
@@ -40,7 +41,7 @@ export async function apiPost<T>(
     error?: string;
   };
   if (!resp.ok) throw new Error(`POST ${path}: HTTP ${resp.status}`);
-  if (data && data.ok === false) {
+  if (data && data.ok === false && !opts?.allowFailure) {
     throw new Error(data.error || `POST ${path} failed`);
   }
   return data;

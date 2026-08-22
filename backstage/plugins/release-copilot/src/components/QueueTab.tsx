@@ -122,9 +122,20 @@ export function QueueTab() {
       setError('Your email (requested_by) is required.');
       return;
     }
+    // The backend refuses rows without the Actions run that built the tag —
+    // it verifies the build and RLFT/RFTL controls before queuing.
+    if (valid.some(r => !r.build_run_url.trim())) {
+      setError(
+        'Build run URL is required for each chart (e.g. https://github.com/<org>/<build-repo>/actions/runs/<id>) — the agent validates the build and its controls before queuing.',
+      );
+      return;
+    }
     setSubmitting(true);
     try {
-      await apiPost(apiBase, '/api/release-queue/batch', {
+      const result = await apiPost<{
+        ok?: boolean;
+        refused?: Array<{ artifact?: string; error?: string }>;
+      }>(apiBase, '/api/release-queue/batch', {
         rows: valid.map(r => ({
           artifact: r.artifact.trim(),
           jira_ticket: r.jira_ticket.trim(),
@@ -135,7 +146,14 @@ export function QueueTab() {
         requested_by: requestedBy.trim(),
         change_details: changeDetails.trim(),
         note: note.trim(),
-      });
+      },
+      { allowFailure: true });
+      if (result.ok === false) {
+        const reasons = (result.refused ?? [])
+          .map(r => `${r.artifact}: ${r.error}`)
+          .join(' | ');
+        throw new Error(reasons || 'Queueing refused by the backend.');
+      }
       setDialogOpen(false);
       setRows([
         {
@@ -323,7 +341,7 @@ export function QueueTab() {
                 <TextField
                   variant="outlined"
                   size="small"
-                  label="Build run URL"
+                  label="Build run URL (required — Actions run that built the tag)"
                   value={r.build_run_url}
                   onChange={e =>
                     updateRow(idx, { build_run_url: e.target.value })
