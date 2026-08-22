@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "backstage-portal.fullname" . }}
+  labels:
+    {{- include "backstage-portal.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "backstage-portal.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "backstage-portal.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "backstage-portal.serviceAccountName" . }}
+      securityContext:
+        {{- .Values.podSecurityContext | toYaml | nindent 8 }}
+      containers:
+        - name: backstage
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            # Backend proxy forwards /api/proxy/release-copilot/* here.
+            - name: RELEASE_COPILOT_URL
+              value: {{ .Values.releaseCopilot.url | quote }}
+          resources:
+            {{- .Values.resources | toYaml | nindent 12 }}
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/app-config.kubernetes.yaml
+              subPath: app-config.kubernetes.yaml
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          # app-config.kubernetes.yaml is merged LAST, after the image's baked-in
+          # app-config.yaml / app-config.docker.yaml.
+          command:
+            - node
+            - packages/backend
+            - --config
+            - app-config.yaml
+            - --config
+            - app-config.kubernetes.yaml
+      volumes:
+        - name: app-config
+          configMap:
+            name: {{ include "backstage-portal.fullname" . }}-config

@@ -1,0 +1,12 @@
+Backstage portal ({{ .Chart.Name }}-{{ .Chart.Version }}) installed.
+
+Serves the Backstage UI + backend (guest auth) and proxies
+/api/proxy/release-copilot/* to: {{ .Values.releaseCopilot.url }}
+
+{{- if .Values.ingress.enabled }}
+Open: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}/release-copilot
+{{- else }}
+Port-forward to try it:
+  kubectl port-forward svc/{{ include "backstage-portal.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  then open http://localhost:{{ .Values.service.port }}/release-copilot
+{{- end }}

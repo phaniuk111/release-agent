@@ -1,0 +1,63 @@
+# Backstage portal chart values.
+# Defaults: single-replica PoC, in-cluster sqlite (ephemeral), guest auth,
+# proxying to the release-copilot service in the same namespace.
+
+replicaCount: 1
+
+image:
+  # Built from backstage/Dockerfile in this repo (backstage_poc branch)
+  repository: backstage-release-copilot
+  tag: poc
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 7007
+
+ingress:
+  enabled: false
+  className: ""
+  host: backstage.example.internal
+  tls: false
+
+# Where the backend proxy forwards /api/proxy/release-copilot/*.
+# Points at the release-copilot Helm release's Service (helm/release-copilot).
+releaseCopilot:
+  # e.g. http://release-copilot.release.svc.cluster.local:8000
+  url: "http://release-copilot:8000"
+
+# Backstage app-config overrides merged over the baked-in app-config.yaml.
+# Rendered into a ConfigMap mounted as app-config.kubernetes.yaml.
+config:
+  app:
+    baseUrl: http://localhost:7007
+  backend:
+    baseUrl: http://localhost:7007
+    listen: ":7007"
+    # PoC default: sqlite in-memory. For anything real, switch to postgres:
+    # database:
+    #   client: pg
+    #   connection: { host: .., port: 5432, user: .., password: .. } (from a Secret)
+    database:
+      client: better-sqlite3
+      connection: ":memory:"
+  auth:
+    providers:
+      guest: {}
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+serviceAccount:
+  create: true
+  name: ""
