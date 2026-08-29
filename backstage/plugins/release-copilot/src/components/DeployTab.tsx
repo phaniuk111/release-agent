@@ -42,9 +42,22 @@ type DeployPayload = {
   };
 };
 
-export function DeployTab(props: { onSend: (text: string) => Promise<void> }) {
+export function DeployTab(props: {
+  onSend: (text: string) => Promise<void>;
+  /** Agent is streaming a response for the submitted payload. */
+  busy?: boolean;
+  /** Latest agent reply (preview / result) — rendered inline. */
+  agentResponse?: string;
+  /** Set when the agent's reply contains a CONFIRM token. */
+  pendingConfirm?: string | null;
+}) {
   const classes = useStyles();
-  const { onSend } = props;
+  const {
+    onSend,
+    busy = false,
+    agentResponse = '',
+    pendingConfirm = null,
+  } = props;
   const apiBase = useApiBase();
   const [env, setEnv] = useState<'uat' | 'prod'>('uat');
   const [json, setJson] = useState('');
@@ -242,10 +255,10 @@ export function DeployTab(props: { onSend: (text: string) => Promise<void> }) {
             {error}
           </Typography>
         )}
-        {sent && (
+        {sent && !busy && !pendingConfirm && (
           <Typography className={classes.sentNote}>
-            Sent to the agent — the preview and CONFIRM token are on the Chat
-            tab.
+            Sent to the agent — the preview appears below when it responds. If
+            the agent asks for confirmation, use the Confirm bar above.
           </Typography>
         )}
         <Button
@@ -253,9 +266,35 @@ export function DeployTab(props: { onSend: (text: string) => Promise<void> }) {
           color="primary"
           style={{ marginTop: 12 }}
           onClick={submit}
+          disabled={busy}
         >
-          Deploy to {isProd ? 'PRD' : 'UAT'}
+          {busy ? 'Working…' : `Deploy to ${isProd ? 'PRD' : 'UAT'}`}
         </Button>
+        {(busy || agentResponse) && (
+          <>
+            <Typography variant="subtitle2" style={{ marginTop: 16 }}>
+              Agent response
+            </Typography>
+            <pre
+              className={classes.jsonBox}
+              style={{
+                whiteSpace: 'pre-wrap',
+                background:
+                  'rgba(127,127,127,0.08)',
+                padding: 12,
+                borderRadius: 4,
+                maxHeight: 320,
+                overflowY: 'auto' as const,
+                marginTop: 8,
+              }}
+            >
+              {busy
+                ? (agentResponse || 'Preparing the deploy preview…')
+                : agentResponse || 'No response yet.'}
+              {busy && '▌'}
+            </pre>
+          </>
+        )}
       </CardContent>
     </Card>
   );

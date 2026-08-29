@@ -70,8 +70,10 @@ export function ChatTab(props: {
           )}
           {messages.map((m, i) => {
             const msgClass =
-              { user: classes.userMsg, agent: classes.agentMsg }[m.role] ??
-              classes.sysMsg;
+              ({ user: classes.userMsg, agent: classes.agentMsg } as Record<
+                string,
+                string
+              >)[m.role] ?? classes.sysMsg;
             return (
               <div key={i} className={msgClass}>
                 {m.role === 'user' ? '» ' : ''}

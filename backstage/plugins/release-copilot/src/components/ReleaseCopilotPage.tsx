@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toastApiRef } from '@backstage/frontend-plugin-api';
 import { useApi } from '@backstage/core-plugin-api';
-import { Box, makeStyles, Tab, Tabs } from '@material-ui/core';
+import { Box, Button, makeStyles, Tab, Tabs, Typography } from '@material-ui/core';
 import { Content, Header, Page } from '@backstage/core-components';
 import { streamChat, useApiBase } from '../api';
 import { ChatGrid } from './ChatTab';
@@ -14,8 +14,28 @@ import { InsightsTab } from './InsightsTab';
 
 export type ChatMessage = { role: 'user' | 'agent' | 'system'; text: string };
 
+const CONFIRM_TOKEN_RE = /CONFIRM-[A-F0-9]{4,10}\b/i;
+
 const useStyles = makeStyles(theme => ({
   tabsBar: { borderBottom: `1px solid ${theme.palette.divider}` },
+  confirmBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(1.5),
+    padding: theme.spacing(1.5, 2),
+    marginBottom: theme.spacing(2),
+    borderRadius: theme.shape.borderRadius,
+    border: `1px solid ${theme.palette.warning.main}`,
+    background:
+      theme.palette.type === 'light'
+        ? 'rgba(255, 152, 0, 0.08)'
+        : 'rgba(255, 152, 0, 0.12)',
+  },
+  confirmToken: {
+    fontFamily: 'monospace',
+    fontWeight: 700,
+  },
+  spacer: { flex: 1 },
 }));
 
 const TABS = [
@@ -52,6 +72,10 @@ export function ReleaseCopilotPage() {
   const apiBase = useApiBase();
   const toastApi = useApi(toastApiRef);
 
+  // When the agent ends a turn with a confirmation prompt, surface the token
+  // right where the user is (Deploy/Dataflow tabs) — no chat-tab round trip.
+  const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
+
   const append = useCallback((msg: ChatMessage) => {
     setMessages(prev => [...prev, msg]);
   }, []);
@@ -60,6 +84,7 @@ export function ReleaseCopilotPage() {
   const send = useCallback(
     async (text: string) => {
       if (busy) return;
+      setPendingConfirm(null);
       setBusy(true);
       append({ role: 'user', text });
       append({ role: 'agent', text: '' });
@@ -80,13 +105,6 @@ export function ReleaseCopilotPage() {
               role: 'system',
               text: '⚠ Confirmation required — reply with the exact CONFIRM token to proceed.',
             });
-            toastApi.post({
-              title: 'Confirmation required',
-              description:
-                'Reply in Chat with the exact CONFIRM token to proceed.',
-              status: 'warning',
-              timeout: 6000,
-            });
           } else if (ev.type === 'error') {
             append({
               role: 'system',
@@ -99,12 +117,13 @@ export function ReleaseCopilotPage() {
             });
           }
         });
-        // Stream completed without error — show a transient success toast for
-        // form-tab submissions (Deploy/Dataflow pass their text here).
-        toastApi.post({
-          title: 'Request sent',
-          status: 'success',
-          timeout: 3000,
+        // If the agent ended its turn with a confirmation prompt, capture the
+        // token so the current tab can confirm inline.
+        setMessages(prev => {
+          const last = [...prev].reverse().find(m => m.role === 'agent');
+          const match = last?.text.match(CONFIRM_TOKEN_RE);
+          if (match) setPendingConfirm(match[0].toUpperCase());
+          return prev;
         });
       } catch (e) {
         append({ role: 'system', text: `Error: ${(e as Error).message}` });
@@ -120,6 +139,29 @@ export function ReleaseCopilotPage() {
     [busy, threadId, append, apiBase, toastApi],
   );
 
+  const confirmAndRelease = useCallback(() => {
+    if (pendingConfirm) send(pendingConfirm);
+  }, [pendingConfirm, send]);
+
+  const dismissConfirm = useCallback(() => {
+    setPendingConfirm(null);
+    append({
+      role: 'system',
+      text: '✖ Preview dismissed — nothing was deployed.',
+    });
+    toastApi.post({
+      title: 'Not confirmed',
+      description: 'The preview was dismissed — nothing was deployed.',
+      status: 'info',
+      timeout: 5000,
+    });
+  }, [append, toastApi]);
+
+  const lastAgentText = useRef('');
+  const msgs = messages;
+  const lastAgent = [...msgs].reverse().find(m => m.role === 'agent');
+  lastAgentText.current = lastAgent?.text ?? '';
+
   return (
     <Page themeId="tool">
       <Header
@@ -127,6 +169,26 @@ export function ReleaseCopilotPage() {
         subtitle="ADK release agent, proxied through Backstage (PoC)"
       />
       <Content>
+        {pendingConfirm && !busy && (
+          <Box className={classes.confirmBar} data-testid="confirm-bar">
+            <Typography>
+              Preview ready — confirm to release. Token:{' '}
+              <span className={classes.confirmToken}>{pendingConfirm}</span>
+            </Typography>
+            <span className={classes.spacer} />
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={confirmAndRelease}
+              startIcon={<span>🚀</span>}
+            >
+              Confirm &amp; release
+            </Button>
+            <Button variant="outlined" onClick={dismissConfirm}>
+              Cancel
+            </Button>
+          </Box>
+        )}
         <Tabs
           className={classes.tabsBar}
           value={tab}
@@ -141,7 +203,14 @@ export function ReleaseCopilotPage() {
           {tab === 0 && (
             <ChatGrid messages={messages} busy={busy} onSend={send} />
           )}
-          {tab === 1 && <DeployTab onSend={send} />}
+          {tab === 1 && (
+            <DeployTab
+              onSend={send}
+              busy={busy}
+              agentResponse={lastAgentText.current}
+              pendingConfirm={pendingConfirm}
+            />
+          )}
           {tab === 2 && <DataflowTab onSend={send} />}
           {tab === 3 && <ReleasesTab />}
           {tab === 4 && <QueueTab />}
