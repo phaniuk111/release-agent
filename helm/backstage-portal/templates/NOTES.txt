@@ -3,7 +3,17 @@ Backstage portal ({{ .Chart.Name }}-{{ .Chart.Version }}) installed.
 Serves the Backstage UI + backend (guest auth) and proxies
 /api/proxy/release-copilot/* to: {{ .Values.releaseCopilot.url }}
 
-{{- if .Values.ingress.enabled }}
+{{- if .Values.virtualService.enabled }}
+Exposed on the shared host{{ if .Values.virtualService.pathPrefix }} at path prefix {{ .Values.virtualService.pathPrefix }}{{ end }}:
+{{- range .Values.virtualService.hosts }}
+  → http{{ if $.Values.gateway.tls }}s{{ end }}://{{ . }}{{ $.Values.virtualService.pathPrefix }}/
+{{- end }}
+
+IMPORTANT: config.app.baseUrl and config.backend.baseUrl MUST include the
+same prefix, e.g.:
+  --set config.app.baseUrl=https://{{ index .Values.virtualService.hosts 0 }}{{ .Values.virtualService.pathPrefix }}
+  --set config.backend.baseUrl=https://{{ index .Values.virtualService.hosts 0 }}{{ .Values.virtualService.pathPrefix }}
+{{- else if .Values.ingress.enabled }}
 Open: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}/release-copilot
 {{- else }}
 Port-forward to try it:

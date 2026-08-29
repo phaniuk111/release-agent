@@ -6,13 +6,10 @@ metadata:
     {{- include "backstage-portal.labels" . | nindent 4 }}
 data:
   app-config.kubernetes.yaml: |
-{{ .Values.config | toYaml | indent 4 }}
-{{- if .Values.serviceAccount.create }}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: {{ include "backstage-portal.serviceAccountName" . }}
-  labels:
-    {{- include "backstage-portal.labels" . | nindent 4 }}
-{{- end }}
+    {{- $cfg := .Values.config | deepCopy }}
+    {{- $dbPath := ":memory:" }}
+    {{- if .Values.persistence.enabled }}
+    {{- $dbPath = printf "%s/backstage.sqlite" .Values.persistence.mountPath }}
+    {{- end }}
+    {{- $_ := set $cfg.backend.database "connection" $dbPath }}
+{{ $cfg | toYaml | indent 4 }}

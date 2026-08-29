@@ -34,6 +34,8 @@ spec:
             - name: app-config
               mountPath: /app/app-config.kubernetes.yaml
               subPath: app-config.kubernetes.yaml
+            - name: backstage-data
+              mountPath: {{ .Values.persistence.mountPath }}
           readinessProbe:
             httpGet:
               path: /
@@ -55,3 +57,10 @@ spec:
         - name: app-config
           configMap:
             name: {{ include "backstage-portal.fullname" . }}-config
+        - name: backstage-data
+        {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "backstage-portal.fullname" . }}-data
+        {{- else }}
+          emptyDir: {}
+        {{- end }}

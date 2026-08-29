@@ -1,5 +1,5 @@
 # Backstage portal chart values.
-# Defaults: single-replica PoC, in-cluster sqlite (ephemeral), guest auth,
+# Defaults: single-replica PoC, in-cluster sqlite, guest auth,
 # proxying to the release-copilot service in the same namespace.
 
 replicaCount: 1
@@ -20,30 +20,94 @@ ingress:
   host: backstage.example.internal
   tls: false
 
+# Istio/Gateway-API exposure on a SHARED hostname (GKE + ASM/Istio).
+# Backstage is path-prefixed: e.g. https://common-host/idp serves the portal.
+# The VS redirects "/idp" -> "/idp/" and strips the prefix before forwarding
+# to the pod; the app itself is TOLD the prefix via config.app.baseUrl /
+# config.backend.baseUrl (the frontend uses its pathname as router base path).
+virtualService:
+  enabled: false
+  # The common hostname shared by services in the namespace, e.g.:
+  # hosts: ["shared.internal.company.com"]
+  hosts: []
+  # Existing Gateway(s) in the cluster/namespace that terminate the common
+  # host, e.g. gateways: ["istio-system/shared-gateway"].
+  # If gateway.enabled=true, this chart creates its own gateway instead.
+  gateways: []
+  pathPrefix: "/idp"
+  # timeout: "30s"
+  # retries: { attempts: 2, perTryTimeout: "10s" }
+
+gateway:
+  enabled: false
+  selector:
+    istio: ingressgateway
+  port:
+    number: 80
+    name: http
+    protocol: HTTP
+  # tls:
+  #   mode: SIMPLE
+  #   credentialName: backstage-tls
+
 # Where the backend proxy forwards /api/proxy/release-copilot/*.
 # Points at the release-copilot Helm release's Service (helm/release-copilot).
 releaseCopilot:
   # e.g. http://release-copilot.release.svc.cluster.local:8000
   url: "http://release-copilot:8000"
 
+# SQLite persistence. PoC default keeps data only for the pod's lifetime
+# (emptyDir). Enable persistence to survive pod restarts/reschedules.
+#
+# NOTE: single-replica only — a PVC with ReadWriteOnce cannot be shared.
+# For multi-replica, switch backend.database to Postgres (see config below).
+persistence:
+  enabled: false
+  size: 1Gi
+  # storageClassName: ""   # leave empty to use the cluster default
+  mountPath: /app/backstage-data
+
 # Backstage app-config overrides merged over the baked-in app-config.yaml.
 # Rendered into a ConfigMap mounted as app-config.kubernetes.yaml.
+# Paths in catalog.locations are relative to the backend process working
+# dir inside the container (/app).
 config:
   app:
     baseUrl: http://localhost:7007
   backend:
     baseUrl: http://localhost:7007
     listen: ":7007"
-    # PoC default: sqlite in-memory. For anything real, switch to postgres:
+    # SQLite path is injected by the chart (see persistence.*) — do not set
+    # a hardcoded path here unless you override the mount too.
+    # For anything real, switch to postgres instead:
     # database:
     #   client: pg
     #   connection: { host: .., port: 5432, user: .., password: .. } (from a Secret)
     database:
       client: better-sqlite3
-      connection: ":memory:"
   auth:
     providers:
       guest: {}
+  catalog:
+    rules:
+      - allow: [Component, System, API, Resource, Location]
+    locations:
+      - type: file
+        target: ./examples/entities.yaml
+      - type: file
+        target: ./examples/release-entities.yaml
+      - type: file
+        target: ./examples/springboot-service.yaml
+        rules:
+          - allow: [Component, System, API, Resource, Group]
+      - type: file
+        target: ./examples/template/template.yaml
+        rules:
+          - allow: [Template]
+      - type: file
+        target: ./examples/org.yaml
+        rules:
+          - allow: [User, Group]
 
 resources:
   requests:

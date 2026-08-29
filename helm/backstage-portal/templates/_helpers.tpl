@@ -23,3 +23,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 default
 {{- end -}}
 {{- end -}}
+
+{{/* In-cluster DNS name of the Service. */}}
+{{- define "backstage-portal.serviceHost" -}}
+{{- printf "%s.%s.svc.cluster.local" (include "backstage-portal.fullname" .) .Release.Namespace -}}
+{{- end -}}
