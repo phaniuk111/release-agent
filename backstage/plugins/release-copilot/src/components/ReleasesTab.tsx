@@ -122,7 +122,7 @@ export function ReleasesTab() {
         >
           Draft change request
         </Button>
-        {draft != null && (
+        {draft !== null && (
           <pre
             style={{
               marginTop: 12,

@@ -68,21 +68,17 @@ export function ChatTab(props: {
               Dataflow tabs; their submissions land here.
             </Typography>
           )}
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={
-                m.role === 'user'
-                  ? classes.userMsg
-                  : m.role === 'agent'
-                  ? classes.agentMsg
-                  : classes.sysMsg
-              }
-            >
-              {m.role === 'user' ? '» ' : ''}
-              {m.text}
-            </div>
-          ))}
+          {messages.map((m, i) => {
+            const msgClass =
+              { user: classes.userMsg, agent: classes.agentMsg }[m.role] ??
+              classes.sysMsg;
+            return (
+              <div key={i} className={msgClass}>
+                {m.role === 'user' ? '» ' : ''}
+                {m.text}
+              </div>
+            );
+          })}
           {busy && <Progress />}
         </div>
         <div className={classes.inputRow}>
@@ -149,7 +145,7 @@ export function StatusCard() {
             Click refresh to load the current release status.
           </Typography>
         )}
-        {status != null && (
+        {status !== null && (
           <pre style={{ overflowX: 'auto', fontSize: '0.8rem' }}>
             {JSON.stringify(status, null, 2)}
           </pre>

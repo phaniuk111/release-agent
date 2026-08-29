@@ -117,7 +117,7 @@ export function ReleaseCopilotPage() {
         setBusy(false);
       }
     },
-    [busy, threadId, append],
+    [busy, threadId, append, apiBase, toastApi],
   );
 
   return (

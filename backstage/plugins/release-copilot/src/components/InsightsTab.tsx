@@ -86,7 +86,7 @@ const columns: TableColumn<Row>[] = [
     title: 'PR',
     field: 'pr',
     render: (row: Row) =>
-      row.pr == null ? (
+      row.pr === null || row.pr === undefined ? (
         '—'
       ) : (
         <Link to={`https://github.com/pull/${row.pr}`}>#{row.pr}</Link>

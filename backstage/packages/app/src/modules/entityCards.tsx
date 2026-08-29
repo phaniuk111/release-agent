@@ -40,7 +40,7 @@ function ReleaseQueueCard() {
 
   useEffect(() => {
     let alive = true;
-    apiGet<{ queue?: unknown[] }>(apiBase, '/api/queue')
+    apiGet<{ queue?: unknown[] }>(apiBase, '/api/release-queue')
       .then(ctx => {
         if (alive) setPending(ctx.queue?.length ?? 0);
       })
