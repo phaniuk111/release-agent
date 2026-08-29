@@ -1,4 +1,7 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { toastApiRef } from '@backstage/frontend-plugin-api';
+import { useApi } from '@backstage/core-plugin-api';
 import { Box, makeStyles, Tab, Tabs } from '@material-ui/core';
 import { Content, Header, Page } from '@backstage/core-components';
 import { streamChat, useApiBase } from '../api';
@@ -15,15 +18,39 @@ const useStyles = makeStyles(theme => ({
   tabsBar: { borderBottom: `1px solid ${theme.palette.divider}` },
 }));
 
-const TABS = ['Chat', 'Deploy', 'Dataflow', 'Releases', 'Queue', 'Insights'] as const;
+const TABS = [
+  'Chat',
+  'Deploy',
+  'Dataflow',
+  'Releases',
+  'Queue',
+  'Insights',
+] as const;
 
 export function ReleaseCopilotPage() {
   const classes = useStyles();
-  const [tab, setTab] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabName = (searchParams.get('tab') ?? '').toLowerCase();
+  const urlTab = TABS.map(t => t.toLowerCase()).indexOf(tabName);
+  const [tab, setTab] = useState(urlTab >= 0 ? urlTab : 0);
+
+  // Deep-link: /release-copilot?tab=queue (or deploy, insights, ...)
+  useEffect(() => {
+    if (urlTab >= 0 && urlTab !== tab) setTab(urlTab);
+  }, [urlTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectTab = useCallback(
+    (v: number) => {
+      setTab(v);
+      setSearchParams({ tab: TABS[v].toLowerCase() }, { replace: true });
+    },
+    [setSearchParams],
+  );
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [threadId] = useState<string | null>(null);
   const apiBase = useApiBase();
+  const toastApi = useApi(toastApiRef);
 
   const append = useCallback((msg: ChatMessage) => {
     setMessages(prev => [...prev, msg]);
@@ -53,15 +80,39 @@ export function ReleaseCopilotPage() {
               role: 'system',
               text: '⚠ Confirmation required — reply with the exact CONFIRM token to proceed.',
             });
+            toastApi.post({
+              title: 'Confirmation required',
+              description:
+                'Reply in Chat with the exact CONFIRM token to proceed.',
+              status: 'warning',
+              timeout: 6000,
+            });
           } else if (ev.type === 'error') {
             append({
               role: 'system',
               text: `Error: ${ev.content ?? 'unknown'}`,
             });
+            toastApi.post({
+              title: 'Release Copilot error',
+              description: String(ev.content ?? 'unknown error'),
+              status: 'danger',
+            });
           }
+        });
+        // Stream completed without error — show a transient success toast for
+        // form-tab submissions (Deploy/Dataflow pass their text here).
+        toastApi.post({
+          title: 'Request sent',
+          status: 'success',
+          timeout: 3000,
         });
       } catch (e) {
         append({ role: 'system', text: `Error: ${(e as Error).message}` });
+        toastApi.post({
+          title: 'Release Copilot request failed',
+          description: (e as Error).message,
+          status: 'danger',
+        });
       } finally {
         setBusy(false);
       }
@@ -79,7 +130,7 @@ export function ReleaseCopilotPage() {
         <Tabs
           className={classes.tabsBar}
           value={tab}
-          onChange={(_, v) => setTab(v)}
+          onChange={(_, v) => selectTab(v)}
           indicatorColor="primary"
         >
           {TABS.map(label => (

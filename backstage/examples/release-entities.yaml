@@ -1,0 +1,52 @@
+---
+# Release platform entities — registered via catalog locations (app-config.yaml).
+# These power the github-actions CI/CD tab and give each repo a catalog page.
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: release-platform
+  description: Release Copilot — ADK agent + Backstage portal + deploy repos
+spec:
+  owner: guests
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: release-copilot-agent
+  description: ADK release agent (FastAPI) — build + deploy repos, release orchestration
+  annotations:
+    github.com/project-slug: phaniuk111/devops
+  tags: [release, adk, agent]
+spec:
+  type: service
+  lifecycle: experimental
+  owner: guests
+  system: release-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: deployment-repo
+  description: Deployment repo (uat/ + prd/ deployment.json) driven by the release agent
+  annotations:
+    github.com/project-slug: phaniuk111/deployment-repo
+  tags: [deploy, config]
+spec:
+  type: repository
+  lifecycle: experimental
+  owner: guests
+  system: release-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: dataflow-deploy-repo
+  description: Dataflow deploy repo (df-deploy.yml workflow) driven by the release agent
+  annotations:
+    github.com/project-slug: phaniuk111/dataflow-deploy-repo
+  tags: [deploy, dataflow]
+spec:
+  type: repository
+  lifecycle: experimental
+  owner: guests
+  system: release-platform

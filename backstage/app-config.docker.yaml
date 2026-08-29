@@ -5,14 +5,38 @@ app:
 backend:
   baseUrl: http://localhost:7007
   listen: ':7007'
-  # SQLite in-memory: no Postgres container needed for the PoC.
+  # SQLite file-backed: no Postgres container needed for the PoC.
+  # The DB file lives in /app/backstage-data (created by the backend at
+  # startup); mount a volume there if you want it to survive rebuilds.
   database:
     client: better-sqlite3
-    connection: ':memory:'
+    connection: '/app/backstage-data/backstage.sqlite'
 
 auth:
   providers:
     guest: {}
 
 catalog:
-  locations: []
+  locations:
+    # Paths are relative to the backend process working dir inside the
+    # container (/app), NOT packages/backend like in local dev.
+    - type: file
+      target: ./examples/entities.yaml
+    - type: file
+      target: ./examples/release-entities.yaml
+    - type: file
+      target: ./examples/springboot-service.yaml
+      rules:
+        - allow: [Component, System, API, Resource, Group]
+
+    # Local example template
+    - type: file
+      target: ./examples/template/template.yaml
+      rules:
+        - allow: [Template]
+
+    # Local example organizational data
+    - type: file
+      target: ./examples/org.yaml
+      rules:
+        - allow: [User, Group]

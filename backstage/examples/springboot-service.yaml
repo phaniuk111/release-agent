@@ -1,0 +1,194 @@
+---
+# A mocked Spring Boot service so we can demo the developer experience in
+# Backstage. Modeled on the classic Spring PetClinic sample
+# (https://github.com/spring-petclinic/spring-petclinic) — a real public
+# Spring Boot REST service — so the links / GitHub Actions tabs feel real.
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: payments-platform
+  description: Online payments domain — checkout, settlement & reconciliation
+spec:
+  owner: payments-team
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: payments-team
+  description: The team owning the payments platform
+spec:
+  type: team
+  profile:
+    displayName: Payments Team
+    email: payments@mycompany.com
+  parent: guests
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: payments-db
+  description: PostgreSQL database storing payment transactions
+  tags:
+    - postgres
+    - database
+spec:
+  type: database
+  owner: payments-team
+  system: payments-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: payment-api
+  description: REST API for creating and tracking payments
+  tags:
+    - openapi
+    - spring-boot
+spec:
+  type: openapi
+  lifecycle: production
+  owner: payments-team
+  system: payments-platform
+  definition: |
+    openapi: 3.0.1
+    info:
+      title: Payment API
+      version: 1.0.0
+      description: REST API for creating and tracking payments
+      license:
+        name: Apache-2.0
+    servers:
+      - url: http://payment-service.mycompany.com/api/v1
+    tags:
+      - name: payments
+        description: Payment operations
+    paths:
+      /payments:
+        get:
+          tags: [payments]
+          summary: List all payments
+          operationId: listPayments
+          responses:
+            '200':
+              description: List of payment transactions
+              content:
+                application/json:
+                  schema:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Payment'
+        post:
+          tags: [payments]
+          summary: Create a new payment
+          operationId: createPayment
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Payment'
+          responses:
+            '201':
+              description: Payment created
+              content:
+                application/json:
+                  schema:
+                    $ref: '#/components/schemas/Payment'
+      /payments/{id}:
+        get:
+          tags: [payments]
+          summary: Get a payment by id
+          operationId: getPayment
+          parameters:
+            - name: id
+              in: path
+              required: true
+              schema:
+                type: integer
+                format: int64
+          responses:
+            '200':
+              description: A single payment
+              content:
+                application/json:
+                  schema:
+                    $ref: '#/components/schemas/Payment'
+            '404':
+              description: Payment not found
+        delete:
+          tags: [payments]
+          summary: Cancel a payment
+          operationId: cancelPayment
+          parameters:
+            - name: id
+              in: path
+              required: true
+              schema:
+                type: integer
+                format: int64
+          responses:
+            '204':
+              description: Payment cancelled
+    components:
+      schemas:
+        Payment:
+          type: object
+          required: [amount, currency, status]
+          properties:
+            id:
+              type: integer
+              format: int64
+              readOnly: true
+            amount:
+              type: number
+              format: double
+              example: 49.99
+            currency:
+              type: string
+              example: USD
+            status:
+              type: string
+              enum: [PENDING, AUTHORIZED, SETTLED, CANCELLED]
+            merchantRef:
+              type: string
+              example: order-7f3e2a
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: payment-service
+  title: Payment Service
+  description: Spring Boot microservice handling payment creation, auth & settlement
+  annotations:
+    github.com/project-slug: spring-petclinic/spring-petclinic
+    backstage.io/source-location: url:https://github.com/spring-petclinic/spring-petclinic
+    # Docs placeholder so the TechDocs tab has something to render
+    backstage.io/techdocs-ref: dir:.
+  tags:
+    - java
+    - spring-boot
+    - maven
+    - postgres
+  links:
+    - url: https://github.com/spring-petclinic/spring-petclinic
+      title: Source Code
+      icon: github
+      type: source-code
+    - url: https://github.com/spring-petclinic/spring-petclinic/actions
+      title: CI/CD Pipeline
+      icon: ci
+      type: ci
+    - url: https://spring-petclinic.github.io
+      title: Live Demo
+      icon: dashboard
+      type: docs
+spec:
+  type: service
+  lifecycle: production
+  owner: payments-team
+  system: payments-platform
+  providesApis:
+    - payment-api
+  dependsOn:
+    - resource:payments-db

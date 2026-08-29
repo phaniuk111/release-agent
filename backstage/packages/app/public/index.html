@@ -2,6 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <script>
+  // Workaround: newer Chrome/V8 marks Error.prepareStackTrace as read-only,
+  // which crashes React's dev-mode JSX key validation when building component
+  // frames for warnings. Make it writable (it stays configurable).
+  try {
+    var d = Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');
+    if (d && d.writable === false && d.configurable) {
+      Object.defineProperty(Error, 'prepareStackTrace', { writable: true, configurable: true, value: d.value });
+    }
+  } catch (e) { /* ignore */ }
+</script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#000000" />
     <meta
