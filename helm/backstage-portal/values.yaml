@@ -77,6 +77,10 @@ config:
   backend:
     baseUrl: http://localhost:7007
     listen: ":7007"
+    # Behind the Istio gateway (and any external-auth layer) the pod sees
+    # forwarded headers (X-Forwarded-Proto/For) instead of the real scheme —
+    # trust them so redirects/OAuth callbacks keep the external https URL.
+    trustProxy: true
     # SQLite path is injected by the chart (see persistence.*) — do not set
     # a hardcoded path here unless you override the mount too.
     # For anything real, switch to postgres instead:
