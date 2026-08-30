@@ -166,6 +166,7 @@ export function DeployTab(props: {
             <FormControl fullWidth variant="outlined" size="small">
               <InputLabel>Environment</InputLabel>
               <Select
+                id="deploy-env"
                 value={env}
                 label="Environment"
                 onChange={e => setEnv(e.target.value as 'uat' | 'prod')}
@@ -177,6 +178,7 @@ export function DeployTab(props: {
           </Grid>
           <Grid item xs={12} sm={8}>
             <TextField
+              id="deploy-repo"
               fullWidth
               variant="outlined"
               size="small"
@@ -187,6 +189,7 @@ export function DeployTab(props: {
           </Grid>
           <Grid item xs={12}>
             <TextField
+              id="deploy-json"
               fullWidth
               multiline
               minRows={8}
@@ -203,6 +206,7 @@ export function DeployTab(props: {
             <>
               <Grid item xs={12}>
                 <TextField
+                  id="deploy-chg-summary"
                   fullWidth
                   variant="outlined"
                   size="small"
@@ -213,6 +217,7 @@ export function DeployTab(props: {
               </Grid>
               <Grid item xs={12}>
                 <TextField
+                  id="deploy-chg-description"
                   fullWidth
                   multiline
                   minRows={2}
@@ -225,6 +230,7 @@ export function DeployTab(props: {
               </Grid>
               <Grid item xs={12} sm={6}>
                 <TextField
+                  id="deploy-chg-start"
                   fullWidth
                   variant="outlined"
                   size="small"
@@ -237,6 +243,7 @@ export function DeployTab(props: {
               </Grid>
               <Grid item xs={12} sm={6}>
                 <TextField
+                  id="deploy-chg-end"
                   fullWidth
                   variant="outlined"
                   size="small"
@@ -279,8 +286,7 @@ export function DeployTab(props: {
               className={classes.jsonBox}
               style={{
                 whiteSpace: 'pre-wrap',
-                background:
-                  'rgba(127,127,127,0.08)',
+                background: 'rgba(127,127,127,0.08)',
                 padding: 12,
                 borderRadius: 4,
                 maxHeight: 320,
@@ -289,7 +295,7 @@ export function DeployTab(props: {
               }}
             >
               {busy
-                ? (agentResponse || 'Preparing the deploy preview…')
+                ? agentResponse || 'Preparing the deploy preview…'
                 : agentResponse || 'No response yet.'}
               {busy && '▌'}
             </pre>

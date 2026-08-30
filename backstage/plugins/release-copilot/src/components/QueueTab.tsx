@@ -279,6 +279,7 @@ export function QueueTab() {
           <DialogTitle>Add to next release</DialogTitle>
           <DialogContent>
             <TextField
+              id="queue-requested-by"
               fullWidth
               variant="outlined"
               size="small"
@@ -288,6 +289,7 @@ export function QueueTab() {
               onChange={e => setRequestedBy(e.target.value)}
             />
             <TextField
+              id="queue-change-details"
               fullWidth
               multiline
               minRows={3}
@@ -299,6 +301,7 @@ export function QueueTab() {
               onChange={e => setChangeDetails(e.target.value)}
             />
             <TextField
+              id="queue-note"
               fullWidth
               variant="outlined"
               size="small"
@@ -321,6 +324,7 @@ export function QueueTab() {
                 }}
               >
                 <TextField
+                  id={`queue-chart-${idx}`}
                   variant="outlined"
                   size="small"
                   label="chart:version"
@@ -329,6 +333,7 @@ export function QueueTab() {
                   style={{ flex: 2 }}
                 />
                 <TextField
+                  id={`queue-jira-${idx}`}
                   variant="outlined"
                   size="small"
                   label="Jira ticket"
@@ -339,6 +344,7 @@ export function QueueTab() {
                   style={{ flex: 1 }}
                 />
                 <TextField
+                  id={`queue-build-run-${idx}`}
                   variant="outlined"
                   size="small"
                   label="Build run URL (required — Actions run that built the tag)"
