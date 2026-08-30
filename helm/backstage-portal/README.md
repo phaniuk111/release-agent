@@ -80,6 +80,14 @@ If your namespace already has a Gateway terminating the common host, keep
   reschedule). With `persistence.enabled=true` the sqlite file is stored on a
   PVC (`backstage-data`). Single-replica only (PVC is ReadWriteOnce) — point
   `config.backend.database` at postgres for multi-replica.
+- **Rolling deploys with PVC**: the chart sets `strategy: Recreate` when
+  persistence is enabled — a RollingUpdate surge pod cannot attach a
+  ReadWriteOnce volume held by the old pod and would hang in ContainerCreating.
+- **A PVC is not a backup.** Backstage catalog/history is regenerable from
+  `examples/*.yaml`, but plugin/queue state is not. Use volume snapshots
+  (`VolumeSnapshotClass` + a CronJob or Velero) or schedule sqlite backups
+  (`sqlite3 /app/backstage-data/backstage.sqlite ".backup ..."` from a sidecar).
+  For anything beyond PoC: Postgres.
 - **Catalog demo data**: the chart seeds the same example locations baked into
   the image (`examples/*.yaml`), including the mock Spring Boot
   `payment-service` and the `release-platform` release-copilot entities.

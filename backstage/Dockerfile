@@ -27,6 +27,11 @@ WORKDIR /app
 RUN tar -xzf packages/backend/dist/bundle.tar.gz \
   && rm -f packages/backend/dist/bundle.tar.gz packages/backend/dist/skeleton.tar.gz
 
+# SQLite data dir (app-config.docker.yaml points the DB here). app.docker
+# runs without a volume: create the dir now, own it as uid 1000 so the
+# k8s podSecurityContext (runAsUser/fsGroup 1000) can write it too.
+RUN mkdir -p /app/backstage-data && chown -R 1000:1000 /app/backstage-data
+
 EXPOSE 7007
 
 CMD ["node", "packages/backend", "--config", "app-config.yaml", "--config", "app-config.docker.yaml"]

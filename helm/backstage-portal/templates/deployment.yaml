@@ -6,6 +6,13 @@ metadata:
     {{- include "backstage-portal.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if .Values.persistence.enabled }}
+  # SQLite lives on one ReadWriteOnce PVC — a surge pod on another node
+  # cannot attach it. Recreate swaps pods instead of overlapping them.
+  # (Multi-replica: switch database to Postgres and turn persistence off.)
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "backstage-portal.selectorLabels" . | nindent 6 }}
