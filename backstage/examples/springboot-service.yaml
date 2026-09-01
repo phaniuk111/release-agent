@@ -183,6 +183,27 @@ metadata:
       title: Live Demo
       icon: dashboard
       type: docs
+    # --- Observability & runtime (Level-0 links; replace with real IDs) ---
+    - url: https://grafana.your-domain.com/d/payments-overview?orgId=1&var-service=payment-service&kiosk
+      title: Grafana — PRD Dashboard
+      icon: dashboard
+      type: monitoring
+    - url: https://grafana.your-domain.com/alertlist?service=payment-service
+      title: Grafana — Alerts
+      icon: alert
+      type: monitoring
+    - url: https://console.cloud.google.com/kubernetes/workload/overview/asia-south1/YOUR_GKE_CLUSTER/eod1/payment-service?project=flash-keel-412418
+      title: GKE Workload
+      icon: kind:kubernetes-cluster
+      type: ops
+    - url: https://console.cloud.google.com/kubernetes/deployment/asia-south1/YOUR_GKE_CLUSTER/eod1/payment-service/details?project=flash-keel-412418
+      title: GKE Deployment Details
+      icon: kind:kubernetes-cluster
+      type: ops
+    - url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22eod1%22%0Aresource.labels.pod_name:%22payment-service-%22;duration=PT1H?project=flash-keel-412418
+      title: GKE Logs — Log Explorer
+      icon: docs
+      type: ops
 spec:
   type: service
   lifecycle: production
