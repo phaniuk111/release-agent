@@ -1,4 +1,5 @@
 import { createFrontendModule } from '@backstage/frontend-plugin-api';
+import { catalogApiRef } from '@backstage/plugin-catalog-react';
 import { HomePageWidgetBlueprint } from '@backstage/plugin-home-react/alpha';
 import { MarkdownContent } from '@backstage/core-components';
 import {
@@ -7,6 +8,8 @@ import {
   useApiBase,
 } from '@internal/plugin-release-copilot';
 import { useEffect, useState } from 'react';
+import { useApi } from '@backstage/core-plugin-api';
+import { Progress } from '@backstage/core-components';
 import {
   Button,
   Chip,
@@ -16,6 +19,7 @@ import {
   ListItemIcon,
   ListItemText,
   makeStyles,
+  Typography,
 } from '@material-ui/core';
 import { Link } from 'react-router-dom';
 import DashboardIcon from '@material-ui/icons/Dashboard';
@@ -163,7 +167,6 @@ const quickActionsWidget = HomePageWidgetBlueprint.make({
   },
 });
 
-
 // Grafana PRD dashboards gallery - config-driven (app-config under
 // home-page-widget:home/grafana-dashboards -> config.dashboards), so platform
 // admins curate the list once and every dev sees it on Home.
@@ -205,32 +208,162 @@ function DashboardListContent({ dashboards }: { dashboards: DashboardLink[] }) {
   );
 }
 
-const grafanaDashboardsWidget = HomePageWidgetBlueprint.makeWithOverrides({
-  name: 'grafana-dashboards',
-  configSchema: {
-    dashboards: z
-      .array(
-        z.object({
-          title: z.string(),
-          url: z.string(),
-          description: z.string().optional(),
+// Per-service dashboards: every 'service' component in the catalog gets a
+// link automatically, built from a URL template ({name} substituted) - so
+// adding a service to the catalog puts its dashboard on Home with zero config.
+type ServiceTemplate = {
+  label: string;
+  urlPattern: string;
+  description?: string;
+};
+
+function ServiceDashboardsSections({
+  templates,
+}: {
+  templates: ServiceTemplate[];
+}) {
+  const classes = useGrafanaListStyles();
+  const catalogApi = useApi(catalogApiRef);
+  const [services, setServices] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    catalogApi
+      .getEntities({
+        filter: { kind: 'component' },
+        fields: ['metadata.name', 'spec.type'],
+      })
+      .then(({ items }) => {
+        if (!alive) return;
+        setServices(
+          items
+            .filter(e => (e.spec as { type?: string })?.type === 'service')
+            .map(e => e.metadata.name)
+            .sort(),
+        );
+      })
+      .catch(e => alive && setError((e as Error).message));
+    return () => {
+      alive = false;
+    };
+  }, [catalogApi]);
+
+  if (error) {
+    return <MarkdownContent content={`*Catalog error: ${error}*`} />;
+  }
+  if (services === null) {
+    return <Progress />;
+  }
+  if (!services.length) {
+    return <MarkdownContent content="*No services in the catalog yet.*" />;
+  }
+  return (
+    <>
+      {templates.map(t => (
+        <div key={t.label}>
+          <Typography variant="subtitle2" style={{ marginTop: 8 }}>
+            {t.label}
+          </Typography>
+          <List className={classes.list} dense>
+            {services.map(name => {
+              const url = t.urlPattern.replace(/\{\{name\}\}/g, name);
+              return (
+                <ListItem
+                  key={`${t.label}-${name}`}
+                  button
+                  component="a"
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ListItemIcon className={classes.icon}>
+                    <DashboardIcon />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={name}
+                    secondary={t.description}
+                    primaryTypographyProps={{ className: classes.link }}
+                  />
+                </ListItem>
+              );
+            })}
+          </List>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function makeGrafanaTileWidget(
+  name: string,
+  widgetName: string,
+  title: string,
+  description: string,
+) {
+  return HomePageWidgetBlueprint.makeWithOverrides({
+    name,
+    configSchema: {
+      dashboards: z
+        .array(
+          z.object({
+            title: z.string(),
+            url: z.string(),
+            description: z.string().optional(),
+          }),
+        )
+        .optional(),
+      // One section per environment: every 'service' component in the catalog
+      // gets a dashboard link built from the template ({{name}} substituted).
+      serviceDashboardTemplates: z
+        .array(
+          z.object({
+            label: z.string(),
+            urlPattern: z.string(),
+            description: z.string().optional(),
+          }),
+        )
+        .optional(),
+    },
+    *factory(originalFactory, { config }) {
+      yield* originalFactory({
+        name: widgetName,
+        title,
+        description,
+        components: async () => ({
+          Content: () => {
+            const templates = config.serviceDashboardTemplates ?? [];
+            return (
+              <>
+                <DashboardListContent dashboards={config.dashboards ?? []} />
+                {templates.length > 0 && (
+                  <>
+                    <Divider style={{ margin: '8px 0' }} />
+                    <ServiceDashboardsSections templates={templates} />
+                  </>
+                )}
+              </>
+            );
+          },
         }),
-      )
-      .optional(),
-  },
-  *factory(originalFactory, { config }) {
-    yield* originalFactory({
-      name: 'GrafanaDashboards',
-      title: 'Grafana - PRD Dashboards',
-      description: 'Observability dashboards for every service',
-      components: async () => ({
-        Content: () => (
-          <DashboardListContent dashboards={config.dashboards ?? []} />
-        ),
-      }),
-    });
-  },
-});
+      });
+    },
+  });
+}
+
+const grafanaDashboardsWidget = makeGrafanaTileWidget(
+  'grafana-dashboards',
+  'GrafanaDashboards',
+  'Grafana - PRD Dashboards',
+  'Observability dashboards for every service',
+);
+
+const grafanaUatDashboardsWidget = makeGrafanaTileWidget(
+  'grafana-uat-dashboards',
+  'GrafanaUatDashboards',
+  'Grafana - UAT Dashboards',
+  'Pre-prod observability for every service',
+);
 
 export const homeModule = createFrontendModule({
   pluginId: 'home',
@@ -239,6 +372,6 @@ export const homeModule = createFrontendModule({
     releaseCopilotWidget,
     quickActionsWidget,
     grafanaDashboardsWidget,
+    grafanaUatDashboardsWidget,
   ],
 });
-

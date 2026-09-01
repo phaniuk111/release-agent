@@ -30,15 +30,27 @@ app:
             - title: PRD Overview
               url: https://grafana.your-domain.com/d/prd-overview?orgId=1&kiosk
               description: Org-wide production health
-            - title: Payment Service - PRD
-              url: https://grafana.your-domain.com/d/payments-overview?orgId=1&var-service=payment-service
-              description: Golden signals + SLOs
             - title: GKE Workloads - PRD
               url: https://grafana.your-domain.com/d/gke-workloads?orgId=1
               description: Pod restarts, CPU/memory, OOM kills
             - title: All Alerts
               url: https://grafana.your-domain.com/alertlist
               description: Firing + pending across environments
+          # Auto: one dashboard link per 'service' component in the catalog
+          serviceDashboardTemplates:
+            - label: PRD
+              urlPattern: https://grafana.your-domain.com/d/service-overview?orgId=1&var-service={{name}}&var-env=prd
+              description: Golden signals + SLOs
+    - home-page-widget:home/grafana-uat-dashboards:
+        config:
+          dashboards:
+            - title: UAT Overview
+              url: https://grafana.your-domain.com/d/uat-overview?orgId=1&kiosk
+              description: Pre-prod health at a glance
+          serviceDashboardTemplates:
+            - label: UAT
+              urlPattern: https://grafana.your-domain.com/d/service-overview?orgId=1&var-service={{name}}&var-env=uat
+              description: Pre-prod signals
     - home-page-widget:home/toolkit:
         config:
           tools:
@@ -90,6 +102,11 @@ app:
             - component: GrafanaDashboards
               column: 6
               row: 2
+              width: 6
+              height: 4
+            - component: GrafanaUatDashboards
+              column: 6
+              row: 3
               width: 6
               height: 4
             - component: Welcome
