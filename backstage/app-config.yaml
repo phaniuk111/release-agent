@@ -72,14 +72,12 @@ app:
     - home-page-widget:home/world-clock:
         config:
           clockConfigs:
-            - label: NYC
+            - label: India (IST)
+              timeZone: Asia/Kolkata
+            - label: UK (GMT/BST)
+              timeZone: Europe/London
+            - label: US (EST/EDT)
               timeZone: America/New_York
-            - label: UTC
-              timeZone: UTC
-            - label: STO
-              timeZone: Europe/Stockholm
-            - label: TYO
-              timeZone: Asia/Tokyo
     - page:home:
         config:
           defaultConfig:
@@ -89,51 +87,57 @@ app:
               width: 12
               height: 2
               deletable: false
-            - component: ReleaseCopilotStatus
+            - component: Welcome
               column: 0
               row: 1
               width: 6
-              height: 6
+              height: 5
             - component: QuickActions
               column: 6
               row: 1
               width: 6
               height: 3
+            - component: ReleaseCopilotStatus
+              column: 0
+              row: 2
+              width: 6
+              height: 5
             - component: GrafanaDashboards
               column: 6
               row: 2
               width: 6
               height: 4
+            - component: HomePageWorldClock
+              column: 0
+              row: 3
+              width: 6
+              height: 3
             - component: GrafanaUatDashboards
               column: 6
               row: 3
               width: 6
               height: 4
-            - component: Welcome
+            - component: HomePageToolkit
               column: 0
-              row: 2
+              row: 4
               width: 6
-              height: 6
+              height: 3
             - component: HomePageStarredEntities
               column: 6
-              row: 2
+              row: 4
               width: 6
               height: 4
             - component: HomePageRecentlyVisited
               column: 6
-              row: 2
+              row: 5
               width: 6
               height: 4
-            - component: HomePageToolkit
-              column: 0
-              row: 3
-              width: 6
-              height: 3
             - component: HomePageMostVisited
               column: 6
-              row: 3
+              row: 6
               width: 6
               height: 4
+
 
 organization:
   name: Release Copilot
