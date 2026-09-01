@@ -7,8 +7,25 @@ import {
   useApiBase,
 } from '@internal/plugin-release-copilot';
 import { useEffect, useState } from 'react';
-import { Button, Chip, makeStyles } from '@material-ui/core';
+import {
+  Button,
+  Chip,
+  Divider,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
+  makeStyles,
+} from '@material-ui/core';
 import { Link } from 'react-router-dom';
+import DashboardIcon from '@material-ui/icons/Dashboard';
+import { z } from 'zod';
+
+export type DashboardLink = {
+  title: string;
+  url: string;
+  description?: string;
+};
 
 const content = `
 ## Release Copilot Portal 🤖
@@ -146,7 +163,82 @@ const quickActionsWidget = HomePageWidgetBlueprint.make({
   },
 });
 
+
+// Grafana PRD dashboards gallery - config-driven (app-config under
+// home-page-widget:home/grafana-dashboards -> config.dashboards), so platform
+// admins curate the list once and every dev sees it on Home.
+const useGrafanaListStyles = makeStyles(theme => ({
+  list: { padding: 0 },
+  icon: { minWidth: 36 },
+  link: { color: theme.palette.primary.main, textDecoration: 'none' },
+}));
+
+function DashboardListContent({ dashboards }: { dashboards: DashboardLink[] }) {
+  const classes = useGrafanaListStyles();
+  if (!dashboards.length) {
+    return (
+      <MarkdownContent content="*No dashboards configured - add them in app-config.yaml under home-page-widget:home/grafana-dashboards.*" />
+    );
+  }
+  return (
+    <List className={classes.list} dense>
+      {dashboards.map(d => (
+        <ListItem
+          key={d.url}
+          button
+          component="a"
+          href={d.url}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <ListItemIcon className={classes.icon}>
+            <DashboardIcon />
+          </ListItemIcon>
+          <ListItemText
+            primary={d.title}
+            secondary={d.description}
+            primaryTypographyProps={{ className: classes.link }}
+          />
+        </ListItem>
+      ))}
+    </List>
+  );
+}
+
+const grafanaDashboardsWidget = HomePageWidgetBlueprint.makeWithOverrides({
+  name: 'grafana-dashboards',
+  configSchema: {
+    dashboards: z
+      .array(
+        z.object({
+          title: z.string(),
+          url: z.string(),
+          description: z.string().optional(),
+        }),
+      )
+      .optional(),
+  },
+  *factory(originalFactory, { config }) {
+    yield* originalFactory({
+      name: 'GrafanaDashboards',
+      title: 'Grafana - PRD Dashboards',
+      description: 'Observability dashboards for every service',
+      components: async () => ({
+        Content: () => (
+          <DashboardListContent dashboards={config.dashboards ?? []} />
+        ),
+      }),
+    });
+  },
+});
+
 export const homeModule = createFrontendModule({
   pluginId: 'home',
-  extensions: [welcomeWidget, releaseCopilotWidget, quickActionsWidget],
+  extensions: [
+    welcomeWidget,
+    releaseCopilotWidget,
+    quickActionsWidget,
+    grafanaDashboardsWidget,
+  ],
 });
+

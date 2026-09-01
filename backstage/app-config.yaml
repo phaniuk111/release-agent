@@ -24,6 +24,21 @@ app:
     # - app-root-element:home/visit-listener: true
     - api:home/visits: true
     - app-root-element:home/visit-listener: true
+    - home-page-widget:home/grafana-dashboards:
+        config:
+          dashboards:
+            - title: PRD Overview
+              url: https://grafana.your-domain.com/d/prd-overview?orgId=1&kiosk
+              description: Org-wide production health
+            - title: Payment Service - PRD
+              url: https://grafana.your-domain.com/d/payments-overview?orgId=1&var-service=payment-service
+              description: Golden signals + SLOs
+            - title: GKE Workloads - PRD
+              url: https://grafana.your-domain.com/d/gke-workloads?orgId=1
+              description: Pod restarts, CPU/memory, OOM kills
+            - title: All Alerts
+              url: https://grafana.your-domain.com/alertlist
+              description: Firing + pending across environments
     - home-page-widget:home/toolkit:
         config:
           tools:
@@ -72,6 +87,11 @@ app:
               row: 1
               width: 6
               height: 3
+            - component: GrafanaDashboards
+              column: 6
+              row: 2
+              width: 6
+              height: 4
             - component: Welcome
               column: 0
               row: 2
