@@ -2,7 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toastApiRef } from '@backstage/frontend-plugin-api';
 import { useApi } from '@backstage/core-plugin-api';
-import { Box, Button, makeStyles, Tab, Tabs, Typography } from '@material-ui/core';
+import {
+  Box,
+  Button,
+  makeStyles,
+  Tab,
+  Tabs,
+  Typography,
+} from '@material-ui/core';
 import { Content, Header, Page } from '@backstage/core-components';
 import { streamChat, useApiBase } from '../api';
 import { ChatGrid } from './ChatTab';
