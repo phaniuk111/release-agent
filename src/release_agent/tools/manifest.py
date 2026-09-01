@@ -244,12 +244,12 @@ def dispatch_workflow(
     image_tags: "img1:tag1,img2:tag2"
     extra_inputs: optional JSON string of other inputs
     """
-    # Enforce the config-driven allow-list (safety gate). Set ALLOWED_WORKFLOWS
-    # (env / Helm ConfigMap) to permit additional workflows.
+    # Safety gate. The list is a code constant, not config — see ALLOWED_WORKFLOWS
+    # in tools/_common.py for why.
     if workflow not in ALLOWED_WORKFLOWS:
         return (
             f"ERROR dispatching workflow: '{workflow}' is not in the allowed list "
-            f"{sorted(ALLOWED_WORKFLOWS)}. Add it via the ALLOWED_WORKFLOWS config to permit it."
+            f"{sorted(ALLOWED_WORKFLOWS)}."
         )
 
     inputs: dict[str, Any] = {}

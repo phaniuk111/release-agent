@@ -188,10 +188,6 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("GITHUB_BASE_URL", "GH_BASE_URL"),
     )
-    default_workflow: str = Field(
-        default="image-tag-step-report.yml",
-        validation_alias=AliasChoices("DEFAULT_WORKFLOW", "RELEASE_DEFAULT_WORKFLOW"),
-    )
     # Workflow dispatched in DEPLOY_REPO to (re)run the deployment simulation.
     on_merge_workflow: str = Field(
         default="on-merge-deploy.yml",
@@ -316,18 +312,6 @@ class Settings(BaseSettings):
     prd_require_controls: bool = Field(
         default=True,
         validation_alias=AliasChoices("PRD_REQUIRE_CONTROLS", "RELEASE_PRD_REQUIRE_CONTROLS"),
-    )
-    # Allow-list of workflows the agent may dispatch (enforced). Comma-separated
-    # in env, e.g. ALLOWED_WORKFLOWS="image-tag-step-report.yml,release-promote.yml".
-    allowed_workflows: Annotated[list[str], NoDecode] = Field(
-        default=[
-            "image-tag-step-report.yml",
-            "build-payments-api.yml",
-            "build-orders-api.yml",
-            "release-promote.yml",
-            "create-deployment-pr.yml",
-        ],
-        validation_alias=AliasChoices("ALLOWED_WORKFLOWS", "RELEASE_ALLOWED_WORKFLOWS"),
     )
     manifest_path: str = Field(
         default="release-manifest.json",
@@ -508,11 +492,11 @@ class Settings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
-    @field_validator("allowed_workflows", "control_prefixes", "release_guard_branches", mode="before")
+    @field_validator("control_prefixes", "release_guard_branches", mode="before")
     @classmethod
-    def _split_allowed_workflows(cls, v):
+    def _split_list_setting(cls, v):
         """Accept a comma-separated string (env) or a JSON array for list settings
-        (dispatch allow-list, control prefixes)."""
+        (control prefixes, release-guard branches)."""
         if isinstance(v, str):
             v = v.strip()
             if not v:

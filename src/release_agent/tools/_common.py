@@ -23,9 +23,12 @@ BUILD_REPO = settings.build_repo
 DEPLOY_REPO = settings.deploy_repo
 CONFIG_PATH = settings.config_path
 MANIFEST_PATH = settings.manifest_path
-# Dispatchable-workflow allow-list — driven by config (env / Helm ConfigMap), not
-# hardcoded. The default workflow is always allowed so a promote never self-blocks.
-ALLOWED_WORKFLOWS = set(settings.allowed_workflows) | {settings.default_workflow}
+# Dispatchable-workflow allow-list guarding ``dispatch_workflow``. No longer
+# configurable: the tool is unreachable from the product (MutationGuardPlugin
+# blocks it in chat and it is excluded from the ADK toolset), so its only caller
+# is the local tools CLI. Two env keys that gated nothing in a cluster were more
+# confusing than the literal is restrictive — widen this list in code, not config.
+ALLOWED_WORKFLOWS = {"image-tag-step-report.yml"}
 # Workflow used to (re)run the deployment simulation in DEPLOY_REPO.
 ON_MERGE_WORKFLOW = settings.on_merge_workflow
 
