@@ -365,6 +365,70 @@ const grafanaUatDashboardsWidget = makeGrafanaTileWidget(
   'Pre-prod observability for every service',
 );
 
+// Generic links tile (console links etc.) - config-driven list, same look as
+// the dashboard tiles. Used for the per-environment GCP console tiles.
+function makeLinksTileWidget(
+  name: string,
+  widgetName: string,
+  title: string,
+  description: string,
+) {
+  return HomePageWidgetBlueprint.makeWithOverrides({
+    name,
+    configSchema: {
+      links: z
+        .array(
+          z.object({
+            title: z.string(),
+            url: z.string(),
+            description: z.string().optional(),
+          }),
+        )
+        .optional(),
+    },
+    *factory(originalFactory, { config }) {
+      yield* originalFactory({
+        name: widgetName,
+        title,
+        description,
+        components: async () => ({
+          Content: () => (
+            <DashboardListContent dashboards={config.links ?? []} />
+          ),
+        }),
+      });
+    },
+  });
+}
+
+const gcpPrdTile = makeLinksTileWidget(
+  'gcp-prd-links',
+  'GcpPrdLinks',
+  'GCP - PRD Console',
+  'Production cluster, workloads & logs',
+);
+
+const gcpUatTile = makeLinksTileWidget(
+  'gcp-uat-links',
+  'GcpUatLinks',
+  'GCP - UAT Console',
+  'UAT cluster, workloads & logs',
+);
+
+const gcpPrl1Tile = makeLinksTileWidget(
+  'gcp-prl1-links',
+  'GcpPrl1Links',
+  'GCP - PRL1 Console',
+  'PRL1 cluster, workloads & logs',
+);
+
+const grafanaPrl1DashboardsWidget = makeGrafanaTileWidget(
+  'grafana-prl1-dashboards',
+  'GrafanaPrl1Dashboards',
+  'Grafana - PRL1 Dashboards',
+  'Pre-release observability for every service',
+);
+
 export const homeModule = createFrontendModule({
   pluginId: 'home',
   extensions: [
@@ -373,5 +437,9 @@ export const homeModule = createFrontendModule({
     quickActionsWidget,
     grafanaDashboardsWidget,
     grafanaUatDashboardsWidget,
+    grafanaPrl1DashboardsWidget,
+    gcpPrdTile,
+    gcpUatTile,
+    gcpPrl1Tile,
   ],
 });

@@ -51,6 +51,16 @@ app:
             - label: UAT
               urlPattern: https://grafana.your-domain.com/d/service-overview?orgId=1&var-service={{name}}&var-env=uat
               description: Pre-prod signals
+    - home-page-widget:home/grafana-prl1-dashboards:
+        config:
+          dashboards:
+            - title: PRL1 Overview
+              url: https://grafana.your-domain.com/d/prl1-overview?orgId=1&kiosk
+              description: Pre-release lane health
+          serviceDashboardTemplates:
+            - label: PRL1
+              urlPattern: https://grafana.your-domain.com/d/service-overview?orgId=1&var-service={{name}}&var-env=prl1
+              description: Pre-release signals
     - home-page-widget:home/toolkit:
         config:
           tools:
@@ -69,6 +79,36 @@ app:
             - url: http://localhost:8000/docs
               label: Agent API Docs
               icon: docs
+    - home-page-widget:home/gcp-prd-links:
+        config:
+          links:
+            - title: GKE Workloads — PRD
+              url: https://console.cloud.google.com/kubernetes/workload/list?project=flash-keel-412418&namespace=eod1
+              description: All workloads in the PRD namespace
+            - title: GKE Cluster — PRD
+              url: https://console.cloud.google.com/kubernetes/clusters/details/asia-south1/YOUR_GKE_CLUSTER/details?project=flash-keel-412418
+            - title: Logs — PRD
+              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22eod1%22;duration=PT1H?project=flash-keel-412418
+            - title: Cloud SQL / Databases
+              url: https://console.cloud.google.com/sql/instances?project=flash-keel-412418
+    - home-page-widget:home/gcp-uat-links:
+        config:
+          links:
+            - title: GKE Workloads — UAT
+              url: https://console.cloud.google.com/kubernetes/workload/list?project=flash-keel-412418&namespace=eod1
+              description: All workloads in the UAT namespace
+            - title: GKE Cluster — UAT
+              url: https://console.cloud.google.com/kubernetes/clusters/details/asia-south1/YOUR_GKE_CLUSTER/details?project=flash-keel-412418
+            - title: Logs — UAT
+              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22eod1%22;duration=PT1H?project=flash-keel-412418
+    - home-page-widget:home/gcp-prl1-links:
+        config:
+          links:
+            - title: GKE Workloads — PRL1
+              url: https://console.cloud.google.com/kubernetes/workload/list?project=flash-keel-412418
+              description: Pre-release lane workloads
+            - title: Logs — PRL1
+              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22;duration=PT1H?project=flash-keel-412418
     - home-page-widget:home/world-clock:
         config:
           clockConfigs:
@@ -102,39 +142,63 @@ app:
               row: 2
               width: 6
               height: 5
-            - component: GrafanaDashboards
+            - component: HomePageWorldClock
               column: 6
               row: 2
               width: 6
-              height: 4
-            - component: HomePageWorldClock
+              height: 3
+            # --- PRD row ---
+            - component: GrafanaDashboards
               column: 0
               row: 3
               width: 6
-              height: 3
+              height: 4
+            - component: GcpPrdLinks
+              column: 6
+              row: 3
+              width: 6
+              height: 4
+            # --- UAT row ---
             - component: GrafanaUatDashboards
-              column: 6
-              row: 3
-              width: 6
-              height: 4
-            - component: HomePageToolkit
               column: 0
               row: 4
               width: 6
-              height: 3
-            - component: HomePageStarredEntities
+              height: 4
+            - component: GcpUatLinks
               column: 6
               row: 4
               width: 6
               height: 4
-            - component: HomePageRecentlyVisited
+            # --- PRL1 row ---
+            - component: GrafanaPrl1Dashboards
+              column: 0
+              row: 5
+              width: 6
+              height: 4
+            - component: GcpPrl1Links
               column: 6
               row: 5
               width: 6
               height: 4
-            - component: HomePageMostVisited
+            # --- personal tools ---
+            - component: HomePageToolkit
+              column: 0
+              row: 6
+              width: 6
+              height: 3
+            - component: HomePageStarredEntities
               column: 6
               row: 6
+              width: 6
+              height: 4
+            - component: HomePageRecentlyVisited
+              column: 0
+              row: 7
+              width: 6
+              height: 4
+            - component: HomePageMostVisited
+              column: 6
+              row: 7
               width: 6
               height: 4
 
