@@ -6,14 +6,12 @@ import { showDeployForm } from './forms.js';
 
 // Groups follow the WEEK, not the code: a dev queues on Monday, DevOps cuts the
 // release on Thursday, deploys are the per-chart pushes in between, and checks
-// answer "is this safe / did it work". Ops stays its own group so the repair
-// action does not sit among read-only ones. Rendered as rows here and as
-// sections in ⌘K, so a capability is categorised in exactly one place.
+// answer "is this safe / did it work". Rendered as rows here and as sections in
+// ⌘K, so a capability is categorised in exactly one place.
 export const GROUPS = [
     {name:'Release',  hint:'the weekly cut — queue it, build the file-set, ship it'},
     {name:'Deploy',   hint:'push one chart or DF template to an environment'},
     {name:'Check',    hint:'read-only — status, controls, builds, PRs'},
-    {name:'Ops',      hint:'re-run something that failed'},
 ];
 
 // Quick actions — what the agent can do. mode 'send' runs immediately;
@@ -36,7 +34,6 @@ export const CAPABILITIES = [
     {group:'Check',   icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/controls',    send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
     {group:'Check',   icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
     {group:'Check',   icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
-    {group:'Ops',     icon:'fa-rotate',            label:'Re-run a step',        desc:'re-run apply or dispatch',                    send:false, text:'re-run dispatch_workflow'},
 ];
 
 // One accent per group so the row a pill belongs to is readable at a glance,
@@ -46,7 +43,6 @@ const GROUP_STYLE = {
     Release: {icon:'text-violet-300',  border:'hover:border-violet-400/50',  label:'text-violet-300/70'},
     Deploy:  {icon:'text-sky-300',     border:'hover:border-sky-400/50',     label:'text-sky-300/70'},
     Check:   {icon:'text-emerald-300', border:'hover:border-emerald-400/50', label:'text-emerald-300/70'},
-    Ops:     {icon:'text-amber-300',   border:'hover:border-amber-400/50',   label:'text-amber-300/70'},
 };
 
 export function runQuick(text, send) {

@@ -166,12 +166,10 @@ config:
   PRD_LEAD_TIME_DAYS: "1"
   # Path (inside DEPLOY_REPO) of the team's release file-set generator.
   RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
-  # Workflows: allow-list fencing the dispatch capability (enforced in code);
-  # ON_MERGE is dispatched by chat "re-run the deploy for PR #N"; DEFAULT is the
-  # legacy tag-tracing hint (run-URL flows don't need it).
-  ALLOWED_WORKFLOWS: "image-tag-step-report.yml,release-promote.yml,create-deployment-pr.yml"
+  # Dispatched in DEPLOY_REPO by chat "re-run the deploy for PR #N" to regenerate
+  # a deployment PR's control comments. Matched EXACTLY (case + .yml/.yaml). Set
+  # it only if that workflow exists; nothing else depends on it.
   ON_MERGE_WORKFLOW: "on-merge-deploy.yml"
-  DEFAULT_WORKFLOW: "image-tag-step-report.yml"
   # ADK runtime (leave true).
   ADK_CONTEXT_CACHE: "true"
   ADK_EVENT_COMPACTION: "true"
