@@ -2,6 +2,10 @@
 #
 #   docker compose -f docker-compose.backstage.yml up --build
 #
+# Two images, one per service (two Dockerfiles in this repo):
+#   ./Dockerfile.agent     -> release-copilot   (FastAPI + ADK agent, :8000)
+#   ./backstage/Dockerfile -> backstage-portal  (Backstage UI + backend, :7007)
+#
 # Then open http://localhost:7007/release-copilot (sign in as Guest).
 #
 # release-copilot needs GH_TOKEN / GOOGLE_CLOUD_PROJECT / BUILD_REPO /
@@ -9,10 +13,13 @@
 # Compose passes it through. For a smoke test without real credentials the
 # container still boots and serves the UI; chat will fail until env is set.
 services:
-  # Built from the adk-release-agent branch via a read-only git worktree:
-  #   git worktree add .worktrees/adk adk-release-agent
+  # Agent image = ./Dockerfile.agent (this branch carries the ADK code too).
+  # (The older setup built this from a .worktrees/adk worktree of the
+  # adk-release-agent branch - no longer needed.)
   release-copilot:
-    build: ./.worktrees/adk
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
     image: release-copilot:poc
     ports:
       - "127.0.0.1:8000:8000"

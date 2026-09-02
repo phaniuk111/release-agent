@@ -361,3 +361,29 @@ The chatbot stays the conversational "front door".
 - Shared ADK session storage + history UI
 
 **For realistic testing (separate deployment repo):** Follow `DEPLOYMENT_REPO_SETUP.md`. It creates a distinct repo where PRs land, and includes a workflow that posts comments with image names + simulated controls when merged to main.
+
+---
+
+
+## Docker images & deployment (this branch)
+
+Two images, one per service - two Dockerfiles, two Helm charts:
+
+| Dockerfile | Image | Runs | Helm chart |
+|---|---|---|---|
+| `./Dockerfile.agent` | `release-copilot` | FastAPI + ADK release agent (:8000) | `helm/release-copilot` |
+| `./backstage/Dockerfile` | `backstage-release-copilot` | Backstage portal - UI + backend (:7007) | `helm/backstage-portal` |
+
+```bash
+# build both
+docker build -f Dockerfile.agent -t <registry>/release-copilot:<tag> .
+docker build -t <registry>/backstage-release-copilot:<tag> ./backstage
+
+# local smoke test (both services)
+docker compose -f docker-compose.backstage.yml up --build
+```
+
+The portal proxies `/api/proxy/release-copilot/*` to the agent
+(`RELEASE_COPILOT_URL`, default `http://release-copilot:8000` in-cluster).
+See `helm/backstage-portal/README.md` for the full GKE/Istio install.
+
