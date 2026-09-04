@@ -121,6 +121,9 @@ resources:
     cpu: "1"
     memory: 2Gi
 
+nodeSelector: {}
+# pinning: cloud.google.com/gke-spot: "true"
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000

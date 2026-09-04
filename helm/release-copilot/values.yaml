@@ -257,6 +257,11 @@ containerSecurityContext:
     drop:
       - ALL
 
+# Pin to Spot pods for demo clusters (evictions lose in-memory chat
+# sessions; the queue/ledger is the durable state).
+nodeSelector: {}
+# e.g. cloud.google.com/gke-spot: "true"
+
 resources:
   requests:
     cpu: "250m"
