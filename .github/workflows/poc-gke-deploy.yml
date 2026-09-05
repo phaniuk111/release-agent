@@ -134,6 +134,31 @@ jobs:
       # Spot pods on both services. virtualService stays off: the PoC is reached
       # by port-forward, and the chart's default VirtualService references an
       # asm-ingressgateway Gateway a fresh cluster does not have.
+      # A run that is cancelled or times out mid-`helm upgrade` leaves the
+      # release in pending-install/pending-upgrade, and every later run then
+      # dies with "another operation (install/upgrade/rollback) is in progress"
+      # until a human intervenes. Recover deterministically instead: roll back
+      # if there is a completed revision to return to, otherwise drop the
+      # never-completed install so the next step can install cleanly.
+      - name: Clear any stuck helm release
+        run: |
+          for rel in release-copilot backstage; do
+            status=$(helm status "$rel" -n "$NAMESPACE" -o json 2>/dev/null \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["status"])' 2>/dev/null || echo absent)
+            case "$status" in
+              pending-*)
+                echo "::warning::$rel is stuck in $status — recovering"
+                if helm rollback "$rel" -n "$NAMESPACE" 2>/dev/null; then
+                  echo "  rolled back $rel"
+                else
+                  helm uninstall "$rel" -n "$NAMESPACE" || true
+                  echo "  uninstalled $rel (no completed revision to roll back to)"
+                fi
+                ;;
+              *) echo "$rel: $status" ;;
+            esac
+          done
+
       - name: Spot-pod values
         run: |
           cat > /tmp/spot.yaml <<'YAML'
