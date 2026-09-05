@@ -120,12 +120,18 @@ if [ "$MESH" = "true" ]; then
   gcloud container fleet mesh update --management automatic \
     --memberships "$CLUSTER_NAME" --location "$REGION" --project "$PROJECT_ID"
 
-  # Bounded wait: the managed control plane takes a few minutes to provision.
+  # Bounded wait (20min): the managed control plane is slow on a fresh cluster.
   # The PoC's portal→agent hop is a plain ClusterIP call, so a mesh that does
   # not converge degrades the demo (no mTLS/telemetry) instead of blocking it.
-  for _ in $(seq 1 30); do
-    if kubectl get controlplanerevision -n istio-system 2>/dev/null |
-      grep -q asm-managed; then
+  # Wait for RECONCILED=True, not merely for the resource to exist. The
+  # ControlPlaneRevision appears within seconds but stays NotProvisioned for
+  # ~10-15min on a fresh cluster, and the injection webhook does not exist until
+  # it reconciles — so an existence check reports success while pods come up
+  # with no sidecar at all (1/1 instead of 2/2).
+  for _ in $(seq 1 60); do
+    if [ "$(kubectl get controlplanerevision asm-managed -n istio-system \
+      -o jsonpath='{.status.conditions[?(@.type=="Reconciled")].status}' \
+      2>/dev/null)" = "True" ]; then
       MESH_READY=true
       break
     fi
@@ -135,7 +141,7 @@ if [ "$MESH" = "true" ]; then
     kubectl label namespace "$NAMESPACE" istio.io/rev=asm-managed --overwrite
     echo "  mesh ready — sidecars will be injected (pods become 2/2)"
   else
-    echo "  ⚠ mesh did not converge in 10min; continuing WITHOUT sidecars"
+    echo "  ⚠ mesh did not converge in 20min; continuing WITHOUT sidecars"
   fi
 fi
 
