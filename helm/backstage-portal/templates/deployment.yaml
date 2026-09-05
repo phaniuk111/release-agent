@@ -18,6 +18,14 @@ spec:
       {{- include "backstage-portal.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      {{- with .Values.podAnnotations }}
+      # Sidecar sizing lives here: managed CSM injects istio-proxy with a 500m
+      # CPU request by default — as much as the app — so on a small or
+      # quota-capped cluster the annotations sidecar.istio.io/proxyCPU and
+      # proxyMemory are the difference between scheduling and Pending.
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       labels:
         {{- include "backstage-portal.selectorLabels" . | nindent 8 }}
     spec:

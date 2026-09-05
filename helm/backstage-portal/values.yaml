@@ -129,6 +129,10 @@ podSecurityContext:
   runAsUser: 1000
   fsGroup: 1000
 
+# Extra pod annotations. Managed Cloud Service Mesh reads sidecar sizing from
+# here, e.g. sidecar.istio.io/proxyCPU: "100m".
+podAnnotations: {}
+
 serviceAccount:
   create: true
   name: ""

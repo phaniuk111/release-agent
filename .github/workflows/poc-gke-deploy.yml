@@ -173,12 +173,19 @@ jobs:
           cat > /tmp/spot.yaml <<'YAML'
           nodeSelector:
             cloud.google.com/gke-spot: "true"
+          # Managed CSM injects istio-proxy with a 500m CPU request by default —
+          # as much as the app — so every meshed pod costs double. Two pods at
+          # 500m+500m plus ~660m of system daemons exceeds the 1930m node and
+          # nothing schedules. 100m is ample for a demo's traffic.
+          podAnnotations:
+            sidecar.istio.io/proxyCPU: "100m"
+            sidecar.istio.io/proxyMemory: "128Mi"
           resources:
             requests:
-              cpu: "500m"
+              cpu: "300m"
               memory: "1Gi"
             limits:
-              cpu: "500m"
+              cpu: "300m"
               memory: "1Gi"
           YAML
           # Backstage is a Node backend and OOMs under 1Gi; give it headroom.
