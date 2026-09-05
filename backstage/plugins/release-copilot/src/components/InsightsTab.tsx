@@ -214,12 +214,21 @@ export function InsightsTab() {
   const [stateLoading, setStateLoading] = useState(false);
   const [envFilter, setEnvFilter] = useState<string>(ALL_ENVS);
 
+  // Debounced so typing "eod-risk-fetcher" costs one pair of BigQuery queries
+  // instead of seventeen. Both cards read `debounced`, never `pattern`, so the
+  // input stays responsive while the queries lag behind it.
+  const [debounced, setDebounced] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(pattern.trim()), 350);
+    return () => clearTimeout(t);
+  }, [pattern]);
+
   // `pattern` is applied SERVER-side (glob or substring on the image name), so
   // the same box narrows both cards and the filtering matches what the agent
   // itself would answer in chat.
   const query = useMemo(
-    () => (pattern.trim() ? `&pattern=${encodeURIComponent(pattern.trim())}` : ''),
-    [pattern],
+    () => (debounced ? `&pattern=${encodeURIComponent(debounced)}` : ''),
+    [debounced],
   );
 
   const load = useCallback(async () => {
@@ -282,10 +291,7 @@ export function InsightsTab() {
               value={pattern}
               onChange={e => setPattern(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  load();
-                  loadState();
-                }
+                if (e.key === 'Enter') setDebounced(pattern.trim());
               }}
               style={{ minWidth: 280 }}
               helperText="Filters both cards. Substring, or a glob with *"
@@ -349,8 +355,8 @@ export function InsightsTab() {
             data={envRows}
             emptyContent={
               <Typography className={classes.muted} style={{ padding: 16 }}>
-                {pattern.trim()
-                  ? `No deployed images match "${pattern.trim()}".`
+                {debounced
+                  ? `No deployed images match "${debounced}".`
                   : 'No deployed images recorded yet — the estate is derived from deploy events in BigQuery.'}
               </Typography>
             }
@@ -402,7 +408,7 @@ export function InsightsTab() {
               {data.total_events === 1 ? '' : 's'} across {data.chart_count}{' '}
               chart{data.chart_count === 1 ? '' : 's'} in the last {data.days}{' '}
               days (BigQuery event log)
-              {pattern.trim() ? ` matching "${pattern.trim()}"` : ''}.
+              {debounced ? ` matching "${debounced}"` : ''}.
             </Typography>
           )}
           {error && <Typography color="error">{error}</Typography>}
