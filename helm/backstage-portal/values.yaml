@@ -53,8 +53,11 @@ gateway:
 # Where the backend proxy forwards /api/proxy/release-copilot/*.
 # Points at the release-copilot Helm release's Service (helm/release-copilot).
 releaseCopilot:
-  # e.g. http://release-copilot.release.svc.cluster.local:8000
-  url: "http://release-copilot:8000"
+  # The agent SERVICE listens on 80 and forwards to the container's 8000 — so
+  # this is :80, not :8000. Pointing at 8000 hits nothing and every proxied call
+  # dies as a 504 after the timeout, which reads like the agent being down.
+  # e.g. http://release-copilot.release-copilot.svc.cluster.local:80
+  url: "http://release-copilot:80"
 
 # SQLite persistence. PoC default keeps data only for the pod's lifetime
 # (emptyDir). Enable persistence to survive pod restarts/reschedules.

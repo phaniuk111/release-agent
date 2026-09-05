@@ -214,7 +214,7 @@ jobs:
             --namespace "$NAMESPACE" \
             --set image.repository="$REGISTRY/backstage-release-copilot" \
             --set image.tag="${{ github.sha }}" \
-            --set releaseCopilot.url="http://release-copilot.$NAMESPACE.svc.cluster.local:8000" \
+            --set releaseCopilot.url="http://release-copilot.$NAMESPACE.svc.cluster.local:80" \
             --set persistence.enabled=true \
             --set config.app.baseUrl="http://localhost:7007" \
             --set config.backend.baseUrl="http://localhost:7007" \
