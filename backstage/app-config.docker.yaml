@@ -18,7 +18,11 @@ backend:
 
 auth:
   providers:
-    guest: {}
+    # Required because the image runs NODE_ENV=production, where the guest
+    # provider is off by default. PoC only — every visitor becomes a signed-in
+    # guest.
+    guest:
+      dangerouslyAllowOutsideDevelopment: true
 
 catalog:
   locations:

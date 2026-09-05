@@ -94,7 +94,15 @@ config:
       client: better-sqlite3
   auth:
     providers:
-      guest: {}
+      # The built image runs NODE_ENV=production, where Backstage disables the
+      # guest provider unless this flag is set — sign-in fails with "you must
+      # either enable the legacy guest token or configure the auth backend to
+      # support guest sign in". It is named "dangerously" for good reason:
+      # everyone who can reach the portal is signed in. Acceptable here only
+      # because the PoC is reached by port-forward and has no ingress. Replace
+      # with a real provider before exposing this to a network.
+      guest:
+        dangerouslyAllowOutsideDevelopment: true
   catalog:
     rules:
       - allow: [Component, System, API, Resource, Location]
