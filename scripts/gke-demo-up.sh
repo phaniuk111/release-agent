@@ -55,6 +55,14 @@ fail() {
 say "Preflight"
 command -v gcloud >/dev/null || fail "gcloud not found"
 command -v kubectl >/dev/null || fail "kubectl not found"
+# kubectl cannot authenticate to GKE without this credential plugin, and the
+# failure is easy to miss: `kubectl` still exits 0 on some paths, so the mesh
+# poll below silently never matches and the namespace is silently never created.
+# Fail here instead, with the fix.
+command -v gke-gcloud-auth-plugin >/dev/null || fail "gke-gcloud-auth-plugin not on PATH.
+  Install:  gcloud components install gke-gcloud-auth-plugin
+  Homebrew installs it outside PATH — add its bin dir, e.g.:
+    export PATH=\"\$(gcloud info --format='value(installation.sdk_root)')/bin:\$PATH\""
 gcloud config list project --format='value(core.project)' >/dev/null 2>&1 ||
   fail "gcloud not authenticated (gcloud auth login)"
 
@@ -99,8 +107,16 @@ if [ "$MESH" = "true" ]; then
   say "Managed Cloud Service Mesh (fleet API)"
   gcloud services enable mesh.googleapis.com --project "$PROJECT_ID"
   gcloud container fleet mesh enable --project "$PROJECT_ID"
-  gcloud container clusters update "$CLUSTER_NAME" \
-    --region "$REGION" --project "$PROJECT_ID" --fleet-project "$PROJECT_ID"
+  # Registration is NOT idempotent: re-running it on an already-registered
+  # cluster fails with "Changing existing fleet membership is not supported",
+  # which would abort the whole script on a re-run.
+  if [ -z "$(gcloud container clusters describe "$CLUSTER_NAME" --region "$REGION" \
+    --project "$PROJECT_ID" --format='value(fleet.project)')" ]; then
+    gcloud container clusters update "$CLUSTER_NAME" \
+      --region "$REGION" --project "$PROJECT_ID" --fleet-project "$PROJECT_ID"
+  else
+    echo "  cluster already registered to the fleet"
+  fi
   gcloud container fleet mesh update --management automatic \
     --memberships "$CLUSTER_NAME" --location "$REGION" --project "$PROJECT_ID"
 
