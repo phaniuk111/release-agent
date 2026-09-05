@@ -23,12 +23,12 @@ import {
 } from '@material-ui/core';
 import { Link } from 'react-router-dom';
 import DashboardIcon from '@material-ui/icons/Dashboard';
-// zod/v4, not 'zod': Backstage's frontend system converts an extension's
-// configSchema to JSON Schema, which only the v4 API supports. A v3 schema is
-// rejected at runtime with an UNCAUGHT error — "Config schema for field
-// 'dashboards' uses a Zod v3 schema" — which blanks the entire portal, not just
-// this widget. zod 3.25+ ships both APIs, so this subpath needs no dep change.
-import { z } from 'zod/v4';
+// Requires the zod v4 PACKAGE (see packages/app/package.json). Backstage
+// converts an extension's configSchema to JSON Schema, and createPortableSchema
+// rejects both a v3 schema and the `zod/v4` subpath of the v3 package, because
+// neither carries a JSON Schema converter. The throw is uncaught during
+// extension setup, so getting this wrong blanks the whole portal.
+import { z } from 'zod';
 
 export type DashboardLink = {
   title: string;
