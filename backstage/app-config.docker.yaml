@@ -10,7 +10,11 @@ backend:
   # startup); mount a volume there if you want it to survive rebuilds.
   database:
     client: better-sqlite3
-    connection: '/app/backstage-data/backstage.sqlite'
+    # A DIRECTORY, not a file: Backstage gives each plugin its own sqlite
+    # database and refuses a single `connection.filename` for the base
+    # connection. Same constraint the Helm chart's ConfigMap encodes.
+    connection:
+      directory: /app/backstage-data
 
 auth:
   providers:

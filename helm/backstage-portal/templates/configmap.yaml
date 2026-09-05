@@ -7,9 +7,17 @@ metadata:
 data:
   app-config.kubernetes.yaml: |
     {{- $cfg := .Values.config | deepCopy }}
-    {{- $dbPath := ":memory:" }}
+    {{/*
+      Backstage splits its data across a database PER PLUGIN. For sqlite that
+      means the base connection must name a DIRECTORY it can create files in;
+      passing a single filename is rejected outright at startup with
+        `connection.filename` is not supported for the base sqlite connection.
+      Only the no-persistence case may be a bare string, because every plugin
+      can share one anonymous in-memory database.
+    */}}
     {{- if .Values.persistence.enabled }}
-    {{- $dbPath = printf "%s/backstage.sqlite" .Values.persistence.mountPath }}
+    {{- $_ := set $cfg.backend.database "connection" (dict "directory" .Values.persistence.mountPath) }}
+    {{- else }}
+    {{- $_ := set $cfg.backend.database "connection" ":memory:" }}
     {{- end }}
-    {{- $_ := set $cfg.backend.database "connection" $dbPath }}
 {{ $cfg | toYaml | indent 4 }}
