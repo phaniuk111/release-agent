@@ -31,41 +31,76 @@ browser ──► Backstage pod (:7007) ──proxy──► agent pod (:8000) �
 | Line | Rate | Our load | Result |
 | --- | --- | --- | --- |
 | Cluster fee | $0.10/hr | covered by **$74.40/mo GKE free tier** (one Autopilot/zonal cluster) | $0 |
-| Portal pod | 0.25 vCPU + 0.5 GiB × Spot rates ($0.0133/vCPU-hr) | 250m/512Mi | ~$0.004/hr |
-| Agent pod | same | 250m/512Mi | ~$0.004/hr |
-| Managed Service Mesh | ~$0.50/client/mo (per pod) | 2 pods | ~$1/mo |
+| Portal pod | Spot ($0.0133/vCPU-hr, $0.0015/GiB-hr) | 1 vCPU / 2 GiB | ~$0.016/hr |
+| Agent pod | same | 1 vCPU / 1 GiB | ~$0.015/hr |
+| Managed Service Mesh | included with GKE | 2 pods | $0 |
 | PVC (pd-balanced) | ~$0.10/GiB/mo | 1 GiB | ~$0.10/mo |
+| Artifact Registry | $0.10/GB/mo above 0.5 GB free | ~1.5 GB | ~$0.10/mo |
+| GitHub Actions | free on public repos; 2,000 min/mo otherwise | ~12 min/build | $0 |
 
-**Running cost ≈ 1¢/hour.** A 2h demo session ≈ 2¢. A month of weekly demos ≈ **$2–4**.
+**Running cost ~3c/hour.** A 2h demo session ~6c. A month of weekly demos ~**$1-2**.
 
-⚠️ Autopilot floors pod requests (250m/512Mi minimum) — that's what the math uses.
+WARNING: Autopilot does NOT bill the 250m/512Mi you *request* - it raises requests
+to match your *limits* (Guaranteed QoS). The charts' limits (1 vCPU, 1-2 GiB) are
+what actually bills, which is why these numbers are ~4x the naive estimate.
 
-## 3. Lifecycle (two commands)
+WARNING: the one line that can scale unexpectedly is **fleet registration**. This
+project's fleet already carries GKE Enterprise features (`configmanagement`,
+`policycontroller`, `fleetobservability`) with zero memberships. Registering a
+cluster for mesh can flip it to the Enterprise tier ($0.00822/vCPU-hr). Check
+right after registering, and unregister if it flipped:
 
 ```bash
-scripts/gke-demo-up.sh      # ~10 min: cluster + mesh + images + helm installs
-scripts/gke-demo-down.sh    # ~5 min:  helm uninstall + cluster delete + disk sweep
+gcloud container clusters describe release-copilot-demo --region us-central1 \
+  --format='value(enterpriseConfig.clusterTier)'   # want: STANDARD
 ```
 
-What `up` does, in order:
+## 3. Lifecycle (two owners, never overlapping)
 
-1. Autopilot cluster (`create-auto`, regular channel) — skipped if it exists
-2. Fleet registration + **managed Cloud Service Mesh** (`gcloud container fleet mesh`)
-3. Namespace labeled for sidecar injection
-4. Images: build if missing locally, push to ghcr
-5. Secret `release-copilot-secrets` (GH_TOKEN from env/gh CLI — never committed)
-6. `helm upgrade --install` both charts, both with
-   `nodeSelector: cloud.google.com/gke-spot: "true"` and
-   `persistence.enabled=true` for the portal
+Infrastructure is a human action from an authenticated laptop. Images and helm
+releases belong to CI.
 
-What `down` does: helm uninstall (releases PVC) → cluster delete → orphaned-disk sweep.
+```bash
+scripts/gke-poc-ci-setup.sh                              # ONCE: keyless CI auth (WIF)
+scripts/gke-demo-up.sh                                   # ~12 min: cluster + mesh + secret + WI
+gh workflow run poc-gke-deploy.yml --ref backstage_poc   # ~12 min: build both, deploy both
+scripts/gke-demo-down.sh                                 # ~6 min: uninstall + delete + sweep
+```
 
-### Env vars both scripts accept
+What `up` does (INFRASTRUCTURE only), in order:
+
+1. Artifact Registry repo - skipped if it exists
+2. Autopilot cluster (`create-auto`, regular channel) - skipped if it exists
+3. Fleet registration + **managed Cloud Service Mesh**, then the namespace label
+   `istio.io/rev=asm-managed`. Bounded 10-min wait: a mesh that does not
+   converge *degrades* the demo (no mTLS/telemetry), it does not block it
+4. Secret `release-copilot-secrets` (key `gh-token`, from env/gh CLI - never committed)
+5. Workload Identity: `aiplatform.user` + `bigquery.{jobUser,dataEditor}` granted
+   straight to the KSA principal, so there is no GCP service account to clean up
+
+What the **workflow** does (APPLICATION): builds both images on `ubuntu-latest`
+(linux/amd64, GHA layer cache), pushes them to Artifact Registry tagged with the
+commit SHA, then `helm upgrade --install`s both charts pinned to Spot Pods.
+
+What `down` does: helm uninstall -> cluster delete -> fleet unregister -> revoke
+both sets of IAM grants -> delete the AR repo -> sweep unattached `pvc-*` disks.
+
+### Why CI builds, and not a laptop
+
+- The runner is **linux/amd64**, matching Autopilot nodes. A dev Mac is arm64 and
+  silently produces an image the cluster cannot execute.
+- Auth is **keyless** (GitHub OIDC -> Workload Identity Federation). No
+  service-account JSON is created, downloaded, or stored as a repo secret.
+- ghcr is not used: pushing there needs a token with `write:packages`, which the
+  release flow's PAT deliberately does not carry. Artifact Registry in the same
+  project also means GKE pulls with no `imagePullSecret` at all.
+
+### Env vars the scripts accept
 
 `PROJECT_ID` (default flash-keel-412418), `REGION` (us-central1),
 `CLUSTER_NAME` (release-copilot-demo), `NAMESPACE` (release-copilot),
-`DNS_HOST` (optional external hostname), `KEEP_DISK=true` (down: preserve
-the sqlite PD across sessions).
+`AR_REPO` (poc), `MESH=false` (skip the mesh), and on `down`:
+`KEEP_DISK=true`, `KEEP_IMAGES=true`.
 
 ## 4. Why this design (decisions & trade-offs)
 
@@ -92,12 +127,15 @@ the sqlite PD across sessions).
 
 ## 5. Verification checklist (per session)
 
+- [ ] `gh run watch` — build + deploy both green
 - [ ] `kubectl -n release-copilot get pods` — both Running, **2/2 containers** (sidecar injected)
 - [ ] `kubectl -n release-copilot logs deploy/backstage | grep -i listening`
 - [ ] port-forward → portal loads, catalog shows payment-service + release entities
-- [ ] Release Copilot → Queue shows data (agent → BigQuery OK)
+- [ ] Release Copilot → Queue shows data (agent → BigQuery OK, proves Workload Identity)
 - [ ] Deploy tab → submit → preview → Confirm → PRs merged (end-to-end)
-- [ ] `istioctl proxy-status` — both pods SYNCED (mesh actually routing)
+- [ ] `kubectl -n release-copilot get pods -o jsonpath='{..containers[*].name}'` —
+      an `istio-proxy` alongside each app container (mesh actually injected;
+      `istioctl` is not needed and is not installed by these scripts)
 
 ## 6. Post-PoC exit path
 
@@ -110,7 +148,9 @@ the sqlite PD across sessions).
 
 ## 7. Files
 
-- `scripts/gke-demo-up.sh` / `gke-demo-down.sh` — the lifecycle
+- `scripts/gke-demo-up.sh` / `gke-demo-down.sh` — the infrastructure lifecycle
+- `scripts/gke-poc-ci-setup.sh` — one-time keyless CI auth (WIF, no keys)
+- `.github/workflows/poc-gke-deploy.yml` — the build + deploy lane
 - `helm/backstage-portal/` — portal chart (values: persistence, spot, VS, trustProxy)
 - `helm/release-copilot/` — agent chart (secret, VS, spot)
 - `docker-compose.backstage.yml` — local pre-flight before touching GKE

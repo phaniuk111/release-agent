@@ -326,6 +326,5 @@ gateway:
     # mode: SIMPLE
     # credentialName: release-copilot-tls
 
-nodeSelector: {}
 tolerations: []
 affinity: {}

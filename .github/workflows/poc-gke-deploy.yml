@@ -1,0 +1,180 @@
+name: poc-gke-deploy
+
+# Build BOTH PoC images on GitHub-hosted runners and deploy them to the
+# Autopilot demo cluster. This is the CI lane for docs/POC_GKE_DEMO.md:
+# scripts/gke-demo-up.sh owns the CLUSTER (infrastructure), this workflow owns
+# the IMAGES and the RELEASES (application).
+#
+# Why the runner and not a laptop: the runner is linux/amd64, matching the
+# Autopilot nodes — a dev Mac is arm64 and produces an image the cluster cannot
+# execute. Auth is keyless (GitHub OIDC -> Workload Identity Federation), so no
+# service-account JSON is ever stored as a repo secret.
+#
+# One-time bootstrap of the WIF provider + CI service account this needs:
+#   scripts/gke-poc-ci-setup.sh
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to the cluster after building"
+        type: boolean
+        default: true
+  push:
+    branches: [backstage_poc]
+    paths:
+      - "src/**"
+      - "adk_release_agent/**"
+      - "backstage/**"
+      - "helm/**"
+      - "Dockerfile.agent"
+      - ".github/workflows/poc-gke-deploy.yml"
+
+permissions:
+  contents: read
+  id-token: write # required to mint the OIDC token WIF exchanges
+
+env:
+  PROJECT_ID: flash-keel-412418
+  PROJECT_NUMBER: "1065061624068"
+  REGION: us-central1
+  CLUSTER: release-copilot-demo
+  NAMESPACE: release-copilot
+  REGISTRY: us-central1-docker.pkg.dev/flash-keel-412418/poc
+  WIF_PROVIDER: projects/1065061624068/locations/global/workloadIdentityPools/github-actions-pool/providers/poc-provider
+  CI_SA: release-copilot-poc-ci@flash-keel-412418.iam.gserviceaccount.com
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: agent
+            context: .
+            dockerfile: Dockerfile.agent
+            image: release-copilot
+          - name: portal
+            context: backstage
+            dockerfile: backstage/Dockerfile
+            image: backstage-release-copilot
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.CI_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authorise docker against Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ matrix.image }}:poc
+            ${{ env.REGISTRY }}/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          provenance: false
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' || inputs.deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.CI_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: azure/setup-helm@v4
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.CLUSTER }}
+          location: ${{ env.REGION }}
+
+      - name: Namespace
+        run: kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+      # The agent's GitHub PAT reaches other repos (BUILD_REPO / DEPLOY_REPO), so
+      # the workflow's own GITHUB_TOKEN cannot stand in for it. Set the optional
+      # repo secret to have CI manage it; otherwise the Secret that
+      # gke-demo-up.sh created in the cluster is left exactly as it is.
+      - name: GitHub token secret (only when the repo secret is set)
+        env:
+          TOKEN: ${{ secrets.RELEASE_COPILOT_GH_TOKEN }}
+        if: env.TOKEN != ''
+        run: |
+          kubectl -n "$NAMESPACE" create secret generic release-copilot-secrets \
+            --from-literal=gh-token="$TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Fail early if the agent has no token to use
+        run: |
+          kubectl -n "$NAMESPACE" get secret release-copilot-secrets >/dev/null 2>&1 || {
+            echo "::error::Secret release-copilot-secrets is missing. Run scripts/gke-demo-up.sh once, or set the RELEASE_COPILOT_GH_TOKEN repo secret."
+            exit 1
+          }
+
+      # Spot pods on both services. virtualService stays off: the PoC is reached
+      # by port-forward, and the chart's default VirtualService references an
+      # asm-ingressgateway Gateway a fresh cluster does not have.
+      - name: Spot-pod values
+        run: |
+          cat > /tmp/spot.yaml <<'YAML'
+          nodeSelector:
+            cloud.google.com/gke-spot: "true"
+          YAML
+
+      - name: helm upgrade release-copilot (agent)
+        run: |
+          helm upgrade --install release-copilot ./helm/release-copilot \
+            --namespace "$NAMESPACE" \
+            --set image.repository="$REGISTRY/release-copilot" \
+            --set image.tag="${{ github.sha }}" \
+            --set virtualService.enabled=false \
+            --set githubToken.existingSecret=release-copilot-secrets \
+            --set githubToken.existingSecretKey=gh-token \
+            --set config.GOOGLE_CLOUD_PROJECT="$PROJECT_ID" \
+            --set config.BUILD_REPO=phaniuk111/devops \
+            --set config.DEPLOY_REPO=phaniuk111/deployment-repo \
+            -f /tmp/spot.yaml \
+            --wait --timeout 10m
+
+      - name: helm upgrade backstage (portal)
+        run: |
+          helm upgrade --install backstage ./helm/backstage-portal \
+            --namespace "$NAMESPACE" \
+            --set image.repository="$REGISTRY/backstage-release-copilot" \
+            --set image.tag="${{ github.sha }}" \
+            --set releaseCopilot.url="http://release-copilot.$NAMESPACE.svc.cluster.local:8000" \
+            --set persistence.enabled=true \
+            --set config.app.baseUrl="http://localhost:7007" \
+            --set config.backend.baseUrl="http://localhost:7007" \
+            -f /tmp/spot.yaml \
+            --wait --timeout 10m
+
+      - name: Rollout summary
+        run: |
+          {
+            echo "### Deployed to \`$CLUSTER\`"
+            echo '```'
+            kubectl -n "$NAMESPACE" get pods -o wide
+            echo '```'
+            echo "Reach it with: \`kubectl -n $NAMESPACE port-forward svc/backstage 7007:7007\`"
+          } >> "$GITHUB_STEP_SUMMARY"

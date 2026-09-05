@@ -1,0 +1,22 @@
+# Keeps the agent image's build context small on CI runners. Dockerfile.agent
+# copies only pyproject/uv.lock/src/adk_release_agent, so everything else here
+# is upload weight and cache-busting noise.
+.git
+.venv
+backstage
+deployment-repo
+traces
+evals
+practice
+docs
+design
+examples
+tests
+k8s
+helm
+**/__pycache__
+**/*.pyc
+.env
+.claude
+.codex
+node_modules

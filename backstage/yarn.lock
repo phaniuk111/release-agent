@@ -4345,7 +4345,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@backstage/theme@npm:^0.7.1, @backstage/theme@npm:^0.7.3":
+"@backstage/theme@npm:^0.7.0, @backstage/theme@npm:^0.7.1, @backstage/theme@npm:^0.7.3":
   version: 0.7.3
   resolution: "@backstage/theme@npm:0.7.3"
   dependencies:
@@ -5484,6 +5484,7 @@ __metadata:
   resolution: "@internal/plugin-release-copilot@workspace:plugins/release-copilot"
   dependencies:
     "@backstage/core-components": "npm:^0.18.13"
+    "@backstage/core-plugin-api": "npm:^1.12.9"
     "@backstage/frontend-plugin-api": "npm:^0.18.0"
     "@material-ui/core": "npm:^4.12.4"
     "@material-ui/icons": "npm:^4.11.3"
@@ -5491,6 +5492,7 @@ __metadata:
     react-use: "npm:^17.2.4"
   peerDependencies:
     react: ^16.13.1 || ^17.0.0 || ^18.0.0
+    react-router-dom: ^6.0.0
   languageName: unknown
   linkType: soft
 
@@ -12808,6 +12810,7 @@ __metadata:
     "@backstage/plugin-techdocs": "npm:^1.18.0"
     "@backstage/plugin-techdocs-module-addons-contrib": "npm:^1.1.39"
     "@backstage/plugin-user-settings": "npm:^0.9.6"
+    "@backstage/theme": "npm:^0.7.0"
     "@backstage/ui": "npm:^0.17.1"
     "@internal/plugin-release-copilot": "workspace:^"
     "@material-ui/core": "npm:^4.12.2"
@@ -12823,6 +12826,7 @@ __metadata:
     react-dom: "npm:^18.0.2"
     react-router: "npm:^6.30.2"
     react-router-dom: "npm:^6.30.2"
+    zod: "npm:^3.25.0"
   languageName: unknown
   linkType: soft
 
@@ -31488,7 +31492,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"zod@npm:^3.22.4, zod@npm:^3.25.76":
+"zod@npm:^3.22.4, zod@npm:^3.25.0, zod@npm:^3.25.76":
   version: 3.25.76
   resolution: "zod@npm:3.25.76"
   checksum: 10c0/5718ec35e3c40b600316c5b4c5e4976f7fee68151bc8f8d90ec18a469be9571f072e1bbaace10f1e85cf8892ea12d90821b200e980ab46916a6166a4260a983c
