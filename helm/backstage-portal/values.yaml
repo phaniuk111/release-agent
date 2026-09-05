@@ -113,6 +113,31 @@ config:
         rules:
           - allow: [User, Group]
 
+# Health probes. Paths are Backstage's own endpoints (backend-defaults'
+# health router), NOT "/" — "/" returns 500 until initialisation finishes.
+# startupProbe gives startup up to 5 minutes (30 x 10s) before liveness is
+# allowed to act; a cold Backstage with a fresh sqlite DB can take a minute or
+# two, and killing it mid-init produces a crash loop that never converges.
+startupProbe:
+  httpGet:
+    path: /.backstage/health/v1/readiness
+    port: http
+  periodSeconds: 10
+  failureThreshold: 30
+readinessProbe:
+  httpGet:
+    path: /.backstage/health/v1/readiness
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 3
+livenessProbe:
+  httpGet:
+    path: /.backstage/health/v1/liveness
+    port: http
+  periodSeconds: 20
+  timeoutSeconds: 3
+  failureThreshold: 3
+
 resources:
   requests:
     cpu: 200m

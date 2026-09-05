@@ -67,14 +67,24 @@ spec:
               subPath: app-config.kubernetes.yaml
             - name: backstage-data
               mountPath: {{ .Values.persistence.mountPath }}
+          # Probing "/" was fatal: it answers 500 until every plugin has
+          # initialised, and with no initialDelaySeconds the liveness probe
+          # killed the container ~30s in, every time, forever. Backstage exposes
+          # real health endpoints; the startupProbe is what buys initialisation
+          # the time it needs (12 plugins + ~390 assets), and liveness only
+          # begins once it passes.
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
           readinessProbe:
-            httpGet:
-              path: /
-              port: http
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
           livenessProbe:
-            httpGet:
-              path: /
-              port: http
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           # app-config.kubernetes.yaml is merged LAST, after the image's baked-in
           # app-config.yaml / app-config.docker.yaml.
           command:
