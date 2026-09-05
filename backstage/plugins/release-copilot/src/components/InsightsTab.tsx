@@ -150,7 +150,7 @@ function flatten(charts: ChartInsight[]): Row[] {
 }
 
 const columns: TableColumn<Row>[] = [
-  { title: 'Chart', field: 'chart' },
+  { title: 'Image', field: 'chart' },
   { title: 'Version', field: 'version' },
   { title: 'Release', field: 'release' },
   {
@@ -406,7 +406,7 @@ export function InsightsTab() {
             <Typography variant="body2" className={classes.muted} gutterBottom>
               {data.total_events} {data.event_type} event
               {data.total_events === 1 ? '' : 's'} across {data.chart_count}{' '}
-              chart{data.chart_count === 1 ? '' : 's'} in the last {data.days}{' '}
+              image{data.chart_count === 1 ? '' : 's'} in the last {data.days}{' '}
               days (BigQuery event log)
               {debounced ? ` matching "${debounced}"` : ''}.
             </Typography>

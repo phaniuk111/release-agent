@@ -4,10 +4,12 @@ import {
   Card,
   CardContent,
   CardHeader,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   IconButton,
   Table,
   TableBody,
@@ -17,7 +19,6 @@ import {
   TextField,
   Typography,
 } from '@material-ui/core';
-import { ToggleButton, ToggleButtonGroup } from '@material-ui/lab';
 import AddIcon from '@material-ui/icons/Add';
 import RefreshIcon from '@material-ui/icons/Refresh';
 import { Progress } from '@backstage/core-components';
@@ -36,28 +37,59 @@ type QueueItem = {
 };
 
 /**
- * What a developer picks, and what the two backend booleans mean.
+ * The four ticks a developer sets per image, and how they reach the two
+ * booleans the event log actually stores.
  *
- * partition_environments() in release_fileset.py is the authority:
+ * partition_environments() in release_fileset.py is the authority on what they
+ * mean:
  *   deployable = names - df_images        DF images enter NO helm environment
  *   prd        = deployable - prl1_only   prl1_only never reaches PRD
  *   uat/prl1   = deployable               everything else goes to both
  *
- * So this is two questions, not four independent ticks — and the second one
- * only exists for CARE. "DF + PRD" is not a destination the release model can
- * express, which is why picking DF disables the target choice rather than
- * silently ignoring it.
+ * PRD therefore covers PRL1 — the restriction is what PRL1-without-PRD encodes,
+ * so ticking both is the same as ticking PRD alone, and neither is a superset
+ * of the other by accident.
  */
-type ReleaseModel = 'CARE' | 'DF';
-type PromoteTarget = 'PRD' | 'PRL1';
+type Ticks = {
+  prd: boolean;
+  prl1: boolean;
+  care: boolean;
+  df: boolean;
+};
 
-function toFlags(model: ReleaseModel, target: PromoteTarget) {
+function toFlags(t: Ticks) {
   return {
-    df_only: model === 'DF',
-    // Meaningless for a DF image; pinned false so the queued row cannot claim
-    // a helm restriction it will never be subject to.
-    prl1_only: model === 'CARE' && target === 'PRL1',
+    df_only: t.df,
+    // Only a PRL1 tick WITHOUT PRD restricts the image; PRD implies both.
+    // Pinned false for a DF image, which is subject to no helm restriction.
+    prl1_only: !t.df && t.prl1 && !t.prd,
   };
+}
+
+/**
+ * Combinations the release model cannot represent in one queued row. Reported
+ * inline instead of being silently resolved, because either resolution would
+ * ship the image somewhere the developer did not choose.
+ */
+function tickError(t: Ticks): string {
+  if (t.care && t.df) {
+    return 'CARE and DF are different release models — tick one. An image is either a helm chart in the CARE release or a Dataflow image, not both.';
+  }
+  if (!t.care && !t.df) return 'Tick CARE or DF.';
+  if (t.care && !t.prd && !t.prl1) return 'Tick PRD and/or PRL1 for a CARE image.';
+  return '';
+}
+
+/** The destination those ticks actually produce. */
+function describeTicks(t: Ticks): string {
+  const err = tickError(t);
+  if (err) return '';
+  if (t.df) {
+    return 'Dataflow image — built and deployed by the DF workflow; it enters no helm environment.';
+  }
+  return t.prl1 && !t.prd
+    ? 'Goes to UAT and PRL1 — held back from PRD.'
+    : 'Goes to UAT, PRL1 and PRD.';
 }
 
 /** How a queued row reads back in the table. */
@@ -84,16 +116,20 @@ export function QueueTab() {
       artifact: string;
       jira_ticket: string;
       build_run_url: string;
-      model: ReleaseModel;
-      target: PromoteTarget;
+      prd: boolean;
+      prl1: boolean;
+      care: boolean;
+      df: boolean;
     }>
   >([
     {
       artifact: '',
       jira_ticket: '',
       build_run_url: '',
-      model: 'CARE',
-      target: 'PRD',
+      prd: true,
+      prl1: false,
+      care: true,
+      df: false,
     },
   ]);
   const [requestedBy, setRequestedBy] = useState('');
@@ -124,8 +160,10 @@ export function QueueTab() {
         artifact: '',
         jira_ticket: '',
         build_run_url: '',
-        model: 'CARE',
-        target: 'PRD',
+        prd: true,
+        prl1: false,
+        care: true,
+        df: false,
       },
     ]);
   }, []);
@@ -145,7 +183,7 @@ export function QueueTab() {
     setError(null);
     const valid = rows.filter(r => r.artifact.trim());
     if (!valid.length) {
-      setError('Add at least one chart:version row.');
+      setError('Add at least one image:version row.');
       return;
     }
     if (!requestedBy.trim()) {
@@ -156,8 +194,15 @@ export function QueueTab() {
     // it verifies the build and RLFT/RFTL controls before queuing.
     if (valid.some(r => !r.build_run_url.trim())) {
       setError(
-        'Build run URL is required for each chart (e.g. https://github.com/<org>/<build-repo>/actions/runs/<id>) — the agent validates the build and its controls before queuing.',
+        'Build run URL is required for each image (e.g. https://github.com/<org>/<build-repo>/actions/runs/<id>) — the agent validates the build and its controls before queuing.',
       );
+      return;
+    }
+    const bad = valid
+      .map(r => ({ artifact: r.artifact.trim(), err: tickError(r) }))
+      .filter(x => x.err);
+    if (bad.length) {
+      setError(bad.map(x => `${x.artifact || 'row'}: ${x.err}`).join(' | '));
       return;
     }
     setSubmitting(true);
@@ -170,7 +215,7 @@ export function QueueTab() {
           artifact: r.artifact.trim(),
           jira_ticket: r.jira_ticket.trim(),
           build_run_url: r.build_run_url.trim(),
-          ...toFlags(r.model, r.target),
+          ...toFlags(r),
         })),
         requested_by: requestedBy.trim(),
         change_details: changeDetails.trim(),
@@ -189,8 +234,10 @@ export function QueueTab() {
           artifact: '',
           jira_ticket: '',
           build_run_url: '',
-          model: 'CARE',
-          target: 'PRD',
+          prd: true,
+          prl1: false,
+          care: true,
+          df: false,
         },
       ]);
       setChangeDetails('');
@@ -252,7 +299,7 @@ export function QueueTab() {
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>Artifact</TableCell>
+                <TableCell>Image</TableCell>
                 <TableCell>Requested by</TableCell>
                 <TableCell>Jira</TableCell>
                 <TableCell>Destination</TableCell>
@@ -338,7 +385,7 @@ export function QueueTab() {
               onChange={e => setNote(e.target.value)}
             />
             <Typography variant="subtitle2" gutterBottom>
-              Charts
+              Images
             </Typography>
             {rows.map((r, idx) => (
               <div
@@ -359,10 +406,10 @@ export function QueueTab() {
                   }}
                 >
                 <TextField
-                  id={`queue-chart-${idx}`}
+                  id={`queue-image-${idx}`}
                   variant="outlined"
                   size="small"
-                  label="chart:version"
+                  label="image:version"
                   value={r.artifact}
                   onChange={e => updateRow(idx, { artifact: e.target.value })}
                   style={{ flex: 2 }}
@@ -398,63 +445,46 @@ export function QueueTab() {
                 <div
                   style={{
                     display: 'flex',
-                    gap: 24,
+                    gap: 4,
                     alignItems: 'center',
                     flexWrap: 'wrap',
                   }}
                 >
-                  <div>
-                    <Typography variant="caption" color="textSecondary">
-                      Release model
-                    </Typography>
-                    <ToggleButtonGroup
-                      exclusive
-                      size="small"
-                      value={r.model}
-                      onChange={(_e, v) =>
-                        v && updateRow(idx, { model: v as ReleaseModel })
+                  {(
+                    [
+                      ['prd', 'PRD'],
+                      ['prl1', 'PRL1'],
+                      ['care', 'CARE'],
+                      ['df', 'DF'],
+                    ] as Array<[keyof Ticks, string]>
+                  ).map(([key, label]) => (
+                    <FormControlLabel
+                      key={key}
+                      control={
+                        <Checkbox
+                          size="small"
+                          id={`queue-${key}-${idx}`}
+                          checked={r[key]}
+                          onChange={e =>
+                            updateRow(idx, { [key]: e.target.checked })
+                          }
+                        />
                       }
-                      style={{ display: 'block' }}
-                    >
-                      <ToggleButton value="CARE">CARE</ToggleButton>
-                      <ToggleButton value="DF">DF</ToggleButton>
-                    </ToggleButtonGroup>
-                  </div>
-                  <div>
-                    <Typography variant="caption" color="textSecondary">
-                      Promotes to
-                    </Typography>
-                    <ToggleButtonGroup
-                      exclusive
-                      size="small"
-                      value={r.model === 'DF' ? null : r.target}
-                      onChange={(_e, v) =>
-                        v && updateRow(idx, { target: v as PromoteTarget })
-                      }
-                      style={{ display: 'block' }}
-                    >
-                      {/* A DF image enters no helm environment, so there is no
-                          PRD/PRL1 choice to make for it. */}
-                      <ToggleButton value="PRD" disabled={r.model === 'DF'}>
-                        PRD
-                      </ToggleButton>
-                      <ToggleButton value="PRL1" disabled={r.model === 'DF'}>
-                        PRL1 only
-                      </ToggleButton>
-                    </ToggleButtonGroup>
-                  </div>
-                  <Typography variant="caption" color="textSecondary">
-                    {r.model === 'DF'
-                      ? 'Dataflow image — built and deployed by the DF workflow; it enters no helm environment.'
-                      : r.target === 'PRD'
-                        ? 'Goes to UAT, PRL1 and PRD.'
-                        : 'Goes to UAT and PRL1 — held back from PRD.'}
+                      label={label}
+                    />
+                  ))}
+                  <Typography
+                    variant="caption"
+                    color={tickError(r) ? 'error' : 'textSecondary'}
+                    style={{ marginLeft: 8 }}
+                  >
+                    {tickError(r) || describeTicks(r)}
                   </Typography>
                 </div>
               </div>
             ))}
             <Button size="small" onClick={addRow}>
-              + Add another chart
+              + Add another image
             </Button>
           </DialogContent>
           <DialogActions>
