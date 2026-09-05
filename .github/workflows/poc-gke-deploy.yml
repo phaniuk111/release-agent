@@ -12,6 +12,11 @@ name: poc-gke-deploy
 #
 # One-time bootstrap of the WIF provider + CI service account this needs:
 #   scripts/gke-poc-ci-setup.sh
+#
+# Manual trigger ONLY, on purpose. The demo cluster is created and destroyed per
+# session (scripts/gke-demo-up.sh / gke-demo-down.sh), so for most of its life
+# there is no cluster to deploy to — a push trigger would fail this workflow on
+# every commit to the branch and train everyone to ignore a red X.
 on:
   workflow_dispatch:
     inputs:
@@ -19,15 +24,6 @@ on:
         description: "Deploy to the cluster after building"
         type: boolean
         default: true
-  push:
-    branches: [backstage_poc]
-    paths:
-      - "src/**"
-      - "adk_release_agent/**"
-      - "backstage/**"
-      - "helm/**"
-      - "Dockerfile.agent"
-      - ".github/workflows/poc-gke-deploy.yml"
 
 permissions:
   contents: read
@@ -90,7 +86,7 @@ jobs:
 
   deploy:
     needs: build
-    if: github.event_name == 'push' || inputs.deploy
+    if: inputs.deploy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
