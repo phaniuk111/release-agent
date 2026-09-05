@@ -32,6 +32,18 @@ RUN tar -xzf packages/backend/dist/bundle.tar.gz \
 # k8s podSecurityContext (runAsUser/fsGroup 1000) can write it too.
 RUN mkdir -p /app/backstage-data && chown -R 1000:1000 /app/backstage-data
 
+# WORKDIR creates /app as root with mode 0700, and everything the app needs to
+# READ inside it is already world-readable — so the one thing standing between
+# uid 1000 and the app is the traverse bit on /app itself. Without this the
+# container dies with a MODULE_NOT_FOUND for /app/packages/backend that looks
+# like a broken build rather than a permissions problem. `chmod` not
+# `chown -R`: recursing over node_modules would add a ~1.5GB layer.
+RUN chmod 755 /app
+
+# Run as non-root by default so the image matches the Helm chart's
+# podSecurityContext instead of depending on it.
+USER 1000
+
 EXPOSE 7007
 
 CMD ["node", "packages/backend", "--config", "app-config.yaml", "--config", "app-config.docker.yaml"]
