@@ -78,10 +78,10 @@ done
 # leaves no standing credential path from GitHub into the project.
 say "Removing PoC CI identity (WIF provider + service account)"
 CI_SA="release-copilot-poc-ci@${PROJECT_ID}.iam.gserviceaccount.com"
-for role in roles/artifactregistry.writer roles/container.developer; do
-  gcloud projects remove-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${CI_SA}" --role="$role" --condition=None >/dev/null 2>&1 || true
-done
+# artifactregistry.writer was granted on the repo, not the project, so it dies
+# with the repo below; only the project-wide role needs an explicit revoke.
+gcloud projects remove-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${CI_SA}" --role=roles/container.developer --condition=None >/dev/null 2>&1 || true
 gcloud iam workload-identity-pools providers delete poc-provider \
   --project="$PROJECT_ID" --location=global \
   --workload-identity-pool=github-actions-pool --quiet 2>/dev/null || true

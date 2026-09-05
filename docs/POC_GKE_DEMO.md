@@ -137,7 +137,38 @@ both sets of IAM grants -> delete the AR repo -> sweep unattached `pvc-*` disks.
       an `istio-proxy` alongside each app container (mesh actually injected;
       `istioctl` is not needed and is not installed by these scripts)
 
-## 6. Post-PoC exit path
+## 6. Security posture (this repo is PUBLIC)
+
+Every workflow log, step summary and run artifact on `phaniuk111/release-agent`
+is world-readable, and the deploy workflow can mint a real Google credential.
+What that forces:
+
+| Control | Why |
+| --- | --- |
+| **No long-lived keys** | Auth is GitHub OIDC → WIF. No service-account JSON is created, downloaded, or stored as a repo secret. |
+| **Provider pinned to repo AND branch** | `assertion.repository=='phaniuk111/release-agent' && assertion.ref=='refs/heads/backstage_poc'`. Without the repo clause any repo on GitHub could mint a token; without the ref clause a workflow added on any other branch could. |
+| **Actions pinned to commit SHAs** | A retagged upstream action is a direct path to exfiltrating the OIDC token. Tags are recorded in trailing comments. |
+| **`artifactregistry.writer` scoped to one repo** | Not project-wide, so a stolen credential cannot write to any other registry in the project. |
+| **`permissions:` minimal** | `contents: read` + `id-token: write`. Nothing else. |
+| **Step summary carries no topology** | `kubectl get pods` without `-o wide` — pod IPs and node names do not belong on a public page. |
+| **Manual trigger only** | No `pull_request`/`pull_request_target`, so a fork PR has no path to the credential. |
+
+The agent's GitHub PAT never passes through CI by default: it lives in the
+cluster Secret `release-copilot-secrets` (key `gh-token`) that `gke-demo-up.sh`
+creates from your local `gh` session. Set `RELEASE_COPILOT_GH_TOKEN` only if you
+want CI to manage it — and note it reaches OTHER repos (`BUILD_REPO`,
+`DEPLOY_REPO`), so the workflow's own `GITHUB_TOKEN` cannot substitute for it.
+
+### Residual risks (accepted for a PoC)
+
+- **`container.developer` is project-wide.** GKE has no cluster-scoped
+  equivalent, so the CI identity can reach any cluster in the project. It is the
+  widest grant here; `gke-demo-down.sh` revokes it at teardown.
+- **Anyone with write access to `backstage_poc` can reach the project.** The
+  branch pin narrows *which* ref, not *who* can push to it. Protect the branch
+  if that matters.
+
+## 7. Post-PoC exit path
 
 | When | Move |
 | --- | --- |
@@ -146,7 +177,7 @@ both sets of IAM grants -> delete the AR repo -> sweep unattached `pvc-*` disks.
 | Production | GKE Enterprise + zonal redundancy + real OAuth + Cloud SQL |
 | Cost ceiling hit | Keep cluster up but scale deployments to 0 (`kubectl scale deploy --all --replicas=0`) — pods cost nothing paused; cluster fee still applies ($0.10/hr) unless free tier covers it |
 
-## 7. Files
+## 8. Files
 
 - `scripts/gke-demo-up.sh` / `gke-demo-down.sh` — the infrastructure lifecycle
 - `scripts/gke-poc-ci-setup.sh` — one-time keyless CI auth (WIF, no keys)
