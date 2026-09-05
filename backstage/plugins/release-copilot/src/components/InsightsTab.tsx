@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Chip,
   FormControl,
   Grid,
   InputLabel,
@@ -42,6 +43,31 @@ type InsightsResponse = {
   error?: string;
 };
 
+/** One image currently deployed in one environment. */
+type EnvImage = {
+  artifact_name: string;
+  version: string;
+  since: string;
+};
+
+type EnvState = {
+  environment: string;
+  count: number;
+  images: EnvImage[];
+};
+
+/**
+ * `event_type=state` is not a window over events — it is the CURRENT estate,
+ * derived by letting the latest deployed/removed event win per
+ * (image, environment). So it deliberately ignores the history window.
+ */
+type StateResponse = {
+  ok: boolean;
+  environments: EnvState[];
+  distinct_images: number;
+  error?: string;
+};
+
 type Row = {
   chart: string;
   version: string;
@@ -51,14 +77,59 @@ type Row = {
   count: number;
 };
 
+type EnvRow = {
+  environment: string;
+  image: string;
+  tag: string;
+  since: string;
+};
+
 const useStyles = makeStyles(theme => ({
   filters: {
     display: 'flex',
     gap: theme.spacing(2),
     marginBottom: theme.spacing(2),
+    flexWrap: 'wrap',
+    alignItems: 'center',
   },
   muted: { color: theme.palette.text.secondary },
+  envChip: { marginRight: theme.spacing(1), marginBottom: theme.spacing(1) },
 }));
+
+/**
+ * The promotion chain leads; anything else (dataflow-uat, ad-hoc envs) follows
+ * alphabetically. Without this the estate reads in BigQuery's order, which puts
+ * dataflow-uat above the environment a release actually promotes through.
+ */
+const ENV_ORDER = ['uat', 'prl1', 'prd'];
+
+function envRank(env: string): number {
+  const i = ENV_ORDER.indexOf(env.toLowerCase());
+  return i === -1 ? ENV_ORDER.length : i;
+}
+
+function sortEnvs(envs: EnvState[]): EnvState[] {
+  return [...envs].sort(
+    (a, b) =>
+      envRank(a.environment) - envRank(b.environment) ||
+      a.environment.localeCompare(b.environment),
+  );
+}
+
+function flattenEnvs(envs: EnvState[]): EnvRow[] {
+  const rows: EnvRow[] = [];
+  for (const e of sortEnvs(envs)) {
+    for (const img of e.images) {
+      rows.push({
+        environment: e.environment,
+        image: img.artifact_name,
+        tag: img.version,
+        since: img.since,
+      });
+    }
+  }
+  return rows;
+}
 
 function flatten(charts: ChartInsight[]): Row[] {
   const rows: Row[] = [];
@@ -99,11 +170,32 @@ const columns: TableColumn<Row>[] = [
   },
 ];
 
+const envColumns: TableColumn<EnvRow>[] = [
+  {
+    title: 'Environment',
+    field: 'environment',
+    render: (row: EnvRow) => row.environment.toUpperCase(),
+    customSort: (a: EnvRow, b: EnvRow) =>
+      envRank(a.environment) - envRank(b.environment) ||
+      a.environment.localeCompare(b.environment),
+  },
+  { title: 'Image', field: 'image' },
+  { title: 'Tag', field: 'tag' },
+  {
+    title: 'Deployed since',
+    field: 'since',
+    render: (row: EnvRow) =>
+      row.since ? new Date(row.since).toLocaleString() : '—',
+  },
+];
+
 const DAY_OPTIONS = [
   { label: 'Last 7 days', value: 7 },
   { label: 'Last 30 days', value: 30 },
   { label: 'Last 90 days', value: 90 },
 ];
+
+const ALL_ENVS = '__all__';
 
 export function InsightsTab() {
   const classes = useStyles();
@@ -117,18 +209,26 @@ export function InsightsTab() {
     'released',
   );
 
+  const [state, setState] = useState<StateResponse | null>(null);
+  const [stateError, setStateError] = useState<string | null>(null);
+  const [stateLoading, setStateLoading] = useState(false);
+  const [envFilter, setEnvFilter] = useState<string>(ALL_ENVS);
+
+  // `pattern` is applied SERVER-side (glob or substring on the image name), so
+  // the same box narrows both cards and the filtering matches what the agent
+  // itself would answer in chat.
+  const query = useMemo(
+    () => (pattern.trim() ? `&pattern=${encodeURIComponent(pattern.trim())}` : ''),
+    [pattern],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const qs = new URLSearchParams({
-        days: String(days),
-        event_type: eventType,
-        ...(pattern.trim() ? { pattern: pattern.trim() } : {}),
-      });
       const result = await apiGet<InsightsResponse>(
         apiBase,
-        `/api/release-insights?${qs}`,
+        `/api/release-insights?days=${days}&event_type=${eventType}${query}`,
       );
       if (result.ok === false) throw new Error(result.error || 'query failed');
       setData(result);
@@ -137,16 +237,126 @@ export function InsightsTab() {
     } finally {
       setLoading(false);
     }
-  }, [apiBase, days, pattern, eventType]);
+  }, [apiBase, days, query, eventType]);
+
+  const loadState = useCallback(async () => {
+    setStateLoading(true);
+    setStateError(null);
+    try {
+      const result = await apiGet<StateResponse>(
+        apiBase,
+        `/api/release-insights?event_type=state${query}`,
+      );
+      if (result.ok === false) throw new Error(result.error || 'query failed');
+      setState(result);
+    } catch (e) {
+      setStateError((e as Error).message);
+    } finally {
+      setStateLoading(false);
+    }
+  }, [apiBase, query]);
 
   useEffect(() => {
     load();
   }, [load]);
 
+  useEffect(() => {
+    loadState();
+  }, [loadState]);
+
   const rows = data ? flatten(data.charts ?? []) : [];
+  const envs = state ? sortEnvs(state.environments ?? []) : [];
+  const envRows = flattenEnvs(state?.environments ?? []).filter(
+    r => envFilter === ALL_ENVS || r.environment === envFilter,
+  );
 
   return (
     <Grid container spacing={3}>
+      <Grid item xs={12}>
+        <InfoCard title="Currently deployed by environment">
+          <div className={classes.filters}>
+            <TextField
+              variant="outlined"
+              size="small"
+              label="Image name (e.g. eod-risk or orders-*)"
+              value={pattern}
+              onChange={e => setPattern(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  load();
+                  loadState();
+                }
+              }}
+              style={{ minWidth: 280 }}
+              helperText="Filters both cards. Substring, or a glob with *"
+            />
+            <FormControl
+              variant="outlined"
+              size="small"
+              style={{ minWidth: 180 }}
+            >
+              <InputLabel>Environment</InputLabel>
+              <Select
+                value={envFilter}
+                label="Environment"
+                onChange={e => setEnvFilter(String(e.target.value))}
+              >
+                <MenuItem value={ALL_ENVS}>All environments</MenuItem>
+                {envs.map(e => (
+                  <MenuItem key={e.environment} value={e.environment}>
+                    {e.environment.toUpperCase()}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </div>
+          {state && !stateError && (
+            <>
+              <div>
+                {envs.map(e => (
+                  <Chip
+                    key={e.environment}
+                    className={classes.envChip}
+                    size="small"
+                    color={envFilter === e.environment ? 'primary' : 'default'}
+                    label={`${e.environment.toUpperCase()} · ${e.count}`}
+                    onClick={() =>
+                      setEnvFilter(
+                        envFilter === e.environment ? ALL_ENVS : e.environment,
+                      )
+                    }
+                  />
+                ))}
+              </div>
+              <Typography
+                variant="body2"
+                className={classes.muted}
+                gutterBottom
+              >
+                {state.distinct_images} distinct image
+                {state.distinct_images === 1 ? '' : 's'} across {envs.length}{' '}
+                environment{envs.length === 1 ? '' : 's'}. Current estate —
+                latest deployed event wins per image per environment, so this is
+                not limited by the history window below.
+              </Typography>
+            </>
+          )}
+          {stateError && <Typography color="error">{stateError}</Typography>}
+          <Table<EnvRow>
+            options={{ paging: false, search: false, padding: 'dense' }}
+            isLoading={stateLoading}
+            columns={envColumns}
+            data={envRows}
+            emptyContent={
+              <Typography className={classes.muted} style={{ padding: 16 }}>
+                {pattern.trim()
+                  ? `No deployed images match "${pattern.trim()}".`
+                  : 'No deployed images recorded yet — the estate is derived from deploy events in BigQuery.'}
+              </Typography>
+            }
+          />
+        </InfoCard>
+      </Grid>
       <Grid item xs={12}>
         <InfoCard title="Release history">
           <div className={classes.filters}>
@@ -185,24 +395,14 @@ export function InsightsTab() {
                 <MenuItem value="deployed">Deployed (env)</MenuItem>
               </Select>
             </FormControl>
-            <TextField
-              variant="outlined"
-              size="small"
-              label="Chart pattern (e.g. orders-*)"
-              value={pattern}
-              onChange={e => setPattern(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') load();
-              }}
-              style={{ minWidth: 240 }}
-            />
           </div>
           {data && !error && (
             <Typography variant="body2" className={classes.muted} gutterBottom>
               {data.total_events} {data.event_type} event
               {data.total_events === 1 ? '' : 's'} across {data.chart_count}{' '}
               chart{data.chart_count === 1 ? '' : 's'} in the last {data.days}{' '}
-              days (BigQuery event log).
+              days (BigQuery event log)
+              {pattern.trim() ? ` matching "${pattern.trim()}"` : ''}.
             </Typography>
           )}
           {error && <Typography color="error">{error}</Typography>}
