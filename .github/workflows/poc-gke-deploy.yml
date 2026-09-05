@@ -159,12 +159,30 @@ jobs:
             esac
           done
 
-      - name: Spot-pod values
+      # Spot pods + PoC sizing. Two things worth knowing before changing these:
+      #
+      # 1. Autopilot bills and schedules on LIMITS, not requests — it raises
+      #    requests to match. The charts' defaults (1 vCPU, 1-2GiB) are sized
+      #    for a real deployment and are ~4x what a demo needs.
+      # 2. This project's SSD_TOTAL_GB quota is 250GB and every Autopilot node
+      #    takes a 100GB balanced boot disk, so the cluster is hard-capped at
+      #    TWO nodes. Everything has to pack onto them; a third node is refused
+      #    with "GCE quota exceeded" and pods sit Pending forever.
+      - name: PoC values (spot + right-sized to the node cap)
         run: |
           cat > /tmp/spot.yaml <<'YAML'
           nodeSelector:
             cloud.google.com/gke-spot: "true"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
           YAML
+          # Backstage is a Node backend and OOMs under 1Gi; give it headroom.
+          sed 's/memory: "1Gi"/memory: "1536Mi"/' /tmp/spot.yaml > /tmp/spot-portal.yaml
 
       - name: helm upgrade release-copilot (agent)
         run: |
@@ -178,6 +196,8 @@ jobs:
             --set config.GOOGLE_CLOUD_PROJECT="$PROJECT_ID" \
             --set config.BUILD_REPO=phaniuk111/devops \
             --set config.DEPLOY_REPO=phaniuk111/deployment-repo \
+            --set updateStrategy.rollingUpdate.maxSurge=0 \
+            --set updateStrategy.rollingUpdate.maxUnavailable=1 \
             -f /tmp/spot.yaml \
             --wait --timeout 10m
 
@@ -191,7 +211,7 @@ jobs:
             --set persistence.enabled=true \
             --set config.app.baseUrl="http://localhost:7007" \
             --set config.backend.baseUrl="http://localhost:7007" \
-            -f /tmp/spot.yaml \
+            -f /tmp/spot-portal.yaml \
             --wait --timeout 10m
 
       - name: Rollout summary
