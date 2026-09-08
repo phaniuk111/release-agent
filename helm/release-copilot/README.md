@@ -160,8 +160,8 @@ bypasses the guard if you have a reason.
 ## Persistent chat sessions (surviving pod restarts)
 
 By default ADK sessions are in-memory: a restart or a rollout loses every
-conversation, and a second replica would answer from a different history. That
-is why `replicaCount` is pinned to 1.
+conversation, and a second replica would answer from a different history. That is
+the main reason `replicaCount` is pinned to 1.
 
 `ADK_SESSION_BACKEND: "vertex"` moves sessions into a **Vertex AI Agent Engine**.
 You do not have to create one: the app looks for an engine whose display name
@@ -186,19 +186,27 @@ config:
   VERTEX_AGENT_ENGINE_ID: "<bare id or full resource name>"   # wins over the name
 ```
 
-The pod's service account needs `roles/aiplatform.user` on the project.
+The pod's service account needs `roles/aiplatform.user` on the project — it
+covers both `aiplatform.reasoningEngines.*` (find-or-create) and
+`aiplatform.sessions.*` (the reads and writes). `GOOGLE_CLOUD_PROJECT` must be
+set explicitly: the pod has no `gcloud` and there is no metadata-server fallback,
+so an empty value fails with *"ADK_SESSION_BACKEND=vertex needs
+GOOGLE_CLOUD_PROJECT"*. The `aiplatform.googleapis.com` API must be enabled —
+the role grants permission, but a disabled API still refuses.
 
-**What this does and does not fix.** Conversation history survives restarts and
-is shared across pods. Three pieces of state are still process-local:
+**What this does and does not fix.** Sessions carry the conversation, the pending
+`CONFIRM-…` token and any paused yes/no tool call, so all three survive a restart
+and move between pods. One piece of state is still process-local:
 
 | still per-pod | effect |
 |---|---|
-| pending `CONFIRM-…` previews | a preview served by pod A cannot be confirmed on pod B |
-| paused yes/no prod-op confirmations | same |
-| the per-thread GitHub PAT (memory-only by design) | user must reconnect after a restart |
+| the per-thread GitHub PAT (memory-only by design) | the user reconnects after a restart, or whenever a request lands on a pod that has not seen them |
+
+The ADK artifact and memory services are also in-memory per pod.
 
 So this is a real improvement to restart behaviour, but **not on its own a
-licence to raise `replicaCount`** — those three need addressing first.
+licence to raise `replicaCount`** — the PAT would be re-prompted on every pod
+that has not seen that thread.
 
 ## Key values
 
@@ -226,7 +234,7 @@ licence to raise `replicaCount`** — those three need addressing first.
 | `config.PRL1_BRANCH` | `PRL1` | second terminal env branch (prl1_only charts never reach PRD) |
 | `config.RELEASE_UPDATER_SCRIPT` | `scripts/release/update_release_files.py` | deploy repo's file-set generator (CARE/DF releases) |
 | `config.ARTIFACTORY_BASE_URL` | `""` | prepended when devs give bare `name:version` |
-| `config.DF_BUILD_REPO` | `""` | Dataflow images' build repo (empty = BUILD_REPO) |
+| `config.DF_BUILD_REPO` | `""` | Dataflow images' build repo, used when asking by image name (empty = BUILD_REPO). A run URL carries its own repo |
 | `config.DF_RELEASE_REPO` | `""` | repo a **DF release** is raised in (empty = DEPLOY_REPO). Separate from `DF_DEPLOY_REPO` |
 | `config.JIRA_BASE_URL` / `.JIRA_USER_EMAIL` | `""` | read-only JIRA lookup at queue time; empty = disabled |
 | `jiraToken.existingSecret` / `.existingSecretKey` | `""` / `jira-api-token` | Secret holding the technical-account API token |
