@@ -77,3 +77,43 @@ def test_free_form_toolset_excludes_release_defining_mutations():
     provided = set(toolset._provided_tools_by_name)
     assert not (BLOCKED_FREEFORM_TOOLS & provided)
     assert "prepare_deploy_preview" not in provided
+
+
+def test_consumer_onboarding_indexes_every_reference():
+    """A reference file the SKILL.md does not name is UNREADABLE.
+
+    `load_skill` hands the model the instructions only — it does not list the
+    folder — and `load_skill_resource` needs an exact path. So a document
+    dropped into references/ without a row in the index is loaded into memory,
+    never read, and nobody finds out: the model just answers without it. This
+    test is the thing that notices.
+    """
+    import pathlib
+
+    skill = pathlib.Path(__file__).parent.parent / "adk_release_agent/skills/consumer-onboarding"
+    body = (skill / "SKILL.md").read_text()
+    refs = skill / "references"
+
+    missing = [
+        str(f.relative_to(skill))
+        for f in sorted(refs.rglob("*"))
+        if f.is_file() and str(f.relative_to(skill)) not in body
+    ]
+    assert not missing, (
+        f"reference files not named in SKILL.md, so the model can never load them: {missing}"
+    )
+
+
+def test_consumer_onboarding_reference_paths_all_exist():
+    """The mirror failure: an index row pointing at a file that was renamed or
+    deleted sends the model to load_skill_resource for a path that 404s."""
+    import pathlib
+    import re
+
+    skill = pathlib.Path(__file__).parent.parent / "adk_release_agent/skills/consumer-onboarding"
+    body = (skill / "SKILL.md").read_text()
+
+    cited = set(re.findall(r"`(references/[^`]+)`", body))
+    assert cited, "SKILL.md cites no reference files — the index is missing"
+    broken = sorted(p for p in cited if not (skill / p).is_file())
+    assert not broken, f"SKILL.md names reference files that do not exist: {broken}"

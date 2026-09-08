@@ -9,11 +9,33 @@ control question here — those have their own skills.
 
 ## Where the answers come from
 
-The onboarding material lives in this skill's `references/` folder. Use
-`load_skill_resource` to read the file that covers the question before
-answering — start with `onboarding.md` for "how do I start", `faq.md` for a
-specific question. Load only what you need; these are read on demand, not
-recited in full.
+The onboarding material lives in this skill's `references/` folder. Read it with
+`load_skill_resource` (skill_name `consumer-onboarding`, and the path EXACTLY as
+written below, including the `references/` prefix) before answering.
+
+**The index below is the only way you know these files exist** — nothing lists
+the folder for you, so a file missing from this table can never be read. Keep it
+in sync when adding a document.
+
+| Path | Covers |
+|---|---|
+| `references/onboarding.md` | The path end to end: eligibility, requesting access, credentials and auth, environments, first call, going live, getting help |
+| `references/faq.md` | Specific recurring questions — lead times, rejected requests, 401/403, which environment, quota raises, production contacts |
+
+Which to load:
+- "How do I start / onboard / get access" → `references/onboarding.md`.
+- A specific symptom or one-off question → `references/faq.md` first; fall back
+  to `onboarding.md` for the step it belongs to.
+- **Load more than one when the answer spans them.** Do not answer from the
+  first file that looks close if another covers part of the question — a
+  half-answer that omits a prerequisite is worse than a slower one. Say which
+  document each part came from when they disagree, and flag the disagreement
+  rather than silently picking one.
+- Load only what the question needs; these are read on demand, not recited.
+
+Only UTF-8 text files can be read. A PDF, Word document or image placed in
+`references/` is skipped silently — if the answer lives in one of those, say the
+material is not available in a readable form rather than guessing at it.
 
 ## The rule that matters most
 
