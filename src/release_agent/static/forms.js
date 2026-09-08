@@ -323,17 +323,19 @@ export async function showQueueForm() {
     // Exactly one release type is always on: unticking one ticks the other, so
     // the pair reads as tick boxes but cannot land in a state the API has no
     // value for.
-    // The two lanes route differently, so the boxes behave differently.
-    // CARE promotes along a CHAIN: a standard chart passes through PRL1 on its
-    // way to PRD, so PRD rides with PRL1 locked on — offering to untick it
-    // would promise a route that does not exist.
-    // Dataflow has SEPARATE pipelines: the CHG is raised once, and which
-    // pipeline is triggered is decided at deploy time, so both may be ticked
-    // and neither implies the other.
+    // Both environments are independently tickable in BOTH lanes: the CHG is
+    // raised once and which pipeline is triggered is decided at deploy time, so
+    // the developer records what is in scope rather than a single destination.
+    //
+    // The hint is where the two lanes differ, because CARE has a second
+    // consumer the tick boxes do not control. prl1_only routes the release
+    // FILE-SET, and it has only two states — so ticking PRD alone records the
+    // pipeline you intend to trigger, it does NOT hold the chart out of the
+    // PRL1 file-set: _service_routing generates a standard chart into every
+    // environment's workflow. Only PRL1-without-PRD actually excludes PRD.
+    // Saying so here is cheaper than someone discovering it on release day.
     const syncFlags = () => {
         const isDf = dfF.cb.checked;
-        prl1.cb.disabled = !isDf && prd.cb.checked;
-        if (!isDf && prd.cb.checked) prl1.cb.checked = true;
         const picked = [prd.cb.checked && 'PRD', prl1.cb.checked && 'PRL1'].filter(Boolean);
         if (isDf) {
             envHint.textContent = picked.length
@@ -342,14 +344,19 @@ export async function showQueueForm() {
                 : '';
             return;
         }
-        envHint.textContent = prd.cb.checked ? 'UAT → PRL1 → PRD'
-            : (prl1.cb.checked ? 'UAT → PRL1, never PRD' : '');
+        envHint.textContent =
+            prd.cb.checked && prl1.cb.checked ? 'UAT → PRL1 → PRD'
+            : prd.cb.checked ? 'PRD pipeline — release files still cover PRL1'
+            : prl1.cb.checked ? 'UAT → PRL1, never PRD'
+            : '';
     };
     care.cb.addEventListener('change', () => { dfF.cb.checked = !care.cb.checked; syncFlags(); });
     dfF.cb.addEventListener('change', () => { care.cb.checked = !dfF.cb.checked; syncFlags(); });
     prd.cb.addEventListener('change', syncFlags);
     prl1.cb.addEventListener('change', syncFlags);
-    care.cb.checked = true; prd.cb.checked = true;
+    // Default to the full path — the common case, and the one the file-set
+    // generates anyway for a standard chart.
+    care.cb.checked = true; prd.cb.checked = true; prl1.cb.checked = true;
     syncFlags();
 
     const row = document.createElement('div');
