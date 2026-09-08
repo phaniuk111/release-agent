@@ -445,6 +445,7 @@ class QueueAddRequest(BaseModel):
     jira_ticket: str = ""
     change_details: str = ""  # dev's what-changed-and-why → CHG draft on release day
     build_run_url: str = ""  # Actions run that built the tag → eligibility check at queue time
+    target_envs: str = ""  # queue-time intent, e.g. "prd,prl1"
 
 
 class QueueRow(BaseModel):
@@ -457,6 +458,11 @@ class QueueRow(BaseModel):
     jira_ticket: str = ""
     prl1_only: bool = False
     df_only: bool = False
+    # Which environments the developer ticked. prl1_only stays the boolean the
+    # CARE release routing reads; this records the full selection, which the
+    # boolean cannot: a DF entry may name BOTH pipelines, and which one is
+    # triggered is decided at deploy time.
+    target_envs: str = ""
 
 
 class QueueBatchRequest(BaseModel):
@@ -529,6 +535,7 @@ def release_queue_add(req: QueueAddRequest):
         artifact=req.artifact,
         requested_by=req.requested_by,
         prl1_only=req.prl1_only,
+        target_envs=req.target_envs,
         df_only=req.df_only,
         note=req.note,
         jira_ticket=req.jira_ticket,
@@ -565,6 +572,7 @@ def release_queue_add_batch(req: QueueBatchRequest):
                 artifact=row.artifact.strip(),
                 requested_by=req.requested_by,
                 prl1_only=row.prl1_only,
+                target_envs=row.target_envs,
                 df_only=row.df_only,
                 note=req.note,
                 jira_ticket=row.jira_ticket,

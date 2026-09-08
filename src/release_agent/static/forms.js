@@ -323,18 +323,25 @@ export async function showQueueForm() {
     // Exactly one release type is always on: unticking one ticks the other, so
     // the pair reads as tick boxes but cannot land in a state the API has no
     // value for.
+    // The two lanes route differently, so the boxes behave differently.
+    // CARE promotes along a CHAIN: a standard chart passes through PRL1 on its
+    // way to PRD, so PRD rides with PRL1 locked on — offering to untick it
+    // would promise a route that does not exist.
+    // Dataflow has SEPARATE pipelines: the CHG is raised once, and which
+    // pipeline is triggered is decided at deploy time, so both may be ticked
+    // and neither implies the other.
     const syncFlags = () => {
         const isDf = dfF.cb.checked;
-        // A DF image is not deployed by helm at all, so offering it an
-        // environment would be a lie — the DF release decides where it lands.
-        [prd.cb, prl1.cb].forEach(cb => { cb.disabled = isDf; });
-        envRow.classList.toggle('opacity-40', isDf);
-        if (isDf) { envHint.textContent = 'DF images never enter a helm deploy workflow'; return; }
-        // A standard chart already passes through PRL1 on its way to PRD, so
-        // PRD rides with PRL1 locked on rather than pretending they are
-        // independent routes.
-        prl1.cb.disabled = prd.cb.checked;
-        if (prd.cb.checked) prl1.cb.checked = true;
+        prl1.cb.disabled = !isDf && prd.cb.checked;
+        if (!isDf && prd.cb.checked) prl1.cb.checked = true;
+        const picked = [prd.cb.checked && 'PRD', prl1.cb.checked && 'PRL1'].filter(Boolean);
+        if (isDf) {
+            envHint.textContent = picked.length
+                ? picked.join(' + ') + ' pipeline' + (picked.length > 1 ? 's' : '') +
+                  ' — triggered at deploy time'
+                : '';
+            return;
+        }
         envHint.textContent = prd.cb.checked ? 'UAT → PRL1 → PRD'
             : (prl1.cb.checked ? 'UAT → PRL1, never PRD' : '');
     };
@@ -408,9 +415,14 @@ export async function showQueueForm() {
                         artifact: r.chart.value.trim() + ':' + r.ver.value.trim(),
                         build_run_url: r.run.value.trim(),
                         jira_ticket: r.jira.value.trim(),
-                        // "PRL1 without PRD" is what the API calls prl1_only.
-                        prl1_only: !dfF.cb.checked && prl1.cb.checked && !prd.cb.checked,
+                        // "PRL1 without PRD" is what the API calls prl1_only —
+                        // it drives the CARE release routing. target_envs carries
+                        // the full selection, which the boolean cannot: a DF entry
+                        // may name both pipelines.
+                        prl1_only: prl1.cb.checked && !prd.cb.checked,
                         df_only: dfF.cb.checked,
+                        target_envs: [prd.cb.checked && 'prd', prl1.cb.checked && 'prl1']
+                            .filter(Boolean).join(','),
                     })),
                 }),
             });

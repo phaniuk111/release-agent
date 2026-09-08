@@ -356,3 +356,36 @@ def test_build_repo_routing_for_dataflow(monkeypatch):
     assert captured["repo"] == ""  # tool layer falls back to BUILD_REPO
     T.get_build_report(image="df-img", tag="1.0", repo="explicit/repo", dataflow=True)
     assert captured["repo"] == "explicit/repo"
+
+
+def test_norm_envs_is_stable_and_chain_ordered():
+    """target_envs must be COMPARABLE: two developers ticking the same boxes in a
+    different order have to produce one value, or "did the intent change?" cannot
+    be answered by looking at two rows."""
+    from release_agent.tools.release_queue import _norm_envs
+
+    assert _norm_envs("prl1,prd") == _norm_envs("prd,prl1") == "prl1,prd"
+    assert _norm_envs(" PRD , prl1 ") == "prl1,prd"
+    assert _norm_envs("prod") == "prd"          # same alias the deployed events use
+    assert _norm_envs("prd,prd") == "prd"
+    # Additive column: nothing selected stays NULL rather than becoming "".
+    assert _norm_envs("") is None
+    assert _norm_envs("  ,  ") is None
+
+
+def test_queued_intent_records_both_df_pipelines(monkeypatch):
+    """A Dataflow entry may name PRD and PRL1 at once. prl1_only cannot express
+    that ("not PRL1-only" is also what PRD-only writes), so target_envs is what
+    survives to deploy time — assert the two cases are distinguishable."""
+    from release_agent.tools import release_queue as RQ
+
+    written = []
+    monkeypatch.setattr(RQ, "_insert", lambda rows: written.extend(rows) or {"ok": True})
+
+    RQ.add_intent("df-job:1.0", "dev@example.com", df_only=True, target_envs="prd,prl1")
+    RQ.add_intent("df-job2:1.0", "dev@example.com", df_only=True, target_envs="prd")
+
+    both, prd_only = written
+    assert both["prl1_only"] is False and prd_only["prl1_only"] is False
+    assert both["target_envs"] == "prl1,prd"
+    assert prd_only["target_envs"] == "prd"

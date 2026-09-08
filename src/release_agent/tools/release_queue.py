@@ -50,6 +50,7 @@ _SCHEMA = [
     ("jira_ticket", "STRING"),  # e.g. REL-1234 — audit link, surfaces in CHG draft
     ("change_details", "STRING"),  # dev's what-changed-and-why, feeds change_description
     ("build_run_url", "STRING"),  # the Actions run that built the tag — eligibility evidence
+    ("target_envs", "STRING"),  # queue-time intent, e.g. "prd,prl1" — see the JSON schema
 ]
 
 _lock = threading.Lock()
@@ -158,6 +159,20 @@ def _norm_env(env: str) -> str:
     return {"prod": "prd", "dataflow-prod": "dataflow-prd"}.get(e, e)
 
 
+def _norm_envs(value: str) -> str | None:
+    """Queue-time environment intent as a stable, comparable string.
+
+    Lowercased, de-duplicated and ORDERED by the promotion chain rather than by
+    what the developer clicked first, so "prd,prl1" and "prl1,prd" are one value
+    and two rows can be compared. Empty stays NULL — the column is additive, and
+    rows written before it existed have no intent to report.
+    """
+    order = ["uat", "prl1", "prd"]
+    picked = {e for raw in str(value or "").split(",") if (e := _norm_env(raw))}
+    known = [e for e in order if e in picked]
+    return ",".join(known + sorted(picked - set(order))) or None
+
+
 # --- writes ------------------------------------------------------------------
 def add_intent(
     artifact: str,
@@ -170,6 +185,7 @@ def add_intent(
     jira_ticket: str = "",
     change_details: str = "",
     build_run_url: str = "",
+    target_envs: str = "",
 ) -> dict[str, Any]:
     """Queue an artifact for the next release. Re-queuing the same chart
     replaces it in the derived queue (latest event wins) — that's how a dev
@@ -198,6 +214,7 @@ def add_intent(
         "jira_ticket": str(jira_ticket or "").strip().upper() or None,
         "change_details": str(change_details or "").strip() or None,
         "build_run_url": str(build_run_url or "").strip() or None,
+        "target_envs": _norm_envs(target_envs),
     }
     result = _insert([row])
     if result.get("ok"):
@@ -478,6 +495,7 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "jira_ticket": ev.get("jira_ticket") or "",
                 "change_details": ev.get("change_details") or "",
                 "build_run_url": ev.get("build_run_url") or "",
+                "target_envs": ev.get("target_envs") or "",
             }
         elif etype in ("withdrawn", "released"):
             state.pop(name, None)

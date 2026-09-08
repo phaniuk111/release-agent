@@ -170,9 +170,13 @@ def queue_release_intent(
     jira_ticket: str = "",
     change_details: str = "",
     build_run_url: str = "",
+    target_envs: str = "",
 ) -> dict[str, Any]:
     """Register an artifact for the NEXT release (the intake queue): chart:version,
-    the requester's email, PRL1-only / Dataflow-only routing, optional note for
+    the requester's email, PRL1-only / Dataflow-only routing, target_envs (which
+    environments the developer picked, e.g. "prd" or "prd,prl1" — recorded intent,
+    since a Dataflow entry may name both pipelines and which one is triggered is
+    decided at deploy time), optional note for
     DevOps, the change context — jira_ticket (e.g. REL-1234) and change_details
     (what changed and why) — and build_run_url, the GitHub Actions run that
     built the tag. build_run_url is REQUIRED: nothing is queued without it —
@@ -338,6 +342,7 @@ def queue_release_intent(
         jira_ticket=jira_ticket,
         change_details=change_details,
         build_run_url=run_url,
+        target_envs=target_envs,
     )
     if result.get("ok"):
         result["eligible"] = True if verified else None
