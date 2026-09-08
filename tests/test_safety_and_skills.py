@@ -117,3 +117,88 @@ def test_consumer_onboarding_reference_paths_all_exist():
     assert cited, "SKILL.md cites no reference files — the index is missing"
     broken = sorted(p for p in cited if not (skill / p).is_file())
     assert not broken, f"SKILL.md names reference files that do not exist: {broken}"
+
+
+# --- ScopeGuardPlugin --------------------------------------------------------
+
+def _llm_request(text):
+    """Minimal stand-in for an LlmRequest carrying one user message."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        contents=[SimpleNamespace(role="user", parts=[SimpleNamespace(text=text)])]
+    )
+
+
+async def _verdict(plugin, text):
+    return await plugin.before_model_callback(callback_context=None, llm_request=_llm_request(text))
+
+
+def test_scope_guard_stage1_never_refuses_on_its_own(monkeypatch):
+    """Stage 1 is an ALLOW path, not a decision.
+
+    Its vocabulary check misses ordinary in-domain questions ("why did my thing
+    fail yesterday?"), so if a stage-1 miss could refuse, the guard would reject
+    exactly the users it exists to serve. Assert the classifier is consulted.
+    """
+    import asyncio
+
+    from adk_release_agent.safety import ScopeGuardPlugin, _looks_in_scope
+
+    vague = "why did my thing fail yesterday afternoon"
+    assert not _looks_in_scope(vague), "test is meaningless if stage 1 already allows this"
+
+    guard = ScopeGuardPlugin(mode="enforce")
+    monkeypatch.setattr(ScopeGuardPlugin, "_classify", staticmethod(lambda text: True))
+    assert asyncio.run(_verdict(guard, vague)) is None
+
+
+def test_scope_guard_refuses_only_a_confident_no(monkeypatch):
+    import asyncio
+
+    from adk_release_agent.safety import ScopeGuardPlugin
+
+    guard = ScopeGuardPlugin(mode="enforce")
+    off_topic = "Write me a Python function that reverses a linked list please"
+
+    monkeypatch.setattr(ScopeGuardPlugin, "_classify", staticmethod(lambda text: False))
+    refusal = asyncio.run(_verdict(guard, off_topic))
+    assert refusal is not None
+    assert ScopeGuardPlugin.REFUSAL in refusal.content.parts[0].text
+
+
+def test_scope_guard_fails_open_when_the_classifier_cannot_answer(monkeypatch):
+    """A classifier outage must not take the portal down. This guard protects
+    spend; the mutation guard protects the infrastructure, and is untouched by
+    whatever this one decides."""
+    import asyncio
+
+    from adk_release_agent.safety import ScopeGuardPlugin
+
+    guard = ScopeGuardPlugin(mode="enforce")
+    off_topic = "Give me a recipe for lasagne that serves six people"
+
+    for outcome in (lambda text: None, lambda text: (_ for _ in ()).throw(RuntimeError("429"))):
+        monkeypatch.setattr(ScopeGuardPlugin, "_classify", staticmethod(outcome))
+        assert asyncio.run(_verdict(guard, off_topic)) is None
+
+
+def test_scope_guard_log_mode_refuses_nothing(monkeypatch):
+    import asyncio
+
+    from adk_release_agent.safety import ScopeGuardPlugin
+
+    monkeypatch.setattr(ScopeGuardPlugin, "_classify", staticmethod(lambda text: False))
+    for mode in ("log", "off"):
+        guard = ScopeGuardPlugin(mode=mode)
+        assert asyncio.run(_verdict(guard, "write me a sonnet about the sea please")) is None
+
+
+def test_scope_guard_lets_confirmations_through_without_a_model_call():
+    """A CONFIRM token or a bare yes/no continues a gated deploy. Screening
+    those would strand someone mid-release — a worse failure than answering a
+    stray question — so they must not even reach the classifier."""
+    from adk_release_agent.safety import _looks_in_scope
+
+    for text in ("CONFIRM-124ABF", "yes", "no", "confirm-abc123", "the second one"):
+        assert _looks_in_scope(text), text

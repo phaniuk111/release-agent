@@ -410,6 +410,15 @@ class Settings(BaseSettings):
     )
     # Require human confirmation before high-impact prod ops (prod remove / merge
     # PRD release) via ADK tool confirmation.
+    # Off-topic screening for the free-form chat lane. "log" records what it
+    # WOULD refuse without refusing anything — run that first on real traffic,
+    # then switch to "enforce". This guards spend, not safety: the mutation
+    # guard and the deterministic deploy Workflow are what stop mutations, and
+    # they are unaffected by this setting.
+    scope_guard: str = Field(
+        default="log",
+        validation_alias=AliasChoices("SCOPE_GUARD", "RELEASE_SCOPE_GUARD"),
+    )
     adk_confirm_prod_ops: bool = Field(
         default=True,
         validation_alias=AliasChoices("ADK_CONFIRM_PROD_OPS", "RELEASE_ADK_CONFIRM_PROD_OPS"),

@@ -188,6 +188,12 @@ config:
   ADK_EVENT_COMPACTION: "true"
   ADK_MEMORY_ENABLED: "true"    # in-memory / per-pod — keep replicaCount: 1
   ADK_CONFIRM_PROD_OPS: "true"
+  # Off-topic screening for free-form chat: off | log | enforce. "log" records
+  # what it WOULD refuse without refusing anything — run that against real
+  # traffic first, then switch to "enforce". Guards SPEND, not safety: the
+  # mutation guard and the confirmation-gated deploy Workflow are what stop
+  # mutations, and neither is affected by this setting. Fails open.
+  SCOPE_GUARD: "log"
   # Where chat sessions live. "memory" = per-pod (a restart loses the
   # conversation). "vertex" stores them in a Vertex AI Agent Engine so they
   # survive a restart, along with the pending CONFIRM token and any paused tool
