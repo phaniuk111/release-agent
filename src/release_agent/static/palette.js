@@ -12,12 +12,16 @@ export const GROUPS = [
     {name:'Release',  hint:'the weekly cut — queue it, build the file-set, ship it'},
     {name:'Deploy',   hint:'push one chart or DF template to an environment'},
     {name:'Check',    hint:'read-only — status, controls, builds, PRs'},
+    // Its own row because the audience is different: everything above is for
+    // the team shipping the release, this is for someone CONSUMING our APIs.
+    {name:'Onboarding', hint:'consuming our APIs — guided from the onboarding docs'},
 ];
 
 // Quick actions — what the agent can do. mode 'send' runs immediately;
 // otherwise the text is pre-filled so the user edits the image:tag first.
 export const CAPABILITIES = [
     {group:'Release', icon:'fa-cart-plus',         label:'Add to next release',  desc:'queue your chart:version now — DevOps picks it up on release day', form:'queue'},
+    {group:'Release', icon:'fa-list-ul',           label:'Check release queue', desc:"what's queued for the next release — who added it, routing, JIRA, build status", send:true,  text:"what's queued for the next release?"},
     {group:'Release', icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
     {group:'Release', icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
     {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
@@ -34,6 +38,7 @@ export const CAPABILITIES = [
     {group:'Check',   icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/controls',    send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
     {group:'Check',   icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
     {group:'Check',   icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
+    {group:'Onboarding', icon:'fa-plug',           label:'Consumer onboarding',  desc:'how to start using our APIs — access, auth, first call, going live', send:true,  text:'I want to onboard to your APIs — walk me through it step by step'},
 ];
 
 // One accent per group so the row a pill belongs to is readable at a glance,
@@ -43,6 +48,7 @@ const GROUP_STYLE = {
     Release: {icon:'text-violet-300',  border:'hover:border-violet-400/50',  label:'text-violet-300/70'},
     Deploy:  {icon:'text-sky-300',     border:'hover:border-sky-400/50',     label:'text-sky-300/70'},
     Check:   {icon:'text-emerald-300', border:'hover:border-emerald-400/50', label:'text-emerald-300/70'},
+    Onboarding: {icon:'text-cyan-300', border:'hover:border-cyan-400/50', label:'text-cyan-300/70'},
 };
 
 export function runQuick(text, send) {
