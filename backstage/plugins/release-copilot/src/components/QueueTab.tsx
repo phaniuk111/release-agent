@@ -32,6 +32,7 @@ type QueueItem = {
   note?: string;
   prl1_only?: boolean;
   df_only?: boolean;
+  target_envs?: string;
   jira_ticket?: string;
   change_details?: string;
 };
@@ -46,9 +47,10 @@ type QueueItem = {
  *   prd        = deployable - prl1_only   prl1_only never reaches PRD
  *   uat/prl1   = deployable               everything else goes to both
  *
- * PRD therefore covers PRL1 — the restriction is what PRL1-without-PRD encodes,
- * so ticking both is the same as ticking PRD alone, and neither is a superset
- * of the other by accident.
+ * For the release FILE-SET, PRD therefore covers PRL1 — the restriction is
+ * what PRL1-without-PRD encodes. The full selection travels separately as
+ * target_envs, because the deploy-time choice of pipeline (DF especially) needs
+ * "PRD + PRL1" and "PRD only" to stay distinguishable.
  */
 type Ticks = {
   prd: boolean;
@@ -60,9 +62,14 @@ type Ticks = {
 function toFlags(t: Ticks) {
   return {
     df_only: t.df,
-    // Only a PRL1 tick WITHOUT PRD restricts the image; PRD implies both.
-    // Pinned false for a DF image, which is subject to no helm restriction.
-    prl1_only: !t.df && t.prl1 && !t.prd,
+    // Only a PRL1 tick WITHOUT PRD restricts the image. Same mapping as the
+    // portal's own queue form, for both lanes.
+    prl1_only: t.prl1 && !t.prd,
+    // The full selection. prl1_only cannot carry it: "PRD + PRL1" and "PRD
+    // only" both mean "not PRL1-only", and for a DF image — whose PRD and PRL1
+    // pipelines are chosen at deploy time — that is exactly the difference
+    // the deploy needs.
+    target_envs: [t.prd && 'prd', t.prl1 && 'prl1'].filter(Boolean).join(','),
   };
 }
 
@@ -85,16 +92,22 @@ function describeTicks(t: Ticks): string {
   const err = tickError(t);
   if (err) return '';
   if (t.df) {
-    return 'Dataflow image — built and deployed by the DF workflow; it enters no helm environment.';
+    const picked = [t.prd && 'PRD', t.prl1 && 'PRL1'].filter(Boolean);
+    return picked.length
+      ? `Dataflow image — ${picked.join(' + ')} pipeline${picked.length > 1 ? 's' : ''}, triggered at deploy time.`
+      : 'Dataflow image — built and deployed by the DF workflow.';
   }
-  return t.prl1 && !t.prd
-    ? 'Goes to UAT and PRL1 — held back from PRD.'
-    : 'Goes to UAT, PRL1 and PRD.';
+  if (t.prd && t.prl1) return 'Goes to UAT, PRL1 and PRD.';
+  // prl1_only has two states, so PRD alone records the pipeline to trigger —
+  // it does not hold the chart out of the PRL1 file-set.
+  if (t.prd) return 'PRD pipeline — release files still cover PRL1.';
+  return 'Goes to UAT and PRL1 — held back from PRD.';
 }
 
 /** How a queued row reads back in the table. */
-function describeDestination(prl1Only?: boolean, dfOnly?: boolean): string {
-  if (dfOnly) return 'DF (Dataflow)';
+function describeDestination(prl1Only?: boolean, dfOnly?: boolean, targetEnvs?: string): string {
+  const envs = (targetEnvs || '').split(',').filter(Boolean).map(e => e.toUpperCase());
+  if (dfOnly) return envs.length ? `DF → ${envs.join(', ')}` : 'DF (Dataflow)';
   return prl1Only ? 'CARE → UAT, PRL1' : 'CARE → UAT, PRL1, PRD';
 }
 
@@ -127,7 +140,7 @@ export function QueueTab() {
       jira_ticket: '',
       build_run_url: '',
       prd: true,
-      prl1: false,
+      prl1: true,
       care: true,
       df: false,
     },
@@ -161,7 +174,7 @@ export function QueueTab() {
         jira_ticket: '',
         build_run_url: '',
         prd: true,
-        prl1: false,
+        prl1: true,
         care: true,
         df: false,
       },
@@ -235,7 +248,7 @@ export function QueueTab() {
           jira_ticket: '',
           build_run_url: '',
           prd: true,
-          prl1: false,
+          prl1: true,
           care: true,
           df: false,
         },
@@ -316,7 +329,7 @@ export function QueueTab() {
                   <TableCell>{it.requested_by}</TableCell>
                   <TableCell>{it.jira_ticket}</TableCell>
                   <TableCell>
-                    {describeDestination(it.prl1_only, it.df_only)}
+                    {describeDestination(it.prl1_only, it.df_only, it.target_envs)}
                   </TableCell>
                   <TableCell>{it.note}</TableCell>
                   <TableCell align="right">

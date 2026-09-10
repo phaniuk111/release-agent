@@ -214,7 +214,7 @@ export function InsightsTab() {
   const [stateLoading, setStateLoading] = useState(false);
   const [envFilter, setEnvFilter] = useState<string>(ALL_ENVS);
 
-  // Debounced so typing "eod-risk-fetcher" costs one pair of BigQuery queries
+  // Debounced so typing "acme-risk-fetcher" costs one pair of BigQuery queries
   // instead of seventeen. Both cards read `debounced`, never `pattern`, so the
   // input stays responsive while the queries lag behind it.
   const [debounced, setDebounced] = useState('');
@@ -287,7 +287,7 @@ export function InsightsTab() {
             <TextField
               variant="outlined"
               size="small"
-              label="Image name (e.g. eod-risk or orders-*)"
+              label="Image name (e.g. acme-risk or orders-*)"
               value={pattern}
               onChange={e => setPattern(e.target.value)}
               onKeyDown={e => {
