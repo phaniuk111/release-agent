@@ -74,7 +74,8 @@ class _FakeWorkflow:
 
 def test_deploy_dataflow_dispatches_workflow(monkeypatch):
     wf = _FakeWorkflow()
-    repo = SimpleNamespace(default_branch="main", get_workflow=lambda name: wf)
+    repo = SimpleNamespace(default_branch="main", get_workflow=lambda name: wf,
+                           html_url="https://github.com/o/df")
     monkeypatch.setattr(DF, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
     monkeypatch.setattr(DF.settings, "df_deploy_repo", "o/df", raising=False)
 
@@ -82,6 +83,35 @@ def test_deploy_dataflow_dispatches_workflow(monkeypatch):
     assert out["ok"] and out["action"] == "df_workflow_dispatched"
     assert wf.dispatched == [{"ref": "main", "inputs": {"image": "job-a", "tag": "2.0", "environment": "uat"}}]
     assert out["run"]["id"] == 2  # the NEW run, not the pre-existing one
+    assert out["run_url"] == "http://run/2"
+    assert "[Run #2](http://run/2)" in out["note"]
+
+
+def test_deploy_dataflow_links_the_runs_page_when_the_run_is_not_found_yet(monkeypatch):
+    """GitHub can take longer than the polling window to register the run.
+    The reply must still give somewhere to click, not just 'shortly'."""
+    wf = _FakeWorkflow()
+    repo = SimpleNamespace(default_branch="main", get_workflow=lambda name: wf,
+                           html_url="https://github.com/o/df")
+    monkeypatch.setattr(DF, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
+    monkeypatch.setattr(DF.settings, "df_deploy_repo", "o/df", raising=False)
+    monkeypatch.setattr(DF, "_find_dispatched_run", lambda workflow, before: None)
+
+    out = json.loads(DF.deploy_dataflow.invoke({"environment": "uat", "image": "job-a", "tag": "2.0"}))
+    page = f"https://github.com/o/df/actions/workflows/{DF.settings.df_deploy_workflow}"
+    assert out["run_url"] == "" and out["runs_page"] == page
+    assert f"]({page})" in out["note"]
+
+
+def test_df_reply_links_the_composer_pr():
+    from release_agent.adk_service import AdkChatService
+
+    reply = AdkChatService._format_deploy_apply_result({
+        "ok": True, "note": "Dispatched … GitHub run: [Run #2](http://run/2)",
+        "dag_bump": {"ok": True, "pr_number": 41, "pr_url": "https://github.com/o/dags/pull/41"},
+    })
+    assert "[Run #2](http://run/2)" in reply
+    assert "Composer DAGs: [PR #41](https://github.com/o/dags/pull/41) raised" in reply
 
 
 def test_deploy_dataflow_guards():

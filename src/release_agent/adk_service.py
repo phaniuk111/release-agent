@@ -663,8 +663,8 @@ class AdkChatService:
         bump = result.get("dag_bump")
         if isinstance(bump, dict):
             if bump.get("ok") and bump.get("pr_url"):
-                note += (f"\n\nComposer DAGs: PR #{bump.get('pr_number')} raised "
-                         f"({bump['pr_url']}) — merge it once the run above is green.")
+                note += (f"\n\nComposer DAGs: [PR #{bump.get('pr_number')}]({bump['pr_url']}) "
+                         "raised — merge it once the run above is green.")
             elif bump.get("ok"):
                 note += f"\n\nComposer DAGs: {bump.get('note') or 'no change needed'}."
             else:
