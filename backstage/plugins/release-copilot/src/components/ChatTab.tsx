@@ -4,6 +4,7 @@ import {
   Card,
   CardContent,
   CardHeader,
+  Chip,
   Grid,
   IconButton,
   makeStyles,
@@ -15,8 +16,30 @@ import RefreshIcon from '@material-ui/icons/Refresh';
 import { Progress } from '@backstage/core-components';
 import { apiGet, useApiBase } from '../api';
 import type { ChatMessage } from './ReleaseCopilotPage';
+import { LinkedText } from './LinkedText';
+
+// The portal's pills that have no tab of their own here. Each sends the same
+// text the portal pill does, so both front doors reach the same skill.
+const QUICK_ASKS = [
+  {
+    label: 'Check release queue',
+    hint: "What's queued for the next release — who added it, routing, JIRA, build status",
+    text: "what's queued for the next release?",
+  },
+  {
+    label: 'Consumer onboarding',
+    hint: 'How to start using our APIs — access, auth, first call, going live',
+    text: 'I want to onboard to your APIs — walk me through it step by step',
+  },
+];
 
 const useStyles = makeStyles(theme => ({
+  quickAsks: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: theme.spacing(1),
+    marginBottom: theme.spacing(1),
+  },
   chatLog: {
     minHeight: 300,
     maxHeight: 460,
@@ -79,11 +102,25 @@ export function ChatTab(props: {
             return (
               <div key={i} className={msgClass}>
                 {m.role === 'user' ? '» ' : ''}
-                {m.text}
+                {m.role === 'agent' ? <LinkedText text={m.text} /> : m.text}
               </div>
             );
           })}
           {busy && <Progress />}
+        </div>
+        <div className={classes.quickAsks}>
+          {QUICK_ASKS.map(q => (
+            <Chip
+              key={q.label}
+              label={q.label}
+              title={q.hint}
+              size="small"
+              variant="outlined"
+              clickable
+              disabled={busy}
+              onClick={() => onSend(q.text)}
+            />
+          ))}
         </div>
         <div className={classes.inputRow}>
           <TextField

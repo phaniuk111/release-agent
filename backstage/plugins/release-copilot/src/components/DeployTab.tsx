@@ -14,6 +14,7 @@ import {
   Typography,
 } from '@material-ui/core';
 import { apiGet, useApiBase } from '../api';
+import { LinkedText } from './LinkedText';
 
 const useStyles = makeStyles(theme => ({
   jsonBox: {
@@ -294,9 +295,13 @@ export function DeployTab(props: {
                 marginTop: 8,
               }}
             >
-              {busy
-                ? agentResponse || 'Preparing the deploy preview…'
-                : agentResponse || 'No response yet.'}
+              {busy ? (
+                agentResponse || 'Preparing the deploy preview…'
+              ) : agentResponse ? (
+                <LinkedText text={agentResponse} />
+              ) : (
+                'No response yet.'
+              )}
               {busy && '▌'}
             </pre>
           </>
