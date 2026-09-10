@@ -10,7 +10,7 @@ def _ev(etype, name, ts, **over):
         "artifact_name": name,
         "event_ts": ts,
         "artifact_version": "1.0.0",
-        "requested_by": "dev@db.com",
+        "requested_by": "dev@example.com",
         "prl1_only": False,
         "df_only": False,
         "note": "",
@@ -90,7 +90,7 @@ def test_add_intent_normalizes_jira(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(RQ, "_insert", _fake_insert)
-    RQ.add_intent("svc-a:1.0.0", "dev@db.com", jira_ticket="rel-1234",
+    RQ.add_intent("svc-a:1.0.0", "dev@example.com", jira_ticket="rel-1234",
                   change_details="  why text  ")
     assert captured["row"]["jira_ticket"] == "REL-1234"
     assert captured["row"]["change_details"] == "why text"
@@ -226,8 +226,8 @@ def test_bq_fully_optional_when_disabled():
     assert RQ.queue_enabled() is False
     for result in (
         RQ.current_queue(),
-        RQ.add_intent("svc-a:1.0.0", "dev@db.com"),
-        RQ.withdraw_intent("svc-a", "dev@db.com"),
+        RQ.add_intent("svc-a:1.0.0", "dev@example.com"),
+        RQ.withdraw_intent("svc-a", "dev@example.com"),
         RQ.record_deployment("uat", [{"name": "svc-a", "tag": "1.0.0"}]),
         RQ.mark_released("R1", 1, [{"name": "svc-a", "tag": "1.0.0"}]),
         RQ.history_stats(),
@@ -249,7 +249,7 @@ def test_bq_unreachable_degrades_not_raises(monkeypatch):
     monkeypatch.setattr(RQ, "_get_client", _boom)
     monkeypatch.setattr(RQ, "_fetch_events", _boom)
     assert RQ.current_queue()["ok"] is False
-    assert "unavailable" in RQ.add_intent("svc-a:1.0.0", "dev@db.com")["error"].lower()
+    assert "unavailable" in RQ.add_intent("svc-a:1.0.0", "dev@example.com")["error"].lower()
     assert RQ.record_deployment("uat", [{"name": "s", "tag": "1"}])["ok"] is False
     assert RQ.history_stats()["ok"] is False
     assert RQ.cached_queue_count() is None
@@ -262,13 +262,13 @@ def test_queue_intent_requires_run_url(monkeypatch):
 
     inserted = []
     monkeypatch.setattr(RQ, "add_intent", lambda **kw: inserted.append(kw) or {"ok": True})
-    out = T.queue_release_intent("svc-a:1.0.0", "dev@db.com")
+    out = T.queue_release_intent("svc-a:1.0.0", "dev@example.com")
     assert out["ok"] is False and "run URL" in out["error"]
     assert inserted == []
 
     # Uninspectable URL is also a refusal, not a silent queue.
     monkeypatch.setattr(T, "_invoke_tool", lambda *a, **k: {"found": False, "reason": "404"})
-    out = T.queue_release_intent("svc-a:1.0.0", "dev@db.com", build_run_url="https://x/actions/runs/1", jira_ticket="ABC-1", note="n", change_details="d")
+    out = T.queue_release_intent("svc-a:1.0.0", "dev@example.com", build_run_url="https://x/actions/runs/1", jira_ticket="ABC-1", note="n", change_details="d")
     assert out["ok"] is False and "Nothing was queued" in out["error"]
     assert inserted == []
 
@@ -295,7 +295,7 @@ def test_queue_intent_blocks_ineligible_build(monkeypatch):
 
     monkeypatch.setattr(T, "_invoke_tool", _report)
     out = T.queue_release_intent(
-        "svc-a:1.0.0", "dev@db.com", build_run_url="https://gh/actions/runs/1", jira_ticket="ABC-1", note="n", change_details="d"
+        "svc-a:1.0.0", "dev@example.com", build_run_url="https://gh/actions/runs/1", jira_ticket="ABC-1", note="n", change_details="d"
     )
     assert out["ok"] is False and out["eligible"] is False
     assert out["failed_controls"] == ["RFTL deploy control"]
@@ -315,7 +315,7 @@ def test_queue_intent_eligible_build_queues_verified(monkeypatch):
         "failed_steps": [], "tag": "svc-a-1.0.0",
     })
     out = T.queue_release_intent(
-        "svc-a:1.0.0", "dev@db.com", build_run_url="https://gh/actions/runs/2", jira_ticket="ABC-1", note="n", change_details="d"
+        "svc-a:1.0.0", "dev@example.com", build_run_url="https://gh/actions/runs/2", jira_ticket="ABC-1", note="n", change_details="d"
     )
     assert out["ok"] is True and out["eligible"] is True
     assert inserted["build_verified"] is True
@@ -327,7 +327,7 @@ def test_validate_release_deployment_repo():
         "release_name": "R1",
         "start_date": "2026-07-20 10:00:00",
         "end_date": "2026-07-21 10:00:00",
-        "change_initiator": "dev@db.com",
+        "change_initiator": "dev@example.com",
         "change_summary": "R1",
         "artefact": ["svc-a:1.0.0"],
     }
