@@ -202,3 +202,61 @@ def test_scope_guard_lets_confirmations_through_without_a_model_call():
 
     for text in ("CONFIRM-124ABF", "yes", "no", "confirm-abc123", "the second one"):
         assert _looks_in_scope(text), text
+
+
+# --- identity discovery: tokens that carry the user ---------------------------
+
+def _fake_jwt(claims):
+    """Unsigned, fabricated — shaped like a JWT, valid for nothing."""
+    import base64
+    import json as _json
+
+    def b64(obj):
+        return base64.urlsafe_b64encode(_json.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{b64({'alg': 'RS256'})}.{b64(claims)}.c2lnbmF0dXJl"
+
+
+def test_jwt_in_an_innocently_named_header_is_found_and_masked():
+    from release_agent.app_fastapi import _jwt_findings
+
+    token = _fake_jwt({"iss": "https://auth.example.com", "email": "alice@example.com",
+                       "sub": "12345678", "exp": 1})
+    out = _jwt_findings({"x-asm-rctoken": token, "user-agent": "curl", "x-request-id": "abc"})
+
+    assert list(out) == ["x-asm-rctoken"]
+    found = out["x-asm-rctoken"]
+    assert found["claim_names"] == ["email", "exp", "iss", "sub"]
+    assert found["issuer"] == "https://auth.example.com"
+    assert found["identity"]["email"] == "a***@example.com"
+    assert "alice" not in str(out) and token not in str(out), "never echo the token or the address"
+
+
+def test_jwt_inside_a_cookie_is_found_too():
+    from release_agent.app_fastapi import _jwt_findings
+
+    token = _fake_jwt({"email": "bob@example.com"})
+    out = _jwt_findings({"cookie": f"theme=dark; session={token}; other=1"})
+    assert list(out) == ["cookie:session"]
+    assert out["cookie:session"]["identity"]["email"] == "b***@example.com"
+
+
+def test_things_that_are_not_jwts_are_ignored():
+    from release_agent.app_fastapi import _jwt_findings
+
+    assert _jwt_findings({"x-b3-traceid": "a.b.c", "host": "portal.example.com",
+                          "x-reqid": "1.2.3", "cookie": "a=b"}) == {}
+
+
+def test_email_mapped_into_rctoken_attributes_is_found():
+    """Cloud Service Mesh's RCToken puts attributeMapping claims under a nested
+    `attributes` object; a top-level-only lookup reports "no email" for a token
+    that has one."""
+    from release_agent.app_fastapi import _jwt_findings
+
+    token = _fake_jwt({"iss": "authservice.asm-user-auth.svc.cluster.local", "aud": "portal",
+                       "sub": "0a1b2c3d4e5f", "attributes": {"email": "carol@example.com"}})
+    found = _jwt_findings({"x-asm-rctoken": token})["x-asm-rctoken"]
+    assert "attributes.email" in found["claim_names"]
+    assert found["identity"]["attributes.email"] == "c***@example.com"
+    assert found["identity"]["sub"] == "0a***"

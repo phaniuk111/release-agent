@@ -930,6 +930,65 @@ def _mask_identity(value: str) -> str:
     return f"{value[:2]}***" if len(value) > 4 else "***"
 
 
+# Claims that name a person. Reported masked; everything else only by NAME.
+_IDENTITY_CLAIMS = ("email", "preferred_username", "upn", "unique_name", "sub",
+                    "user", "username", "uid", "name")
+
+
+def _jwt_payload(value: str) -> dict | None:
+    """The payload of a JWT-shaped value, decoded WITHOUT verification — or None.
+
+    Discovery only: this answers "does the mesh's token carry the user?", not
+    "can we trust it". Trusting a claim needs its signature checked against the
+    issuer's keys, which this deliberately does not pretend to do.
+    """
+    import base64
+
+    token = (value or "").strip().split(" ")[-1]           # tolerate "Bearer <jwt>"
+    parts = token.split(".")
+    if len(parts) != 3 or not parts[1]:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _jwt_findings(headers: dict) -> dict:
+    """Every header — and every cookie — whose value is a JWT, described by its
+    claim names, its issuer, and MASKED identity claims. The token itself is
+    never returned: it may still be valid, and this page gets screenshotted."""
+    candidates = {name: value for name, value in headers.items() if name != "cookie"}
+    for part in (headers.get("cookie") or "").split(";"):
+        key, sep, val = part.strip().partition("=")
+        if sep:
+            candidates[f"cookie:{key}"] = val
+    found = {}
+    for name, value in candidates.items():
+        claims = _jwt_payload(value)
+        if claims is None:
+            continue
+        # Cloud Service Mesh's RCToken (x-asm-rctoken) carries the IdP's `sub`
+        # at the top level and any claims the platform team mapped with
+        # attributeMapping — email among them, if anyone mapped it — inside a
+        # nested `attributes` object. Look in both, or a mapped email is missed.
+        attrs = claims.get("attributes") if isinstance(claims.get("attributes"), dict) else {}
+        flat = {**{f"attributes.{k}": v for k, v in attrs.items()}, **claims}
+        found[name] = {
+            "claim_names": sorted(k for k in flat if k != "attributes"),
+            # Who issued it — needed to verify it later, and not personal data.
+            "issuer": str(claims.get("iss") or ""),
+            "identity": {
+                key: _mask_identity(str(flat[key]))
+                for c in _IDENTITY_CLAIMS for key in (c, f"attributes.{c}")
+                if flat.get(key) not in (None, "")
+            },
+        }
+    return found
+
+
 def _identity_report(request: Request) -> dict:
     """What the mesh tells us about the caller — discovery only, nothing consumes it.
 
@@ -958,10 +1017,15 @@ def _identity_report(request: Request) -> dict:
         "all_header_names": sorted(headers),
         "authorization_present": "authorization" in headers,
         "via_gateway": bool(headers.get("x-forwarded-for") or headers.get("x-envoy-external-address")),
+        # A mesh often carries the user INSIDE a token under a name that says
+        # nothing about identity (x-asm-rctoken, say) — invisible to the name
+        # match above. Decoding it is the only way to know.
+        "jwt_claims": _jwt_findings(headers),
         "note": (
             "Discovery only — nothing in the app reads these yet. If a header here "
             "carries the signed-in user, it can replace the typed 'requested_by' "
-            "and the hardcoded session user. Values are masked."
+            "and the hardcoded session user. Values are masked; JWTs are decoded "
+            "WITHOUT signature verification, to see what they carry — not to trust it."
         ),
     }
 
