@@ -23,7 +23,6 @@ To run the agent you need **GitHub auth**, **GCP / Vertex AI access**, and a few
 | `GEMINI_MODEL` | No — default `gemini-2.5-flash` | env var | model id (`gemini-2.0-flash` is retired) |
 | `BUILD_REPO` | **Yes** — no hardcoded default | `.env`, env var, or Helm ConfigMap | code + image catalog (`image-workflows.json`), tags, build runs, RLFT/RFTL controls (legacy `RELEASE_AGENT_TARGET_REPO` still accepted) |
 | `DEPLOY_REPO` | **Yes** — no hardcoded default | `.env`, env var, or Helm ConfigMap | deploy repo: SIT/UAT/PRD protected branches + `uat/deployment.json` & `prd/deployment.json` the deploy PR chain overrides |
-| `DEFAULT_WORKFLOW` | No — default `image-tag-step-report.yml` | env var | workflow dispatched on promote |
 | **`DEPLOY_PAT`** (repo **Secret**) | Only for the **cross-repo PR** | Actions secret on the **target** repo | lets the dispatched workflow open a PR in `DEPLOY_REPO` (GitHub's built-in `GITHUB_TOKEN` can't write across repos) |
 
 **GitHub PAT scopes:** classic PAT with **`repo`** + **`workflow`**, or a fine-grained PAT with

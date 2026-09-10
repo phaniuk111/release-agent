@@ -15,5 +15,6 @@
   {"name": "environment", "type": "STRING", "mode": "NULLABLE", "description": "deployed/removed events: uat | prd | prl1 | dataflow-uat"},
   {"name": "jira_ticket", "type": "STRING", "mode": "NULLABLE", "description": "e.g. REL-1234; surfaces in the CHG draft"},
   {"name": "change_details", "type": "STRING", "mode": "NULLABLE", "description": "dev what-changed-and-why; aggregated into change_description"},
-  {"name": "build_run_url", "type": "STRING", "mode": "NULLABLE", "description": "GitHub Actions run that built the tag — eligibility evidence checked at queue time"}
+  {"name": "build_run_url", "type": "STRING", "mode": "NULLABLE", "description": "GitHub Actions run that built the tag — eligibility evidence checked at queue time"},
+  {"name": "target_envs", "type": "STRING", "mode": "NULLABLE", "description": "queued events: environments the developer picked, comma-separated and ordered uat,prl1,prd (e.g. \"prd,prl1\"). Recorded intent — a Dataflow entry may name both pipelines and which one is triggered is decided at deploy time. Null on rows written before this column existed"}
 ]

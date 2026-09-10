@@ -1,8 +1,13 @@
 # Default values for release-copilot.
 # Deploys the FastAPI production UI (port 8000) to GKE behind Anthos Service Mesh.
 
-replicaCount: 1   # In-memory ADK session/artifact services are per-pod; keep 1
-                  # unless you add shared ADK storage.
+replicaCount: 1   # Keep 1 unless every item below is addressed. With
+                  # ADK_SESSION_BACKEND: vertex the conversation, the pending
+                  # CONFIRM token and the paused tool call all survive a move
+                  # between pods. Still per-pod: the developer's CONNECTED PAT
+                  # (memory-only by design) and the ADK artifact/memory services.
+                  # A second replica therefore re-prompts for the PAT whenever a
+                  # request lands on the other pod.
 
 # --- Restart behaviour -------------------------------------------------------
 # What makes a restart cheap at ONE replica: the new pod must be ready before
@@ -81,14 +86,22 @@ config:
   GOOGLE_GENAI_USE_VERTEXAI: "true"
 
   # ==================== [FEATURE] set only if you use it ====================
-  # Dataflow: DF images build in their own repo (empty = BUILD_REPO fallback);
-  # a DF deploy is a workflow_dispatch in the DF deploy repo. DF_DEPLOY_REPO is
-  # UI-overridable via the DF form's Advanced field.
+  # Three DIFFERENT repos, because a Dataflow change touches three: where the
+  # image is BUILT, where the release file-set is RAISED, and where the deploy
+  # WORKFLOW lives. CARE needs only two — its deploy is a commit in DEPLOY_REPO,
+  # so release repo and deploy repo are the same thing. DF's deploy is a
+  # workflow_dispatch, so it needs a home of its own.
+  #
+  # Where DF images are built. Read to verify an image:tag and its controls when
+  # the caller asks by NAME (a run URL carries its own repo). Empty = BUILD_REPO.
   DF_BUILD_REPO: ""
-  # GitOps repo a DATAFLOW RELEASE is raised in — separate from the CARE release
-  # repo (DEPLOY_REPO) so the two releases have independent branch chains and
-  # independent in-flight guards. Empty = one repo for both.
+  # GitOps repo a DATAFLOW RELEASE file-set is raised in — separate from the CARE
+  # release repo (DEPLOY_REPO) so the two releases have independent branch chains
+  # and independent in-flight guards. Empty = one repo for both.
   DF_RELEASE_REPO: ""
+  # Repo hosting the DF deploy workflow named by DF_DEPLOY_WORKFLOW below. NO
+  # fallback: empty means DF deploys are refused. UI-overridable via the DF
+  # form's Advanced field.
   DF_DEPLOY_REPO: ""
   # Composer DAGs repo. A DF deploy builds a flex template under a VERSION path
   # in a bucket; the DAGs that launch it carry that version as the fallback of
@@ -175,12 +188,18 @@ config:
   ADK_EVENT_COMPACTION: "true"
   ADK_MEMORY_ENABLED: "true"    # in-memory / per-pod — keep replicaCount: 1
   ADK_CONFIRM_PROD_OPS: "true"
+  # Off-topic screening for free-form chat: off | log | enforce. "log" records
+  # what it WOULD refuse without refusing anything — run that against real
+  # traffic first, then switch to "enforce". Guards SPEND, not safety: the
+  # mutation guard and the confirmation-gated deploy Workflow are what stop
+  # mutations, and neither is affected by this setting. Fails open.
+  SCOPE_GUARD: "log"
   # Where chat sessions live. "memory" = per-pod (a restart loses the
   # conversation). "vertex" stores them in a Vertex AI Agent Engine so they
-  # survive restarts — VERTEX_AGENT_ENGINE_ID is then REQUIRED and the pod
-  # fails fast without it. See "Persistent chat sessions" in the README.
-  # This covers CONVERSATION HISTORY ONLY: pending CONFIRM tokens and connected
-  # PATs remain per-pod, so it is not on its own a licence to raise replicaCount.
+  # survive a restart, along with the pending CONFIRM token and any paused tool
+  # call. Needs GOOGLE_CLOUD_PROJECT set explicitly — there is no metadata-server
+  # fallback in the pod. See "Persistent chat sessions" in the README.
+  # The connected PAT stays per-pod either way; see replicaCount at the top.
   ADK_SESSION_BACKEND: "memory"
   # With backend "vertex" the engine is found by DISPLAY NAME in
   # GOOGLE_CLOUD_LOCATION and CREATED if it does not exist — so the same values

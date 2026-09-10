@@ -189,14 +189,28 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
         )
 
     run = _find_dispatched_run(workflow, before_ids)
+    # Always hand back somewhere to click. The run link when we found it; when
+    # GitHub had not registered it within the polling window, the workflow's
+    # runs page — "it should appear shortly" with nothing to open left people
+    # hunting through Actions for their run.
+    #
+    # Everything from here runs AFTER a successful dispatch, so none of it may
+    # raise: an error now would report a failed deploy for a workflow that is
+    # already running — the same false result throw=True above exists to stop.
+    base = str(getattr(repo, "html_url", "") or "")
+    runs_page = f"{base}/actions/workflows/{settings.df_deploy_workflow}" if base else ""
+    run_url = run["url"] if run else ""
     note = (
         f"Dispatched DF deploy workflow {settings.df_deploy_workflow} in {repo_full} "
         f"for {image}:{tag} → {env}."
     )
     if run:
-        note += f" Run #{run['id']}: {run['url']}"
+        note += f" GitHub run: [Run #{run['id']}]({run_url})"
+    elif runs_page:
+        note += (f" The run was not registered yet — it will appear under "
+                 f"[{settings.df_deploy_workflow} runs]({runs_page}).")
     else:
-        note += " The run should appear in Actions shortly."
+        note += f" The run was not registered yet — check Actions in {repo_full}."
     return json.dumps(
         {
             "ok": True,
@@ -208,6 +222,8 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
             "ref": ref,
             "inputs": inputs,
             "run": run,
+            "run_url": run_url,
+            "runs_page": runs_page,
             "note": note,
         },
         indent=2,

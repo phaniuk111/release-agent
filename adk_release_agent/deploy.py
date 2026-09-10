@@ -342,6 +342,20 @@ def _record_deploy_event(req: dict[str, Any], environment: str, result: dict[str
                 repo = active_deploy_repo()
             except Exception:
                 repo = ""
+        # Only what LANDED is recorded as deployed. "pending_review" means the
+        # chain stopped at a PR awaiting approval: recording it as deployed made
+        # the per-environment state claim a version was live while it sat in
+        # review. It is recorded as PENDING instead — against the PR whose merge
+        # completes it — so that when someone approves it in GitHub, outside any
+        # chat turn, pr_reconcile can write the deploy with its merge time.
+        if result.get("action") == "pending_review":
+            final = next((p for p in result.get("pending_prs") or [] if p.get("final")), None)
+            if final:
+                from release_agent.tools.pr_reconcile import record_pending
+
+                record_pending(environment, req.get("images") or [], repo,
+                               final.get("number"), on_merge="deployed", tag="deployed")
+            return
         # PRD staging returns pr_number; the UAT promote chain returns a prs list —
         # record the terminal (last-merged) PR of the chain.
         pr_number = result.get("pr_number")

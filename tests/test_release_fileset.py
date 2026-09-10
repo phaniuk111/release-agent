@@ -13,7 +13,7 @@ def _payload(**over):
         "release_name": "July 20th 2026 : Release 31",
         "start_date": "2026-07-20 10:00:00",
         "end_date": "2026-07-21 23:00:00",
-        "change_initiator": "dev@db.com",
+        "change_initiator": "dev@example.com",
         "change_summary": "Release 31",
         "prl1_only": ["acme-risk-fetcher"],
         "df_images": [],

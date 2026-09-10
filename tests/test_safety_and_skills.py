@@ -77,3 +77,186 @@ def test_free_form_toolset_excludes_release_defining_mutations():
     provided = set(toolset._provided_tools_by_name)
     assert not (BLOCKED_FREEFORM_TOOLS & provided)
     assert "prepare_deploy_preview" not in provided
+
+
+def test_consumer_onboarding_indexes_every_reference():
+    """A reference file the SKILL.md does not name is UNREADABLE.
+
+    `load_skill` hands the model the instructions only — it does not list the
+    folder — and `load_skill_resource` needs an exact path. So a document
+    dropped into references/ without a row in the index is loaded into memory,
+    never read, and nobody finds out: the model just answers without it. This
+    test is the thing that notices.
+    """
+    import pathlib
+
+    skill = pathlib.Path(__file__).parent.parent / "adk_release_agent/skills/consumer-onboarding"
+    body = (skill / "SKILL.md").read_text()
+    refs = skill / "references"
+
+    missing = [
+        str(f.relative_to(skill))
+        for f in sorted(refs.rglob("*"))
+        if f.is_file() and str(f.relative_to(skill)) not in body
+    ]
+    assert not missing, (
+        f"reference files not named in SKILL.md, so the model can never load them: {missing}"
+    )
+
+
+def test_consumer_onboarding_reference_paths_all_exist():
+    """The mirror failure: an index row pointing at a file that was renamed or
+    deleted sends the model to load_skill_resource for a path that 404s."""
+    import pathlib
+    import re
+
+    skill = pathlib.Path(__file__).parent.parent / "adk_release_agent/skills/consumer-onboarding"
+    body = (skill / "SKILL.md").read_text()
+
+    cited = set(re.findall(r"`(references/[^`]+)`", body))
+    assert cited, "SKILL.md cites no reference files — the index is missing"
+    broken = sorted(p for p in cited if not (skill / p).is_file())
+    assert not broken, f"SKILL.md names reference files that do not exist: {broken}"
+
+
+# --- ScopeGuardPlugin --------------------------------------------------------
+
+def _llm_request(text):
+    """Minimal stand-in for an LlmRequest carrying one user message."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        contents=[SimpleNamespace(role="user", parts=[SimpleNamespace(text=text)])]
+    )
+
+
+async def _verdict(plugin, text):
+    return await plugin.before_model_callback(callback_context=None, llm_request=_llm_request(text))
+
+
+def test_scope_guard_stage1_never_refuses_on_its_own(monkeypatch):
+    """Stage 1 is an ALLOW path, not a decision.
+
+    Its vocabulary check misses ordinary in-domain questions ("why did my thing
+    fail yesterday?"), so if a stage-1 miss could refuse, the guard would reject
+    exactly the users it exists to serve. Assert the classifier is consulted.
+    """
+    import asyncio
+
+    from adk_release_agent.safety import ScopeGuardPlugin, _looks_in_scope
+
+    vague = "why did my thing fail yesterday afternoon"
+    assert not _looks_in_scope(vague), "test is meaningless if stage 1 already allows this"
+
+    guard = ScopeGuardPlugin(mode="enforce")
+    monkeypatch.setattr(ScopeGuardPlugin, "_classify", staticmethod(lambda text: True))
+    assert asyncio.run(_verdict(guard, vague)) is None
+
+
+def test_scope_guard_refuses_only_a_confident_no(monkeypatch):
+    import asyncio
+
+    from adk_release_agent.safety import ScopeGuardPlugin
+
+    guard = ScopeGuardPlugin(mode="enforce")
+    off_topic = "Write me a Python function that reverses a linked list please"
+
+    monkeypatch.setattr(ScopeGuardPlugin, "_classify", staticmethod(lambda text: False))
+    refusal = asyncio.run(_verdict(guard, off_topic))
+    assert refusal is not None
+    assert ScopeGuardPlugin.REFUSAL in refusal.content.parts[0].text
+
+
+def test_scope_guard_fails_open_when_the_classifier_cannot_answer(monkeypatch):
+    """A classifier outage must not take the portal down. This guard protects
+    spend; the mutation guard protects the infrastructure, and is untouched by
+    whatever this one decides."""
+    import asyncio
+
+    from adk_release_agent.safety import ScopeGuardPlugin
+
+    guard = ScopeGuardPlugin(mode="enforce")
+    off_topic = "Give me a recipe for lasagne that serves six people"
+
+    for outcome in (lambda text: None, lambda text: (_ for _ in ()).throw(RuntimeError("429"))):
+        monkeypatch.setattr(ScopeGuardPlugin, "_classify", staticmethod(outcome))
+        assert asyncio.run(_verdict(guard, off_topic)) is None
+
+
+def test_scope_guard_log_mode_refuses_nothing(monkeypatch):
+    import asyncio
+
+    from adk_release_agent.safety import ScopeGuardPlugin
+
+    monkeypatch.setattr(ScopeGuardPlugin, "_classify", staticmethod(lambda text: False))
+    for mode in ("log", "off"):
+        guard = ScopeGuardPlugin(mode=mode)
+        assert asyncio.run(_verdict(guard, "write me a sonnet about the sea please")) is None
+
+
+def test_scope_guard_lets_confirmations_through_without_a_model_call():
+    """A CONFIRM token or a bare yes/no continues a gated deploy. Screening
+    those would strand someone mid-release — a worse failure than answering a
+    stray question — so they must not even reach the classifier."""
+    from adk_release_agent.safety import _looks_in_scope
+
+    for text in ("CONFIRM-124ABF", "yes", "no", "confirm-abc123", "the second one"):
+        assert _looks_in_scope(text), text
+
+
+# --- identity discovery: tokens that carry the user ---------------------------
+
+def _fake_jwt(claims):
+    """Unsigned, fabricated — shaped like a JWT, valid for nothing."""
+    import base64
+    import json as _json
+
+    def b64(obj):
+        return base64.urlsafe_b64encode(_json.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{b64({'alg': 'RS256'})}.{b64(claims)}.c2lnbmF0dXJl"
+
+
+def test_jwt_in_an_innocently_named_header_is_found_and_masked():
+    from release_agent.app_fastapi import _jwt_findings
+
+    token = _fake_jwt({"iss": "https://auth.example.com", "email": "alice@example.com",
+                       "sub": "12345678", "exp": 1})
+    out = _jwt_findings({"x-asm-rctoken": token, "user-agent": "curl", "x-request-id": "abc"})
+
+    assert list(out) == ["x-asm-rctoken"]
+    found = out["x-asm-rctoken"]
+    assert found["claim_names"] == ["email", "exp", "iss", "sub"]
+    assert found["issuer"] == "https://auth.example.com"
+    assert found["identity"]["email"] == "a***@example.com"
+    assert "alice" not in str(out) and token not in str(out), "never echo the token or the address"
+
+
+def test_jwt_inside_a_cookie_is_found_too():
+    from release_agent.app_fastapi import _jwt_findings
+
+    token = _fake_jwt({"email": "bob@example.com"})
+    out = _jwt_findings({"cookie": f"theme=dark; session={token}; other=1"})
+    assert list(out) == ["cookie:session"]
+    assert out["cookie:session"]["identity"]["email"] == "b***@example.com"
+
+
+def test_things_that_are_not_jwts_are_ignored():
+    from release_agent.app_fastapi import _jwt_findings
+
+    assert _jwt_findings({"x-b3-traceid": "a.b.c", "host": "portal.example.com",
+                          "x-reqid": "1.2.3", "cookie": "a=b"}) == {}
+
+
+def test_email_mapped_into_rctoken_attributes_is_found():
+    """Cloud Service Mesh's RCToken puts attributeMapping claims under a nested
+    `attributes` object; a top-level-only lookup reports "no email" for a token
+    that has one."""
+    from release_agent.app_fastapi import _jwt_findings
+
+    token = _fake_jwt({"iss": "authservice.asm-user-auth.svc.cluster.local", "aud": "portal",
+                       "sub": "0a1b2c3d4e5f", "attributes": {"email": "carol@example.com"}})
+    found = _jwt_findings({"x-asm-rctoken": token})["x-asm-rctoken"]
+    assert "attributes.email" in found["claim_names"]
+    assert found["identity"]["attributes.email"] == "c***@example.com"
+    assert found["identity"]["sub"] == "0a***"

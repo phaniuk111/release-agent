@@ -279,12 +279,85 @@ export async function showQueueForm() {
     };
     addRow(false);          // start with one row; listeners are wired per row
 
-    const flagRow = document.createElement('div');
-    flagRow.className = 'flex items-center gap-4 text-[11px] text-slate-400 mb-2';
-    flagRow.innerHTML =
-        '<label class="flex items-center gap-1"><input type="checkbox" id="q-prl1"> PRL1-only (never PRD)</label>' +
-        '<label class="flex items-center gap-1"><input type="checkbox" id="q-df"> Dataflow image</label>';
-    wrap.appendChild(flagRow);
+    // Routing, asked POSITIVELY: which release carries this, and how far it goes.
+    // The API still takes the two negatives it always took, so the mapping happens
+    // at submit and the developer never has to think in "only"s:
+    //   CARE + PRD   -> df_only=false, prl1_only=false   (UAT, PRL1 and PRD)
+    //   CARE + PRL1  -> df_only=false, prl1_only=true    (UAT and PRL1, never PRD)
+    //   Dataflow     -> df_only=true                     (no helm deploy at all)
+    const mkFlag = (id, text, title) => {
+        const l = document.createElement('label');
+        l.className = 'flex items-center gap-1 cursor-pointer';
+        l.title = title;
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.id = id;
+        l.appendChild(cb); l.appendChild(document.createTextNode(' ' + text));
+        return { label: l, cb: cb };
+    };
+    const mkFlagRow = (labelText) => {
+        const r = document.createElement('div');
+        r.className = 'flex items-center gap-3';
+        const l = document.createElement('span');
+        l.className = 'text-slate-500 w-[86px] shrink-0';
+        l.textContent = labelText;
+        r.appendChild(l);
+        return r;
+    };
+
+    const flags = document.createElement('div');
+    flags.className = 'text-[11px] text-slate-400 mb-2 space-y-1';
+    const typeRow = mkFlagRow('Release type *');
+    const care = mkFlag('q-care', 'CARE', 'Helm chart — rides the CARE release');
+    const dfF = mkFlag('q-df', 'Dataflow',
+        'DF image — rides the DF release; never enters a helm deploy workflow');
+    typeRow.appendChild(care.label); typeRow.appendChild(dfF.label);
+    const envRow = mkFlagRow('Goes to *');
+    const prd = mkFlag('q-prd', 'PRD', 'Full path: UAT, then PRL1, then PRD');
+    const prl1 = mkFlag('q-prl1', 'PRL1', 'Stops at PRL1 — never promoted to PRD');
+    const envHint = document.createElement('span');
+    envHint.className = 'text-slate-600';
+    envRow.appendChild(prd.label); envRow.appendChild(prl1.label); envRow.appendChild(envHint);
+    flags.appendChild(typeRow); flags.appendChild(envRow);
+    wrap.appendChild(flags);
+
+    // Exactly one release type is always on: unticking one ticks the other, so
+    // the pair reads as tick boxes but cannot land in a state the API has no
+    // value for.
+    // Both environments are independently tickable in BOTH lanes: the CHG is
+    // raised once and which pipeline is triggered is decided at deploy time, so
+    // the developer records what is in scope rather than a single destination.
+    //
+    // The hint is where the two lanes differ, because CARE has a second
+    // consumer the tick boxes do not control. prl1_only routes the release
+    // FILE-SET, and it has only two states — so ticking PRD alone records the
+    // pipeline you intend to trigger, it does NOT hold the chart out of the
+    // PRL1 file-set: _service_routing generates a standard chart into every
+    // environment's workflow. Only PRL1-without-PRD actually excludes PRD.
+    // Saying so here is cheaper than someone discovering it on release day.
+    const syncFlags = () => {
+        const isDf = dfF.cb.checked;
+        const picked = [prd.cb.checked && 'PRD', prl1.cb.checked && 'PRL1'].filter(Boolean);
+        if (isDf) {
+            envHint.textContent = picked.length
+                ? picked.join(' + ') + ' pipeline' + (picked.length > 1 ? 's' : '') +
+                  ' — triggered at deploy time'
+                : '';
+            return;
+        }
+        envHint.textContent =
+            prd.cb.checked && prl1.cb.checked ? 'UAT → PRL1 → PRD'
+            : prd.cb.checked ? 'PRD pipeline — release files still cover PRL1'
+            : prl1.cb.checked ? 'UAT → PRL1, never PRD'
+            : '';
+    };
+    care.cb.addEventListener('change', () => { dfF.cb.checked = !care.cb.checked; syncFlags(); });
+    dfF.cb.addEventListener('change', () => { care.cb.checked = !dfF.cb.checked; syncFlags(); });
+    prd.cb.addEventListener('change', syncFlags);
+    prl1.cb.addEventListener('change', syncFlags);
+    // Default to the full path — the common case, and the one the file-set
+    // generates anyway for a standard chart.
+    care.cb.checked = true; prd.cb.checked = true; prl1.cb.checked = true;
+    syncFlags();
 
     const row = document.createElement('div');
     row.className = 'flex items-center gap-3 mt-1';
@@ -293,6 +366,11 @@ export async function showQueueForm() {
     submit.textContent = 'Queue it';
     const err = document.createElement('span');
     err.className = 'text-[11px] text-red-400';
+    // Retract a routing complaint the moment the routing changes — ticking
+    // Dataflow makes "Tick where it goes" untrue, and an error that outlives its
+    // cause reads as a second, unexplained problem.
+    [care.cb, dfF.cb, prd.cb, prl1.cb].forEach(
+        cb => cb.addEventListener('change', () => { err.textContent = ''; }));
     submit.addEventListener('click', async () => {
         err.textContent = '';
         wrap.querySelectorAll('.batch-result').forEach(n => n.remove());
@@ -323,6 +401,9 @@ export async function showQueueForm() {
         const sharedMissing = [[email, 'your email'], [details, 'change details']]
             .filter(pair => !pair[0]).map(pair => pair[1]);
         if (sharedMissing.length) problems.push('Still needed: ' + sharedMissing.join(', '));
+        if (!dfF.cb.checked && !prd.cb.checked && !prl1.cb.checked) {
+            problems.push('Tick where it goes: PRD or PRL1.');
+        }
         if (problems.length) { err.innerHTML = problems.map(esc).join('<br>'); return; }
 
         localStorage.setItem('queue_email', email);
@@ -341,8 +422,14 @@ export async function showQueueForm() {
                         artifact: r.chart.value.trim() + ':' + r.ver.value.trim(),
                         build_run_url: r.run.value.trim(),
                         jira_ticket: r.jira.value.trim(),
-                        prl1_only: document.getElementById('q-prl1').checked,
-                        df_only: document.getElementById('q-df').checked,
+                        // "PRL1 without PRD" is what the API calls prl1_only —
+                        // it drives the CARE release routing. target_envs carries
+                        // the full selection, which the boolean cannot: a DF entry
+                        // may name both pipelines.
+                        prl1_only: prl1.cb.checked && !prd.cb.checked,
+                        df_only: dfF.cb.checked,
+                        target_envs: [prd.cb.checked && 'prd', prl1.cb.checked && 'prl1']
+                            .filter(Boolean).join(','),
                     })),
                 }),
             });
@@ -419,7 +506,7 @@ export async function showQueueForm() {
                   're-queue before release day.</div></div>'
                 : '') +
             '<div class="text-[11px] text-slate-500 mt-2">You\'re done — they will be in the ' +
-            '<b>' + (document.getElementById('q-df').checked ? 'DF' : 'CARE') + ' Release</b> form automatically. ' +
+            '<b>' + (dfF.cb.checked ? 'DF' : 'CARE') + ' Release</b> form automatically. ' +
             'Withdraw any time from the Insights panel or by asking me.</div>';
         _withDismiss(wrap);          // innerHTML above wiped the original ✕
         loadReleaseStatus(true);
