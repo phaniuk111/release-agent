@@ -15,6 +15,14 @@
 
 set -euo pipefail
 
+# kubectl (helm uninstall, PVC cleanup below) needs gke-gcloud-auth-plugin, and
+# Homebrew's gcloud keeps it in the SDK's bin dir, off PATH. Without it those
+# steps fail and the teardown quietly leaves Kubernetes-created disks behind.
+if ! command -v gke-gcloud-auth-plugin >/dev/null; then
+  SDK_BIN="$(gcloud info --format='value(installation.sdk_root)' 2>/dev/null)/bin"
+  [ -x "$SDK_BIN/gke-gcloud-auth-plugin" ] && export PATH="$SDK_BIN:$PATH"
+fi
+
 PROJECT_ID="${PROJECT_ID:-flash-keel-412418}"
 REGION="${REGION:-us-central1}"
 CLUSTER_NAME="${CLUSTER_NAME:-release-copilot-demo}"

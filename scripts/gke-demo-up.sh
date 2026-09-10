@@ -59,6 +59,12 @@ command -v kubectl >/dev/null || fail "kubectl not found"
 # failure is easy to miss: `kubectl` still exits 0 on some paths, so the mesh
 # poll below silently never matches and the namespace is silently never created.
 # Fail here instead, with the fix.
+# Homebrew's gcloud installs the plugin into the SDK's own bin dir, which is not
+# on PATH. It is there — use it rather than stopping the run to say so.
+if ! command -v gke-gcloud-auth-plugin >/dev/null; then
+  SDK_BIN="$(gcloud info --format='value(installation.sdk_root)' 2>/dev/null)/bin"
+  [ -x "$SDK_BIN/gke-gcloud-auth-plugin" ] && export PATH="$SDK_BIN:$PATH"
+fi
 command -v gke-gcloud-auth-plugin >/dev/null || fail "gke-gcloud-auth-plugin not on PATH.
   Install:  gcloud components install gke-gcloud-auth-plugin
   Homebrew installs it outside PATH — add its bin dir, e.g.:

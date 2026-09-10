@@ -62,10 +62,23 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 echo "  granted container.developer (project-wide — no cluster-scoped role exists)"
 
 say "OIDC provider (scoped to ${GITHUB_REPO})"
-if gcloud iam workload-identity-pools providers describe "$PROVIDER" \
+# `describe` succeeds for a DELETED provider too: gke-demo-down.sh deletes it,
+# and GCP keeps it soft-deleted for 30 days, still reserving the name. Treating
+# that as "exists" skips the create and leaves the workflow failing at auth —
+# so read the state, and undelete rather than skip.
+PROVIDER_STATE="$(gcloud iam workload-identity-pools providers describe "$PROVIDER" \
   --project="$PROJECT_ID" --location=global --workload-identity-pool="$POOL" \
-  >/dev/null 2>&1; then
-  echo "  provider $PROVIDER already exists"
+  --format='value(state)' 2>/dev/null || true)"
+if [ "$PROVIDER_STATE" = "DELETED" ]; then
+  gcloud iam workload-identity-pools providers undelete "$PROVIDER" \
+    --project="$PROJECT_ID" --location=global --workload-identity-pool="$POOL" >/dev/null
+  echo "  provider $PROVIDER was soft-deleted by a previous teardown — undeleted"
+  echo "  (its attribute condition is kept; check it still pins repo AND branch):"
+  gcloud iam workload-identity-pools providers describe "$PROVIDER" \
+    --project="$PROJECT_ID" --location=global --workload-identity-pool="$POOL" \
+    --format='value(attributeCondition)' | sed 's/^/    /'
+elif [ -n "$PROVIDER_STATE" ]; then
+  echo "  provider $PROVIDER already exists ($PROVIDER_STATE)"
 else
   # attribute-condition is THE security boundary. Without it, any GitHub repo in
   # the world could mint a token this provider accepts. Two clauses, because the
