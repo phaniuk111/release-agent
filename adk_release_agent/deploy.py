@@ -330,7 +330,13 @@ def apply_confirmed_deploy(
 def _record_deploy_event(req: dict[str, Any], environment: str, result: dict[str, Any]) -> None:
     """Capture a confirmed deploy in the BQ event log (deployment history with
     the target GitHub repo). Best-effort telemetry — never fails the deploy."""
-    if not result.get("ok") or result.get("action") in ("no_change", "blocked_prd_pr_open"):
+    # Only what LANDED. "pending_review" means the chain stopped at a PR awaiting
+    # approval — recording it as deployed made the per-environment state claim a
+    # version was live while it sat in review, and kept claiming it if the PR was
+    # later closed instead of merged.
+    if not result.get("ok") or result.get("action") in (
+        "no_change", "blocked_prd_pr_open", "pending_review",
+    ):
         return
     try:
         from release_agent.tools import release_queue as _rq

@@ -580,8 +580,12 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             "pr_number": promo_pr.number,
             "pr_url": promo_pr.html_url,
             "note": (
-                f"Release file-set promoted to {target_branch} via PR #{promo_pr.number}"
-                f" ({'merged' if merged else detail})."
+                f"Release file-set promoted to {target_branch} via "
+                f"[PR #{promo_pr.number}]({promo_pr.html_url}) (merged)."
+                if merged else
+                f"Raised [PR #{promo_pr.number}]({promo_pr.html_url}) to promote the release "
+                f"file-set to {target_branch} — awaiting approval, NOT promoted yet: {detail}. "
+                f"{target_branch} is unchanged until it merges."
             ),
         }, indent=2)
     except Exception as e:
