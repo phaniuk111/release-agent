@@ -382,3 +382,25 @@ def test_pending_deploy_is_not_recorded_as_deployed(monkeypatch):
     D._record_deploy_event({"images": [{"name": "svc-a", "tag": "2.0.0"}]}, "uat",
                            {"ok": True, "action": "deployed", "prs": [{"number": 8}]})
     assert len(written) == 1
+
+
+def test_uat_deploy_blocked_at_sit_says_to_run_it_again(monkeypatch):
+    """When the FIRST hop is blocked the UAT PR is never raised, so "approve
+    and merge it" would leave UAT unchanged after they did exactly that."""
+    from release_agent.tools import promotion as P
+
+    initial = {b: {"uat/deployment.json": {"include": [_chart("1.0.0")]}} for b in ("SIT", "UAT")}
+    repo = _ProtectedRepo(initial, protected=("SIT",))
+
+    class _Github:
+        def get_repo(self, full):
+            return repo
+
+    monkeypatch.setattr(P, "_get_github_client", lambda: _Github())
+    monkeypatch.setattr(P, "active_deploy_repo", lambda: "example-org/deploy")
+    out = json.loads(P.open_release_pr.invoke({"environment": "uat", "image_tags": "svc-a:2.0.0"}))
+
+    assert out["action"] == "pending_review"
+    [pending] = out["pending_prs"]
+    assert pending["stage"] == "→SIT" and pending["final"] is False
+    assert "then run this again" in out["note"]

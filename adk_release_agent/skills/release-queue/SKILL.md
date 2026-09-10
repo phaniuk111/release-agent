@@ -75,6 +75,10 @@ History / stats questions — use `release_stats`:
   This is derived from the event log (latest deployed/removed event per
   artifact per env) — the governance workflow files can NOT answer it, they
   are regenerated per release.
+  A deploy that stopped at a PR awaiting review is NOT counted until that PR
+  merges. Merges done in GitHub, outside this chat, are picked up the next time
+  the log is read — so if someone says "I merged it", reading the state again is
+  the right move, not telling them it isn't deployed.
 Present stats as a short ranked list or per-env table (chart — count — last
 release/date), not raw JSON. If total_events is 0 or an environment is absent,
 say so plainly and mention the window — do not invent history. The log started

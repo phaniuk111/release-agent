@@ -418,11 +418,21 @@ def history_stats(
     if not queue_enabled():
         return _disabled()
     et = (event_type or "released").strip().lower()
+    window = 365 if et == "state" else days   # state looks across the whole log
     try:
-        # State questions look across the whole log, not just the stats window.
-        events = _fetch_events(365 if et == "state" else days)
+        events = _fetch_events(window)
     except Exception as e:
         return {"ok": False, "error": f"BigQuery unavailable: {e}"}
+    # Settle any PR the portal raised that has since been merged or closed in
+    # GitHub, then re-read so THIS answer includes it. Without this, a deploy
+    # approved outside the chat never reaches the log. Never raises; throttled.
+    from .pr_reconcile import reconcile_pending
+
+    if reconcile_pending(events):
+        try:
+            events = _fetch_events(window)
+        except Exception:
+            pass   # answer from what we had rather than fail the read
     if et == "state":
         out = aggregate_env_state(events, pattern=pattern)
         out.update({"ok": True, "pattern": pattern or "*", "event_type": "state"})

@@ -314,6 +314,34 @@ def _open_prs(prs: list) -> list:
     return [p for p in prs if p.get("number") and not p.get("merged")]
 
 
+def _pending_prs(prs: list, final_branch: str) -> list:
+    """Open PRs as reported to the caller. `final` marks the PR whose merge
+    COMPLETES the change — only that one can be recorded as pending."""
+    return [
+        {"number": p["number"], "url": p.get("url"), "stage": p["stage"],
+         "reason": p.get("detail"), "final": p["stage"] == f"→{final_branch}"}
+        for p in _open_prs(prs)
+    ]
+
+
+def _pending_note(what: str, prs: list, final_branch: str, env_label: str,
+                  done: str = "done") -> str:
+    """What to tell someone whose change stopped at a PR awaiting review.
+
+    The chain breaks at the FIRST unmerged hop. When that is the final hop,
+    merging it lands the change. When it is an earlier one, merging it lands
+    nothing downstream — the next hop's PR has not been raised — so the
+    instruction has to be "merge it, then run this again", not "merge it".
+    """
+    waiting = _open_prs(prs)
+    links = ", ".join(_pr_link(p) for p in waiting) or "the raised PR"
+    head = f"{what} — awaiting approval, NOT {done} yet. {_pr_chain_note(prs)} "
+    if waiting and waiting[-1]["stage"] == f"→{final_branch}":
+        return head + f"Approve and merge {links}; {env_label} is unchanged until it merges."
+    return head + (f"Approve and merge {links}, then run this again — the PR into "
+                   f"{final_branch} is only raised once that one has merged.")
+
+
 def _deploy_run_note(res: dict) -> str:
     """Note pointing at the deploy workflow run(s) captured by the chain."""
     bits = []
@@ -663,24 +691,15 @@ def open_release_pr(
         # Nothing has reached UAT: saying "Deployed" here — or quoting the live
         # chart count, which is the PRE-deploy file — told people a change had
         # landed when it was sitting in review.
-        waiting = _open_prs(res["prs"])
-        links = ", ".join(_pr_link(p) for p in waiting) or "the raised PR"
-        note = (
-            f"Raised {chart_str} for UAT — awaiting approval, NOT deployed yet. "
-            f"{_pr_chain_note(res['prs'])} Approve and merge {links}; "
-            f"UAT is unchanged until it merges." + _deploy_run_note(res)
-        )
+        note = _pending_note(f"Raised {chart_str} for UAT", res["prs"],
+                             settings.uat_branch, "UAT", done="deployed") + _deploy_run_note(res)
         action = "pending_review"
     return json.dumps(
         {
             "ok": True,
             "environment": "uat",
             "action": action,
-            "pending_prs": [
-                {"number": p["number"], "url": p.get("url"), "stage": p["stage"],
-                 "reason": p.get("detail")}
-                for p in _open_prs(res["prs"])
-            ],
+            "pending_prs": _pending_prs(res["prs"], settings.uat_branch),
             "image_tags": chart_str,
             "files_updated": ["uat/deployment.json"],
             # Only when it landed: before the merge the live file is the OLD one.
@@ -1014,19 +1033,29 @@ def remove_from_release(image_names: str, environment: str = "staging", deployme
         # Same as a UAT deploy: the chain stopped at a PR awaiting review, so the
         # chart is STILL live. Reporting it removed — and writing 'removed'
         # events — would make "what's deployed where" lie until someone merges.
-        waiting = _open_prs(res["prs"])
-        links = ", ".join(_pr_link(p) for p in waiting) or "the raised PR"
+        final_branch = settings.prd_branch if env == "prod" else settings.uat_branch
+        pending = _pending_prs(res["prs"], final_branch)
+        final_pr = next((p for p in pending if p["final"]), None)
+        if final_pr:
+            # Merged in GitHub later, outside any chat turn — pr_reconcile writes
+            # the 'removed' events then. Best-effort.
+            try:
+                from .pr_reconcile import record_pending
+
+                for ev_env in (("prd", "uat") if env == "prod" else ("uat",)):
+                    record_pending(ev_env, [{"name": n} for n in removed],
+                                   target_repo or active_deploy_repo(), final_pr["number"],
+                                   on_merge="removed", tag="removed_from_live")
+            except Exception:
+                pass
         return json.dumps(
             {"ok": True, "action": "removal_pending_review", "environment": env,
              "removed": [], "requested": sorted(set(removed)),
              "unstaged": sorted(staged_removed), "staging_pr": staging,
-             "pending_prs": [{"number": p["number"], "url": p.get("url"), "stage": p["stage"],
-                              "reason": p.get("detail")} for p in waiting],
-             "prs": res["prs"],
-             "note": (unstage_note
-                      + f"Raised removal of {', '.join(removed)} from live {env} — awaiting "
-                      f"approval, NOT removed yet. {_pr_chain_note(res['prs'])} Approve and merge "
-                      f"{links}; {env} is unchanged until it merges.")},
+             "pending_prs": pending, "prs": res["prs"],
+             "note": unstage_note + _pending_note(
+                 f"Raised removal of {', '.join(removed)} from live {env}",
+                 res["prs"], final_branch, env, done="removed")},
             indent=2,
         )
     note = (

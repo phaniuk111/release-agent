@@ -547,31 +547,38 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             head=work, base=target_branch,
         )
         merged, detail = _merge_pr(promo_pr, "squash")
-        if merged:
-            # BQ capture: the promoted env's governance workflow on the release
-            # branch IS that env's exact deploy set — record one 'deployed' event
-            # per chart so per-environment state/stats include UAT/PRD/PRL1
-            # promotions. Best-effort; never fails the promotion.
-            try:
-                from . import release_queue as _rq
+        # BQ capture: the promoted env's governance workflow on the release
+        # branch IS that env's exact deploy set — one event per chart so
+        # per-environment state/stats include UAT/PRD/PRL1 promotions. Merged →
+        # 'deployed' now. Refused by branch protection → 'pending' against this
+        # PR, settled by pr_reconcile when someone merges it in GitHub (a single
+        # PR, so its merge is what completes the promotion). Best-effort; never
+        # fails the promotion.
+        try:
+            from . import release_queue as _rq
 
-                key = "prd" if t in ("prd", "prod") else t
-                wf_text = _read_raw(
-                    gh_repo,
-                    f".github/workflows/deploy_with_sdlc_governance_{key}.yaml",
-                    release_branch,
+            key = "prd" if t in ("prd", "prod") else t
+            wf_text = _read_raw(
+                gh_repo,
+                f".github/workflows/deploy_with_sdlc_governance_{key}.yaml",
+                release_branch,
+            )
+            charts = _workflow_chart_entries(wf_text or "")
+            if charts and merged:
+                _rq.record_deployment(
+                    environment=key,
+                    artifacts=charts,
+                    deployment_repo=repo_full,
+                    pr_number=promo_pr.number,
+                    note="release_promoted",
                 )
-                charts = _workflow_chart_entries(wf_text or "")
-                if charts:
-                    _rq.record_deployment(
-                        environment=key,
-                        artifacts=charts,
-                        deployment_repo=repo_full,
-                        pr_number=promo_pr.number,
-                        note="release_promoted",
-                    )
-            except Exception:
-                pass
+            elif charts:
+                from .pr_reconcile import record_pending
+
+                record_pending(key, charts, repo_full, promo_pr.number,
+                               on_merge="deployed", tag="release_promoted")
+        except Exception:
+            pass
         return json.dumps({
             "ok": True,
             "action": "release_promoted" if merged else "promotion_pending",
