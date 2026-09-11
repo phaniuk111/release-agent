@@ -152,9 +152,9 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
                    image: str = "", run_url: str = "", repo: str = "") -> dict[str, Any]:
     """Open a PR bumping the named DAGs to ``new_version``.
 
-    A PR, not a direct commit, so a human still merges it. The deploy Workflow
-    calls this only once the flex-template run is green — the version names a
-    template that exists — and the body carries that run's link as evidence.
+    A PR, not a direct commit: it is raised right after the DF dispatch, before
+    the flex-template build has finished, so a human decides when to merge. The
+    body links the run so whoever merges can check it went green first.
     """
     if not dag_files:
         return {"ok": False, "error": "No DAG files selected — nothing to bump."}
@@ -245,7 +245,10 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
         + (f" for `{image}`" if image else "") + ".\n\n"
         + "\n".join(f"- `{u['file']}`: {', '.join(u['from'])} → {version}"
                     for u in updated if not u["unchanged"])
-        + (f"\n\nBuild run (green): {run_url}" if run_url else "")
+        + (f"\n\nDF build run: {run_url}\n\n**Merge only once that run is green** — "
+           "until it finishes, this version names a flex template that is not in the "
+           "bucket yet. Raised at dispatch time on purpose: when to merge is your call."
+           if run_url else "")
     )
     try:
         pr = gh_repo.create_pull(

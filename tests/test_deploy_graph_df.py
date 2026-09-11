@@ -1,9 +1,9 @@
 """The deploy graph's Dataflow branch, run through the REAL ADK Workflow.
 
-apply_deploy → await_df_run → bump_dags, with GitHub faked at the tool seams.
-These exercise what unit tests of the node functions cannot: that the graph
-routes, pauses on a CHECK token, resumes, and — on ADK 2.9, where a failed node
-re-runs on resume — never repeats a side effect.
+A DF deploy that names Composer DAGs dispatches the run and raises the DAG PR
+in the same confirm turn — not after the run finishes. The reply links the run
+beside the PR: whether it is green enough to merge on is the person's call.
+GitHub is faked at the tool seams.
 """
 import asyncio
 import json
@@ -20,9 +20,10 @@ from google.adk.runners import InMemoryRunner  # noqa: E402
 from google.genai import types  # noqa: E402
 
 from release_agent.config import settings  # noqa: E402
-from release_agent.tools import composer, dataflow  # noqa: E402
+from release_agent.tools import composer  # noqa: E402
 
 RUN = {"id": 7, "url": "https://github.com/o/df/actions/runs/7", "status": "queued"}
+RUNS_PAGE = "https://github.com/o/df/actions/workflows/df-deploy.yml"
 
 
 def _payload():
@@ -35,21 +36,15 @@ def _payload():
 @pytest.fixture
 def github(monkeypatch):
     """Fake every GitHub seam the DF branch touches; record what happened."""
-    rec = {"dispatches": 0, "bumps": [], "statuses": []}
+    rec = {"dispatches": 0, "bumps": [], "run": dict(RUN)}
     deploy._PENDING_PREVIEWS.clear()
 
     def fake_invoke(name, args):
         assert name == "deploy_dataflow", name
         rec["dispatches"] += 1
-        return {"ok": True, "action": "df_workflow_dispatched", "run": dict(RUN),
-                "dispatch": {"repo": "o/df", "workflow": "df-deploy.yml", "before_ids": [1]},
-                "note": f"Dispatched job-a:2.0.0 → uat. GitHub run: [Run #7]({RUN['url']})"}
-
-    def fake_status(repo, run_id):
-        s = rec["statuses"].pop(0) if rec["statuses"] else "in_progress"
-        done = s in ("success", "failure", "cancelled")
-        return {"id": run_id, "url": RUN["url"], "status": "completed" if done else s,
-                "conclusion": s if done else "", "done": done, "green": s == "success"}
+        return {"ok": True, "action": "df_workflow_dispatched", "run": rec["run"],
+                "run_url": (rec["run"] or {}).get("url", ""), "runs_page": RUNS_PAGE,
+                "note": "Dispatched job-a:2.0.0 → uat."}
 
     def fake_bump(dag_files, version, environment="uat", image="", run_url="", repo=""):
         rec["bumps"].append({"files": dag_files, "version": version, "run_url": run_url, "repo": repo})
@@ -57,16 +52,10 @@ def github(monkeypatch):
                 "pr_url": "https://github.com/o/dags/pull/41"}
 
     monkeypatch.setattr(deploy, "_invoke_tool", fake_invoke)
-    monkeypatch.setattr(dataflow, "df_run_status", fake_status)
-    monkeypatch.setattr(dataflow, "locate_dispatched_run", lambda d: dict(RUN))
     monkeypatch.setattr(composer, "apply_dag_bump", fake_bump)
     monkeypatch.setattr(composer, "preview_dag_bump", lambda *a, **k: {
         "repo": "o/dags", "branch": "main", "dir": "uat", "problems": [],
         "changes": [{"file": "uat/job_a_dag.py", "from": ["1.9.0"], "to": "2.0.0", "unchanged": False}]})
-    # One poll inside a short window: status "in_progress" pauses at once, a
-    # scripted "success"/"failure" is seen on the first poll.
-    monkeypatch.setattr(settings, "df_run_wait_seconds", 0.2)
-    monkeypatch.setattr(settings, "df_run_poll_seconds", 1.0)
     return rec
 
 
@@ -114,68 +103,32 @@ class _Session:
         return asyncio.run(get())
 
 
-def test_green_run_raises_the_dag_pr_after_the_run(github):
-    github["statuses"] = ["success"]
+def test_the_dag_pr_is_raised_in_the_confirm_turn_citing_the_run(github):
     s = _Session()
     confirm = s.say(_payload())["pause"]
     assert confirm.startswith("CONFIRM-")
 
     out = s.resume(confirm)
-    assert out["pause"] is None
+    assert out["pause"] is None, "no waiting on the run — the PR is raised now"
     result = out["output"]
-    assert result["ok"] is True and result["run_green"] is True
-    assert result["dag_bump"]["pr_number"] == 41
+    assert result["ok"] is True and result["dag_bump"]["pr_number"] == 41
     assert github["dispatches"] == 1
     [bump] = github["bumps"]
-    assert bump["run_url"] == RUN["url"], "the PR body cites the green run"
+    assert bump["run_url"] == RUN["url"], "the PR body links the run to check"
     assert bump["files"] == ["job_a_dag.py"] and bump["repo"] == "o/dags"
 
 
-def test_a_building_run_pauses_on_check_then_finishes_when_resumed(github):
-    github["statuses"] = ["in_progress"]
+def test_a_run_github_has_not_registered_yet_links_the_runs_page(github):
+    github["run"] = None
     s = _Session()
-    confirm = s.say(_payload())["pause"]
-
-    paused = s.resume(confirm)
-    check = paused["pause"]
-    assert check and check.startswith("CHECK-")
-    assert check in paused["text"] and "raised only once it is green" in paused["text"]
-    assert github["bumps"] == [], "no DAG PR while the run is still building"
-    assert s.state()["df_check_token"] == check
-
-    github["statuses"] = ["success"]
-    done = s.resume(check)
-    assert done["pause"] is None
-    assert done["output"]["dag_bump"]["pr_number"] == 41
-    assert len(github["bumps"]) == 1 and github["dispatches"] == 1, "resuming must not re-dispatch"
-    assert not s.state().get("df_check_token"), "the CHECK token is spent once it resolves"
-
-
-def test_a_still_building_run_can_be_checked_repeatedly(github):
-    github["statuses"] = ["in_progress"]
-    s = _Session()
-    first = s.resume(s.say(_payload())["pause"])["pause"]
-    github["statuses"] = ["in_progress"]
-    second = s.resume(first)
-    assert second["pause"].startswith("CHECK-") and second["pause"] != first
-    assert github["bumps"] == [] and github["dispatches"] == 1
-
-
-def test_a_failed_run_leaves_the_dags_alone(github):
-    github["statuses"] = ["failure"]
-    s = _Session()
-    out = s.resume(s.say(_payload())["pause"])
-    result = out["output"]
-    assert result["ok"] is False and result["status"] == "df_run_failed"
-    assert "NOT bumped" in result["note"] and "failure" in result["note"]
-    assert github["bumps"] == []
-    assert not s.state().get("df_wait") and not s.state().get("df_check_token")
+    s.resume(s.say(_payload())["pause"])
+    [bump] = github["bumps"]
+    assert bump["run_url"] == RUNS_PAGE, "still somewhere to check before merging"
 
 
 def test_the_confirm_token_is_spent_by_the_apply(github):
     """Single-use: after the apply, neither the token nor the preview can be
     found in session state — so a re-sent CONFIRM finds nothing to resume."""
-    github["statuses"] = ["success"]
     s = _Session()
     s.resume(s.say(_payload())["pause"])
     state = s.state()
@@ -212,7 +165,7 @@ def test_a_slow_preview_is_abandoned_with_an_explanation(monkeypatch):
     assert "took longer than" in (out["output"].get("error") or "")
 
 
-# --- through the chat service: CONFIRM → CHECK interrupt → CHECK → result -----
+# --- through the chat service: CONFIRM → one reply with the PR and the run -------
 
 def _stream(service, message, thread="t-df"):
     async def go():
@@ -220,44 +173,17 @@ def _stream(service, message, thread="t-df"):
     return asyncio.run(go())
 
 
-def test_the_service_routes_check_tokens_to_the_paused_deploy(github):
+def test_the_reply_hands_the_merge_call_to_the_person_with_the_run(github):
     from release_agent.adk_service import AdkChatService
 
     service = AdkChatService()
-    github["statuses"] = ["in_progress"]
     [confirm] = [e["data"]["token"] for e in _stream(service, _payload()) if e["type"] == "interrupt"]
-
-    paused = _stream(service, confirm)
-    [intr] = [e["data"] for e in paused if e["type"] == "interrupt"]
-    assert intr["type"] == "check" and intr["token"].startswith("CHECK-")
-    assert github["bumps"] == []
-
-    # A wrong CHECK token is explained, not silently ignored or treated as chat.
-    wrong = _stream(service, "CHECK-000000")
-    assert "doesn't match" in "".join(e.get("content", "") for e in wrong if e["type"] == "token")
-    assert github["bumps"] == []
-
-    github["statuses"] = ["success"]
-    done = _stream(service, intr["token"])
+    done = _stream(service, confirm)
+    assert not [e for e in done if e["type"] == "interrupt"], "nothing left to wait on"
     reply = "".join(e.get("content", "") for e in done if e["type"] == "token")
-    assert "The run is green" in reply and "[PR #41](https://github.com/o/dags/pull/41)" in reply
-    assert len(github["bumps"]) == 1 and github["dispatches"] == 1
-
-
-def test_a_fresh_service_can_resume_a_check_it_never_saw(github):
-    """Another replica, or this pod after a restart: the CHECK token is found in
-    session state, not only in the process that paused."""
-    from release_agent.adk_service import AdkChatService
-
-    service = AdkChatService()
-    github["statuses"] = ["in_progress"]
-    [confirm] = [e["data"]["token"] for e in _stream(service, _payload(), "t-r") if e["type"] == "interrupt"]
-    [check] = [e["data"]["token"] for e in _stream(service, confirm, "t-r") if e["type"] == "interrupt"]
-
-    service._pending_check.clear()          # as if a different process picked it up
-    github["statuses"] = ["success"]
-    reply = "".join(e.get("content", "") for e in _stream(service, check, "t-r") if e["type"] == "token")
-    assert "The run is green" in reply and len(github["bumps"]) == 1
+    assert "[PR #41](https://github.com/o/dags/pull/41)" in reply
+    assert f"[Run #7]({RUN['url']})" in reply, "the run to check sits beside the PR"
+    assert "only once it is green" in reply and "call is yours" in reply
 
 
 # --- composer: a retry after a half-finished attempt still opens the PR -------
@@ -355,10 +281,22 @@ def test_a_spent_confirm_token_gets_a_plain_answer_and_applies_nothing(github):
     from release_agent.adk_service import AdkChatService
 
     service = AdkChatService()
-    github["statuses"] = ["success"]
     [confirm] = [e["data"]["token"] for e in _stream(service, _payload(), "t-s") if e["type"] == "interrupt"]
     _stream(service, confirm, "t-s")                       # applies once
     again = _stream(service, confirm, "t-s")               # re-sent
     reply = "".join(e.get("content", "") for e in again if e["type"] == "token")
     assert "already used" in reply and "Nothing was applied" in reply
     assert github["dispatches"] == 1 and len(github["bumps"]) == 1
+
+
+def test_the_pr_body_says_merge_only_once_the_run_is_green(monkeypatch):
+    """Raised at dispatch, before the build finishes — the body must not claim
+    the run is green, and must say to check it first."""
+    repo = _DagRepo()
+    monkeypatch.setattr(composer, "_repo", lambda r="": repo)
+    monkeypatch.setattr(settings, "composer_branch", "main")
+    composer.apply_dag_bump(["job.py"], "2.0.0", "uat", image="job-a",
+                            run_url="https://github.com/o/df/actions/runs/7", repo="o/dags")
+    body = repo.created[0]["body"]
+    assert "https://github.com/o/df/actions/runs/7" in body
+    assert "Merge only once that run is green" in body and "(green)" not in body

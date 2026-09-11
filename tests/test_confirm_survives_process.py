@@ -68,14 +68,12 @@ def test_the_workflow_binds_the_payload_from_state(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         D, "apply_confirmed_deploy",
-        lambda token, pending=None, defer_dag_bump=False: seen.update(
-            token=token, pending=pending, defer=defer_dag_bump) or {"ok": True},
+        lambda token, pending=None: seen.update(token=token, pending=pending) or {"ok": True},
     )
     events = _drain(W._apply_deploy({"token": "CONFIRM-ABC123"},
                                     deploy_pending={"request": {"x": 1}}))
     assert seen["token"] == "CONFIRM-ABC123"
     assert seen["pending"] == {"request": {"x": 1}}
-    assert seen["defer"] is True, "the Workflow owns the DAG bump — it waits for the run"
     # Single-use: the token and the preview leave session state BEFORE the apply.
     assert events[0].actions.state_delta == {"deploy_confirm_token": None, "deploy_pending": None}
 

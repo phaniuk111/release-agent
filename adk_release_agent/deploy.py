@@ -161,12 +161,6 @@ def _extract_confirmation_token(text: str) -> str:
     return _extract_prefixed_token(text, "CONFIRM-")
 
 
-def _extract_check_token(text: str) -> str:
-    """CHECK-xxxxxx: resumes a Dataflow deploy paused while its run builds.
-    Deliberately a different prefix from CONFIRM — it approves nothing, it only
-    asks the paused deploy to look at the run again."""
-    return _extract_prefixed_token(text, "CHECK-")
-
 
 def prepare_deploy_preview(
     message: str = "",
@@ -251,8 +245,7 @@ def prepare_deploy_preview(
 
 
 def apply_confirmed_deploy(
-    confirmation_text: str, pending: dict[str, Any] | None = None,
-    defer_dag_bump: bool = False,
+    confirmation_text: str, pending: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Apply a previously prepared deploy after exact token confirmation.
 
@@ -270,10 +263,6 @@ def apply_confirmed_deploy(
     Every failure comes back as a result, never an exception — a caller running
     this inside a resumable Workflow node must not see the node fail, because a
     failed node re-runs on resume (ADK 2.9) and would repeat the side effects.
-
-    ``defer_dag_bump`` (the Workflow sets it): return the Composer DAG bump as a
-    ``dag_request`` instead of performing it, so it can wait for the DF run to go
-    green first.
     """
     _cleanup_expired_previews()
     token = _extract_confirmation_token(confirmation_text)
@@ -297,7 +286,7 @@ def apply_confirmed_deploy(
     req = pending["request"]
     env = (req.get("environment") or "uat").lower()
     try:
-        return _apply(req, env, token, defer_dag_bump)
+        return _apply(req, env, token)
     except Exception as e:  # noqa: BLE001 — surfaced as an honest result, see docstring
         return {
             "ok": False,
@@ -312,7 +301,7 @@ def apply_confirmed_deploy(
         }
 
 
-def _apply(req: dict[str, Any], env: str, token: str, defer_dag_bump: bool) -> dict[str, Any]:
+def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
     args: dict[str, Any]
     if req.get("deployment_type") == "release":
         from release_agent.tools import release_fileset as _rf
@@ -331,18 +320,16 @@ def _apply(req: dict[str, Any], env: str, token: str, defer_dag_bump: bool) -> d
         result["confirmed_token"] = token
         dags = req.get("dag_files") or []
         if dags and result.get("ok"):
-            dag_request = {
+            # DISPATCH FIRST, then raise the DAG PR — raised straight away, not
+            # after the run finishes. The PR only proposes the change; the reply
+            # and the PR body both link the run, and merging once it is green is
+            # the person's call. Dispatch-first means a failed build leaves a
+            # template nothing uses, never DAGs pointing at a missing one.
+            result["dag_bump"] = apply_dag_request({
                 "dag_files": list(dags), "version": image["tag"], "environment": env,
                 "image": image["name"], "composer_repo": req.get("composer_repo") or "",
-            }
-            if defer_dag_bump:
-                # The Workflow waits for the run and bumps only on green.
-                result["dag_request"] = dag_request
-            else:
-                # Direct callers (no Workflow to wait in): dispatch first, then
-                # bump — the reply tells whoever merges to wait for green.
-                result["dag_bump"] = apply_dag_request(
-                    dag_request, ((result.get("run") or {}) or {}).get("url") or "")
+            }, run_url=((result.get("run") or {}) or {}).get("url") or ""
+               or result.get("runs_page") or "")
         _record_deploy_event(req, f"dataflow-{env}", result)
         return result
     if req.get("entries"):

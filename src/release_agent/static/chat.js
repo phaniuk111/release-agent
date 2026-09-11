@@ -175,31 +175,19 @@ export function addMessage(role, content, isStreaming = false) {
         // content may be the full interrupt object (preferred) or a bare string.
         const intr = (content && typeof content === 'object') ? content : { message: content };
         const isBudget = intr.type === 'budget_confirmation';
-        // A Dataflow deploy paused while its run builds. It approves nothing —
-        // one button re-checks the run; the token is not something to type.
-        const isCheck = intr.type === 'check' && !!intr.token;
         // A yes/no tool-approval (e.g. merge_prod_release): no CONFIRM token —
         // identified by the function name / the 'Reply "yes"' instruction. Render
         // Approve/Reject buttons; a pasted token here would otherwise reject it.
         const isApproval = !intr.token && !isBudget &&
             (!!intr.function || ((intr.action || intr.message || '').toLowerCase().includes('"yes"')));
-        const header = isCheck ? 'Waiting for the Dataflow run'
-            : isBudget ? 'Budget Confirmation'
+        const header = isBudget ? 'Budget Confirmation'
             : (isApproval ? 'Approval Required' : 'Confirmation Required');
         const bodyText = renderMarkdown(intr.message || 'Please confirm this action.')
             + (intr.action && !isApproval ? ('<br><br>' + renderMarkdown(intr.action)) : '');
         const placeholder = isBudget
             ? 'Type yes to continue, anything else to stop'
             : 'Paste CONFIRM-XXXXXX here';
-        const checkToken = isCheck ? String(intr.token).replace(/[^A-Za-z0-9-]/g, '') : '';
-        const controls = isCheck ? `
-            <div class="flex gap-2">
-                <button onclick="sendCheck('${checkToken}')"
-                        class="bg-sky-600 hover:bg-sky-500 px-4 py-1.5 rounded-lg text-sm font-medium">
-                    <i class="fa-solid fa-rotate mr-1"></i>Check run again
-                </button>
-            </div>
-        ` : isApproval ? `
+        const controls = isApproval ? `
             <div class="flex gap-2">
                 <button onclick="sendApproval('yes')"
                         class="bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 rounded-lg text-sm font-medium">
@@ -374,16 +362,6 @@ export function sendApproval(answer) {
     const last = chat.lastElementChild;
     if (last) last.remove();
     sendMessage(answer);
-}
-
-export function sendCheck(token) {
-    // Re-check a paused Dataflow run: drop the interrupt box, send the token.
-    const chat = document.getElementById('chat');
-    const last = chat.lastElementChild;
-    if (last) last.remove();
-    const hiddenInput = document.getElementById('input');
-    hiddenInput.value = token;
-    sendMessage();
 }
 
 export function sendConfirmation() {

@@ -160,19 +160,6 @@ class Settings(BaseSettings):
         default='{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}',
         validation_alias=AliasChoices("DF_DISPATCH_INPUTS", "DATAFLOW_DISPATCH_INPUTS"),
     )
-    # After a DF dispatch, how long the deploy waits in-request for the run before
-    # raising the Composer DAG PR. Bounded by the gateway: the whole confirm turn
-    # (dispatch + wait) must finish inside virtualService.timeout (120s), or the
-    # stream is cut mid-answer. A run still building when this runs out pauses
-    # the deploy on a CHECK-xxxxxx token instead — nothing is lost, it resumes.
-    df_run_wait_seconds: float = Field(
-        default=75.0,
-        validation_alias=AliasChoices("DF_RUN_WAIT_SECONDS", "DATAFLOW_RUN_WAIT_SECONDS"),
-    )
-    df_run_poll_seconds: float = Field(
-        default=15.0,
-        validation_alias=AliasChoices("DF_RUN_POLL_SECONDS", "DATAFLOW_RUN_POLL_SECONDS"),
-    )
     # Upper bound on building a deploy preview (a release preview clones the
     # deploy repo and runs its updater script). Kept under the gateway timeout so
     # a slow preview ends with an explanation instead of a dropped stream.
