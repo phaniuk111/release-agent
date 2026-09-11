@@ -1119,6 +1119,8 @@ def diagnostics(request: Request):
       vertex.ok false + 429              -> quota; request an increase
       github.ok false + 404              -> wrong repo, or the token can't see it
       bq.ok false + 404 Not found: Table -> table not provisioned yet
+      clone_paths.verdict.summary        -> which way of getting the deploy repo's
+                                            files works here (git / tarball / API)
     """
     import os as _os
 
@@ -1195,39 +1197,17 @@ def diagnostics(request: Request):
     except Exception as e:
         report["github"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
 
-    # The REST API and the GIT endpoint are different hosts and may be allowed
-    # separately by the proxy. The CARE/DF release flow clones over https to
-    # github.com, so a working API says nothing about whether a release can run.
+    # Creating a release needs the deploy repo's files on disk, and each way of
+    # getting them runs over a different host the proxy may allow separately
+    # (git endpoint / codeload / REST). Probe all three — cheaply, nothing is
+    # downloaded — plus the repo's size, so choosing between the git CLI,
+    # Dulwich and a snapshot is measured, not guessed. See tools/clone_probe.
     try:
-        import os as _os2
-        import subprocess as _sp
+        from .tools.clone_probe import probe_clone_paths
 
-        from .tools.release_fileset import _authed_clone_url
-
-        host = settings.github_base_url.split("://")[-1].split("/")[0] if settings.github_base_url else "github.com"
-        # Use the SAME authenticated URL the release flow builds — an anonymous
-        # ls-remote fails on a private repo for reasons that have nothing to do
-        # with the proxy, which would send an operator chasing a phantom.
-        url = _authed_clone_url(active_deploy_repo())
-        env = {**_os2.environ, "GIT_TERMINAL_PROMPT": "0"}   # never block on a credential prompt
-        probe = _sp.run(
-            ["git", "ls-remote", url, "HEAD"],
-            capture_output=True, text=True, timeout=30, env=env,
-        )
-        if probe.returncode == 0:
-            report["git_https"] = {"ok": True, "host": host}
-        else:
-            # git echoes the remote URL on failure — strip the embedded token.
-            detail = (probe.stderr or probe.stdout).strip()
-            token = _resolve_github_token() or ""
-            if token:
-                detail = detail.replace(token, "***")
-            report["git_https"] = {
-                "ok": False, "host": host, "error": detail[:300],
-                "hint": "release creation clones over this path — check proxy access and SSO for the token",
-            }
+        report["clone_paths"] = probe_clone_paths(active_deploy_repo())
     except Exception as e:
-        report["git_https"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+        report["clone_paths"] = {"error": f"{type(e).__name__}: {e}"[:300]}
 
     # BigQuery: only meaningful when the queue feature is switched on.
     try:
@@ -1246,7 +1226,8 @@ def diagnostics(request: Request):
     report["ok"] = bool(
         report["vertex"].get("ok")
         and report["github"].get("ok")
-        and report["git_https"].get("ok")
+        # Release creation as it runs TODAY: the git binary and the git endpoint.
+        and ((report.get("clone_paths") or {}).get("verdict") or {}).get("release_ready_today")
     )
     report["identity"] = _identity_report(request)
     return report
