@@ -283,6 +283,30 @@ async def chat_page():
     return HTMLResponse(content=html.replace("{APP_STARTED}", APP_STARTED))
 
 
+def _chat_error_message(exc: BaseException) -> str:
+    """What to tell the user when a chat turn fails.
+
+    A Vertex 429 that survived the model's retries is not an internal error:
+    Gemini runs on a shared capacity pool, and it was busy. Saying "internal
+    error" sent people looking for a bug. The cause is usually wrapped a few
+    exceptions deep, so the whole chain is inspected.
+    """
+    seen, cur = set(), exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        text = f"{type(cur).__name__} {cur}"
+        if "429" in text or "RESOURCE_EXHAUSTED" in text or "ResourceExhausted" in text:
+            return ("The AI model is busy right now (Vertex AI rate limit — shared "
+                    "capacity, not something you did). Nothing was changed; please "
+                    "try again in a minute.")
+        if "503" in text or "UNAVAILABLE" in text:
+            return ("The AI model is briefly unavailable. Nothing was changed; "
+                    "please try again in a moment.")
+        cur = cur.__cause__ or cur.__context__
+    return ("Something went wrong processing that message — nothing was changed. "
+            "Try again; if it persists, the server log has the details.")
+
+
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
     """Streaming chat endpoint using Server-Sent Events (SSE).
@@ -307,11 +331,9 @@ async def chat_endpoint(req: ChatRequest):
                         logger.info(f"Interrupt emitted | thread={thread_id}")
                     yield f"data: {json.dumps(event)}\n\n"
 
-        except Exception:
+        except Exception as exc:
             logger.exception(f"Error in chat stream | thread={thread_id}")
-            error_payload = json.dumps(
-                {"type": "error", "content": "Internal error processing request"}
-            )
+            error_payload = json.dumps({"type": "error", "content": _chat_error_message(exc)})
             yield f"data: {error_payload}\n\n"
 
     return StreamingResponse(

@@ -156,11 +156,11 @@ def _classify_in_scope(message: str) -> bool | None:
     """One cheap call -> in/out, or None on ANY failure (caller allows)."""
     import json
 
-    from google import genai
+    from ._genai import classifier_client
 
     from release_agent.config import settings
 
-    client = genai.Client()
+    client = classifier_client()
     response = client.models.generate_content(
         model=settings.gemini_model or "gemini-2.5-flash",
         contents=_CLASSIFY_PROMPT + message.strip(),

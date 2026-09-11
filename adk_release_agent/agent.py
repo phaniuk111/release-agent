@@ -100,6 +100,21 @@ def _model_name() -> str:
     return settings.gemini_model or "gemini-flash-latest"
 
 
+def gemini_retry_options():
+    """Retries for the chat agent's model — the full budget, since a failed call
+    here fails the user's turn. See _genai.RETRYABLE_STATUS for what retries."""
+    from ._genai import retry_options
+
+    return retry_options(settings.gemini_retry_attempts)
+
+
+def _model():
+    """The chat agent's model, with transport retries on transient failures."""
+    from google.adk.models.google_llm import Gemini
+
+    return Gemini(model=_model_name(), retry_options=gemini_retry_options())
+
+
 # Environment words that mark a high-impact PRODUCTION scope.
 _PROD_ENV_WORDS = {"prod", "prd", "production"}
 
@@ -177,7 +192,7 @@ def build_root_agent():
 
     return Agent(
         name="release_copilot_adk",
-        model=_model_name(),
+        model=_model(),
         description="ADK Release Copilot: Skills route to scoped tools; deploys run a deterministic Workflow.",
         instruction=ROOT_INSTRUCTION,
         tools=tools,
