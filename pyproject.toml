@@ -6,8 +6,9 @@ readme = "README.md"
 # ADK Workflow graphs (google.adk.workflow) require Python >= 3.11.
 requires-python = ">=3.11"
 dependencies = [
-    # Core agent framework — 2.3+ for App, plugins, and the Workflow graph API.
-    "google-adk>=2.5",
+    # Core agent framework. 2.9+: failed workflow nodes rerun on resume (apply_deploy
+    # is written to be idempotent for it), plus the resume and Vertex-session fixes.
+    "google-adk>=2.9",
     # Vertex AI Gemini
     "google-genai>=1.0",
     # Web server (production UI)
