@@ -540,6 +540,7 @@ export async function showReleaseForm(kind) {
     // The two releases are independent: a DF release carries only df_only items
     // and is raised in its own repo (DF_RELEASE_REPO), so it neither picks up
     // CARE artifacts nor targets the CARE repo.
+    const otherQueued = (qctx.queue || []).filter(q => (isDf ? !q.df_only : q.df_only)).length;
     qctx.queue = (qctx.queue || []).filter(q => (isDf ? q.df_only : !q.df_only));
     const targetRepo = isDf ? (qctx.df_default_repo || qctx.default_repo) : qctx.default_repo;
 
@@ -561,6 +562,23 @@ export async function showReleaseForm(kind) {
           'You\'ll see the full diff and RCTL timeline before anything is pushed.</div>';
 
     const relNote = _ctxNote(qctx, 'the intake queue'); if (relNote) wrap.appendChild(relNote);
+    // An empty checklist looked like a broken form. Say why it is empty — and
+    // when the other release has items, say so, because that is usually the
+    // answer ("I queued it" — as CARE, not Dataflow).
+    if (!relNote && !(qctx.queue || []).length) {
+        const empty = document.createElement('div');
+        empty.className = 'text-[11px] text-slate-400 border border-slate-700 rounded-lg px-3 py-2 mb-2';
+        const kind = isDf ? 'Dataflow' : 'CARE';
+        const other = isDf ? 'CARE' : 'Dataflow';
+        empty.innerHTML = '<i class="fa-solid fa-circle-info mr-1 text-slate-500"></i>' +
+            'Nothing is queued for the ' + kind + ' release yet' +
+            (otherQueued ? ' — ' + otherQueued + ' item' + (otherQueued === 1 ? ' is' : 's are') +
+                ' queued for the ' + other + ' release' : '') + '. ' +
+            'Developers queue ' + (isDf ? 'Dataflow images' : 'charts') + ' with <b>Add to next release</b>' +
+            (isDf ? ', ticking <b>Dataflow</b>' : ', ticking <b>CARE</b>') +
+            '. You can still type artifacts below.';
+        wrap.appendChild(empty);
+    }
 
     const grid = document.createElement('div');
     grid.className = 'grid gap-2 mb-2';
@@ -702,7 +720,8 @@ export async function showReleaseForm(kind) {
     const envsOf = (q) => String(q.target_envs || '').split(',').map(e => e.trim()).filter(Boolean);
     const routeText = (q) => {
         if (isDf) {
-            const envs = envsOf(q).map(e => e.toUpperCase());
+            // Same order as the queue form's tick boxes (PRD, then PRL1).
+            const envs = ['prd', 'prl1'].filter(e => envsOf(q).includes(e)).map(e => e.toUpperCase());
             return envs.length ? envs.join(' + ') + ' pipeline' + (envs.length > 1 ? 's' : '') +
                 ' — triggered at deploy time' : 'pipelines chosen at deploy time';
         }
