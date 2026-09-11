@@ -633,6 +633,8 @@ class ReleaseDefaultsRequest(BaseModel):
     kind: str = "care"          # care | df
     repo: str = ""              # the release's target repo — its PRs number the release
     date: str = ""              # YYYY-MM-DD, the browser's date or the chosen start
+    number: int | None = None   # the release number from this form's first call — later
+                                # recomputes pass it back so they never wait on GitHub
 
 
 @app.post("/api/release-defaults")
@@ -674,9 +676,9 @@ def release_defaults(req: ReleaseDefaultsRequest):
         })
     repo = (req.repo or "").strip() or (
         app_settings.df_release_repo if req.kind == "df" else "") or app_settings.deploy_repo
-    number = chg_defaults.next_release_number_for_repo(repo)
+    number = req.number if (req.number or 0) > 0 else chg_defaults.next_release_number_for_repo(repo)
     return {"ok": True, "fields": chg_defaults.build_defaults(items, req.kind, day, number),
-            "numbered_from": repo if number else ""}
+            "number": number, "numbered_from": repo if number else ""}
 
 
 @app.post("/api/release-draft")

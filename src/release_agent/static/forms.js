@@ -613,34 +613,56 @@ export async function showReleaseForm(kind) {
         const d = new Date();
         return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     };
-    let defaultsTimer = null, defaultsSeq = 0;
+    // The release number is looked up once (the first call reads the repo's
+    // release PRs — slow, several GitHub pages); every later recompute sends it
+    // back so a date change never waits on GitHub.
+    let defaultsTimer = null, defaultsSeq = 0, defaultsInflight = null, knownNumber = null;
+    const runDefaults = async () => {
+        const seq = ++defaultsSeq;
+        let res = null;
+        try {
+            const r = await fetch(API_BASE + '/api/release-defaults', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    artifacts: artEl.value.split('\n').map(l => l.trim()).filter(Boolean),
+                    kind: isDf ? 'df' : 'care',
+                    repo: repoEl.value.trim(),
+                    date: startEl.value ? startEl.value.slice(0, 10) : localToday(),
+                    number: knownNumber,
+                }),
+            });
+            res = await r.json();
+        } catch (e) { return; }                       // defaults are a convenience
+        if (res && res.number) knownNumber = res.number;
+        if (seq !== defaultsSeq || !res || !res.ok) return;   // a newer request won
+        const f = res.fields || {};
+        fillAuto(nameEl, 'name', f.release_name);
+        fillAuto(sumEl, 'summary', f.change_summary);
+        fillAuto(descEl, 'desc', f.change_description);
+        fillAuto(reasonEl, 'reason', f.change_reason);
+        fillAuto(riskEl, 'risk', f.associated_risk);
+        fillAuto(consEl, 'consequence', f.consequence);
+        fillAuto(impactEl, 'impact', f.user_service_impact);
+    };
     const refreshDefaults = () => {
         clearTimeout(defaultsTimer);
-        defaultsTimer = setTimeout(async () => {
-            const seq = ++defaultsSeq;
-            let res = null;
-            try {
-                const r = await fetch(API_BASE + '/api/release-defaults', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        artifacts: artEl.value.split('\n').map(l => l.trim()).filter(Boolean),
-                        kind: isDf ? 'df' : 'care',
-                        repo: repoEl.value.trim(),
-                        date: startEl.value ? startEl.value.slice(0, 10) : localToday(),
-                    }),
-                });
-                res = await r.json();
-            } catch (e) { return; }                       // defaults are a convenience
-            if (seq !== defaultsSeq || !res || !res.ok) return;   // a newer request won
-            const f = res.fields || {};
-            fillAuto(nameEl, 'name', f.release_name);
-            fillAuto(sumEl, 'summary', f.change_summary);
-            fillAuto(descEl, 'desc', f.change_description);
-            fillAuto(reasonEl, 'reason', f.change_reason);
-            fillAuto(riskEl, 'risk', f.associated_risk);
-            fillAuto(consEl, 'consequence', f.consequence);
-            fillAuto(impactEl, 'impact', f.user_service_impact);
+        defaultsTimer = setTimeout(() => {
+            defaultsTimer = null;
+            defaultsInflight = runDefaults().finally(() => { defaultsInflight = null; });
         }, 250);
+    };
+    // Before a submit reads the fields: finish any recompute still pending, so
+    // setting the start date and clicking Create at once cannot send the
+    // previous date in the name. Returns false if it has not finished within
+    // the wait — the submit then stops rather than send fields it knows are
+    // about to change.
+    const settleDefaults = async () => {
+        if (defaultsTimer) { clearTimeout(defaultsTimer); defaultsTimer = null;
+                             defaultsInflight = runDefaults().finally(() => { defaultsInflight = null; }); }
+        if (!defaultsInflight) return true;
+        const done = await Promise.race([defaultsInflight.then(() => true),
+                                         new Promise(r => setTimeout(() => r(false), 8000))]);
+        return done;
     };
     // The initiator is the person creating the release: remembered from the
     // last one they created, else the email they queue with.
@@ -654,13 +676,22 @@ export async function showReleaseForm(kind) {
     startEl.addEventListener('change', refreshDefaults);
     repoEl.addEventListener('change', refreshDefaults);
 
-    // Per-service flags, regenerated from the artifact list.
+    // Routing per service is READ from the queue — the developer chose PRD /
+    // PRL1 (and CARE vs DF) with the tick boxes when they queued it, so DevOps
+    // is not asked to enter it again. A CARE release never carries DF images
+    // (they have their own release), so there is no DF box here either. Only a
+    // chart typed straight into the form has no queued choice to read; that is
+    // the one case that still offers PRL1-only.
     const flagsHdr = document.createElement('div');
     flagsHdr.className = 'text-[11px] text-slate-400 mb-1';
-    flagsHdr.textContent = 'Per-service routing (from the artifact list):';
+    flagsHdr.textContent = isDf ? 'Pipelines (from the queue):' : 'Routing (from the queue):';
     const flags = document.createElement('div');
     flags.className = 'mb-2 space-y-1';
     wrap.appendChild(flagsHdr); wrap.appendChild(flags);
+
+    const queuedByName = {};
+    (qctx.queue || []).forEach(q => { queuedByName[q.artifact_name] = q; });
+    const manualPrl1 = new Set();
 
     const parseNames = () => artEl.value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
         const last = l.replace(/\/+$/, '').split('/').pop();
@@ -668,42 +699,58 @@ export async function showReleaseForm(kind) {
         return i > 0 ? last.slice(0, i) : null;
     }).filter(Boolean);
 
+    const envsOf = (q) => String(q.target_envs || '').split(',').map(e => e.trim()).filter(Boolean);
+    const routeText = (q) => {
+        if (isDf) {
+            const envs = envsOf(q).map(e => e.toUpperCase());
+            return envs.length ? envs.join(' + ') + ' pipeline' + (envs.length > 1 ? 's' : '') +
+                ' — triggered at deploy time' : 'pipelines chosen at deploy time';
+        }
+        return q.prl1_only ? 'UAT → PRL1 · PRL1-only, held back from PRD' : 'UAT → PRL1 → PRD';
+    };
+
     const renderFlags = () => {
         flags.innerHTML = '';
-        if (isDf) { flagsHdr.style.display = 'none'; return; }  // all DF — nothing to route
         const seen = new Set();
         parseNames().forEach(n => {
             if (seen.has(n)) return; seen.add(n);
+            const q = queuedByName[n];
             const row = document.createElement('div');
-            row.className = 'flex items-center gap-3 text-[11px] text-slate-300 font-mono';
-            row.innerHTML = '<span class="flex-1 truncate">' + esc(n) + '</span>' +
-                '<label class="flex items-center gap-1 text-slate-400"><input type="checkbox" data-prl1="' + esc(n) + '"> PRL1-only</label>' +
-                '<label class="flex items-center gap-1 text-slate-400"><input type="checkbox" data-df="' + esc(n) + '"> DF image</label>';
+            row.className = 'flex items-center gap-3 text-[11px] font-mono';
+            const name = '<span class="w-44 shrink-0 truncate text-slate-300">' + esc(n) + '</span>';
+            if (q) {
+                row.innerHTML = name + '<span class="flex-1 text-slate-400">' + esc(routeText(q)) + '</span>' +
+                    '<span class="text-slate-600">from the queue</span>';
+            } else if (isDf) {
+                row.innerHTML = name + '<span class="flex-1 text-slate-500">not queued — ' +
+                    'pipelines chosen at deploy time</span>';
+            } else {
+                row.innerHTML = name + '<span class="flex-1 text-amber-300/80">not queued — no routing ' +
+                    'choice to read</span><label class="flex items-center gap-1 text-slate-400">' +
+                    '<input type="checkbox" data-prl1-manual="' + esc(n) + '"' +
+                    (manualPrl1.has(n) ? ' checked' : '') + '> PRL1-only</label>';
+                row.querySelector('input').addEventListener('change', (e) => {
+                    if (e.target.checked) manualPrl1.add(n); else manualPrl1.delete(n);
+                });
+            }
             flags.appendChild(row);
         });
         flagsHdr.style.display = seen.size ? '' : 'none';
     };
+    // What the release is raised with: the queued choice, else the manual box.
+    const prl1Names = () => isDf ? [] : Array.from(new Set(parseNames())).filter(n =>
+        queuedByName[n] ? !!queuedByName[n].prl1_only : manualPrl1.has(n));
     artEl.addEventListener('input', renderFlags);
     renderFlags();
 
     // Thursday pre-fill: the intake queue arrives as a checklist — untick an
     // item to defer it (it stays queued for the next release). Ticked items
-    // fill the artifact list and carry their PRL1/DF routing flags.
+    // fill the artifact list; their routing is read from the queue above.
     if ((qctx.queue || []).length) {
         const qBox = document.createElement('div');
         qBox.className = 'border border-emerald-700/40 bg-emerald-500/5 rounded-lg px-3 py-2 mb-2';
         qBox.innerHTML = '<div class="text-[11px] text-emerald-300 mb-1"><i class="fa-solid fa-cart-plus mr-1"></i>' +
             'Queued for this release (' + qctx.queue.length + ') — untick to defer to the next one</div>';
-        const syncFlags = () => {
-            qctx.queue.forEach(it => {
-                const cb = qBox.querySelector('input[data-q="' + it.artifact_name + '"]');
-                if (!cb || !cb.checked) return;
-                const p = flags.querySelector('input[data-prl1="' + it.artifact_name + '"]');
-                if (p) p.checked = !!it.prl1_only;
-                const d = flags.querySelector('input[data-df="' + it.artifact_name + '"]');
-                if (d) d.checked = !!it.df_only;
-            });
-        };
         const applyItem = (q, on) => {
             const line = q.artifact_name + ':' + q.artifact_version;
             const lines = artEl.value.split('\n').map(l => l.trim()).filter(Boolean)
@@ -711,7 +758,6 @@ export async function showReleaseForm(kind) {
             if (on) lines.push(line);
             artEl.value = lines.join('\n');
             renderFlags();
-            syncFlags();
             refreshDefaults();
         };
         qctx.queue.forEach(q => {
@@ -803,8 +849,12 @@ export async function showReleaseForm(kind) {
     submit.textContent = isDf ? 'Create DF release' : 'Create CARE release';
     const err = document.createElement('span');
     err.className = 'text-[11px] text-red-400';
-    submit.addEventListener('click', () => {
+    submit.addEventListener('click', async () => {
         err.textContent = '';
+        if (!(await settleDefaults())) {
+            err.textContent = 'Still computing the release name and wording — try again in a moment.';
+            return;
+        }
         const artifacts = artEl.value.split('\n').map(l => l.trim()).filter(Boolean);
         if (!nameEl.value.trim() || !startEl.value || !endEl.value || !initEl.value.trim() || !sumEl.value.trim()) {
             err.textContent = 'Release name, start, end, initiator and summary are required.'; return;
@@ -828,9 +878,9 @@ export async function showReleaseForm(kind) {
             consequence: consEl.value.trim(),
             user_service_impact: impactEl.value.trim(),
             // DF release: every artifact is a Dataflow image by definition.
-            prl1_only: isDf ? [] : Array.from(flags.querySelectorAll('input[data-prl1]:checked')).map(c => c.dataset.prl1),
-            df_images: isDf ? Array.from(new Set(parseNames()))
-                            : Array.from(flags.querySelectorAll('input[data-df]:checked')).map(c => c.dataset.df),
+            prl1_only: prl1Names(),
+            // A DF release is all DF images; a CARE release carries none.
+            df_images: isDf ? Array.from(new Set(parseNames())) : [],
             artefact: artifacts,
         };
         sendMessage(JSON.stringify(payload));

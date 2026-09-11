@@ -116,3 +116,23 @@ def test_consequence_agrees_with_one_or_many():
     assert one.endswith("the chart stays on its current version.")
     many = C.build_defaults([_item("a"), _item("b")], "care", DAY, 1)["consequence"]
     assert many.endswith("the charts stay on their current versions.")
+
+
+def test_a_passed_back_number_never_waits_on_github(monkeypatch):
+    """The form's first call looks the number up; every recompute after that
+    (a date change, a tick) passes it back and must not hit GitHub again — the
+    lookup is several pages of PRs, and a submit waits on the recompute."""
+    from fastapi.testclient import TestClient
+
+    from release_agent import app_fastapi as A
+    from release_agent.tools import release_queue as RQ
+
+    monkeypatch.setattr(RQ, "current_queue", lambda *a, **k: {"ok": True, "queue": []})
+    def must_not_run(repo):
+        raise AssertionError("looked the release number up again")
+    monkeypatch.setattr(C, "next_release_number_for_repo", must_not_run)
+
+    r = TestClient(A.app).post("/api/release-defaults", json={
+        "artifacts": ["a:1.0"], "repo": "example-org/deploy", "date": "2026-09-24", "number": 34}).json()
+    assert r["number"] == 34
+    assert r["fields"]["release_name"].endswith("September 24th 2026 : Release 34")
