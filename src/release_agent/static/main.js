@@ -1,7 +1,7 @@
 // Entry point: wires page load, keyboard shortcuts, and exposes the functions
 // the HTML's inline onclick handlers need (ES modules don't create globals).
 import { getThreadId } from './state.js';
-import { addMessage, sendMessage, sendConfirmation, sendApproval, newThread } from './chat.js';
+import { addMessage, sendMessage, sendConfirmation, sendApproval, sendCheck, newThread } from './chat.js';
 import { renderConnectionStatus, refreshConnectionStatus, showConnectForm } from './connect.js';
 import { showCapabilities, openPalette } from './palette.js';
 import { toggleInsights, renderInsights } from './insights.js';
@@ -10,7 +10,7 @@ import { renderConsoleLinks } from './links.js';
 
 // Inline onclick handlers in the served HTML (and interrupt-box templates).
 Object.assign(window, {
-    sendMessage, sendConfirmation, sendApproval, newThread,
+    sendMessage, sendConfirmation, sendApproval, sendCheck, newThread,
     showConnectForm, showCapabilities, openPalette,
     toggleInsights, loadReleaseStatus, toggleBannerDetail,
     renderConnectionStatus,

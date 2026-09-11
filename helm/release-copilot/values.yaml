@@ -126,6 +126,17 @@ config:
   # send it. For a workflow declaring module + binary_version:
   #   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
   DF_DISPATCH_INPUTS: '{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}'
+  # After a DF dispatch the deploy waits for the run, and raises the Composer DAG
+  # PR only once it is green. The wait happens inside the confirm turn, so
+  # dispatch + wait must fit in virtualService.timeout (120s) — keep this well
+  # under it. A run still building when it runs out pauses the deploy on a
+  # CHECK-xxxxxx token (one click in the UI) that resumes the wait; nothing is lost.
+  DF_RUN_WAIT_SECONDS: "75"
+  DF_RUN_POLL_SECONDS: "15"
+  # Limit on building a deploy preview (a release preview clones the deploy repo
+  # and runs its updater). Also under virtualService.timeout, so a slow preview
+  # ends with an explanation rather than a dropped stream.
+  DEPLOY_PREVIEW_TIMEOUT_SECONDS: "100"
   # JIRA (read-only). Empty base URL = no lookup; the ticket is stored as typed.
   # The token itself is NOT here — it comes from jiraToken.existingSecret below.
   JIRA_BASE_URL: ""           # e.g. https://your-org.atlassian.net
@@ -188,6 +199,11 @@ config:
   ADK_EVENT_COMPACTION: "true"
   ADK_MEMORY_ENABLED: "true"    # in-memory / per-pod — keep replicaCount: 1
   ADK_CONFIRM_PROD_OPS: "true"
+  # Retries on Gemini 429/5xx with backoff. Vertex runs Gemini on a shared
+  # capacity pool, so a 429 means "busy right now", not a quota you can raise;
+  # most clear within seconds. What survives the retries reaches the user as
+  # "the model is busy — try again", not as an internal error.
+  GEMINI_RETRY_ATTEMPTS: "4"
   # Off-topic screening for free-form chat: off | log | enforce. "log" records
   # what it WOULD refuse without refusing anything — run that against real
   # traffic first, then switch to "enforce". Guards SPEND, not safety: the
@@ -322,6 +338,8 @@ virtualService:
     - istio-ingress/asm-ingressgateway
   # Long timeout: a promote streams over SSE and polls for the created PR (~40s),
   # well past Envoy's 15s route default. Use "0s" to disable entirely for SSE.
+  # DF_RUN_WAIT_SECONDS and DEPLOY_PREVIEW_TIMEOUT_SECONDS are sized to fit
+  # inside this — raise them together, or a stream is cut mid-answer.
   timeout: "120s"
   retries: {}
     # attempts: 2

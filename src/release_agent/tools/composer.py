@@ -152,10 +152,9 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
                    image: str = "", run_url: str = "", repo: str = "") -> dict[str, Any]:
     """Open a PR bumping the named DAGs to ``new_version``.
 
-    A PR, not a direct commit: the flex-template build this version refers to is
-    an Actions run that takes minutes and can fail, so committing now would be a
-    claim about a build that has not finished. The PR body carries the run link
-    so whoever merges can see it went green.
+    A PR, not a direct commit, so a human still merges it. The deploy Workflow
+    calls this only once the flex-template run is green — the version names a
+    template that exists — and the body carries that run's link as evidence.
     """
     if not dag_files:
         return {"ok": False, "error": "No DAG files selected — nothing to bump."}
@@ -181,30 +180,37 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
         if "Reference already exists" not in str(e):
             return {"ok": False, "error": f"Could not create {branch}: {e}"}
 
+    # Idempotent by construction — this runs again whenever a deploy is resumed,
+    # and a previous attempt may have pushed the edits and then failed to open
+    # the PR. So "does this need a change?" is asked of the BASE branch, never of
+    # the work branch: asked of the branch, a retry after a half-finished attempt
+    # finds its own edits, concludes nothing needs changing, and never opens the
+    # PR at all.
     updated, problems = [], []
     for name in dag_files:
         path = f"{directory}/{name}"
         try:
-            blob = gh_repo.get_contents(path, ref=branch)
-            text = blob.decoded_content.decode()
-            new_text, replaced = set_default_version(text, version)
+            base_text = gh_repo.get_contents(path, ref=settings.composer_branch).decoded_content.decode()
+            desired, replaced = set_default_version(base_text, version)
+            branch_blob = gh_repo.get_contents(path, ref=branch)
         except Exception as e:
             problems.append({"file": path, "error": str(e)})
             continue
-        if new_text == text:
+        if desired == base_text:
             updated.append({"file": path, "from": replaced, "to": version, "unchanged": True})
             continue
-        try:
-            gh_repo.update_file(
-                path,
-                f"Bump {name} DF template version to {version}",
-                new_text,
-                blob.sha,
-                branch=branch,
-            )
-        except Exception as e:
-            problems.append({"file": path, "error": str(e)})
-            continue
+        if branch_blob.decoded_content.decode() != desired:
+            try:
+                gh_repo.update_file(
+                    path,
+                    f"Bump {name} DF template version to {version}",
+                    desired,
+                    branch_blob.sha,
+                    branch=branch,
+                )
+            except Exception as e:
+                problems.append({"file": path, "error": str(e)})
+                continue
         updated.append({"file": path, "from": replaced, "to": version, "unchanged": False})
 
     if not any(not u["unchanged"] for u in updated):
@@ -224,13 +230,22 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
         }
 
     changed = [u["file"] for u in updated if not u["unchanged"]]
+    # A PR from this branch may already exist — the earlier attempt that pushed
+    # these edits may have opened it before failing further on. Return that one.
+    existing = _open_pr_for(gh_repo, branch)
+    if existing is not None:
+        return {
+            "ok": True, "action": "dag_bump_pr_exists", "branch": branch,
+            "pr_number": existing.number, "pr_url": existing.html_url,
+            "updated": updated, "problems": problems,
+            "note": f"PR #{existing.number} already bumps {len(changed)} DAG(s) to {version}.",
+        }
     body = (
         f"Point the {environment.upper()} Composer DAGs at DF template `{version}`"
         + (f" for `{image}`" if image else "") + ".\n\n"
         + "\n".join(f"- `{u['file']}`: {', '.join(u['from'])} → {version}"
                     for u in updated if not u["unchanged"])
-        + (f"\n\nBuild run: {run_url}\n\n**Merge once that run is green** — the template "
-           "is not in the bucket until it finishes." if run_url else "")
+        + (f"\n\nBuild run (green): {run_url}" if run_url else "")
     )
     try:
         pr = gh_repo.create_pull(
@@ -238,11 +253,25 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
             body=body, head=branch, base=settings.composer_branch,
         )
     except Exception as e:
-        return {"ok": False, "error": f"DAGs updated on {branch} but the PR failed: {e}",
-                "branch": branch, "updated": updated, "problems": problems}
+        # Lost a race with another attempt opening the same PR: that is success.
+        pr = _open_pr_for(gh_repo, branch)
+        if pr is None:
+            return {"ok": False, "error": f"DAGs updated on {branch} but the PR failed: {e}",
+                    "branch": branch, "updated": updated, "problems": problems}
     return {
         "ok": True, "action": "dag_bump_pr_opened", "branch": branch,
         "pr_number": pr.number, "pr_url": pr.html_url,
         "updated": updated, "problems": problems,
         "note": f"PR #{pr.number} bumps {len(changed)} DAG(s) to {version}.",
     }
+
+
+def _open_pr_for(gh_repo: Any, branch: str) -> Any | None:
+    """The open PR whose head is ``branch``, or None. Best-effort."""
+    try:
+        owner = gh_repo.full_name.split("/")[0]
+        for pr in gh_repo.get_pulls(state="open", head=f"{owner}:{branch}"):
+            return pr
+    except Exception:
+        pass
+    return None

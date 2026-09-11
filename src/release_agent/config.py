@@ -160,6 +160,26 @@ class Settings(BaseSettings):
         default='{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}',
         validation_alias=AliasChoices("DF_DISPATCH_INPUTS", "DATAFLOW_DISPATCH_INPUTS"),
     )
+    # After a DF dispatch, how long the deploy waits in-request for the run before
+    # raising the Composer DAG PR. Bounded by the gateway: the whole confirm turn
+    # (dispatch + wait) must finish inside virtualService.timeout (120s), or the
+    # stream is cut mid-answer. A run still building when this runs out pauses
+    # the deploy on a CHECK-xxxxxx token instead — nothing is lost, it resumes.
+    df_run_wait_seconds: float = Field(
+        default=75.0,
+        validation_alias=AliasChoices("DF_RUN_WAIT_SECONDS", "DATAFLOW_RUN_WAIT_SECONDS"),
+    )
+    df_run_poll_seconds: float = Field(
+        default=15.0,
+        validation_alias=AliasChoices("DF_RUN_POLL_SECONDS", "DATAFLOW_RUN_POLL_SECONDS"),
+    )
+    # Upper bound on building a deploy preview (a release preview clones the
+    # deploy repo and runs its updater script). Kept under the gateway timeout so
+    # a slow preview ends with an explanation instead of a dropped stream.
+    deploy_preview_timeout_seconds: float = Field(
+        default=100.0,
+        validation_alias=AliasChoices("DEPLOY_PREVIEW_TIMEOUT_SECONDS"),
+    )
     # JIRA (read-only) — a technical account resolves the ticket a developer
     # types at queue time, so a typo'd key cannot reach the change record and the
     # ticket summary can be reused in the CHG draft. Leave the base URL empty to
@@ -415,6 +435,13 @@ class Settings(BaseSettings):
     # then switch to "enforce". This guards spend, not safety: the mutation
     # guard and the deterministic deploy Workflow are what stop mutations, and
     # they are unaffected by this setting.
+    # Retries on Gemini calls that come back 429 (Vertex dynamic shared quota:
+    # the shared pool was busy, not a quota you exceeded) or 503. Backoff with
+    # jitter; the last failure surfaces to the user as "model busy, try again".
+    gemini_retry_attempts: int = Field(
+        default=4,
+        validation_alias=AliasChoices("GEMINI_RETRY_ATTEMPTS"),
+    )
     scope_guard: str = Field(
         default="log",
         validation_alias=AliasChoices("SCOPE_GUARD", "RELEASE_SCOPE_GUARD"),

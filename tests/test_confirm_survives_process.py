@@ -68,11 +68,16 @@ def test_the_workflow_binds_the_payload_from_state(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         D, "apply_confirmed_deploy",
-        lambda token, pending=None: seen.update(token=token, pending=pending) or {"ok": True},
+        lambda token, pending=None, defer_dag_bump=False: seen.update(
+            token=token, pending=pending, defer=defer_dag_bump) or {"ok": True},
     )
-    W._apply_deploy({"token": "CONFIRM-ABC123"}, deploy_pending={"request": {"x": 1}})
+    events = _drain(W._apply_deploy({"token": "CONFIRM-ABC123"},
+                                    deploy_pending={"request": {"x": 1}}))
     assert seen["token"] == "CONFIRM-ABC123"
     assert seen["pending"] == {"request": {"x": 1}}
+    assert seen["defer"] is True, "the Workflow owns the DAG bump — it waits for the run"
+    # Single-use: the token and the preview leave session state BEFORE the apply.
+    assert events[0].actions.state_delta == {"deploy_confirm_token": None, "deploy_pending": None}
 
 
 def test_a_rejected_release_cleans_up_from_the_session_copy(monkeypatch):
@@ -83,9 +88,18 @@ def test_a_rejected_release_cleans_up_from_the_session_copy(monkeypatch):
 
     cleaned = []
     monkeypatch.setattr(RF, "cleanup_prepared_release", lambda prep: cleaned.append(prep))
-    W._cancel_deploy({"token": "CONFIRM-X"},
-                     deploy_pending={"request": {"release_prep": {"workdir": "/tmp/x"}}})
+    _drain(W._cancel_deploy({"token": "CONFIRM-X"},
+                            deploy_pending={"request": {"release_prep": {"workdir": "/tmp/x"}}}))
     assert cleaned == [{"workdir": "/tmp/x"}]
+
+
+def _drain(agen):
+    """Run an async-generator node to completion; return what it yielded."""
+    import asyncio
+
+    async def go():
+        return [e async for e in agen]
+    return asyncio.run(go())
 
 
 # ------------------------------------------------ Change C: release file-set

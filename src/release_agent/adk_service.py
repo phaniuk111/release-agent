@@ -393,6 +393,8 @@ class AdkChatService:
         )
         # thread_id -> pending CONFIRM token awaiting resume of the deploy Workflow.
         self._pending_deploy: dict[str, str] = {}
+        # thread_id -> CHECK token of a Dataflow deploy paused on its run.
+        self._pending_check: dict[str, str] = {}
         # thread_id -> paused chat-agent tool confirmation awaiting a yes/no reply.
         self._pending_adk_calls: dict[str, PendingAdkCall] = {}
 
@@ -437,6 +439,34 @@ class AdkChatService:
                 yield {"type": "token", "content": self._format_deploy_apply_result(result)}
                 yield {"type": "done", "mutated": True}
                 return
+            # A token that matches nothing: already used (tokens are single-use),
+            # cancelled, or expired. Say so plainly — handing it to the chat model
+            # produced a guess about what the user "intended to confirm".
+            yield {"type": "token", "content": (
+                f"`{token}` isn't waiting on this thread — it was already used, "
+                "cancelled, or has expired. Nothing was applied. Preview the deploy "
+                "again to get a new token."
+            )}
+            yield {"type": "done"}
+            return
+
+        check = adk_deploy._extract_check_token(message)
+        if check:
+            pending_check = self._pending_check.get(thread_id) or \
+                await self._pending_check_from_session(thread_id)
+            if pending_check and check == pending_check:
+                async for event in self._stream_deploy_resume(
+                    thread_id, pending_check, confirmed=True
+                ):
+                    yield event
+                return
+            yield {"type": "token", "content": (
+                f"`{check}` doesn't match a Dataflow deploy waiting on this thread"
+                + (f" — the one waiting here is `{pending_check}`." if pending_check
+                   else " — nothing is waiting here now (it may already have finished).")
+            )}
+            yield {"type": "done"}
+            return
 
         if _looks_like_deploy_request(message):
             log_router_decision(thread_id, message, "deploy_workflow:deterministic")
@@ -500,14 +530,35 @@ class AdkChatService:
     async def _stream_deploy_resume(
         self, thread_id: str, token: str, confirmed: bool
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Resume the paused deploy Workflow with the user's confirmation."""
+        """Resume the paused deploy Workflow — a CONFIRM decision, or a CHECK on a
+        Dataflow run — and stream it until it finishes or pauses again."""
         self._pending_deploy.pop(thread_id, None)
+        self._pending_check.pop(thread_id, None)
         result: dict[str, Any] | None = None
+        last_text = ""
         async for event in self.deploy_runner.run_async(
             user_id=_USER_ID,
             session_id=_session_id(thread_id, "deploy"),
             new_message=_confirmation_response(token, confirmed),
         ):
+            progress = (getattr(event, "custom_metadata", None) or {}).get("progress")
+            if progress:
+                yield {"type": "progress", "content": progress}
+            text = _text_from_event(event)
+            if text:
+                last_text = text
+            paused = _interrupt_token_from_event(event)
+            if paused and paused.startswith("CHECK-"):
+                # The DF run is still building. The dispatch already happened,
+                # so this turn DID mutate; it now waits on a human's CHECK.
+                self._pending_check[thread_id] = paused
+                yield {"type": "token", "content": last_text}
+                yield {"type": "interrupt", "data": {
+                    "type": "check", "token": paused,
+                    "message": f"Reply `{paused}` to check the run again.",
+                }}
+                yield {"type": "done", "mutated": True}
+                return
             output = getattr(event, "output", None)
             if output is not None:
                 result = output
@@ -624,6 +675,13 @@ class AdkChatService:
         even when the preview was served by a different process. Returns None on
         any failure: a routing hint must never break a chat turn.
         """
+        return await self._deploy_state_value(thread_id, "deploy_confirm_token")
+
+    async def _pending_check_from_session(self, thread_id: str) -> str | None:
+        """The CHECK token of a Dataflow deploy paused while its run builds."""
+        return await self._deploy_state_value(thread_id, "df_check_token")
+
+    async def _deploy_state_value(self, thread_id: str, key: str) -> str | None:
         try:
             session = await self.session_service.get_session(
                 app_name=self.deploy_runner.app_name,
@@ -631,10 +689,10 @@ class AdkChatService:
                 session_id=_session_id(thread_id, "deploy"),
             )
         except Exception:
-            logger.debug("pending-token lookup failed for %s", thread_id, exc_info=True)
+            logger.debug("deploy-state lookup (%s) failed for %s", key, thread_id, exc_info=True)
             return None
-        token = ((session.state if session else None) or {}).get("deploy_confirm_token")
-        return str(token) if token else None
+        value = ((session.state if session else None) or {}).get(key)
+        return str(value) if value else None
 
     async def _persist_session_to_memory(self, thread_id: str) -> None:
         """Best-effort: add the finished chat session to the memory service."""
@@ -651,6 +709,12 @@ class AdkChatService:
 
     @staticmethod
     def _format_deploy_apply_result(result: dict[str, Any]) -> str:
+        # These statuses fail AFTER something happened (a run was dispatched, or
+        # part of an apply landed): "Not applied" would be false, so the note —
+        # which says what did and did not happen — is the whole answer.
+        if result.get("status") in ("df_run_failed", "apply_error", "df_wait_lost"):
+            parts = [str(result.get("note") or "").strip(), str(result.get("error") or "").strip()]
+            return "\n\n".join(p for p in parts if p) or "The deploy did not complete."
         if result.get("ok") is False:
             # Prefer the tool's own explanation (e.g. the one-release-at-a-time
             # guard's note naming the blocking PR) over a generic failure line.
@@ -662,7 +726,10 @@ class AdkChatService:
         # is the one still needing a human to merge it.
         bump = result.get("dag_bump")
         if isinstance(bump, dict):
-            if bump.get("ok") and bump.get("pr_url"):
+            if bump.get("ok") and bump.get("pr_url") and result.get("run_green"):
+                note += (f"\n\nThe run is green. Composer DAGs: "
+                         f"[PR #{bump.get('pr_number')}]({bump['pr_url']}) — ready to merge.")
+            elif bump.get("ok") and bump.get("pr_url"):
                 note += (f"\n\nComposer DAGs: [PR #{bump.get('pr_number')}]({bump['pr_url']}) "
                          "raised — merge it once the run above is green.")
             elif bump.get("ok"):

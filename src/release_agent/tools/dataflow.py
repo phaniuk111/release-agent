@@ -51,6 +51,36 @@ def _find_dispatched_run(workflow, before_ids: set, tries: int = 6, delay: float
     return None
 
 
+# A run's `conclusion` once `status` is "completed". Only "success" means the
+# flex template is in the bucket; everything else leaves the DAGs where they are.
+_GREEN = frozenset({"success"})
+
+
+def df_run_status(repo_full: str, run_id: int) -> dict:
+    """{status, conclusion, url, green, done} for one workflow run. Raises on a
+    GitHub error — callers decide whether that is "keep waiting" or "stop"."""
+    run = _get_github_client().get_repo(repo_full).get_workflow_run(int(run_id))
+    status = getattr(run, "status", "") or ""
+    conclusion = getattr(run, "conclusion", "") or ""
+    done = status == "completed"
+    return {
+        "id": run.id, "url": run.html_url, "status": status, "conclusion": conclusion,
+        "done": done, "green": done and conclusion in _GREEN,
+    }
+
+
+def locate_dispatched_run(dispatch: dict) -> dict | None:
+    """The run a dispatch created, found after the fact — or None if GitHub
+    still has not registered it. One read, no polling: the caller owns time."""
+    try:
+        repo = _get_github_client().get_repo(dispatch["repo"])
+        workflow = repo.get_workflow(dispatch["workflow"])
+        return _find_dispatched_run(workflow, set(dispatch.get("before_ids") or []),
+                                    tries=1, delay=0)
+    except Exception:
+        return None
+
+
 def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
     """Map our values onto the target workflow's declared input names.
 
@@ -224,6 +254,11 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
             "run": run,
             "run_url": run_url,
             "runs_page": runs_page,
+            # Enough to find the run later when GitHub had not registered it
+            # within the polling window: the runs that existed BEFORE the
+            # dispatch, so the new one is the first id not among them.
+            "dispatch": {"repo": repo_full, "workflow": settings.df_deploy_workflow,
+                         "before_ids": sorted(before_ids)},
             "note": note,
         },
         indent=2,
