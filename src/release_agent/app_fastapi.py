@@ -628,6 +628,57 @@ class ReleaseDraftRequest(BaseModel):
     kind: str = "care"          # care | df
 
 
+class ReleaseDefaultsRequest(BaseModel):
+    artifacts: list[str] = []   # the artifact lines as they stand in the form
+    kind: str = "care"          # care | df
+    repo: str = ""              # the release's target repo — its PRs number the release
+    date: str = ""              # YYYY-MM-DD, the browser's date or the chosen start
+
+
+@app.post("/api/release-defaults")
+def release_defaults(req: ReleaseDefaultsRequest):
+    """Every change-request field except start and end, from the facts here.
+
+    Standard wording, no model call — cheap enough to recompute on every tick.
+    Artifacts are matched against the queue for their JIRA, details and build
+    verification; an artifact typed straight into the form has none of those
+    and is described as unverified, because it was never checked.
+    """
+    import datetime as _dt
+
+    from .tools import chg_defaults, release_queue
+
+    try:
+        day = _dt.date.fromisoformat(req.date[:10]) if req.date else _dt.date.today()
+    except ValueError:
+        day = _dt.date.today()
+    queue = {}
+    try:
+        for q in release_queue.current_queue().get("queue") or []:
+            queue[(q.get("artifact_name"), q.get("artifact_version"))] = q
+    except Exception:
+        logger.debug("release-defaults: queue unavailable; describing items without it", exc_info=True)
+
+    items, seen = [], set()
+    for line in req.artifacts:
+        name, version = release_queue._split_artifact(line)
+        if not name or not version or (name, version) in seen:
+            continue
+        seen.add((name, version))
+        q = queue.get((name, version)) or {}
+        items.append({
+            "name": name, "version": version,
+            "jira_ticket": q.get("jira_ticket"), "change_details": q.get("change_details"),
+            "requested_by": q.get("requested_by"), "build_verified": q.get("build_verified"),
+            "prl1_only": q.get("prl1_only"),
+        })
+    repo = (req.repo or "").strip() or (
+        app_settings.df_release_repo if req.kind == "df" else "") or app_settings.deploy_repo
+    number = chg_defaults.next_release_number_for_repo(repo)
+    return {"ok": True, "fields": chg_defaults.build_defaults(items, req.kind, day, number),
+            "numbered_from": repo if number else ""}
+
+
 @app.post("/api/release-draft")
 def release_draft(req: ReleaseDraftRequest):
     """Draft the change-request prose from the queued items' own details.

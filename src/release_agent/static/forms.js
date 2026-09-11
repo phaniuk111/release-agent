@@ -599,8 +599,60 @@ export async function showReleaseForm(kind) {
     artEl.rows = 5; artEl.spellcheck = false; artEl.classList.add('font-mono');
     wrap.appendChild(grid);
 
-    // Summary defaults to the release name.
-    nameEl.addEventListener('change', () => { if (!sumEl.value.trim()) sumEl.value = nameEl.value.trim(); });
+    // Every change-request field except start/end is filled from facts
+    // (POST /api/release-defaults: queue items, JIRA keys, build verification,
+    // the repo's last release number) and recomputed when the items or the
+    // start date change. A field only follows the defaults while it still holds
+    // the last value they put there — any human edit is kept.
+    const autoVals = {};
+    const fillAuto = (el, key, value) => {
+        if (value == null) return;
+        if (!el.value.trim() || el.value === autoVals[key]) { el.value = value; autoVals[key] = value; }
+    };
+    const localToday = () => {
+        const d = new Date();
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    };
+    let defaultsTimer = null, defaultsSeq = 0;
+    const refreshDefaults = () => {
+        clearTimeout(defaultsTimer);
+        defaultsTimer = setTimeout(async () => {
+            const seq = ++defaultsSeq;
+            let res = null;
+            try {
+                const r = await fetch(API_BASE + '/api/release-defaults', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        artifacts: artEl.value.split('\n').map(l => l.trim()).filter(Boolean),
+                        kind: isDf ? 'df' : 'care',
+                        repo: repoEl.value.trim(),
+                        date: startEl.value ? startEl.value.slice(0, 10) : localToday(),
+                    }),
+                });
+                res = await r.json();
+            } catch (e) { return; }                       // defaults are a convenience
+            if (seq !== defaultsSeq || !res || !res.ok) return;   // a newer request won
+            const f = res.fields || {};
+            fillAuto(nameEl, 'name', f.release_name);
+            fillAuto(sumEl, 'summary', f.change_summary);
+            fillAuto(descEl, 'desc', f.change_description);
+            fillAuto(reasonEl, 'reason', f.change_reason);
+            fillAuto(riskEl, 'risk', f.associated_risk);
+            fillAuto(consEl, 'consequence', f.consequence);
+            fillAuto(impactEl, 'impact', f.user_service_impact);
+        }, 250);
+    };
+    // The initiator is the person creating the release: remembered from the
+    // last one they created, else the email they queue with.
+    try { initEl.value = localStorage.getItem('release_initiator') || localStorage.getItem('queue_email') || ''; } catch (e) {}
+    const autoNote = document.createElement('div');
+    autoNote.className = 'text-[10px] text-slate-500 -mt-1 mb-2';
+    autoNote.textContent = 'Filled from the queue and the release history — set the start and end, ' +
+        'review the rest. Anything you edit is kept.';
+    wrap.appendChild(autoNote);
+    artEl.addEventListener('input', refreshDefaults);
+    startEl.addEventListener('change', refreshDefaults);
+    repoEl.addEventListener('change', refreshDefaults);
 
     // Per-service flags, regenerated from the artifact list.
     const flagsHdr = document.createElement('div');
@@ -652,27 +704,6 @@ export async function showReleaseForm(kind) {
                 if (d) d.checked = !!it.df_only;
             });
         };
-        // CHG draft from the devs' own context: the description aggregates each
-        // checked item's JIRA + change details; the reason lists the tickets.
-        // Auto-fills only while the field is empty or still equal to the last
-        // auto draft — a manual DevOps edit always wins.
-        let autoDesc = '', autoReason = '';
-        const composeChg = () => {
-            const checked = qctx.queue.filter(it => {
-                const cb = qBox.querySelector('input[data-q="' + it.artifact_name + '"]');
-                return cb && cb.checked;
-            });
-            const descDraft = checked.map(it =>
-                '- ' + it.artifact_name + ':' + it.artifact_version +
-                (it.jira_ticket ? ' (' + it.jira_ticket + ')' : '') +
-                (it.change_details ? ': ' + it.change_details : '') +
-                (it.requested_by ? ' — ' + it.requested_by.split('@')[0] : '')
-            ).join('\n');
-            const jiras = checked.map(it => it.jira_ticket).filter(Boolean);
-            const reasonDraft = jiras.length ? 'Delivers ' + jiras.join(', ') : '';
-            if (!descEl.value.trim() || descEl.value === autoDesc) { descEl.value = descDraft; autoDesc = descDraft; }
-            if (reasonDraft && (!reasonEl.value.trim() || reasonEl.value === autoReason)) { reasonEl.value = reasonDraft; autoReason = reasonDraft; }
-        };
         const applyItem = (q, on) => {
             const line = q.artifact_name + ':' + q.artifact_version;
             const lines = artEl.value.split('\n').map(l => l.trim()).filter(Boolean)
@@ -681,7 +712,7 @@ export async function showReleaseForm(kind) {
             artEl.value = lines.join('\n');
             renderFlags();
             syncFlags();
-            composeChg();
+            refreshDefaults();
         };
         qctx.queue.forEach(q => {
             const row = document.createElement('label');
@@ -755,11 +786,12 @@ export async function showReleaseForm(kind) {
             fill(riskEl, d.associated_risk);
             fill(consEl, d.consequence);
             fill(impactEl, d.user_impact);
-            autoDesc = descEl.value; autoReason = reasonEl.value;   // keep tick-sync honest
             draftMsg.innerHTML = '<span class="text-amber-300">Draft from ' + res.grounded_on +
                 ' item(s) — review every field before submitting.</span>';
         });
     }
+
+    refreshDefaults();      // also when nothing is queued: name, number, wording
 
     const fmt = (v) => v ? v.replace('T', ' ') + (v.length === 16 ? ':00' : '') : '';
 
@@ -777,6 +809,7 @@ export async function showReleaseForm(kind) {
         if (!nameEl.value.trim() || !startEl.value || !endEl.value || !initEl.value.trim() || !sumEl.value.trim()) {
             err.textContent = 'Release name, start, end, initiator and summary are required.'; return;
         }
+        try { localStorage.setItem('release_initiator', initEl.value.trim()); } catch (e) {}
         if (!repoEl.value.trim() || repoEl.value.indexOf('/') < 1) {
             err.textContent = 'Deployment repo is required (owner/repo).'; return;
         }

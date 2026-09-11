@@ -126,6 +126,18 @@ config:
   # send it. For a workflow declaring module + binary_version:
   #   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
   DF_DISPATCH_INPUTS: '{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}'
+  # CARE/DF release forms fill every change-request field except start and end.
+  # The release name is "<prefix><Month Dayth YYYY> : Release <N>", N read from
+  # the deploy repo's own release PRs — set your team's label as the prefix
+  # (include a trailing space). The three prose fields use standard wording built
+  # from facts (builds verified, controls, JIRA keys, environments); give your
+  # change board's own wording here to override. Placeholders: {count} {noun}
+  # {items} {names} {jira_keys} {pipeline} {prl1_note} {verification}
+  # {rollback} {unchanged} {release_name}. Empty = the built-in wording.
+  RELEASE_NAME_PREFIX: ""
+  CHG_RISK_TEMPLATE: ""
+  CHG_CONSEQUENCE_TEMPLATE: ""
+  CHG_IMPACT_TEMPLATE: ""
   # Limit on building a deploy preview (a release preview clones the deploy repo
   # and runs its updater). Also under virtualService.timeout, so a slow preview
   # ends with an explanation rather than a dropped stream.

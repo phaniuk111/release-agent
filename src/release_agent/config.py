@@ -422,6 +422,22 @@ class Settings(BaseSettings):
     # then switch to "enforce". This guards spend, not safety: the mutation
     # guard and the deterministic deploy Workflow are what stop mutations, and
     # they are unaffected by this setting.
+    # Change-request defaults for the CARE/DF release forms (tools/chg_defaults).
+    # Release names follow "<prefix><Month Dayth YYYY> : Release <N>"; N is read
+    # from the deploy repo's own release PRs. The prefix is a team's own label —
+    # set it in values, keep internal names out of code.
+    release_name_prefix: str = Field(
+        default="",
+        validation_alias=AliasChoices("RELEASE_NAME_PREFIX"),
+    )
+    # A change board's own wording for the three prose fields. Empty = the
+    # standard fact-built wording. Placeholders: {count} {noun} {items} {names}
+    # {jira_keys} {pipeline} {prl1_note} {verification} {rollback} {unchanged}
+    # {release_name}.
+    chg_risk_template: str = Field(default="", validation_alias=AliasChoices("CHG_RISK_TEMPLATE"))
+    chg_consequence_template: str = Field(
+        default="", validation_alias=AliasChoices("CHG_CONSEQUENCE_TEMPLATE"))
+    chg_impact_template: str = Field(default="", validation_alias=AliasChoices("CHG_IMPACT_TEMPLATE"))
     # Retries on Gemini calls that come back 429 (Vertex dynamic shared quota:
     # the shared pool was busy, not a quota you exceeded) or 503. Backoff with
     # jitter; the last failure surfaces to the user as "model busy, try again".
