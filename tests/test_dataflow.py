@@ -95,7 +95,7 @@ def test_deploy_dataflow_links_the_runs_page_when_the_run_is_not_found_yet(monke
                            html_url="https://github.com/o/df")
     monkeypatch.setattr(DF, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
     monkeypatch.setattr(DF.settings, "df_deploy_repo", "o/df", raising=False)
-    monkeypatch.setattr(DF, "_find_dispatched_run", lambda workflow, before: None)
+    monkeypatch.setattr(DF, "_find_dispatched_run", lambda *a, **k: (None, 0))
 
     out = json.loads(DF.deploy_dataflow.invoke({"environment": "uat", "image": "job-a", "tag": "2.0"}))
     page = f"https://github.com/o/df/actions/workflows/{DF.settings.df_deploy_workflow}"

@@ -130,29 +130,28 @@ def _promote_needs_confirmation(target: str = "", **kwargs) -> bool:
 
 
 def _chat_additional_tools():
-    """Read/ops tools surfaced via skill activation.
+    """Read/ops tools surfaced via skill activation, each run off the event loop.
 
     When ``adk_confirm_prod_ops`` is on, the high-impact ops mutations are wrapped
     with ADK tool confirmation: ``merge_prod_release`` always confirms; a prod
     ``remove_from_release`` confirms while UAT passes straight through.
     """
+    tools = [release_tools.off_event_loop(tool) for tool in release_tools.ADK_CHAT_TOOLS]
     if not settings.adk_confirm_prod_ops:
-        return release_tools.ADK_CHAT_TOOLS
+        return tools
 
     from google.adk.tools import FunctionTool
 
-    wrapped = {
-        "merge_prod_release": FunctionTool(
-            release_tools.merge_prod_release, require_confirmation=True
-        ),
-        "remove_from_release": FunctionTool(
-            release_tools.remove_from_release, require_confirmation=_remove_needs_confirmation
-        ),
-        "promote_release": FunctionTool(
-            release_tools.promote_release, require_confirmation=_promote_needs_confirmation
-        ),
+    confirm = {
+        "merge_prod_release": True,
+        "remove_from_release": _remove_needs_confirmation,
+        "promote_release": _promote_needs_confirmation,
     }
-    return [wrapped.get(tool.__name__, tool) for tool in release_tools.ADK_CHAT_TOOLS]
+    return [
+        FunctionTool(tool, require_confirmation=confirm[tool.__name__])
+        if tool.__name__ in confirm else tool
+        for tool in tools
+    ]
 
 
 def _skill_toolset():

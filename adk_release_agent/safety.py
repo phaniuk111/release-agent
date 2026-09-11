@@ -14,6 +14,7 @@ returning an error dict (the tool never executes).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -239,7 +240,8 @@ class ScopeGuardPlugin(BasePlugin):
             if _looks_in_scope(text):
                 return None
             # Stage 2 decides. Anything other than a confident false is allowed.
-            if self._classify(text) is not False:
+            # A blocking model call — off the event loop, or every chat waits on it.
+            if await asyncio.to_thread(self._classify, text) is not False:
                 return None
         except Exception:
             logger.exception("scope_guard: could not screen the message — allowing it")

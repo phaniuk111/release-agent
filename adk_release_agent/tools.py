@@ -6,6 +6,8 @@ and dictionary returns, which ADK can expose as Function Tools.
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 from typing import Any
 
@@ -31,6 +33,22 @@ def _invoke_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str
     if hasattr(tool, "invoke"):
         return _coerce_tool_result(tool.invoke(payload))
     return _coerce_tool_result(tool(**payload))
+
+
+def off_event_loop(fn):
+    """The same tool, run on a worker thread when the chat agent calls it.
+
+    ADK runs a sync tool directly on the event loop (its thread-pool option only
+    applies to live/audio mode), and the whole app is one event loop: while one
+    person's tool waits on GitHub — a run poll can take ~12s — every other
+    person's chat stream stalls. ``functools.wraps`` keeps the name, docstring
+    and signature ADK builds the tool declaration from; the session PAT is a
+    contextvar, which ``to_thread`` carries across.
+    """
+    @functools.wraps(fn)
+    async def run(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    return run
 
 
 def check_release_window() -> dict[str, Any]:

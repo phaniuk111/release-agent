@@ -107,7 +107,7 @@ def run_deploy(monkeypatch, df_config):
             dataflow, "_get_github_client",
             lambda: type("C", (), {"get_repo": staticmethod(lambda _: _FakeRepo(workflow))})(),
         )
-        monkeypatch.setattr(dataflow, "_find_dispatched_run", lambda *a, **k: None)
+        monkeypatch.setattr(dataflow, "_find_dispatched_run", lambda *a, **k: (None, 0))
         result = dataflow.deploy_dataflow.func(
             environment="uat", image="acme-svc-a", tag="1.4.2",
         )

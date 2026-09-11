@@ -433,7 +433,7 @@ class AdkChatService:
                 return
             if token in adk_deploy._PENDING_PREVIEWS:
                 # Stateless fallback (e.g. reconnect with no tracked invocation).
-                result = adk_deploy.apply_confirmed_deploy(message)
+                result = await asyncio.to_thread(adk_deploy.apply_confirmed_deploy, message)
                 yield {"type": "token", "content": self._format_deploy_apply_result(result)}
                 yield {"type": "done", "mutated": True}
                 return

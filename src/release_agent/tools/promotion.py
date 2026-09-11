@@ -112,6 +112,12 @@ def _read_include(repo, branch: str, path: str) -> list:
 
 
 # --- PR plumbing ------------------------------------------------------------
+# Returned by _merge_pr when another change landed on the base branch while this
+# PR was being raised — the one refusal that rebuilding on the new head fixes.
+MERGE_CONFLICT = "conflicts with a change that landed on the branch meanwhile"
+_CONFLICT_REBUILDS = 2
+
+
 def _merge_pr(pr, method: str = "squash"):
     """Merge a PR once GitHub has computed mergeability. Returns (merged, detail).
     On protected branches that require review, the merge is refused — we report it
@@ -127,12 +133,21 @@ def _merge_pr(pr, method: str = "squash"):
             break
         time.sleep(1)
     if pr.mergeable is False:
+        # mergeable is about conflicts only — a PR held for review is still
+        # mergeable and is refused at merge() below, in GitHub's own words.
+        if pr.mergeable_state == "dirty":
+            return False, MERGE_CONFLICT
         return False, f"awaiting review/checks ({pr.mergeable_state})"
     try:
         pr.merge(merge_method=method)
         return True, "merged"
     except Exception as e:
-        return False, _merge_refusal_reason(e)
+        reason = _merge_refusal_reason(e)
+        # The base moved between GitHub computing mergeability and the merge:
+        # someone else's change landed in that window.
+        if getattr(e, "status", None) in (405, 409) and "branch was modified" in reason.lower():
+            return False, MERGE_CONFLICT
+        return False, reason
 
 
 def _merge_refusal_reason(e: Exception) -> str:
@@ -191,6 +206,52 @@ def _doc_changed(existing: dict, new_doc: dict, ignore=("updated_at",)) -> bool:
     return _strip(existing) != _strip(new_doc)
 
 
+def _raise_hop_pr(repo, branch: str, file_mutations: list, extra_files: dict | None, summary: str):
+    """One hop's PR, built on the branch's CURRENT head. Returns (pr, work
+    branch), or (None, None) when the branch already matches."""
+    work = f"change/promote/{uuid.uuid4().hex[:8]}"
+    ref = repo.get_git_ref(f"heads/{branch}")
+    repo.create_git_ref(f"refs/heads/{work}", ref.object.sha)
+
+    changed = False
+    for path, mutate_fn in file_mutations:
+        doc = _read_json_file(repo, work, path)
+        if not isinstance(doc, dict):
+            doc = {}
+        include = doc.get("include") if isinstance(doc.get("include"), list) else []
+        if mutate_fn(include):
+            doc["include"] = include
+            doc["updated_by"] = "release-copilot"
+            _upsert_json_file(repo, work, path, doc)
+            changed = True
+
+    # Whole-file docs (e.g. change-request.json): write verbatim, created if missing.
+    for path, doc in (extra_files or {}).items():
+        if _doc_changed(_read_json_file(repo, work, path), doc):
+            _upsert_json_file(repo, work, path, doc)
+            changed = True
+
+    if not changed:
+        try:
+            repo.get_git_ref(f"heads/{work}").delete()
+        except Exception:
+            pass
+        return None, None
+    return repo.create_pull(title=f"{summary} (→ {branch})", body=summary, head=work, base=branch), work
+
+
+def _supersede(repo, pr, work: str, branch: str) -> None:
+    """Close a PR that conflicted with a concurrent change; it is rebuilt next."""
+    try:
+        pr.create_issue_comment(
+            f"Superseded: another change landed on `{branch}` while this was merging, "
+            "so the change is being rebuilt on the new head in a fresh PR.")
+        pr.edit(state="closed")
+        repo.get_git_ref(f"heads/{work}").delete()
+    except Exception:
+        pass
+
+
 def _promote_targeted(
     repo, file_mutations: list, summary: str, extra_files: dict | None = None,
     branches: tuple | None = None,
@@ -221,39 +282,27 @@ def _promote_targeted(
     deploy_run_uat = deploy_run_prd = None
 
     for branch in chain:
-        work = f"change/promote/{uuid.uuid4().hex[:8]}"
-        ref = repo.get_git_ref(f"heads/{branch}")
-        repo.create_git_ref(f"refs/heads/{work}", ref.object.sha)
-
-        changed = False
-        for path, mutate_fn in file_mutations:
-            doc = _read_json_file(repo, work, path)
-            if not isinstance(doc, dict):
-                doc = {}
-            include = doc.get("include") if isinstance(doc.get("include"), list) else []
-            if mutate_fn(include):
-                doc["include"] = include
-                doc["updated_by"] = "release-copilot"
-                _upsert_json_file(repo, work, path, doc)
-                changed = True
-
-        # Whole-file docs (e.g. change-request.json): write verbatim, created if missing.
-        for path, doc in (extra_files or {}).items():
-            if _doc_changed(_read_json_file(repo, work, path), doc):
-                _upsert_json_file(repo, work, path, doc)
-                changed = True
-
-        if not changed:
-            try:
-                repo.get_git_ref(f"heads/{work}").delete()
-            except Exception:
-                pass
+        # Several people deploy at once: another change can land on this branch
+        # between our read and our merge. Our PR then conflicts — rebuild it on
+        # the new head (both changes survive) rather than leave it for someone
+        # to untangle. Review/branch-protection refusals are never retried.
+        superseded: list[int] = []
+        for attempt in range(_CONFLICT_REBUILDS + 1):
+            pr, work = _raise_hop_pr(repo, branch, file_mutations, extra_files, summary)
+            if pr is None:
+                break
+            ok, detail = _merge_pr(pr, "squash")
+            if ok or detail != MERGE_CONFLICT or attempt == _CONFLICT_REBUILDS:
+                break
+            _supersede(repo, pr, work, branch)
+            superseded.append(pr.number)
+        if pr is None:
             prs.append({"stage": f"→{branch}", "skipped": "already in desired state"})
             continue  # this env already matches; keep promoting to the next
 
-        pr = repo.create_pull(title=f"{summary} (→ {branch})", body=summary, head=work, base=branch)
-        ok, detail = _merge_pr(pr, "squash")
         entry = {"stage": f"→{branch}", "number": pr.number, "url": pr.html_url, "merged": ok, "detail": detail}
+        if superseded:
+            entry["rebuilt_after_conflict"] = superseded
         if ok and branch in (uat, prd):
             try:
                 pr.update()
