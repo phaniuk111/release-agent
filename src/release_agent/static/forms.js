@@ -454,6 +454,9 @@ export async function showQueueForm() {
                 : (r.failed_controls || []).map(c => 'control ' + esc(c));
             (r.failed_steps || []).forEach(st => parts.push('step ' + esc(st.name || st) +
                 (st.job ? ' in job ' + esc(st.job) : '')));
+            (r.open_controls || []).forEach(c => parts.push('control ' + esc(c.control) +
+                (c.job ? ' in job ' + esc(c.job) : '') + ' not passed yet (' +
+                esc(c.status || c.conclusion || 'not run') + ')'));
             const why = parts.length ? parts.join('; ') : esc(r.error || 'not eligible');
             return '<div class="font-mono">❌ ' + esc(r.artifact) + ' — ' + why +
                 (r.run_url ? ' <a href="' + esc(r.run_url) + '" target="_blank" class="underline">open run</a>' : '') +
@@ -476,7 +479,8 @@ export async function showQueueForm() {
                     ? '<div class="mt-1 text-amber-300">⚠ This splits your change — ' +
                       queued.map(q => esc(q.artifact)).join(', ') +
                       ' will ship without the above unless you fix and re-queue before release day.</div>'
-                    : '<div class="mt-1">Fix these, re-run the build, then queue again with the new run.</div>');
+                    : '<div class="mt-1">Every control must pass to queue — fix these (or let the run ' +
+                      'finish), then queue again with a run where they all pass.</div>');
             row.parentNode.insertBefore(box, row);
             if (!queued.length) return;
         }

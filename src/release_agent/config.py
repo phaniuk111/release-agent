@@ -331,6 +331,12 @@ class Settings(BaseSettings):
         default=["RCTLD", "RLFT", "RFTL"],
         validation_alias=AliasChoices("CONTROL_PREFIXES", "RELEASE_CONTROL_PREFIXES"),
     )
+    # Queue only builds whose controls ALL passed. False = the old behaviour: a
+    # run with controls still open, or none matched, is queued with a warning.
+    queue_require_controls_pass: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("QUEUE_REQUIRE_CONTROLS_PASS"),
+    )
     # Block a PRD release when any build control failed (fail-closed). When a build
     # run can't be located we don't hard-block; the agent asks for the run id.
     prd_require_controls: bool = Field(

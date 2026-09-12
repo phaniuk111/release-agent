@@ -146,6 +146,9 @@ config:
   # The token itself is NOT here — it comes from jiraToken.existingSecret below.
   JIRA_BASE_URL: ""           # e.g. https://your-org.atlassian.net
   JIRA_USER_EMAIL: ""         # technical account the token belongs to
+  # "Add to next release" queues a chart only when its build run's controls ALL
+  # passed; "false" lets a run with open or unmatched controls in with a warning.
+  QUEUE_REQUIRE_CONTROLS_PASS: "true"
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
   # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
   # EMPTY BQ_DATASET DISABLES the whole feature cleanly.

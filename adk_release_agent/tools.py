@@ -198,11 +198,12 @@ def queue_release_intent(
     DevOps, the change context — jira_ticket (e.g. REL-1234) and change_details
     (what changed and why) — and build_run_url, the GitHub Actions run that
     built the tag. build_run_url is REQUIRED: nothing is queued without it —
-    the run is checked NOW, and a failed build or failed RLFT/RFTL control
-    makes the chart INELIGIBLE (eligible=false with failed_controls and
-    failed_steps listed) so the dev fixes and re-runs first. A clean run
-    queues as eligible (build_verified=true). Re-queuing a chart replaces
-    its version."""
+    the run is checked NOW, and only a run whose build succeeded and whose
+    controls ALL passed is queued (build_verified=true). A failed build or
+    control, a control that has not passed yet, or a run with no controls at
+    all makes the chart INELIGIBLE (eligible=false, with failed_controls /
+    failed_steps / open_controls listed) so the dev fixes and re-runs first.
+    Re-queuing a chart replaces its version."""
     from release_agent.tools import release_queue as _rq
 
     name, version = _rq._split_artifact(artifact)
@@ -321,6 +322,39 @@ def queue_release_intent(
             ),
         }
     verified = report.get("gate") == "PASS"
+    from release_agent.config import settings as _settings
+
+    if not verified and _settings.queue_require_controls_pass:
+        # Only a PASS queues. "Nothing failed" is not "passed": a control still
+        # running (or skipped) has proven nothing yet, and a run where no step
+        # or job matched the control prefixes has no controls at all — both
+        # used to queue with a warning, which let an unchecked build into the
+        # release. Say which of the two it is; the fix differs.
+        if open_detail:
+            named = ", ".join(
+                f"{c['control']}{' in job ' + c['job'] if c.get('job') else ''} "
+                f"({c.get('status') or c.get('conclusion') or 'not run'})"
+                for c in open_detail
+            )
+            reason = (f"{len(open_detail)} control(s) had not passed in that run: {named}. "
+                      "Every control must pass before a chart can be queued — let the run "
+                      "finish (or re-run it), then queue with a run where they all pass.")
+        else:
+            prefixes = ", ".join(_settings.control_prefixes)
+            reason = (f"No step or job in that run matched the control prefixes ({prefixes}), "
+                      "so nothing shows the controls ran — it cannot be queued. Use the run of "
+                      "the build workflow that carries the controls, or ask DevOps to check "
+                      "CONTROL_PREFIXES.")
+        return {
+            "ok": False,
+            "eligible": False,
+            "artifact": f"{name}:{version}",
+            "run_url": (report.get("run") or {}).get("url") or run_url,
+            "gate": report.get("gate"),
+            "open_controls": open_detail,
+            "error": reason,
+            "reason": reason,
+        }
     if report.get("gate") == "UNKNOWN":
         # UNKNOWN has two very different causes and the developer's next step
         # differs, so never report them with one message. Saying "no controls
@@ -337,8 +371,6 @@ def queue_release_intent(
                 f"{named}. Re-queue with a run where they pass before release day."
             )
         elif not controls:
-            from release_agent.config import settings as _settings
-
             prefixes = ", ".join(_settings.control_prefixes)
             warnings.append(
                 f"Run succeeded but NO step or job matched the control prefixes "
