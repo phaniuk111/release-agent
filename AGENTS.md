@@ -58,7 +58,7 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    sensitive in git, BQ, or traces. `.env`, `.claude/launch.json`, `traces/` stay
    untracked.
 6. **LLM boundaries**: facts come from tools; charts/tables are model-emitted specs
-   rendered by deterministic code (vendored Chart.js, no CDN); the classifier routes
+   rendered by deterministic code (vendored Chart.js, no CDN — Tailwind, Font Awesome and Inter are vendored too, `static/vendor/`); the classifier routes
    only — it never mutates.
 
 ## Workflows
@@ -68,6 +68,7 @@ PYTHONPATH=src .venv/bin/python -m pytest -q     # tests (169+)
 .venv/bin/python -m ruff check src adk_release_agent tests
 uv lock && uv export --no-dev --no-hashes --no-emit-project -o requirements.txt  # after dep changes
 # run: uvicorn release_agent.app_fastapi:app --app-dir src (env via .env / launch config)
+TAILWIND_CLI=/path/to/tailwindcss-v3.4.17 scripts/css/build.sh   # after using a new Tailwind class; commit static/vendor/tailwind.css
 ```
 
 - Config: every setting is a pydantic field in `src/release_agent/config.py` with env

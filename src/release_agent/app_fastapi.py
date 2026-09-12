@@ -126,11 +126,17 @@ async def chat_page():
         document.head.appendChild(base);
     })();
     </script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Everything the page needs is served by the portal itself (static/vendor,
+         see its README): no public CDN, so a proxy that blocks one cannot leave
+         the page unstyled. -->
+    <link rel="stylesheet" href="static/vendor/fontawesome/css/fontawesome.min.css">
+    <link rel="stylesheet" href="static/vendor/fontawesome/css/solid.min.css">
+    <link rel="stylesheet" href="static/vendor/fontawesome/css/brands.min.css">
     <style>
+        @font-face {
+            font-family: 'Inter'; font-style: normal; font-weight: 100 900; font-display: swap;
+            src: url('static/vendor/inter/inter-latin-wght-normal.woff2') format('woff2');
+        }
         * { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif; }
         body {
             color: #e5e7eb;
@@ -170,6 +176,10 @@ async def chat_page():
         .send-btn:active { transform: scale(.97); }
         .navbtn { transition: background .15s, border-color .15s; }
     </style>
+    <!-- After the page's own styles, where the in-browser Tailwind used to inject
+         its rules, so conflicting rules resolve exactly as before. Built by
+         scripts/css/build.sh. -->
+    <link rel="stylesheet" href="static/vendor/tailwind.css?v={APP_STARTED}">
 </head>
 <body class="text-white">
     <div class="max-w-6xl mx-auto px-4 py-6 flex gap-4 items-start">
