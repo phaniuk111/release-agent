@@ -130,6 +130,23 @@ class Settings(BaseSettings):
         default="{env}",
         validation_alias=AliasChoices("COMPOSER_DAG_DIR_PATTERN", "COMPOSER_DAG_DIR"),
     )
+    # PromQL access, checked by /api/diagnostics. Empty URL = Managed Service for
+    # Prometheus in PROMETHEUS_PROJECT (default GOOGLE_CLOUD_PROJECT); otherwise
+    # any Prometheus-compatible HTTP API base, e.g. http://prometheus.monitoring:9090.
+    prometheus_url: str = Field(
+        default="", validation_alias=AliasChoices("PROMETHEUS_URL", "PROMQL_URL"),
+    )
+    prometheus_project: str = Field(
+        default="", validation_alias=AliasChoices("PROMETHEUS_PROJECT"),
+    )
+    # auto = Google auth for monitoring.googleapis.com, none elsewhere; or google / none.
+    prometheus_auth: str = Field(
+        default="auto", validation_alias=AliasChoices("PROMETHEUS_AUTH"),
+    )
+    # Optional: the query you actually plan to rely on, to prove its metric exists.
+    promql_probe_query: str = Field(
+        default="", validation_alias=AliasChoices("PROMQL_PROBE_QUERY"),
+    )
     # Dataflow flex-template deploys: repo hosting the DF deploy workflow. Deploying
     # means workflow_dispatch of df_deploy_workflow with {image, tag, environment}.
     df_deploy_repo: str = Field(

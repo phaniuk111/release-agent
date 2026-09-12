@@ -1121,6 +1121,8 @@ def diagnostics(request: Request):
       bq.ok false + 404 Not found: Table -> table not provisioned yet
       clone_paths.verdict.summary        -> which way of getting the deploy repo's
                                             files works here (git / tarball / API)
+      promql.access.ok false + 403       -> grant roles/monitoring.viewer to promql.principal
+      promql.data.series 0               -> reachable, but no metrics in that project
     """
     import os as _os
 
@@ -1139,6 +1141,7 @@ def diagnostics(request: Request):
             "github_token_present": bool(_resolve_github_token()),
             "HTTPS_PROXY": _os.getenv("HTTPS_PROXY") or "(none)",
             "NO_PROXY": _os.getenv("NO_PROXY") or "(default)",
+            "PROMETHEUS_URL": settings.prometheus_url or "(managed service in the project)",
             "BQ": (
                 f"{settings.bq_project or settings.gcp_project}."
                 f"{settings.bq_dataset}.{settings.bq_table}"
@@ -1222,6 +1225,15 @@ def diagnostics(request: Request):
                             else {"ok": False, "error": str(q.get("error"))[:300]})
     except Exception as e:
         report["bq"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+
+    # PromQL: reachable, permitted (and as whom), and is there data to read.
+    # Informational — it does not gate "ok"; the portal itself does not need it.
+    try:
+        from .tools.promql_probe import probe_promql
+
+        report["promql"] = probe_promql()
+    except Exception as e:
+        report["promql"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
 
     report["ok"] = bool(
         report["vertex"].get("ok")

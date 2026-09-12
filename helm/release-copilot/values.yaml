@@ -153,6 +153,15 @@ config:
   BQ_TABLE: "release_intents"
   BQ_LOCATION: "US"
   BQ_AUTO_CREATE: "false"   # keep false in cluster; true only for local dev
+  # PromQL access — checked by /api/diagnostics (section "promql"), nothing else
+  # uses it yet. Empty PROMETHEUS_URL = Managed Service for Prometheus in
+  # PROMETHEUS_PROJECT (empty = GOOGLE_CLOUD_PROJECT); the pod's service account
+  # needs roles/monitoring.viewer there. Or any Prometheus HTTP API base, e.g.
+  # http://prometheus-operated.monitoring.svc:9090 (then add .svc to NO_PROXY).
+  PROMETHEUS_URL: ""
+  PROMETHEUS_PROJECT: ""
+  PROMETHEUS_AUTH: "auto"     # auto | google | none
+  PROMQL_PROBE_QUERY: ""      # optional: the query you plan to rely on
   # CARE/DF release forms: lets devs type bare name:version (they can always
   # paste full URLs instead — UI-overridable per artifact line).
   ARTIFACTORY_BASE_URL: ""
