@@ -14,15 +14,14 @@ import {
   Typography,
 } from '@material-ui/core';
 import { apiGet, useApiBase } from '../api';
-import { AgentMarkdown } from './AgentMarkdown';
+import { TurnResult } from './TurnResult';
 
-const useStyles = makeStyles(theme => ({
+const useStyles = makeStyles({
   jsonBox: {
     fontFamily: 'monospace',
     fontSize: '0.8rem',
   },
-  sentNote: { color: theme.palette.success.main, marginTop: theme.spacing(1) },
-}));
+});
 
 type DeployTemplate = {
   environment: string;
@@ -45,19 +44,20 @@ type DeployPayload = {
 
 export function DeployTab(props: {
   onSend: (text: string) => Promise<void>;
-  /** Agent is streaming a response for the submitted payload. */
+  /** Any turn is in flight (one at a time, across tabs). */
   busy?: boolean;
-  /** Latest agent reply (preview / result) — rendered inline. */
-  agentResponse?: string;
-  /** Set when the agent's reply contains a CONFIRM token. */
-  pendingConfirm?: string | null;
+  /** The reply to THIS tab's latest submission — preview, token, outcome. */
+  result?: { text: string; streaming: boolean; pendingToken: string | null };
+  onConfirm?: () => void;
+  onCancel?: () => void;
 }) {
   const classes = useStyles();
   const {
     onSend,
     busy = false,
-    agentResponse = '',
-    pendingConfirm = null,
+    result = { text: '', streaming: false, pendingToken: null },
+    onConfirm = () => {},
+    onCancel = () => {},
   } = props;
   const apiBase = useApiBase();
   const [env, setEnv] = useState<'uat' | 'prod'>('uat');
@@ -68,14 +68,12 @@ export function DeployTab(props: {
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
 
   const isProd = env === 'prod';
 
   const loadTemplate = useCallback(
     async (target: 'uat' | 'prod') => {
       setError(null);
-      setSent(false);
       try {
         const t = await apiGet<DeployTemplate>(
           apiBase,
@@ -96,7 +94,6 @@ export function DeployTab(props: {
 
   const submit = useCallback(async () => {
     setError(null);
-    setSent(false);
     let parsed: { include?: unknown[] };
     try {
       parsed = JSON.parse(json);
@@ -152,7 +149,6 @@ export function DeployTab(props: {
       };
     }
     await onSend(JSON.stringify(payload));
-    setSent(true);
   }, [json, env, repo, isProd, summary, description, start, end, onSend]);
 
   return (
@@ -263,12 +259,6 @@ export function DeployTab(props: {
             {error}
           </Typography>
         )}
-        {sent && !busy && !pendingConfirm && (
-          <Typography className={classes.sentNote}>
-            Sent to the agent — the preview appears below when it responds. If
-            the agent asks for confirmation, use the Confirm bar above.
-          </Typography>
-        )}
         <Button
           variant="contained"
           color="primary"
@@ -278,33 +268,7 @@ export function DeployTab(props: {
         >
           {busy ? 'Working…' : `Deploy to ${isProd ? 'PRD' : 'UAT'}`}
         </Button>
-        {(busy || agentResponse) && (
-          <>
-            <Typography variant="subtitle2" style={{ marginTop: 16 }}>
-              Agent response
-            </Typography>
-            {/* A div, not <pre>: the finished reply is markdown (tables,
-                lists); only the raw stream is shown pre-wrapped. */}
-            <div
-              style={{
-                background: 'rgba(127,127,127,0.08)',
-                padding: 12,
-                borderRadius: 10,
-                maxHeight: 320,
-                overflowY: 'auto' as const,
-                marginTop: 8,
-              }}
-            >
-              {busy && (
-                <span style={{ whiteSpace: 'pre-wrap' }}>
-                  {agentResponse || 'Preparing the deploy preview…'}▌
-                </span>
-              )}
-              {!busy && agentResponse && <AgentMarkdown text={agentResponse} />}
-              {!busy && !agentResponse && 'No response yet.'}
-            </div>
-          </>
-        )}
+        <TurnResult {...result} onConfirm={onConfirm} onCancel={onCancel} />
       </CardContent>
     </Card>
   );

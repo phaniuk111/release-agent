@@ -7,12 +7,8 @@ import {
   TextField,
   Typography,
 } from '@material-ui/core';
-import { makeStyles } from '@material-ui/core/styles';
 import { apiGet, useApiBase } from '../api';
-
-const useStyles = makeStyles(theme => ({
-  sentNote: { color: theme.palette.success.main, marginTop: theme.spacing(1) },
-}));
+import { TurnResult } from './TurnResult';
 
 type DfTemplate = {
   deploy_repo?: string;
@@ -23,9 +19,20 @@ type DfTemplate = {
 
 export function DataflowTab(props: {
   onSend: (text: string) => Promise<void>;
+  /** Any turn is in flight (one at a time, across tabs). */
+  busy?: boolean;
+  /** The reply to THIS tab's latest submission — preview, token, outcome. */
+  result?: { text: string; streaming: boolean; pendingToken: string | null };
+  onConfirm?: () => void;
+  onCancel?: () => void;
 }) {
-  const classes = useStyles();
-  const { onSend } = props;
+  const {
+    onSend,
+    busy = false,
+    result = { text: '', streaming: false, pendingToken: null },
+    onConfirm = () => {},
+    onCancel = () => {},
+  } = props;
   const apiBase = useApiBase();
   const [image, setImage] = useState('');
   const [tag, setTag] = useState('');
@@ -33,7 +40,6 @@ export function DataflowTab(props: {
   const [composerRepo, setComposerRepo] = useState('');
   const [deployRepo, setDeployRepo] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const loadDefaults = useCallback(async () => {
@@ -54,7 +60,6 @@ export function DataflowTab(props: {
 
   const submit = useCallback(async () => {
     setError(null);
-    setSent(false);
     if (!image.trim() || !tag.trim()) {
       setError('Image name and tag are both required.');
       return;
@@ -81,7 +86,6 @@ export function DataflowTab(props: {
     }
     if (deployRepo.trim()) payload.deployment_repo = deployRepo.trim();
     await onSend(JSON.stringify(payload));
-    setSent(true);
   }, [image, tag, dags, composerRepo, deployRepo, onSend]);
 
   return (
@@ -142,20 +146,21 @@ export function DataflowTab(props: {
             {error}
           </Typography>
         )}
-        {sent && (
-          <Typography className={classes.sentNote}>
-            Sent to the agent — the preview and CONFIRM token are on the Chat
-            tab.
-          </Typography>
-        )}
         <Button
           variant="contained"
           color="primary"
           style={{ marginTop: 12 }}
           onClick={submit}
+          disabled={busy}
         >
-          Deploy to DF UAT
+          {busy ? 'Working…' : 'Deploy to DF UAT'}
         </Button>
+        <TurnResult
+          {...result}
+          onConfirm={onConfirm}
+          onCancel={onCancel}
+          confirmLabel="Confirm & dispatch"
+        />
       </CardContent>
     </Card>
   );

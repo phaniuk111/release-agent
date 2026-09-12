@@ -15,22 +15,20 @@ import SendIcon from '@material-ui/icons/Send';
 import RefreshIcon from '@material-ui/icons/Refresh';
 import { Progress } from '@backstage/core-components';
 import { apiGet, useApiBase } from '../api';
-import type { ChatMessage } from './ReleaseCopilotPage';
+import type { ChatMessage } from './useAgentChat';
 import { AgentMarkdown } from './AgentMarkdown';
 import { DEV_PORTAL as P } from '../look';
 
+export type QuickAsk = { label: string; hint: string; text: string };
+
 // The portal's pills that have no tab of their own here. Each sends the same
 // text the portal pill does, so both front doors reach the same skill.
-const QUICK_ASKS = [
+// (Consumer onboarding has its own page: see OnboardingPage.)
+const QUICK_ASKS: QuickAsk[] = [
   {
     label: 'Check release queue',
     hint: "What's queued for the next release — who added it, routing, JIRA, build status",
     text: "what's queued for the next release?",
-  },
-  {
-    label: 'Consumer onboarding',
-    hint: 'How to start using our APIs — access, auth, first call, going live',
-    text: 'I want to onboard to your APIs — walk me through it step by step',
   },
 ];
 
@@ -141,9 +139,23 @@ export function ChatTab(props: {
   messages: ChatMessage[];
   busy: boolean;
   onSend: (text: string) => Promise<void>;
+  title?: string;
+  subheader?: string;
+  emptyHint?: string;
+  placeholder?: string;
+  quickAsks?: QuickAsk[];
 }) {
   const classes = useStyles();
-  const { messages, busy, onSend } = props;
+  const {
+    messages,
+    busy,
+    onSend,
+    title = 'Chat',
+    subheader = 'Talk to the ADK release agent — deploy previews and CONFIRM tokens appear here',
+    emptyHint = 'Try: "what is the current release status?" — or use the Deploy / Dataflow tabs.',
+    placeholder = 'Message the release agent…',
+    quickAsks = QUICK_ASKS,
+  } = props;
   const [input, setInput] = useState('');
 
   const send = useCallback(async () => {
@@ -155,17 +167,11 @@ export function ChatTab(props: {
 
   return (
     <Card>
-      <CardHeader
-        title="Chat"
-        subheader="Talk to the ADK release agent — deploy previews and CONFIRM tokens appear here"
-      />
+      <CardHeader title={title} subheader={subheader} />
       <CardContent>
         <div className={classes.chatLog}>
           {messages.length === 0 && (
-            <Typography className={classes.sysMsg}>
-              Try: "what is the current release status?" — or use the Deploy /
-              Dataflow tabs; their submissions land here.
-            </Typography>
+            <Typography className={classes.sysMsg}>{emptyHint}</Typography>
           )}
           {messages.map((m, i) => {
             const msgClass =
@@ -196,7 +202,7 @@ export function ChatTab(props: {
           })}
         </div>
         <div className={classes.quickAsks}>
-          {QUICK_ASKS.map(q => (
+          {quickAsks.map(q => (
             <Chip
               key={q.label}
               label={q.label}
@@ -214,7 +220,7 @@ export function ChatTab(props: {
             fullWidth
             variant="outlined"
             size="small"
-            placeholder="Message the release agent…"
+            placeholder={placeholder}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {

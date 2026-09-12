@@ -23,5 +23,10 @@
   "peerDependencies": {
     "react": "^16.13.1 || ^17.0.0 || ^18.0.0",
     "react-router-dom": "^6.0.0"
+  },
+  "devDependencies": {
+    "@backstage/test-utils": "^1.7.21",
+    "@testing-library/jest-dom": "^6.0.0",
+    "@testing-library/react": "^14.0.0"
   }
 }

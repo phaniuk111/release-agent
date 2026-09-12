@@ -1,28 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { toastApiRef } from '@backstage/frontend-plugin-api';
-import { useApi } from '@backstage/core-plugin-api';
-import {
-  Box,
-  Button,
-  makeStyles,
-  Tab,
-  Tabs,
-  Typography,
-} from '@material-ui/core';
+import { Box, Button, makeStyles, Tab, Tabs, Typography } from '@material-ui/core';
 import { Content, Header, Page } from '@backstage/core-components';
-import { streamChat, useApiBase } from '../api';
 import { ChatGrid } from './ChatTab';
 import { DeployTab } from './DeployTab';
 import { DataflowTab } from './DataflowTab';
 import { ReleasesTab } from './ReleasesTab';
 import { QueueTab } from './QueueTab';
 import { InsightsTab } from './InsightsTab';
+import { useAgentChat } from './useAgentChat';
 import { DEV_PORTAL as P } from '../look';
 
-export type ChatMessage = { role: 'user' | 'agent' | 'system'; text: string };
-
-const CONFIRM_TOKEN_RE = /CONFIRM-[A-F0-9]{4,10}\b/i;
+export type { ChatMessage } from './useAgentChat';
 
 const useStyles = makeStyles(theme => ({
   tabsBar: { borderBottom: `1px solid ${theme.palette.divider}` },
@@ -56,6 +45,9 @@ const TABS = [
   'Insights',
 ] as const;
 
+// Tabs whose submissions show their own result (and confirm) in place.
+const ORIGIN_OF_TAB: Record<string, string> = { Deploy: 'deploy', Dataflow: 'dataflow' };
+
 export function ReleaseCopilotPage() {
   const classes = useStyles();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -75,101 +67,16 @@ export function ReleaseCopilotPage() {
     },
     [setSearchParams],
   );
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [threadId] = useState<string | null>(null);
-  const apiBase = useApiBase();
-  const toastApi = useApi(toastApiRef);
 
-  // When the agent ends a turn with a confirmation prompt, surface the token
-  // right where the user is (Deploy/Dataflow tabs) — no chat-tab round trip.
-  const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
+  const chat = useAgentChat('release');
+  const deploy = chat.resultFor('deploy');
+  const dataflow = chat.resultFor('dataflow');
+  const sendFrom = (origin: string) => (text: string) => chat.send(text, { origin });
 
-  const append = useCallback((msg: ChatMessage) => {
-    setMessages(prev => [...prev, msg]);
-  }, []);
-
-  /** Shared chat turn used by the Chat tab AND the form tabs. */
-  const send = useCallback(
-    async (text: string) => {
-      if (busy) return;
-      setPendingConfirm(null);
-      setBusy(true);
-      append({ role: 'user', text });
-      append({ role: 'agent', text: '' });
-      try {
-        await streamChat(apiBase, text, threadId, ev => {
-          if (ev.type === 'token' && ev.content) {
-            setMessages(prev => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              next[next.length - 1] = {
-                ...last,
-                text: last.text + ev.content,
-              };
-              return next;
-            });
-          } else if (ev.type === 'interrupt') {
-            append({
-              role: 'system',
-              text: '⚠ Confirmation required — reply with the exact CONFIRM token to proceed.',
-            });
-          } else if (ev.type === 'error') {
-            append({
-              role: 'system',
-              text: `Error: ${ev.content ?? 'unknown'}`,
-            });
-            toastApi.post({
-              title: 'Release Copilot error',
-              description: String(ev.content ?? 'unknown error'),
-              status: 'danger',
-            });
-          }
-        });
-        // If the agent ended its turn with a confirmation prompt, capture the
-        // token so the current tab can confirm inline.
-        setMessages(prev => {
-          const last = [...prev].reverse().find(m => m.role === 'agent');
-          const match = last?.text.match(CONFIRM_TOKEN_RE);
-          if (match) setPendingConfirm(match[0].toUpperCase());
-          return prev;
-        });
-      } catch (e) {
-        append({ role: 'system', text: `Error: ${(e as Error).message}` });
-        toastApi.post({
-          title: 'Release Copilot request failed',
-          description: (e as Error).message,
-          status: 'danger',
-        });
-      } finally {
-        setBusy(false);
-      }
-    },
-    [busy, threadId, append, apiBase, toastApi],
-  );
-
-  const confirmAndRelease = useCallback(() => {
-    if (pendingConfirm) send(pendingConfirm);
-  }, [pendingConfirm, send]);
-
-  const dismissConfirm = useCallback(() => {
-    setPendingConfirm(null);
-    append({
-      role: 'system',
-      text: '✖ Preview dismissed — nothing was deployed.',
-    });
-    toastApi.post({
-      title: 'Not confirmed',
-      description: 'The preview was dismissed — nothing was deployed.',
-      status: 'info',
-      timeout: 5000,
-    });
-  }, [append, toastApi]);
-
-  const lastAgentText = useRef('');
-  const msgs = messages;
-  const lastAgent = [...msgs].reverse().find(m => m.role === 'agent');
-  lastAgentText.current = lastAgent?.text ?? '';
+  // The page-level bar is for a token the current tab cannot confirm itself:
+  // one raised in Chat, or one raised by a form tab you have since left.
+  const showBar =
+    chat.pending && !chat.busy && ORIGIN_OF_TAB[TABS[tab]] !== chat.pending.origin;
 
   return (
     <Page themeId="tool">
@@ -178,22 +85,22 @@ export function ReleaseCopilotPage() {
         subtitle="ADK release agent, proxied through Backstage (PoC)"
       />
       <Content>
-        {pendingConfirm && !busy && (
+        {showBar && chat.pending && (
           <Box className={classes.confirmBar} data-testid="confirm-bar">
             <Typography>
               Preview ready — confirm to release. Token:{' '}
-              <span className={classes.confirmToken}>{pendingConfirm}</span>
+              <span className={classes.confirmToken}>{chat.pending.token}</span>
             </Typography>
             <span className={classes.spacer} />
             <Button
               variant="contained"
               color="primary"
-              onClick={confirmAndRelease}
+              onClick={chat.confirm}
               startIcon={<span>🚀</span>}
             >
               Confirm &amp; release
             </Button>
-            <Button variant="outlined" onClick={dismissConfirm}>
+            <Button variant="outlined" onClick={chat.dismiss}>
               Cancel
             </Button>
           </Box>
@@ -210,17 +117,26 @@ export function ReleaseCopilotPage() {
         </Tabs>
         <Box mt={3}>
           {tab === 0 && (
-            <ChatGrid messages={messages} busy={busy} onSend={send} />
+            <ChatGrid messages={chat.messages} busy={chat.busy} onSend={sendFrom('chat')} />
           )}
           {tab === 1 && (
             <DeployTab
-              onSend={send}
-              busy={busy}
-              agentResponse={lastAgentText.current}
-              pendingConfirm={pendingConfirm}
+              onSend={sendFrom('deploy')}
+              busy={chat.busy}
+              result={deploy}
+              onConfirm={chat.confirm}
+              onCancel={chat.dismiss}
             />
           )}
-          {tab === 2 && <DataflowTab onSend={send} />}
+          {tab === 2 && (
+            <DataflowTab
+              onSend={sendFrom('dataflow')}
+              busy={chat.busy}
+              result={dataflow}
+              onConfirm={chat.confirm}
+              onCancel={chat.dismiss}
+            />
+          )}
           {tab === 3 && <ReleasesTab />}
           {tab === 4 && <QueueTab />}
           {tab === 5 && <InsightsTab />}
