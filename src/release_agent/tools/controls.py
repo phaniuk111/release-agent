@@ -1,5 +1,6 @@
 """Build-pipeline verification + RLFT/RFTL release-control tools."""
 
+from typing import Any
 from urllib.parse import urlparse
 
 from ._common import (
@@ -67,8 +68,10 @@ def _fetch_job_log(repo_full: str, job_id: int) -> str:
     try:
         import requests
 
+        # GitHub Enterprise serves the API from GITHUB_BASE_URL, not api.github.com.
+        api = (settings.github_base_url or "https://api.github.com").rstrip("/")
         r = requests.get(
-            f"https://api.github.com/repos/{repo_full}/actions/jobs/{job_id}/logs",
+            f"{api}/repos/{repo_full}/actions/jobs/{job_id}/logs",
             headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
             allow_redirects=True,
             timeout=30,
@@ -289,6 +292,144 @@ def _collect_controls(run) -> list[dict]:
 
 def _build_repo_full(repo: str = "") -> str:
     return repo or active_build_repo()
+
+
+# ============ Which image:tag a run built — one run, one artifact ============
+# Queueing takes a chart:version AND the run URL that built it. The controls of
+# that run only mean something if the run really built THAT chart:version —
+# otherwise a passing run of payments-api could vouch for orders-api:2.0. So the
+# run has to say what it built, in one of the two places a build records it:
+#   * the git tag that TRIGGERED it (tag-push pipelines: head_branch is the tag);
+#   * the "<BUILD_TAG_MARKER><tag>" line its tag-generation step logs
+#     (pipelines that create the tag inside the run, triggered from a branch).
+# A tag names the version; it names the image too when it carries the image
+# name ("orders-api-1.2.3", "orders-api/1.2.3", "orders-api:1.2.3"). A bare
+# version ("1.2.3", "v1.2.3") ties the run to the image only through the build
+# workflow image-workflows.json assigns to that image.
+_TAG_SEPARATORS = "-_/:@"
+
+
+def split_built_tag(built: str, image: str) -> tuple[bool, str]:
+    """(tag names the image, the version part). Pure."""
+    tag = str(built or "").strip().strip("\"'")
+    if tag.startswith("refs/tags/"):
+        tag = tag[len("refs/tags/"):]
+    name = str(image or "").strip()
+    if name and tag.lower().startswith(name.lower()) and tag[len(name):len(name) + 1] in tuple(_TAG_SEPARATORS):
+        return True, tag[len(name) + 1:]
+    return False, tag
+
+
+def version_matches(built_version: str, version: str) -> bool:
+    """Exact, bar a leading "v" — 1.0.1 must never match 1.0.10. Pure."""
+    b, v = str(built_version or "").strip(), str(version or "").strip()
+    return bool(v) and (b == v or b == "v" + v or "v" + b == v)
+
+
+_TAG_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_/:+@")
+
+
+def _strip_ansi(line: str) -> str:
+    """Drop terminal colour codes (ESC [ … letter) that GitHub keeps in logs."""
+    out, i = [], 0
+    while i < len(line):
+        if line[i] == "\x1b" and line[i + 1:i + 2] == "[":
+            i += 2
+            while i < len(line) and not line[i].isalpha():
+                i += 1
+            i += 1
+            continue
+        out.append(line[i])
+        i += 1
+    return "".join(out)
+
+
+def _tags_from_log(text: str, marker: str) -> list[str]:
+    """Every tag logged after ``marker`` (one per built image in a matrix).
+
+    GitHub's log also echoes the step's own script — `echo "TAG_GENERATED=
+    ${GITHUB_REF_NAME}"` — so only a value made of tag characters counts; an
+    unexpanded variable or a quoted command fragment is not a tag.
+    """
+    found = []
+    for line in str(text or "").splitlines():
+        line = _strip_ansi(line)
+        at = line.find(marker)
+        if at < 0:
+            continue
+        value = line[at + len(marker):].strip().split()[0:1]
+        if not value:
+            continue
+        tag = value[0].strip("\"'")
+        if tag and set(tag) <= _TAG_CHARS and tag not in found:
+            found.append(tag)
+    return found
+
+
+def run_built_tags(repo_obj, repo_full: str, run) -> dict[str, Any]:
+    """What ``run`` says it built: {"tags": [...], "source": "trigger"|"log"|None}."""
+    head = str(getattr(run, "head_branch", "") or "")
+    if head and getattr(run, "event", "") == "push":
+        try:
+            repo_obj.get_git_ref(f"tags/{head}")          # a tag push, not a branch push
+            return {"tags": [head], "source": "trigger"}
+        except Exception:
+            pass
+    step_name = settings.build_tag_step
+    marker = settings.build_tag_marker
+    tags: list[str] = []
+    try:
+        for job in run.jobs():
+            steps = getattr(job, "steps", None) or []
+            if any((getattr(st, "name", "") or "") == step_name
+                   and getattr(st, "conclusion", None) == "success" for st in steps):
+                for tag in _tags_from_log(_fetch_job_log(repo_full, job.id), marker):
+                    if tag not in tags:
+                        tags.append(tag)
+    except Exception:
+        pass
+    return {"tags": tags, "source": "log" if tags else None}
+
+
+def match_run_to_artifact(repo_full: str, run_id: int, image: str, version: str) -> dict[str, Any]:
+    """Did run ``run_id`` build exactly ``image:version``? Never raises.
+
+    {"ok": True, "built": tag} or {"ok": False, "reason": ..., "built": [...]}.
+    """
+    label = f"{image}:{version}"
+    try:
+        repo_obj = _get_github_client().get_repo(repo_full)
+        run = repo_obj.get_workflow_run(int(run_id))
+    except Exception as e:
+        return {"ok": False, "built": [], "reason": f"Could not read run {run_id} in {repo_full}: {e}"[:300]}
+    built = run_built_tags(repo_obj, repo_full, run)
+    tags = built["tags"]
+    if not tags:
+        return {"ok": False, "built": [], "reason": (
+            f"Can't tell which image and tag that run built: it was not started by a tag push, "
+            f"and no '{settings.build_tag_step}' step logged a {settings.build_tag_marker}<tag> "
+            f"line. Use the run that built {label}.")}
+
+    run_workflow = str(getattr(run, "path", "") or "").split("/")[-1]
+    image_workflow = _image_build_workflow(repo_obj, image)
+    for tag in tags:
+        names_image, tag_version = split_built_tag(tag, image)
+        if not version_matches(tag_version, version):
+            continue
+        if names_image:
+            return {"ok": True, "built": tag, "source": built["source"]}
+        # A bare version: only the image's own build workflow ties it to the image.
+        if image_workflow and run_workflow == image_workflow:
+            return {"ok": True, "built": tag, "source": built["source"], "via_workflow": run_workflow}
+        why = (f"{image}'s build workflow is {image_workflow}, but this run is {run_workflow}"
+               if image_workflow else f"{image} has no build workflow in {CONFIG_PATH}")
+        return {"ok": False, "built": tags, "reason": (
+            f"That run built tag {tag}, but nothing ties it to {image}: the tag carries no image "
+            f"name and {why}. Use the run of {image}'s own build.")}
+    shown = ", ".join(tags[:5]) + (f" (+{len(tags) - 5} more)" if len(tags) > 5 else "")
+    return {"ok": False, "built": tags, "reason": (
+        f"That run built {shown}, not {label}. Use the run that built {label} — "
+        "each chart:version needs the run that built it.")}
 
 
 def _find_build_run(repo_obj, image: str, tag: str):

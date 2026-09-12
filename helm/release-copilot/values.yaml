@@ -149,6 +149,11 @@ config:
   # "Add to next release" queues a chart only when its build run's controls ALL
   # passed; "false" lets a run with open or unmatched controls in with a warning.
   QUEUE_REQUIRE_CONTROLS_PASS: "true"
+  # ...and only with the run that built exactly that chart:version — read from
+  # the tag that triggered the run, or the line its tag step logs (below).
+  QUEUE_REQUIRE_RUN_MATCH: "true"
+  BUILD_TAG_STEP: "Generate Git tag"
+  BUILD_TAG_MARKER: "TAG_GENERATED="
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
   # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
   # EMPTY BQ_DATASET DISABLES the whole feature cleanly.

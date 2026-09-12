@@ -337,6 +337,20 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("QUEUE_REQUIRE_CONTROLS_PASS"),
     )
+    # ...and only with the run that built exactly that chart:version (its trigger
+    # tag, or the tag its tag-generation step logged). False = warn only.
+    queue_require_run_match: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("QUEUE_REQUIRE_RUN_MATCH"),
+    )
+    # How a build run records the tag it created: the step's name and the log
+    # line prefix it prints, e.g. "TAG_GENERATED=orders-api-1.2.3".
+    build_tag_step: str = Field(
+        default="Generate Git tag", validation_alias=AliasChoices("BUILD_TAG_STEP"),
+    )
+    build_tag_marker: str = Field(
+        default="TAG_GENERATED=", validation_alias=AliasChoices("BUILD_TAG_MARKER"),
+    )
     # Block a PRD release when any build control failed (fail-closed). When a build
     # run can't be located we don't hard-block; the agent asks for the run id.
     prd_require_controls: bool = Field(

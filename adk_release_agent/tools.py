@@ -198,8 +198,10 @@ def queue_release_intent(
     DevOps, the change context — jira_ticket (e.g. REL-1234) and change_details
     (what changed and why) — and build_run_url, the GitHub Actions run that
     built the tag. build_run_url is REQUIRED: nothing is queued without it —
-    the run is checked NOW, and only a run whose build succeeded and whose
-    controls ALL passed is queued (build_verified=true). A failed build or
+    the run is checked NOW: it must be the run that built exactly this
+    chart:version (the tag that triggered it, or the tag its tag step logged),
+    and only a run whose build succeeded and whose controls ALL passed is
+    queued (build_verified=true). A failed build or
     control, a control that has not passed yet, or a run with no controls at
     all makes the chart INELIGIBLE (eligible=false, with failed_controls /
     failed_steps / open_controls listed) so the dev fixes and re-runs first.
@@ -290,6 +292,24 @@ def queue_release_intent(
                 "(…/actions/runs/<id>) in the build repo. Nothing was queued."
             ),
         }
+    # One run, one artifact: the run's controls vouch only for what it built.
+    from release_agent.config import settings as _settings
+
+    run_id = (report.get("run") or {}).get("id")
+    if _settings.queue_require_run_match and run_id and report.get("repo"):
+        from release_agent.tools.controls import match_run_to_artifact
+
+        match = match_run_to_artifact(report["repo"], run_id, name, version)
+        if not match.get("ok"):
+            return {
+                "ok": False,
+                "eligible": False,
+                "artifact": f"{name}:{version}",
+                "run_url": (report.get("run") or {}).get("url") or run_url,
+                "built_tags": match.get("built") or [],
+                "error": match.get("reason") + " Nothing was queued.",
+                "reason": match.get("reason"),
+            }
     # `controls` is the source of truth for the VERDICT — deriving from it means a
     # report without the convenience keys still refuses an ineligible build,
     # rather than reading as "no failures" and queueing it.
@@ -322,8 +342,6 @@ def queue_release_intent(
             ),
         }
     verified = report.get("gate") == "PASS"
-    from release_agent.config import settings as _settings
-
     if not verified and _settings.queue_require_controls_pass:
         # Only a PASS queues. "Nothing failed" is not "passed": a control still
         # running (or skipped) has proven nothing yet, and a run where no step
@@ -378,7 +396,8 @@ def queue_release_intent(
                 f"names in that workflow."
             )
     run_tag = str(report.get("tag") or "")
-    if version and run_tag and version not in run_tag and name not in run_tag:
+    if (not _settings.queue_require_run_match and version and run_tag
+            and version not in run_tag and name not in run_tag):
         warnings.append(
             f"The run built '{run_tag}', which doesn't obviously match {name}:{version} — double-check the URL."
         )
