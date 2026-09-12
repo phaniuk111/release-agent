@@ -1,0 +1,52 @@
+/*
+ * The Dev Portal look for Backstage UI (the newer component library: the page
+ * body, plugin headers, menus). It styles itself from --bui-* variables rather
+ * than the Material UI theme, so theme.tsx alone leaves these areas stock grey
+ * and blue. Scoped to our themes by the name theme.tsx gives them
+ * (data-theme-name="dev-portal"); values mirror DEV_PORTAL in
+ * plugins/release-copilot/src/look.ts. Loaded after @backstage/ui's styles.
+ */
+body[data-theme-name='dev-portal'] {
+  --bui-font-regular: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --bui-accent-bg: #10b981;
+  --bui-accent-bg-hover: #34d399;
+  --bui-accent-fg: #04241c;
+  --bui-bg-solid: #10b981;
+  --bui-bg-solid-hover: #34d399;
+  --bui-bg-solid-pressed: #059669;
+  --bui-fg-solid: #04241c;
+  --bui-ring: rgba(16, 185, 129, 0.45);
+  --bui-fg-positive: #34d399;
+  --bui-fg-success: #34d399;
+}
+
+body[data-theme-name='dev-portal'][data-theme-mode='dark'] {
+  --bui-bg-app: #080d1a;
+  --bui-bg-neutral-1: #0f172a;
+  --bui-bg-neutral-2: #111a2e;
+  --bui-bg-neutral-3: #1e293b;
+  --bui-bg-neutral-4: #243247;
+  --bui-fg-primary: #e5e7eb;
+  --bui-fg-secondary: #94a3b8;
+  --bui-fg-disabled: #64748b;
+  --bui-border-1: rgba(148, 163, 184, 0.12);
+  --bui-border-2: rgba(148, 163, 184, 0.22);
+  background:
+    radial-gradient(1100px 560px at 12% -8%, rgba(16, 185, 129, 0.12), transparent 60%),
+    radial-gradient(900px 520px at 100% 0%, rgba(45, 212, 191, 0.08), transparent 55%),
+    #080d1a;
+  background-attachment: fixed;
+}
+
+body[data-theme-name='dev-portal'][data-theme-mode='light'] {
+  --bui-bg-app: #f5f7fb;
+  --bui-fg-primary: #0f172a;
+  --bui-fg-secondary: #475569;
+  --bui-border-1: rgba(15, 23, 42, 0.08);
+  --bui-border-2: rgba(15, 23, 42, 0.16);
+  background:
+    radial-gradient(1100px 560px at 12% -8%, rgba(16, 185, 129, 0.1), transparent 60%),
+    radial-gradient(900px 520px at 100% 0%, rgba(45, 212, 191, 0.08), transparent 55%),
+    #f5f7fb;
+  background-attachment: fixed;
+}

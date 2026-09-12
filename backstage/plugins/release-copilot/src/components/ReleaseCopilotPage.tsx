@@ -18,6 +18,7 @@ import { DataflowTab } from './DataflowTab';
 import { ReleasesTab } from './ReleasesTab';
 import { QueueTab } from './QueueTab';
 import { InsightsTab } from './InsightsTab';
+import { DEV_PORTAL as P } from '../look';
 
 export type ChatMessage = { role: 'user' | 'agent' | 'system'; text: string };
 
@@ -25,22 +26,23 @@ const CONFIRM_TOKEN_RE = /CONFIRM-[A-F0-9]{4,10}\b/i;
 
 const useStyles = makeStyles(theme => ({
   tabsBar: { borderBottom: `1px solid ${theme.palette.divider}` },
+  // The portal's confirmation box: amber, on glass.
   confirmBar: {
     display: 'flex',
     alignItems: 'center',
     gap: theme.spacing(1.5),
     padding: theme.spacing(1.5, 2),
     marginBottom: theme.spacing(2),
-    borderRadius: theme.shape.borderRadius,
-    border: `1px solid ${theme.palette.warning.main}`,
+    borderRadius: P.radius.card,
+    border: `1px solid ${P.amberBorder}`,
     background:
-      theme.palette.type === 'light'
-        ? 'rgba(255, 152, 0, 0.08)'
-        : 'rgba(255, 152, 0, 0.12)',
+      theme.palette.type === 'light' ? 'rgba(245, 158, 11, 0.08)' : P.amberSurface,
+    backdropFilter: 'blur(10px)',
   },
   confirmToken: {
-    fontFamily: 'monospace',
+    fontFamily: P.mono,
     fontWeight: 700,
+    color: P.amber,
   },
   spacer: { flex: 1 },
 }));

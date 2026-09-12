@@ -14,7 +14,7 @@ import {
   Typography,
 } from '@material-ui/core';
 import { apiGet, useApiBase } from '../api';
-import { LinkedText } from './LinkedText';
+import { AgentMarkdown } from './AgentMarkdown';
 
 const useStyles = makeStyles(theme => ({
   jsonBox: {
@@ -283,27 +283,26 @@ export function DeployTab(props: {
             <Typography variant="subtitle2" style={{ marginTop: 16 }}>
               Agent response
             </Typography>
-            <pre
-              className={classes.jsonBox}
+            {/* A div, not <pre>: the finished reply is markdown (tables,
+                lists); only the raw stream is shown pre-wrapped. */}
+            <div
               style={{
-                whiteSpace: 'pre-wrap',
                 background: 'rgba(127,127,127,0.08)',
                 padding: 12,
-                borderRadius: 4,
+                borderRadius: 10,
                 maxHeight: 320,
                 overflowY: 'auto' as const,
                 marginTop: 8,
               }}
             >
-              {busy ? (
-                agentResponse || 'Preparing the deploy preview…'
-              ) : agentResponse ? (
-                <LinkedText text={agentResponse} />
-              ) : (
-                'No response yet.'
+              {busy && (
+                <span style={{ whiteSpace: 'pre-wrap' }}>
+                  {agentResponse || 'Preparing the deploy preview…'}▌
+                </span>
               )}
-              {busy && '▌'}
-            </pre>
+              {!busy && agentResponse && <AgentMarkdown text={agentResponse} />}
+              {!busy && !agentResponse && 'No response yet.'}
+            </div>
           </>
         )}
       </CardContent>

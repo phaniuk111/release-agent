@@ -53,6 +53,16 @@
       color="#5bbad5"
     />
     <title><%= config.getOptionalString('app.title') ?? 'Backstage' %></title>
+    <!-- Inter, the Dev Portal's typeface — served from public/fonts, no CDN. -->
+    <style>
+      @font-face {
+        font-family: 'Inter';
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: swap;
+        src: url('<%= publicPath %>/fonts/inter-latin-wght-normal.woff2') format('woff2');
+      }
+    </style>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

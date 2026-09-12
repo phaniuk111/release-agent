@@ -6,6 +6,10 @@ app:
   packages: all
 
   extensions:
+    # The Dev Portal themes (packages/app/src/modules/theme.tsx) replace the
+    # stock ones — otherwise "follow the system" picks Backstage's own dark.
+    - theme:app/light: false
+    - theme:app/dark: false
     # Default landing page configuration.
     # The catalog is mounted at /catalog by default but is overridden here to
     # serve as the root page. To switch to the Home page, comment out the

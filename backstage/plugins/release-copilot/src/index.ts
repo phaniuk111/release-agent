@@ -4,3 +4,4 @@ export {
 } from './plugin';
 export { StatusCard } from './components/ChatTab';
 export { apiGet, useApiBase } from './api';
+export { DEV_PORTAL } from './look';
