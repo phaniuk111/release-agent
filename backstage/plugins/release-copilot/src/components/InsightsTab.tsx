@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Chip,
   FormControl,
@@ -231,7 +231,14 @@ export function InsightsTab() {
     [debounced],
   );
 
+  // Filters change faster than BigQuery answers: only the NEWEST request may
+  // update the card, or a slow earlier answer lands last and shows stale rows
+  // for the filter now in the box.
+  const loadSeq = useRef(0);
+  const stateSeq = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
     try {
@@ -239,16 +246,18 @@ export function InsightsTab() {
         apiBase,
         `/api/release-insights?days=${days}&event_type=${eventType}${query}`,
       );
+      if (seq !== loadSeq.current) return;
       if (result.ok === false) throw new Error(result.error || 'query failed');
       setData(result);
     } catch (e) {
-      setError((e as Error).message);
+      if (seq === loadSeq.current) setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [apiBase, days, query, eventType]);
 
   const loadState = useCallback(async () => {
+    const seq = ++stateSeq.current;
     setStateLoading(true);
     setStateError(null);
     try {
@@ -256,12 +265,13 @@ export function InsightsTab() {
         apiBase,
         `/api/release-insights?event_type=state${query}`,
       );
+      if (seq !== stateSeq.current) return;
       if (result.ok === false) throw new Error(result.error || 'query failed');
       setState(result);
     } catch (e) {
-      setStateError((e as Error).message);
+      if (seq === stateSeq.current) setStateError((e as Error).message);
     } finally {
-      setStateLoading(false);
+      if (seq === stateSeq.current) setStateLoading(false);
     }
   }, [apiBase, query]);
 

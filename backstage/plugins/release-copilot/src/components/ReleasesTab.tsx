@@ -17,17 +17,31 @@ import { Progress } from '@backstage/core-components';
 import { apiGet, apiPost, useApiBase } from '../api';
 
 type QueueCtx = {
-  queue?: Array<{ artifact_name?: string; artifact_version?: string }>;
+  queue?: Array<{ artifact_name?: string; artifact_version?: string; df_only?: boolean }>;
   default_repo?: string;
   df_default_repo?: string;
 };
+
+type DraftResponse = { ok?: boolean; error?: string; draft?: Record<string, string> };
+
+// The change-request fields, in the order a CAB form asks for them.
+const FIELD_LABELS: Record<string, string> = {
+  change_summary: 'Change summary',
+  change_description: 'Change description',
+  change_reason: 'Reason for change',
+  associated_risk: 'Associated risk',
+  consequence: 'Consequence of not doing it',
+  user_service_impact: 'User / service impact',
+};
+const label = (key: string) =>
+  FIELD_LABELS[key] ?? key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 
 export function ReleasesTab() {
   const apiBase = useApiBase();
   const [kind, setKind] = useState<'care' | 'df'>('care');
   const [ctx, setCtx] = useState<QueueCtx | null>(null);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [draft, setDraft] = useState<unknown>(null);
+  const [draft, setDraft] = useState<Record<string, string> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -37,7 +51,11 @@ export function ReleasesTab() {
       .catch(e => setError((e as Error).message));
   }, [apiBase]);
 
-  const artifacts = (ctx?.queue ?? [])
+  // A release carries only its own kind: a DF release never picks up CARE
+  // charts, and the reverse (the release forms filter the same way).
+  const ofKind = (ctx?.queue ?? []).filter(r => (kind === 'df' ? !!r.df_only : !r.df_only));
+  const otherKind = (ctx?.queue?.length ?? 0) - ofKind.length;
+  const artifacts = ofKind
     .map(r =>
       r.artifact_name ? `${r.artifact_name}:${r.artifact_version ?? ''}` : null,
     )
@@ -50,24 +68,25 @@ export function ReleasesTab() {
   const submit = useCallback(async () => {
     setError(null);
     setDraft(null);
-    const artifactsPicked = Object.keys(selected).filter(a => selected[a]);
+    // Only ticks on items of THIS kind — a tick left from the other kind is not visible.
+    const artifactsPicked = artifacts.filter(a => selected[a]);
     if (!artifactsPicked.length) {
       setError('Tick at least one queued item.');
       return;
     }
     setLoading(true);
     try {
-      const result = await apiPost(apiBase, '/api/release-draft', {
+      const result = await apiPost<DraftResponse>(apiBase, '/api/release-draft', {
         artifacts: artifactsPicked,
         kind,
       });
-      setDraft(result);
+      setDraft(result.draft ?? {});
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [selected, kind, apiBase]);
+  }, [selected, kind, apiBase, artifacts]);
 
   return (
     <Card>
@@ -85,7 +104,11 @@ export function ReleasesTab() {
           <Select
             value={kind}
             label="Release kind"
-            onChange={e => setKind(e.target.value as 'care' | 'df')}
+            onChange={e => {
+              setKind(e.target.value as 'care' | 'df');
+              setSelected({});
+              setDraft(null);
+            }}
           >
             <MenuItem value="care">CARE release</MenuItem>
             <MenuItem value="df">Dataflow release</MenuItem>
@@ -93,7 +116,12 @@ export function ReleasesTab() {
         </FormControl>
         {artifacts.length === 0 && (
           <Typography color="textSecondary">
-            No queued items — add charts on the Queue tab first.
+            Nothing is queued for the {kind === 'df' ? 'Dataflow' : 'CARE'} release
+            {otherKind > 0
+              ? ` — ${otherKind} item${otherKind === 1 ? ' is' : 's are'} queued for the ${
+                  kind === 'df' ? 'CARE' : 'Dataflow'
+                } release.`
+              : ' — add charts on the Queue tab first.'}
           </Typography>
         )}
         <FormGroup>
@@ -123,16 +151,23 @@ export function ReleasesTab() {
           Draft change request
         </Button>
         {draft !== null && (
-          <pre
-            style={{
-              marginTop: 12,
-              overflowX: 'auto',
-              fontSize: '0.8rem',
-              whiteSpace: 'pre-wrap',
-            }}
-          >
-            {JSON.stringify(draft, null, 2)}
-          </pre>
+          <div style={{ marginTop: 16 }}>
+            {Object.entries(draft)
+              .filter(([, v]) => v)
+              .map(([k, v]) => (
+                <div key={k} style={{ marginBottom: 12 }}>
+                  <Typography variant="caption" color="textSecondary" display="block">
+                    {label(k)}
+                  </Typography>
+                  <Typography variant="body2" style={{ whiteSpace: 'pre-wrap' }}>
+                    {v}
+                  </Typography>
+                </div>
+              ))}
+            <Typography variant="caption" color="textSecondary">
+              A draft to copy into the change request — nothing was submitted.
+            </Typography>
+          </div>
         )}
       </CardContent>
     </Card>

@@ -110,6 +110,10 @@ export function ReleaseCopilotPage() {
           value={tab}
           onChange={(_, v) => selectTab(v)}
           indicatorColor="primary"
+          // On a narrow screen the six tabs overflow; scroll them rather than
+          // cutting "Insights" off where nobody can reach it.
+          variant="scrollable"
+          scrollButtons="auto"
         >
           {TABS.map(label => (
             <Tab key={label} label={label} />

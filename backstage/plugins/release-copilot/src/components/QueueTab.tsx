@@ -23,12 +23,32 @@ import AddIcon from '@material-ui/icons/Add';
 import RefreshIcon from '@material-ui/icons/Refresh';
 import { Progress } from '@backstage/core-components';
 import { apiGet, apiPost, useApiBase } from '../api';
+import { describeRefusal, Refusal, shortName, timeAgo } from './queueFormat';
+
+// The last email typed here, so withdrawing and queueing do not ask twice.
+const EMAIL_KEY = 'release-copilot:email';
+const savedEmail = () => {
+  try {
+    return window.localStorage.getItem(EMAIL_KEY) ?? '';
+  } catch {
+    return '';
+  }
+};
+const saveEmail = (email: string) => {
+  try {
+    window.localStorage.setItem(EMAIL_KEY, email);
+  } catch {
+    /* private mode: just not remembered */
+  }
+};
 
 type QueueItem = {
   artifact_name?: string;
   artifact_version?: string;
   requested_by?: string;
-  event_ts?: string;
+  requested_at?: string;
+  build_verified?: boolean | null;
+  build_run_url?: string;
   note?: string;
   prl1_only?: boolean;
   df_only?: boolean;
@@ -145,7 +165,10 @@ export function QueueTab() {
       df: false,
     },
   ]);
-  const [requestedBy, setRequestedBy] = useState('');
+  const [requestedBy, setRequestedBy] = useState(savedEmail);
+  // The row waiting for "yes, remove it" — removing is a real change to the release.
+  const [removing, setRemoving] = useState<QueueItem | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [changeDetails, setChangeDetails] = useState('');
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -211,6 +234,17 @@ export function QueueTab() {
       );
       return;
     }
+    // The backend refuses a row without its JIRA ticket, and a change without
+    // "what changed and why" — say so before a round trip, for every row at once.
+    const missingJira = valid.filter(r => !r.jira_ticket.trim()).map(r => r.artifact.trim());
+    if (missingJira.length) {
+      setError(`JIRA ticket is required: ${missingJira.join(', ')}`);
+      return;
+    }
+    if (!changeDetails.trim()) {
+      setError('Say what changed and why — it drafts the change request on release day.');
+      return;
+    }
     const bad = valid
       .map(r => ({ artifact: r.artifact.trim(), err: tickError(r) }))
       .filter(x => x.err);
@@ -222,7 +256,10 @@ export function QueueTab() {
     try {
       const result = await apiPost<{
         ok?: boolean;
-        refused?: Array<{ artifact?: string; error?: string }>;
+        error?: string;
+        queued?: Array<{ artifact?: string }>;
+        refused?: Refusal[];
+        split?: boolean;
       }>(apiBase, '/api/release-queue/batch', {
         rows: valid.map(r => ({
           artifact: r.artifact.trim(),
@@ -235,12 +272,29 @@ export function QueueTab() {
         note: note.trim(),
       },
       { allowFailure: true });
-      if (result.ok === false) {
-        const reasons = (result.refused ?? [])
-          .map(r => `${r.artifact}: ${r.error}`)
-          .join(' | ');
-        throw new Error(reasons || 'Queueing refused by the backend.');
+      saveEmail(requestedBy.trim());
+      const queued = result.queued ?? [];
+      const refused = result.refused ?? [];
+      if (!queued.length && !refused.length) {
+        throw new Error(result.error || 'Queueing refused by the backend.');
       }
+      if (refused.length) {
+        // PARTIAL success still reports ok:true — the refused rows must stay in
+        // front of the developer (with why), or one change quietly ships split.
+        const why = refused.map(r => `${r.artifact}: ${describeRefusal(r)}`).join(' | ');
+        setError(
+          (queued.length
+            ? `Queued ${queued.map(q => q.artifact).join(', ')} — but NOT: `
+            : 'Nothing queued: ') +
+            why +
+            (queued.length ? ' — this splits your change; fix and re-queue before release day.' : ''),
+        );
+        const refusedNames = new Set(refused.map(r => r.artifact));
+        setRows(prev => prev.filter(r => refusedNames.has(r.artifact.trim())));
+        await refresh();
+        return;
+      }
+      setNotice(`Queued ${queued.map(q => q.artifact).join(', ')} — build and controls passed.`);
       setDialogOpen(false);
       setRows([
         {
@@ -263,21 +317,31 @@ export function QueueTab() {
     }
   }, [rows, requestedBy, changeDetails, note, refresh, apiBase]);
 
-  const withdraw = useCallback(
-    async (artifact: string) => {
-      setError(null);
-      try {
-        await apiPost(apiBase, '/api/release-queue/withdraw', {
-          artifact_name: artifact,
-          requested_by: requestedBy.trim(),
-        });
-        await refresh();
-      } catch (e) {
-        setError((e as Error).message);
-      }
-    },
-    [requestedBy, refresh, apiBase],
-  );
+  // Sends the version that was shown: if someone re-queued the chart at a new
+  // version meanwhile, the backend refuses rather than removing theirs.
+  const withdraw = useCallback(async () => {
+    if (!removing) return;
+    const who = requestedBy.trim();
+    if (!who.includes('@')) {
+      setError('Your email is needed — the removal is recorded against it.');
+      return;
+    }
+    setError(null);
+    const label = `${removing.artifact_name}:${removing.artifact_version}`;
+    try {
+      await apiPost(apiBase, '/api/release-queue/withdraw', {
+        artifact_name: label,
+        requested_by: who,
+      });
+      saveEmail(who);
+      setNotice(`Removed ${label} from the next release.`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRemoving(null);
+      await refresh();
+    }
+  }, [removing, requestedBy, refresh, apiBase]);
 
   const items = ctx?.queue ?? [];
 
@@ -288,14 +352,24 @@ export function QueueTab() {
         subheader="Next-release items; queued notes go to DevOps"
         action={
           <>
-            <IconButton onClick={refresh} disabled={loading} size="small">
+            <IconButton
+            aria-label="Refresh the queue"
+            title="Refresh the queue"
+            onClick={refresh}
+            disabled={loading}
+            size="small"
+          >
               <RefreshIcon />
             </IconButton>
             <Button
               size="small"
               variant="outlined"
               startIcon={<AddIcon />}
-              onClick={() => setDialogOpen(true)}
+              onClick={() => {
+                setError(null);
+                setNotice(null);
+                setDialogOpen(true);
+              }}
             >
               Add items
             </Button>
@@ -304,42 +378,61 @@ export function QueueTab() {
       />
       <CardContent>
         {loading && <Progress />}
-        {error && <Typography color="error">{error}</Typography>}
-        {!loading && !items.length && !error && (
-          <Typography color="textSecondary">Queue is empty.</Typography>
+        {error && !dialogOpen && <Typography color="error">{error}</Typography>}
+        {notice && !error && (
+          <Typography style={{ color: '#34d399' }}>{notice}</Typography>
+        )}
+        {!loading && !items.length && !error && !ctx?.error && (
+          <Typography color="textSecondary">Nothing is queued for the next release.</Typography>
         )}
         {items.length > 0 && (
-          <Table size="small">
+          // Scrolls sideways on a narrow screen instead of breaking words
+          // mid-way ("verifie|d", "Withdra|w").
+          <div style={{ overflowX: 'auto' }}>
+          <Table size="small" style={{ whiteSpace: 'nowrap' }}>
             <TableHead>
               <TableRow>
                 <TableCell>Image</TableCell>
-                <TableCell>Requested by</TableCell>
-                <TableCell>Jira</TableCell>
                 <TableCell>Destination</TableCell>
+                <TableCell>Jira</TableCell>
+                <TableCell>Build</TableCell>
+                <TableCell>Queued by</TableCell>
                 <TableCell>Note</TableCell>
-                <TableCell align="right">Actions</TableCell>
+                <TableCell align="right" />
               </TableRow>
             </TableHead>
             <TableBody>
               {items.map((it, idx) => (
                 <TableRow key={idx}>
-                  <TableCell>
+                  <TableCell style={{ fontFamily: 'ui-monospace, monospace' }}>
                     {it.artifact_name}:{it.artifact_version}
                   </TableCell>
-                  <TableCell>{it.requested_by}</TableCell>
-                  <TableCell>{it.jira_ticket}</TableCell>
                   <TableCell>
                     {describeDestination(it.prl1_only, it.df_only, it.target_envs)}
                   </TableCell>
-                  <TableCell>{it.note}</TableCell>
+                  <TableCell>{it.jira_ticket || '—'}</TableCell>
+                  <TableCell>
+                    <span style={{ color: it.build_verified ? '#34d399' : '#fbbf24' }}>
+                      {it.build_verified ? '✓ verified' : '⚠ not verified'}
+                    </span>
+                    {it.build_run_url && (
+                      <>
+                        {' '}
+                        <a href={it.build_run_url} target="_blank" rel="noopener noreferrer">
+                          run
+                        </a>
+                      </>
+                    )}
+                  </TableCell>
+                  <TableCell title={`${it.requested_by ?? ''} ${it.requested_at ?? ''}`}>
+                    {shortName(it.requested_by) || '—'}
+                    <Typography variant="caption" display="block" color="textSecondary">
+                      {timeAgo(it.requested_at)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell style={{ whiteSpace: 'normal', minWidth: 160 }}>{it.note}</TableCell>
                   <TableCell align="right">
-                    <Button
-                      size="small"
-                      color="secondary"
-                      onClick={() =>
-                        withdraw(`${it.artifact_name}:${it.artifact_version}`)
-                      }
-                    >
+                    <Button size="small" color="secondary" onClick={() => setRemoving(it)}>
                       Withdraw
                     </Button>
                   </TableCell>
@@ -347,6 +440,7 @@ export function QueueTab() {
               ))}
             </TableBody>
           </Table>
+          </div>
         )}
         {!ctx && !error && !loading && (
           <Typography color="textSecondary">
@@ -357,6 +451,32 @@ export function QueueTab() {
           <Typography color="error">{ctx.error}</Typography>
         )}
 
+        <Dialog open={!!removing} onClose={() => setRemoving(null)} maxWidth="xs" fullWidth>
+          <DialogTitle>Remove from the next release?</DialogTitle>
+          <DialogContent>
+            <Typography style={{ marginBottom: 12 }}>
+              <b style={{ fontFamily: 'ui-monospace, monospace' }}>
+                {removing?.artifact_name}:{removing?.artifact_version}
+              </b>{' '}
+              leaves the queue. It stays in the history.
+            </Typography>
+            <TextField
+              fullWidth
+              variant="outlined"
+              size="small"
+              label="Your email (recorded with the removal)"
+              value={requestedBy}
+              onChange={e => setRequestedBy(e.target.value)}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setRemoving(null)}>Cancel</Button>
+            <Button variant="contained" color="secondary" onClick={withdraw}>
+              Remove
+            </Button>
+          </DialogActions>
+        </Dialog>
+
         <Dialog
           open={dialogOpen}
           onClose={() => setDialogOpen(false)}
@@ -365,6 +485,11 @@ export function QueueTab() {
         >
           <DialogTitle>Add to next release</DialogTitle>
           <DialogContent>
+            {error && (
+              <Typography color="error" style={{ marginBottom: 12 }}>
+                {error}
+              </Typography>
+            )}
             <TextField
               id="queue-requested-by"
               fullWidth

@@ -76,7 +76,8 @@ const releaseCopilotWidget = HomePageWidgetBlueprint.make({
     title: 'Release Status (Release Copilot)',
     description: 'Current release status from the Release Copilot agent',
     components: async () => ({
-      Content: StatusCard,
+      // The widget draws the titled card; the status goes inside it bare.
+      Content: () => <StatusCard embedded />,
     }),
   },
 });

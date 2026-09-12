@@ -17,6 +17,7 @@ import { Progress } from '@backstage/core-components';
 import { apiGet, useApiBase } from '../api';
 import type { ChatMessage } from './useAgentChat';
 import { AgentMarkdown } from './AgentMarkdown';
+import { ReleaseStatus, StatusSummary } from './StatusSummary';
 import { DEV_PORTAL as P } from '../look';
 
 export type QuickAsk = { label: string; hint: string; text: string };
@@ -121,16 +122,6 @@ const useStyles = makeStyles(theme => {
       display: 'flex',
       gap: theme.spacing(1),
       marginTop: theme.spacing(1),
-    },
-    statusJson: {
-      overflowX: 'auto' as const,
-      fontSize: '0.78rem',
-      fontFamily: P.mono,
-      margin: 0,
-      padding: theme.spacing(1.5),
-      borderRadius: P.radius.control,
-      background: dark ? P.sunken : 'rgba(15,23,42,.04)',
-      color: dark ? P.mint : '#047857',
     },
   };
 });
@@ -243,10 +234,14 @@ export function ChatTab(props: {
   );
 }
 
-export function StatusCard() {
-  const classes = useStyles();
+/**
+ * The release status. `embedded` drops the card chrome for hosts that already
+ * draw a titled card around it (the Home page widget) — a card inside a card
+ * with two titles otherwise.
+ */
+export function StatusCard(props: { embedded?: boolean } = {}) {
   const apiBase = useApiBase();
-  const [status, setStatus] = useState<unknown>(null);
+  const [status, setStatus] = useState<ReleaseStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -254,7 +249,7 @@ export function StatusCard() {
     setLoading(true);
     setError(null);
     try {
-      setStatus(await apiGet(apiBase, '/api/release-status'));
+      setStatus(await apiGet<ReleaseStatus>(apiBase, '/api/release-status'));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -262,30 +257,42 @@ export function StatusCard() {
     }
   }, [apiBase]);
 
+  const refreshButton = (
+    <IconButton
+      aria-label="Refresh release status"
+      title="Refresh release status"
+      onClick={refresh}
+      disabled={loading}
+      size="small"
+    >
+      <RefreshIcon />
+    </IconButton>
+  );
+  const body = (
+    <>
+      {loading && <Progress />}
+      {error && <Typography color="error">{error}</Typography>}
+      {!status && !loading && !error && (
+        <Typography color="textSecondary">
+          Click refresh to load the current release status.
+        </Typography>
+      )}
+      {status !== null && <StatusSummary status={status} />}
+    </>
+  );
+
+  if (props.embedded) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>{body}</div>
+        {refreshButton}
+      </div>
+    );
+  }
   return (
     <Card>
-      <CardHeader
-        title="Release status"
-        action={
-          <IconButton onClick={refresh} disabled={loading} size="small">
-            <RefreshIcon />
-          </IconButton>
-        }
-      />
-      <CardContent>
-        {loading && <Progress />}
-        {error && <Typography color="error">{error}</Typography>}
-        {!status && !loading && !error && (
-          <Typography color="textSecondary">
-            Click refresh to load the current release status.
-          </Typography>
-        )}
-        {status !== null && (
-          <pre className={classes.statusJson}>
-            {JSON.stringify(status, null, 2)}
-          </pre>
-        )}
-      </CardContent>
+      <CardHeader title="Release status" action={refreshButton} />
+      <CardContent>{body}</CardContent>
     </Card>
   );
 }

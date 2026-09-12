@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Button,
   Card,
@@ -71,22 +71,47 @@ export function DeployTab(props: {
 
   const isProd = env === 'prod';
 
+  // Each environment keeps its own edits: switching UAT ↔ PRD used to reload
+  // the live file over whatever had been typed. `edited` holds the edits of
+  // the environment you left; the live file is fetched only for one you have
+  // not touched.
+  const edited = useRef<Partial<Record<'uat' | 'prod', { json: string; repo: string }>>>({});
+  const dirty = useRef(false);
+  const loadSeq = useRef(0);
+
   const loadTemplate = useCallback(
     async (target: 'uat' | 'prod') => {
       setError(null);
+      const saved = edited.current[target];
+      if (saved) {
+        setJson(saved.json);
+        setRepo(saved.repo);
+        dirty.current = true;
+        return;
+      }
+      dirty.current = false;
+      // A slower answer for the environment you just left must not land.
+      const seq = ++loadSeq.current;
       try {
         const t = await apiGet<DeployTemplate>(
           apiBase,
           `/api/deploy-template?env=${target}`,
         );
+        if (seq !== loadSeq.current) return;
         setJson(JSON.stringify(t.deployment ?? { include: [] }, null, 2));
         setRepo(t.deploy_repo ?? '');
       } catch (e) {
-        setError((e as Error).message);
+        if (seq === loadSeq.current) setError((e as Error).message);
       }
     },
     [apiBase],
   );
+
+  const switchEnv = (next: 'uat' | 'prod') => {
+    if (next === env) return;
+    if (dirty.current) edited.current[env] = { json, repo };
+    setEnv(next);
+  };
 
   useEffect(() => {
     loadTemplate(env);
@@ -94,14 +119,26 @@ export function DeployTab(props: {
 
   const submit = useCallback(async () => {
     setError(null);
-    let parsed: { include?: unknown[] };
+    let parsed: unknown;
     try {
       parsed = JSON.parse(json);
     } catch {
       setError('Deployment JSON is not valid JSON.');
       return;
     }
-    const include = parsed.include ?? [];
+    // {"include":[...]} as the editor shows it, or a bare list of entries.
+    // Anything else (null, a number, a single object) is a message, not a crash.
+    let include: unknown[] | null = null;
+    if (Array.isArray(parsed)) {
+      include = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      const inner = (parsed as { include?: unknown }).include;
+      if (Array.isArray(inner)) include = inner;
+    }
+    if (!include) {
+      setError('Expected {"include": [ … ]} — a list of chart entries.');
+      return;
+    }
     if (
       !include.length ||
       include.some(
@@ -166,7 +203,7 @@ export function DeployTab(props: {
                 id="deploy-env"
                 value={env}
                 label="Environment"
-                onChange={e => setEnv(e.target.value as 'uat' | 'prod')}
+                onChange={e => switchEnv(e.target.value as 'uat' | 'prod')}
               >
                 <MenuItem value="uat">UAT</MenuItem>
                 <MenuItem value="prod">PRD</MenuItem>
@@ -181,7 +218,10 @@ export function DeployTab(props: {
               size="small"
               label="Deployment repo (owner/repo)"
               value={repo}
-              onChange={e => setRepo(e.target.value)}
+              onChange={e => {
+                dirty.current = true;
+                setRepo(e.target.value);
+              }}
             />
           </Grid>
           <Grid item xs={12}>
@@ -195,7 +235,10 @@ export function DeployTab(props: {
                 env === 'prod' ? 'prd' : 'uat'
               } override JSON`}
               value={json}
-              onChange={e => setJson(e.target.value)}
+              onChange={e => {
+                dirty.current = true;
+                setJson(e.target.value);
+              }}
               InputProps={{ className: classes.jsonBox }}
             />
           </Grid>
