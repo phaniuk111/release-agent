@@ -3,25 +3,16 @@
 // render() — no new layout code. Each section is a native <details> accordion.
 // Static sections render once on first expand; sections marked live:true
 // re-render every time they're opened (fresh data each look).
-import { API_BASE } from './state.js';
-import { escapeHtml as esc } from './chat.js';
+import { getQueue, releaseInsights, withdrawFromQueue } from './api.js';
+import { escapeHtml as esc, shortName, timeAgo } from './core/format.js';
 import { showQueueForm } from './forms.js';
 import { loadReleaseStatus } from './status.js';
-
-function _timeAgo(iso) {
-    if (!iso) return '';
-    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-    if (s < 3600) return Math.floor(s / 60) + 'm ago';
-    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-    return Math.floor(s / 86400) + 'd ago';
-}
 
 async function _renderQueueSection(body) {
     body.innerHTML = '<div class="text-[11px] text-slate-500">Loading queue…</div>';
     let ctx = null;
     try {
-        const r = await fetch(API_BASE + '/api/release-queue');
-        ctx = await r.json();
+        ctx = await getQueue();
     } catch (e) { ctx = { ok: false, error: String(e) }; }
 
     const addBtn = '<button id="q-add-btn" class="text-[11px] text-emerald-400 hover:text-emerald-300">' +
@@ -51,8 +42,8 @@ async function _renderQueueSection(body) {
                 (q.jira_ticket ? '<span class="text-amber-300/80">' + esc(q.jira_ticket) + '</span>' : '') +
                 (q.prl1_only ? '<span class="text-violet-400">PRL1</span>' : '') +
                 (q.df_only ? '<span class="text-sky-400">DF</span>' : '') +
-                '<span class="text-slate-600">' + esc((q.requested_by || '').split('@')[0]) + '</span>' +
-                '<span class="text-slate-700">' + _timeAgo(q.requested_at) + '</span>' +
+                '<span class="text-slate-600">' + esc(shortName(q.requested_by)) + '</span>' +
+                '<span class="text-slate-700">' + timeAgo(q.requested_at) + '</span>' +
                 '<button data-wd="' + esc(q.artifact_name) + '" data-wv="' + esc(q.artifact_version || '') +
                 '" title="Withdraw from the queue" ' +
                 'class="text-slate-600 hover:text-red-400"><i class="fa-solid fa-xmark"></i></button>' +
@@ -65,14 +56,10 @@ async function _renderQueueSection(body) {
             btn.addEventListener('click', async () => {
                 btn.disabled = true;
                 try {
-                    await fetch(API_BASE + '/api/release-queue/withdraw', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            artifact_name: btn.dataset.wd,
-                            artifact_version: btn.dataset.wv || '',
-                            requested_by: localStorage.getItem('queue_email') || '',
-                        }),
+                    await withdrawFromQueue({
+                        artifact_name: btn.dataset.wd,
+                        artifact_version: btn.dataset.wv || '',
+                        requested_by: localStorage.getItem('queue_email') || '',
                     });
                 } catch (e) {}
                 _renderQueueSection(body);
@@ -107,13 +94,11 @@ async function _renderStatsSection(body) {
     results.innerHTML = '<span class="text-slate-600">Loading…</span>';
     let data = null;
     try {
-        const qs = new URLSearchParams({
+        data = await releaseInsights({
             pattern: body.querySelector('#ri-pattern').value.trim(),
             event_type: body.querySelector('#ri-type').value,
             days: '90',
         });
-        const r = await fetch(API_BASE + '/api/release-insights?' + qs.toString());
-        data = await r.json();
     } catch (e) { data = { ok: false, error: String(e) }; }
     if (!data || !data.ok) {
         results.innerHTML = data && data.disabled ? 'Stats disabled (no BigQuery configured).'

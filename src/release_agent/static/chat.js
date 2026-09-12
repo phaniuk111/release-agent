@@ -1,7 +1,9 @@
 // Chat core: markdown rendering, message DOM, the /api/chat SSE stream, and
 // the confirmation/approval replies. Everything here is rendering + transport;
 // all decisions live server-side.
-import { API_BASE, getThreadId, rotateThreadId } from './state.js';
+import { getThreadId, rotateThreadId } from './state.js';
+import { openChat, sessionDisconnect } from './api.js';
+import { escapeHtml } from './core/format.js';
 import { parseDeployIntent, showDeployForm } from './forms.js';
 import { renderConnectionStatus } from './connect.js';
 import { showCapabilities } from './palette.js';
@@ -126,18 +128,8 @@ function _renderTables(t) {
     return out.join('\n');
 }
 
-// HTML-escape untrusted text before it enters innerHTML. Quotes MUST be escaped
-// too: model output and tool results (PR titles, branch names, BQ notes) can
-// carry a `"` that would otherwise break out of an attribute value — the
-// indirect-prompt-injection path ADK's safety guidance calls out.
-export function escapeHtml(value) {
-    return String(value == null ? '' : value)
-        .split('&').join('&amp;')
-        .split('<').join('&lt;')
-        .split('>').join('&gt;')
-        .split('"').join('&quot;')
-        .split("'").join('&#39;');
-}
+// HTML escaping lives in core/format.js; re-exported for existing importers.
+export { escapeHtml };
 
 // Minimal, safe markdown -> HTML for streamed assistant text.
 export function renderMarkdown(t) {
@@ -263,11 +255,7 @@ export async function sendMessage(overrideText) {
     const botMsg = addMessage('bot', '<span class="dots"><span></span><span></span><span></span></span>', true);
 
     try {
-        const res = await fetch(API_BASE + '/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, thread_id: getThreadId() })
-        });
+        const res = await openChat(message, getThreadId());
 
         if (!res.ok) throw new Error(await res.text());
 
@@ -385,11 +373,7 @@ export function sendConfirmation() {
 export async function newThread() {
     // Drop the old thread's stored repo + PAT on the server, then rotate.
     try {
-        await fetch(API_BASE + '/api/session/disconnect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ thread_id: getThreadId() })
-        });
+        await sessionDisconnect(getThreadId());
     } catch (e) {}
     const threadId = rotateThreadId();
     document.getElementById('thread-label').textContent = threadId;

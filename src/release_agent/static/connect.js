@@ -1,7 +1,8 @@
 // GitHub PAT connection (per session). The PAT is sent once to the server and
 // never stored in the browser; all GitHub actions in this session then run as
 // that user against the server-configured repositories.
-import { API_BASE, getThreadId } from './state.js';
+import { getThreadId } from './state.js';
+import { sessionConnect, sessionStatus } from './api.js';
 import { addMessage } from './chat.js';
 
 export function renderConnectionStatus(s) {
@@ -21,8 +22,8 @@ export function renderConnectionStatus(s) {
 
 export async function refreshConnectionStatus() {
     try {
-        const r = await fetch(API_BASE + '/api/session/status?thread_id=' + encodeURIComponent(getThreadId()));
-        if (r.ok) renderConnectionStatus(await r.json());
+        const d = await sessionStatus(getThreadId());
+        if (d.ok !== false) renderConnectionStatus(d);
     } catch (e) {}
 }
 
@@ -62,12 +63,7 @@ export function showConnectForm() {
         if (!token) { err.textContent = 'PAT token is required.'; return; }
         submit.disabled = true; submit.textContent = 'Connecting…';
         try {
-            const r = await fetch(API_BASE + '/api/session/connect', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ thread_id: getThreadId(), pat_token: token })
-            });
-            const d = await r.json();
+            const d = await sessionConnect(getThreadId(), token);
             if (!d.ok) { err.textContent = d.error || 'Could not connect.'; return; }
             renderConnectionStatus(d);
             wrap.remove();
