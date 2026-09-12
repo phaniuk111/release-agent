@@ -21,7 +21,7 @@ export const GROUPS = [
 // otherwise the text is pre-filled so the user edits the image:tag first.
 export const CAPABILITIES = [
     {group:'Release', icon:'fa-cart-plus',         label:'Add to next release',  desc:'queue your chart:version now — DevOps picks it up on release day', form:'queue'},
-    {group:'Release', icon:'fa-list-ul',           label:'Check release queue', desc:"what's queued for the next release — who added it, routing, JIRA, build status", send:true,  text:"what's queued for the next release?"},
+    {group:'Release', icon:'fa-list-ul',           label:'Check release queue', desc:"what's queued for the next release, as a table — who added it, routing, JIRA, build; remove a row", form:'queue-table'},
     {group:'Release', icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
     {group:'Release', icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
     {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},

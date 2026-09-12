@@ -53,7 +53,8 @@ async function _renderQueueSection(body) {
                 (q.df_only ? '<span class="text-sky-400">DF</span>' : '') +
                 '<span class="text-slate-600">' + esc((q.requested_by || '').split('@')[0]) + '</span>' +
                 '<span class="text-slate-700">' + _timeAgo(q.requested_at) + '</span>' +
-                '<button data-wd="' + esc(q.artifact_name) + '" title="Withdraw from the queue" ' +
+                '<button data-wd="' + esc(q.artifact_name) + '" data-wv="' + esc(q.artifact_version || '') +
+                '" title="Withdraw from the queue" ' +
                 'class="text-slate-600 hover:text-red-400"><i class="fa-solid fa-xmark"></i></button>' +
                 '</div>';
         });
@@ -69,6 +70,7 @@ async function _renderQueueSection(body) {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             artifact_name: btn.dataset.wd,
+                            artifact_version: btn.dataset.wv || '',
                             requested_by: localStorage.getItem('queue_email') || '',
                         }),
                     });

@@ -389,3 +389,40 @@ def test_queued_intent_records_both_df_pipelines(monkeypatch):
     assert both["prl1_only"] is False and prd_only["prl1_only"] is False
     assert both["target_envs"] == "prl1,prd"
     assert prd_only["target_envs"] == "prd"
+
+
+# --- removing a row from the queue table -------------------------------------
+
+def _live_queue(monkeypatch, *items):
+    inserted = []
+    monkeypatch.setattr(RQ, "current_queue", lambda use_cache=True: {"ok": True, "queue": list(items)})
+    monkeypatch.setattr(RQ, "_insert", lambda rows: inserted.extend(rows) or {"ok": True})
+    return inserted
+
+
+def test_removing_the_row_you_saw_withdraws_it_and_records_who(monkeypatch):
+    inserted = _live_queue(monkeypatch, {"artifact_name": "svc-a", "artifact_version": "1.0.0"})
+    out = RQ.withdraw_intent("svc-a", "ops@example.com", expected_version="1.0.0")
+    assert out == {"ok": True, "withdrawn": "svc-a"}
+    assert inserted[0]["event_type"] == "withdrawn" and inserted[0]["requested_by"] == "ops@example.com"
+
+
+def test_a_row_requeued_at_a_new_version_meanwhile_is_not_removed(monkeypatch):
+    """Rows are keyed by chart name: without the version check, a click on the
+    1.0.0 row would take out the 1.0.1 someone queued a minute later."""
+    inserted = _live_queue(monkeypatch, {"artifact_name": "svc-a", "artifact_version": "1.0.1",
+                                         "requested_by": "bob@example.com"})
+    out = RQ.withdraw_intent("svc-a", "ops@example.com", expected_version="1.0.0")
+    assert out["ok"] is False and out["stale"] is True
+    assert "now queued at 1.0.1 (by bob)" in out["error"] and not inserted
+
+
+def test_a_row_already_gone_says_so(monkeypatch):
+    inserted = _live_queue(monkeypatch)
+    out = RQ.withdraw_intent("svc-a:1.0.0", "ops@example.com")      # the Backstage shape
+    assert out["stale"] is True and "no longer in the queue" in out["error"] and not inserted
+
+
+def test_withdraw_by_name_alone_still_works_for_the_chat_tool(monkeypatch):
+    inserted = _live_queue(monkeypatch, {"artifact_name": "svc-a", "artifact_version": "9.9.9"})
+    assert RQ.withdraw_intent("svc-a", "dev@example.com")["ok"] is True and inserted

@@ -222,10 +222,32 @@ def add_intent(
     return result
 
 
-def withdraw_intent(artifact_name: str, actor: str) -> dict[str, Any]:
-    name = str(artifact_name).strip().split(":")[0]
+def withdraw_intent(artifact_name: str, actor: str, expected_version: str = "") -> dict[str, Any]:
+    """Withdraw a chart from the queue (queue rows are keyed by chart NAME).
+
+    ``expected_version`` — or a version in ``artifact_name`` ("name:1.2.3") —
+    is the row the person was looking at. Between their table loading and the
+    click, someone may have re-queued the same chart at a new version; removing
+    by name alone would then silently take out a version they never saw. With
+    an expected version the withdrawal is refused unless it still matches.
+    """
+    name, _, version_in_name = str(artifact_name).strip().partition(":")
+    name = name.strip()
     if not name:
         return {"ok": False, "error": "artifact_name is required."}
+    expected = str(expected_version or version_in_name or "").strip()
+    if expected:
+        live = current_queue(use_cache=False)
+        if live.get("ok"):
+            item = next((q for q in live.get("queue") or [] if q.get("artifact_name") == name), None)
+            if item is None:
+                return {"ok": False, "stale": True,
+                        "error": f"{name} is no longer in the queue — already withdrawn or released."}
+            if str(item.get("artifact_version") or "") != expected:
+                by = str(item.get("requested_by") or "someone").split("@")[0]
+                return {"ok": False, "stale": True,
+                        "error": (f"{name} is now queued at {item.get('artifact_version')} (by {by}), "
+                                  f"not {expected} — nothing was removed. Refresh and check first.")}
     row = {
         "event_id": uuid.uuid4().hex,
         "event_type": "withdrawn",

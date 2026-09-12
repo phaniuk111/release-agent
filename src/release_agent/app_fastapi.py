@@ -152,6 +152,7 @@ async def chat_page():
         .chat-container::-webkit-scrollbar-thumb { background: rgba(148,163,184,.18); border-radius: 99px; }
         .chat-container::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.30); }
         .message { max-width: 84%; line-height: 1.6; animation: rise .28s cubic-bezier(.2,.8,.2,1); }
+        .message.queue-table-card { max-width: 100%; }   /* a table needs the room; Remove must stay visible */
         @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
         .bot { background: rgba(30,41,59,.6); border: 1px solid rgba(148,163,184,.10); }
         .user { background: linear-gradient(135deg, #10b981, #2dd4bf); color: #04241c; font-weight: 500; }
@@ -499,6 +500,8 @@ class QueueBatchRequest(BaseModel):
 class QueueWithdrawRequest(BaseModel):
     artifact_name: str
     requested_by: str = ""
+    # The version shown when the person clicked; refused if the queue moved on.
+    artifact_version: str = ""
 
 
 _known_charts_cache: dict = {"at": 0.0, "charts": []}
@@ -710,7 +713,7 @@ def release_queue_withdraw(req: QueueWithdrawRequest):
     'withdrawn' event; nothing is deleted)."""
     from .tools import release_queue
 
-    return release_queue.withdraw_intent(req.artifact_name, req.requested_by)
+    return release_queue.withdraw_intent(req.artifact_name, req.requested_by, req.artifact_version)
 
 
 @app.get("/api/release-insights")
