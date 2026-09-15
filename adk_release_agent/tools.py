@@ -458,9 +458,10 @@ def queue_release_intent(
         if allowed_failures:
             result["allowed_failures"] = allowed_failures
             warnings.insert(0, (
-                f"Queued with {', '.join(allowed_failures)} FAILED — allowed by policy "
-                "(QUEUE_ALLOWED_FAILING_CONTROLS). It stays marked as failed on the queue "
-                "entry and in the change request."))
+                f"Queued. {', '.join(allowed_failures)} is OPEN — it failed on the build run "
+                "and may be a false positive, so it is allowed (QUEUE_ALLOWED_FAILING_CONTROLS) "
+                "and shown as open in the release queue until someone closes it manually. "
+                "The release is not stopped by it."))
         if warnings:
             result["warnings"] = warnings
         # The UI lists these by name; the sentence in warnings is the chat lane's

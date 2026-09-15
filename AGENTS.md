@@ -57,6 +57,8 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
 4. **Queue eligibility**: queueing for a release REQUIRES the GitHub Actions run URL;
    failed build or failed control (RCTLDEF*/RLFT/RFTL prefixes,
    case-insensitive, steps or jobs) → refused with the failures listed.
+   Exception: QUEUE_ALLOWED_FAILING_CONTROLS (e.g. 1691, a possible false positive)
+   queues anyway and shows as OPEN in the release queue only — nothing downstream stops.
 5. **Secrets**: PATs are memory-only per thread and masked everywhere; nothing
    sensitive in git, BQ, or traces. Identity comes only from a VERIFIED token (identity.py) —
    a header value is never trusted just because it is present. `.env`, `.claude/launch.json`, `traces/` stay

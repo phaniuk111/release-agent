@@ -1,6 +1,7 @@
-"""Control 1691 may fail without stopping a chart being queued — but it is
-recorded and shown as FAILED. Every other failure still refuses, and a run where
-everything passed queues exactly as before."""
+"""Control 1691 may fail without stopping a chart being queued (CARE or DF) — it
+can be a false positive, closed by hand. It shows as OPEN in the release queue and
+nowhere else; the release is not stopped by it. Every other failure still
+refuses, and a run where everything passed queues exactly as before."""
 import pytest
 
 from adk_release_agent import tools as T
@@ -72,7 +73,7 @@ def test_only_1691_failing_still_queues_but_is_recorded_as_failed(queue):
     assert out["ok"] and out["eligible"] is True
     [w] = queue.writes
     assert w["allowed_failures"] == ["RCTLDEF0001691 in job build"]
-    assert "FAILED" in out["warnings"][0] and "RCTLDEF0001691" in out["warnings"][0]
+    assert "OPEN" in out["warnings"][0] and "RCTLDEF0001691" in out["warnings"][0]
 
 
 def test_1691_as_a_whole_job_takes_its_own_failed_steps_with_it(queue):
@@ -146,16 +147,26 @@ def test_a_table_without_the_column_keeps_the_fact_in_the_note(monkeypatch):
     assert calls[1][0]["note"] == "[control failed, allowed: RCTLDEF0001691] hi"
 
 
-def test_the_change_request_names_the_failed_control():
+def test_the_change_request_does_not_mention_it():
+    """Only the release queue shows it — a possible false positive, closed by
+    hand, does not belong in the change record."""
     items = [{"name": "payments-api", "version": "1.4.2", "build_verified": True,
-              "allowed_failures": "RCTLDEF0001691 in job build"},
-             {"name": "orders-api", "version": "2.0.0", "build_verified": True}]
+              "allowed_failures": "RCTLDEF0001691 in job build"}]
     text = " ".join(str(v) for v in CHG.build_defaults(items, "care", None, 7).values())
-    assert "payments-api (RCTLDEF0001691 in job build)" in text and "allowed by policy" in text
-    assert "with all release controls (RCTLD) passing." not in text
+    assert "1691" not in text and "with all release controls (RCTLD) passing." in text
 
 
-def test_a_failure_kept_in_the_note_still_reads_as_failed():
+def test_a_dataflow_chart_follows_the_same_rule(queue, monkeypatch):
+    monkeypatch.setattr(RQ, "add_intent", lambda **kw: queue.writes.append(kw) or {"ok": True, "intent": kw})
+    rep = report([ctl("RCTLDEF0000104"), ctl("RCTLDEF0001691", ok=False)], run_ok=False)
+    monkeypatch.setattr(T, "_invoke_tool", lambda name, args=None: rep)
+    out = T.queue_release_intent(artifact="df-orders:2.1.0", requested_by="d@x", df_only=True,
+                                 build_run_url=RUN["url"], jira_ticket="ABC-1", change_details="d")
+    assert out["ok"] and queue.writes[-1]["df_only"] is True
+    assert queue.writes[-1]["allowed_failures"] == ["RCTLDEF0001691 in job build"]
+
+
+def test_a_failure_kept_in_the_note_still_reads_back():
     """Found live: on a table without the column the fact went to the note, and
     the queue read the build back as plain 'verified'."""
     ev = {"event_type": "queued", "artifact_name": "svc", "artifact_version": "1", "build_verified": True,

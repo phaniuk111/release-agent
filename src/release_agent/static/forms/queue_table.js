@@ -71,12 +71,12 @@ async function _renderQueueTable(wrap, flash) {
                 ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check mr-1"></i>verified</span>'
                 : '<span class="text-amber-400" title="no verified build at queue time">' +
                   '<i class="fa-solid fa-triangle-exclamation mr-1"></i>not verified</span>';
-            // Failed controls by number (allowed by policy), else "all passed".
+            // An allowed control that failed reads "open" — to close by hand.
             const cs = controlsSummary(q);
             const controls = '<span class="' +
-                (cs.state === 'passed' ? 'text-emerald-400' : cs.state === 'failed' ? 'text-red-400' : 'text-slate-500') +
+                (cs.state === 'passed' ? 'text-emerald-400' : cs.state === 'open' ? 'text-amber-400' : 'text-slate-500') +
                 '" title="' + esc(cs.title) + '"><i class="fa-solid ' +
-                (cs.state === 'passed' ? 'fa-circle-check' : cs.state === 'failed' ? 'fa-circle-xmark' : 'fa-circle-minus') +
+                (cs.state === 'passed' ? 'fa-circle-check' : cs.state === 'open' ? 'fa-circle-exclamation' : 'fa-circle-minus') +
                 ' mr-1"></i>' + esc(cs.label) + '</span>';
             const run = q.build_run_url
                 ? ' <a href="' + esc(q.build_run_url) + '" target="_blank" rel="noopener" ' +

@@ -399,10 +399,11 @@ class Settings(BaseSettings):
     )
     # ...and only with the run that built exactly that chart:version (its trigger
     # tag, or the tag its tag-generation step logged). False = warn only.
-    # Controls whose FAILURE does not stop a chart being queued — it is still
-    # recorded and shown as failed (queue, release form, change request). Comma
-    # list; "1691" matches a control ID ending in that number (RCTLDEF0001691),
-    # or give the full ID. Any OTHER failure still refuses the chart.
+    # Controls whose FAILURE does not stop a chart being queued (CARE or DF) — it
+    # can be a false positive, closed by hand. It shows as OPEN in the release
+    # queue only; releases are not stopped by it. Comma list; "1691" matches a
+    # control ID ending in that number (RCTLDEF0001691), or give the full ID.
+    # Any OTHER failure still refuses the chart.
     queue_allowed_failing_controls: str = Field(
         default="",
         validation_alias=AliasChoices("QUEUE_ALLOWED_FAILING_CONTROLS"),
