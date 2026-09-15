@@ -58,7 +58,7 @@ proxy:
   # TLS-INSPECTING proxy? (symptom: "certificate verify failed: self-signed
   # certificate in certificate chain"). Put the corporate root CA in a ConfigMap
   # and reference it here — the chart mounts it and points requests, OpenSSL and
-  # git at it. Verify from THIS image, not another pod: corporate base images
+  # the release checkout (Dulwich) at it. Verify from THIS image, not another pod: corporate base images
   # often already trust the CA and hide the problem.
   #   kubectl -n <ns> create configmap corp-proxy-ca --from-file=ca.crt=/path/to/root-ca.crt
   # caBundle:

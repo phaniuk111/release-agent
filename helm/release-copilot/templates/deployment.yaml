@@ -88,15 +88,13 @@ spec:
             {{- if $prx.caBundle }}
             {{- $ca := printf "/etc/proxy-ca/%s" (default "ca.crt" $prx.caBundle.key) }}
             # A TLS-INSPECTING proxy re-signs certs with the corporate CA, which
-            # the slim base image does not trust. Three vars because the stack
-            # has three TLS clients: requests/PyGithub, OpenSSL (httpx, google
-            # clients) and git — GIT_SSL_CAINFO is the one that lets the release
-            # flow clone the deploy repo.
+            # the slim base image does not trust. REQUESTS_CA_BUNDLE covers
+            # requests/PyGithub AND the release checkout (Dulwich is handed the
+            # same bundle, tools/git_snapshot.py); SSL_CERT_FILE covers OpenSSL
+            # (httpx, google clients).
             - name: REQUESTS_CA_BUNDLE
               value: {{ $ca | quote }}
             - name: SSL_CERT_FILE
-              value: {{ $ca | quote }}
-            - name: GIT_SSL_CAINFO
               value: {{ $ca | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}

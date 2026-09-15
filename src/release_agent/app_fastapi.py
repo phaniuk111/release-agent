@@ -1216,8 +1216,8 @@ def diagnostics(request: Request):
     # Creating a release needs the deploy repo's files on disk, and each way of
     # getting them runs over a different host the proxy may allow separately
     # (git endpoint / codeload / REST). Probe all three — cheaply, nothing is
-    # downloaded — plus the repo's size, so choosing between the git CLI,
-    # Dulwich and a snapshot is measured, not guessed. See tools/clone_probe.
+    # downloaded — plus the repo's size and a branch listing through Dulwich's
+    # own transport, which is what the release checkout uses. See tools/clone_probe.
     try:
         from .tools.clone_probe import probe_clone_paths
 
@@ -1251,7 +1251,7 @@ def diagnostics(request: Request):
     report["ok"] = bool(
         report["vertex"].get("ok")
         and report["github"].get("ok")
-        # Release creation as it runs TODAY: the git binary and the git endpoint.
+        # Release creation: Dulwich can list the base branch (no git binary needed).
         and ((report.get("clone_paths") or {}).get("verdict") or {}).get("release_ready_today")
     )
     report["identity"] = _identity_report(request)

@@ -31,6 +31,7 @@ dependencies = [
     # the alternative is an image that boots and only fails once someone turns
     # the backend on.
     "google-cloud-aiplatform>=1.71",
+    "dulwich>=1.2.15",
 ]
 
 [project.optional-dependencies]

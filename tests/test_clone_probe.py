@@ -45,9 +45,12 @@ class _Repo:
                                raw_data={"truncated": False})
 
 
-def _probe(session):
+DULWICH_OK = {"ok": True, "branch": "sit", "ms": 5}
+
+
+def _probe(session, dulwich=DULWICH_OK):
     return P.probe_clone_paths("o/r", session=session, gh=SimpleNamespace(get_repo=lambda r: _Repo()),
-                               token=TOKEN)
+                               token=TOKEN, dulwich_probe=lambda repo, branch, token: dulwich)
 
 
 GIT_OK = _Resp(200, "application/x-git-upload-pack-advertisement")
@@ -86,14 +89,52 @@ def test_no_secret_ever_reaches_the_report():
     assert out["codeload"]["host"] == "codeload.github.com"
 
 
+def test_urllib3s_path_only_quote_does_not_leak_the_tarball_token():
+    """The cluster's real error: urllib3 quotes only "/path?token=…", never the
+    full URL — replacing the full URL alone let the token through."""
+
+    class _Urllib3Style(_Session):
+        def get(self, url, **kw):
+            host = url.split("://")[-1].split("/")[0]
+            if host.startswith("codeload"):
+                path = url.split(host, 1)[1]
+                raise ConnectionError(
+                    f"HTTPSConnectionPool(host='{host}', port=443): Max retries exceeded "
+                    f"with url: {path} (Caused by ProxyError('Unable to connect to proxy', "
+                    "OSError('Tunnel connection failed: 403 Forbidden')))")
+            return GIT_OK
+
+    out = _probe(_Urllib3Style())
+    assert "SHORTLIVED" not in str(out)
+    assert "403 Forbidden" in out["codeload"]["error"], "the real cause still fits in the message"
+
+
+def test_a_token_param_is_masked_wherever_it_appears():
+    assert P._mask_token_params("url: /x?token=AB12&a=1 (y)") == "url: /x?token=***&a=1 (y)"
+    assert P._mask_token_params("a token=Z b token=Q") == "a token=*** b token=***"
+    assert P._mask_token_params("no secrets") == "no secrets"
+
+
 def test_the_probe_downloads_nothing():
     session = _Session(git=GIT_OK, codeload=TAR_OK)
     _probe(session)
     assert all(kw.get("stream") for _, kw in session.calls), "stream + first chunk only"
 
 
-def test_release_ready_today_needs_both_the_binary_and_the_endpoint():
+def test_release_ready_today_is_dulwich_listing_the_branch_no_git_binary():
     ok = {"ok": True}
-    assert P.verdict(True, ok, {}, {})["release_ready_today"] is True
-    assert P.verdict(False, ok, {}, {})["release_ready_today"] is False
-    assert P.verdict(True, {"ok": False}, {}, {})["release_ready_today"] is False
+    assert P.verdict(ok, {}, {}, ok)["release_ready_today"] is True
+    assert P.verdict(ok, {}, {}, {"ok": False, "error": "SSLError"})["release_ready_today"] is False
+    assert P.verdict(ok, {}, {})["release_ready_today"] is False, "not probed is not ready"
+
+
+def test_endpoint_open_but_dulwich_failing_points_at_proxy_and_ca():
+    v = P.verdict({"ok": True}, {}, {}, {"ok": False, "error": "SSLError: certificate verify failed"})
+    assert "proxy and CA" in v["summary"] and "certificate verify failed" in v["summary"]
+
+
+def test_the_cluster_shape_codeload_blocked_endpoint_open_is_ready():
+    out = _probe(_Session(git=GIT_OK, raise_on=("codeload.github.com",)))
+    assert out["verdict"]["release_ready_today"] is True
+    assert out["verdict"]["options"] == ["dulwich", "api_sparse"]
+    assert "git_cli_installed" not in out, "the release flow no longer needs a git binary"

@@ -13,13 +13,17 @@ other two. This probes each cheaply — the first response of the git handshake,
 the first chunk of the tarball, no repository is downloaded — and reports the
 repo's size, so the choice between them is measured rather than guessed.
 
+The release flow checks out with Dulwich (tools/git_snapshot), whose transport
+is urllib3 with its own proxy and CA settings — not ``requests``. So besides the
+raw git endpoint, ``dulwich`` lists the base branch through that exact
+transport: it is what decides ``release_ready_today``.
+
 Nothing sensitive is returned: the token never appears, and the tarball URL
 (which carries a short-lived token of its own for private repos) is reported by
 host only.
 """
 from __future__ import annotations
 
-import shutil
 import time
 from typing import Any
 
@@ -38,6 +42,20 @@ def _git_host() -> str:
 def _scrub(text: str, token: str) -> str:
     text = str(text)
     return text.replace(token, "***") if token else text
+
+
+def _mask_token_params(text: str) -> str:
+    """Blank every ``token=…`` query value, wherever a URL is quoted."""
+    out, rest = [], text
+    while "token=" in rest:
+        head, tail = rest.split("token=", 1)
+        out.append(head + "token=***")
+        end = 0
+        while end < len(tail) and tail[end] not in " '\"&)>,;":
+            end += 1
+        rest = tail[end:]
+    out.append(rest)
+    return "".join(out)
 
 
 def _probe_git_endpoint(session, repo_full: str, token: str) -> dict[str, Any]:
@@ -87,10 +105,30 @@ def _probe_codeload(session, gh_repo, ref: str, token: str) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         # Connection errors quote the URL they failed on, and this URL carries
         # a short-lived token of its own for private repos — drop it entirely.
+        # urllib3 quotes only the path and query ("…with url: /o/r/…?token=…"),
+        # so the whole URL, its path, and any token= value are each removed.
         msg = _scrub(f"{type(e).__name__}: {e}", token)
         if url:
             msg = msg.replace(url, f"https://{host}/…")
-        return {"ok": False, "host": host or "codeload", "error": msg[:300]}
+            path = url.split(host, 1)[-1] if host else ""
+            if path:
+                msg = msg.replace(path, "/…")
+        return {"ok": False, "host": host or "codeload", "error": _mask_token_params(msg)[:300]}
+
+
+def _probe_dulwich(repo_full: str, branch: str, token: str) -> dict[str, Any]:
+    """List the base branch through the transport the release checkout uses."""
+    from . import git_snapshot
+
+    t0 = time.monotonic()
+    try:
+        sha = git_snapshot.branch_tip(git_snapshot.repo_url(repo_full), branch, token)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "branch": branch, "error": _mask_token_params(_scrub(str(e), token))[:300]}
+    ms = int((time.monotonic() - t0) * 1000)
+    if sha is None:
+        return {"ok": False, "branch": branch, "ms": ms, "error": f"branch {branch} not found"}
+    return {"ok": True, "branch": branch, "ms": ms}
 
 
 def _repo_size(gh_repo, ref: str) -> dict[str, Any]:
@@ -104,7 +142,7 @@ def _repo_size(gh_repo, ref: str) -> dict[str, Any]:
     return out
 
 
-def verdict(git_cli: bool, git_endpoint: dict, codeload: dict, size: dict) -> dict[str, Any]:
+def verdict(git_endpoint: dict, codeload: dict, size: dict, dulwich: dict | None = None) -> dict[str, Any]:
     """Which ways of getting the files are open, in plain words. Pure."""
     options = []
     if git_endpoint.get("ok"):
@@ -115,7 +153,7 @@ def verdict(git_cli: bool, git_endpoint: dict, codeload: dict, size: dict) -> di
     large = (size.get("size_mb") or 0) >= _LARGE_REPO_MB
     if git_endpoint.get("ok"):
         text = ("The git endpoint is reachable — Dulwich (pure-Python git, no binary) "
-                "can clone and push here.")
+                "can check out the repo here; the release commit goes through the REST API.")
     elif codeload.get("ok"):
         text = ("The git endpoint is NOT reachable but tarball snapshots are — Dulwich "
                 "would fail here; a snapshot download would work.")
@@ -125,15 +163,21 @@ def verdict(git_cli: bool, git_endpoint: dict, codeload: dict, size: dict) -> di
     if large:
         text += (f" The repo is {size.get('size_mb')} MB: prefer fetching only the files "
                  "the updater script reads and writes over any full download.")
+    dulwich = dulwich or {}
+    if git_endpoint.get("ok") and not dulwich.get("ok"):
+        text += (" But Dulwich's own transport could not list the branch "
+                 f"({dulwich.get('error') or 'not probed'}) — check the proxy and CA settings.")
     return {
         "options": options,
         "summary": text,
-        # What the CURRENT release flow needs: the git binary AND the endpoint.
-        "release_ready_today": bool(git_cli and git_endpoint.get("ok")),
+        # What the release flow needs: Dulwich's checkout (no git binary) —
+        # its commit goes through the REST API the github check proves.
+        "release_ready_today": bool(dulwich.get("ok")),
     }
 
 
-def probe_clone_paths(repo_full: str, session=None, gh=None, token: str | None = None) -> dict[str, Any]:
+def probe_clone_paths(repo_full: str, session=None, gh=None, token: str | None = None,
+                      dulwich_probe=None) -> dict[str, Any]:
     """Probe every way of getting ``repo_full``'s files. Never raises."""
     from ._common import _get_github_client, _resolve_github_token
 
@@ -142,9 +186,8 @@ def probe_clone_paths(repo_full: str, session=None, gh=None, token: str | None =
         import requests  # honours HTTPS_PROXY / NO_PROXY / REQUESTS_CA_BUNDLE
 
         session = requests.Session()
-    git_cli = shutil.which("git") is not None
     if not repo_full:
-        return {"error": "DEPLOY_REPO is not configured", "git_cli_installed": git_cli}
+        return {"error": "DEPLOY_REPO is not configured"}
     try:
         gh_repo = (gh or _get_github_client()).get_repo(repo_full)
         try:
@@ -152,17 +195,17 @@ def probe_clone_paths(repo_full: str, session=None, gh=None, token: str | None =
         except Exception:
             ref = gh_repo.get_branch(gh_repo.default_branch).commit.sha
     except Exception as e:  # noqa: BLE001
-        return {"error": _scrub(f"could not read {repo_full}: {e}", token or "")[:300],
-                "git_cli_installed": git_cli}
+        return {"error": _scrub(f"could not read {repo_full}: {e}", token or "")[:300]}
 
     endpoint = _probe_git_endpoint(session, repo_full, token or "")
     codeload = _probe_codeload(session, gh_repo, ref, token or "")
+    dulwich = (dulwich_probe or _probe_dulwich)(repo_full, settings.sit_branch, token or "")
     size = _repo_size(gh_repo, ref)
     return {
         "repo": repo_full,
-        "git_cli_installed": git_cli,
         "git_endpoint": endpoint,
+        "dulwich": dulwich,
         "codeload": codeload,
         "repo_size": size,
-        "verdict": verdict(git_cli, endpoint, codeload, size),
+        "verdict": verdict(endpoint, codeload, size, dulwich),
     }

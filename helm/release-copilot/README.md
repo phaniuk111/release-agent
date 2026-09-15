@@ -90,9 +90,10 @@ proxy:
     key: ca.crt          # optional, defaults to ca.crt
 ```
 
-The chart mounts it read-only and sets `REQUESTS_CA_BUNDLE` (requests/PyGithub),
-`SSL_CERT_FILE` (OpenSSL — httpx, google clients) **and** `GIT_SSL_CAINFO`
-(git, which reads none of the others and is what the release flow clones with).
+The chart mounts it read-only and sets `REQUESTS_CA_BUNDLE` (requests/PyGithub,
+and the release flow's Dulwich checkout, which is handed the same bundle) and
+`SSL_CERT_FILE` (OpenSSL — httpx, google clients). The image has no `git`
+binary; nothing reads `GIT_SSL_CAINFO`.
 Verification stays ON — never disable it instead.
 
 **Test from THIS image, not another pod.** Corporate base images often already
@@ -388,7 +389,7 @@ PROBE
 |---|---|---|
 | `urllib` OK, `requests` FAIL | the CA is in the **system** store; only `requests` (hence PyGithub) can't see it — it verifies against certifi | set `REQUESTS_CA_BUNDLE` to probe 1's `cafile`, or rebuild: the app now defaults to it |
 | both FAIL with a cert error | the image doesn't trust the CA at all | mount it — `proxy.caBundle.existingConfigMap` |
-| `github.com` OK, `api.github.com` FAIL | the proxy treats the hosts differently | proxy allow-list change (network team). The app needs **both**: REST on `api.github.com`, git clone on `github.com` |
+| `github.com` OK, `api.github.com` FAIL | the proxy treats the hosts differently | proxy allow-list change (network team). The app needs **both**: REST on `api.github.com`, the release checkout (Dulwich) on `github.com` |
 | both FAIL, `ProxyError … only use HTTP` | proxy URL has the wrong scheme | the value must be `http://host:port` |
 
 ## Verify locally before applying

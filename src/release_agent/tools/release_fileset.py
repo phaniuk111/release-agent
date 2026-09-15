@@ -7,13 +7,15 @@ feature branch -> SIT -> UAT -> PRD/PRL1.
 
 The agent orchestrates the script rather than reimplementing it:
 
-  prepare : clone the deploy repo, cut release/<slug> from SIT, write the
-            transient release_details.json to a temp dir OUTSIDE the repo,
-            run the repo's updater script, commit locally. Nothing is pushed.
-            Returns a preview: changed files, env partition, RCTL timeline.
-  apply   : push the branch, open the release PR (feature -> SIT) with a
-            machine-readable changed-files marker, auto-merge (or report
-            pending), clean the workdir.
+  prepare : check out SIT's tip (Dulwich, no git binary — see git_snapshot),
+            write the transient release_details.json to a temp dir OUTSIDE
+            the repo, run the repo's updater script, stage what it changed.
+            Nothing is written to GitHub. Returns a preview: changed files,
+            env partition, RCTL timeline.
+  apply   : commit the staged file-set onto SIT's tip and create
+            release/<slug> through the Git Data API, open the release PR
+            (feature -> SIT) with a machine-readable changed-files marker,
+            auto-merge (or report pending), clean the workdir.
   promote : copy the release's changed file-set VERBATIM from the release
             branch to the next branch (SIT -> UAT -> PRD/PRL1) via a
             short-lived change branch + PR — same targeted mechanism as chart
@@ -41,6 +43,7 @@ from ._common import (
     _resolve_github_token,
     active_deploy_repo,
 )
+from . import git_snapshot
 from .promotion import _merge_pr
 from .release_window import _open_prd_pr_blocker
 
@@ -169,16 +172,10 @@ def partition_environments(details: dict) -> dict:
 
 # --- prepare / apply ---------------------------------------------------------
 def _run(cmd: list[str], cwd: str, timeout: int = 120) -> tuple[int, str]:
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    # No .pyc files: the updater's own imports must not show up as changed files.
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
     return r.returncode, (r.stdout + r.stderr).strip()
-
-
-def _authed_clone_url(repo_full: str) -> str:
-    token = _resolve_github_token() or ""
-    host = "github.com"
-    if settings.github_base_url:
-        host = settings.github_base_url.split("://")[-1].split("/")[0]
-    return f"https://x-access-token:{token}@{host}/{repo_full}.git"
 
 
 def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
@@ -208,16 +205,10 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
     workdir = tempfile.mkdtemp(prefix="release-fileset-")
     repo_dir = os.path.join(workdir, "repo")
     try:
-        rc, out = _run(
-            ["git", "clone", "--depth", "50", "--branch", settings.sit_branch,
-             _authed_clone_url(repo_full), repo_dir],
-            cwd=workdir, timeout=180,
+        git_snapshot.clone_branch(
+            git_snapshot.repo_url(repo_full), settings.sit_branch, repo_dir,
+            _resolve_github_token() or "",
         )
-        if rc != 0:
-            raise RuntimeError(f"clone failed: {out[-500:]}")
-        rc, out = _run(["git", "checkout", "-b", branch], cwd=repo_dir)
-        if rc != 0:
-            raise RuntimeError(f"branch failed: {out[-300:]}")
 
         # Transient release_details.json — OUTSIDE the repo so it can never be committed.
         details_path = os.path.join(workdir, "release_details.json")
@@ -234,20 +225,9 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         if rc != 0:
             raise RuntimeError(f"updater script failed:\n{script_output[-800:]}")
 
-        _run(["git", "add", "-A"], cwd=repo_dir)
-        rc, staged = _run(["git", "diff", "--cached", "--name-only"], cwd=repo_dir)
-        changed_files = sorted(line.strip() for line in staged.splitlines() if line.strip())
+        changed_files = git_snapshot.changed_paths(git_snapshot.stage_all(repo_dir))
         if not changed_files:
             raise RuntimeError("updater script produced no file changes")
-        author = f"{details['change_initiator'].split('@')[0]} <{details['change_initiator']}>"
-        rc, out = _run(
-            ["git", "-c", f"user.name={details['change_initiator'].split('@')[0]}",
-             "-c", f"user.email={details['change_initiator']}",
-             "commit", "--author", author, "-m", details["release_name"]],
-            cwd=repo_dir,
-        )
-        if rc != 0:
-            raise RuntimeError(f"commit failed: {out[-300:]}")
 
         # RCTL timeline read back from the file the script just generated.
         timeline = []
@@ -356,12 +336,21 @@ def apply_release_fileset(prep: dict) -> dict:
     if not workdir or not os.path.isdir(repo_dir):
         return {"ok": False, "error": "Prepared release workdir is gone — start the release again."}
     try:
-        rc, out = _run(["git", "push", "-u", "origin", branch], cwd=repo_dir, timeout=180)
-        if rc != 0:
-            return {"ok": False, "error": f"push failed: {out[-400:]}"}
-
         repo_full = prep.get("deployment_repo") or active_deploy_repo()
         gh_repo = _get_github_client().get_repo(repo_full)
+        initiator = (prep.get("details") or {}).get("change_initiator") or ""
+        try:
+            sha = git_snapshot.commit_via_api(
+                gh_repo, repo_dir, git_snapshot.stage_all(repo_dir),
+                git_snapshot.base_commit(repo_dir), prep.get("release_name") or branch,
+                initiator.split("@")[0] or "release-copilot", initiator or "release-copilot@localhost",
+            )
+            gh_repo.create_git_ref(f"refs/heads/{branch}", sha)
+        except Exception as e:  # noqa: BLE001 — nothing was pushed; say why
+            msg = str(getattr(e, "data", None) or e)
+            if "already exists" in msg.lower():
+                msg = f"branch {branch} already exists in {repo_full} — delete it or pick another release name"
+            return {"ok": False, "error": f"could not create {branch}: {msg[:400]}"}
         preview = prep.get("preview", {})
         body = (
             f"Release **{prep.get('release_name')}** — file-set generated by "
