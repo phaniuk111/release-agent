@@ -14,6 +14,7 @@ with proper auth, TLS, and observability.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -626,20 +627,24 @@ def release_queue_add(req: QueueAddRequest, request: Request):
     conversational intake."""
     from adk_release_agent.tools import queue_release_intent
 
-    who, refused = identity.actor(req.requested_by, _caller(request))
+    caller = _caller(request)
+    who, refused = identity.actor(req.requested_by, caller)
     if refused:
         return {"ok": False, "error": refused}
-    return queue_release_intent(
-        artifact=req.artifact,
-        requested_by=who,
-        prl1_only=req.prl1_only,
-        target_envs=req.target_envs,
-        df_only=req.df_only,
-        note=req.note,
-        jira_ticket=req.jira_ticket,
-        change_details=req.change_details,
-        build_run_url=req.build_run_url,
-    )
+    # Bound for the call: the queue tool checks identity itself (it is the same
+    # tool the chat uses), and a REST request has no chat turn binding it.
+    with identity.activate(caller):
+        return queue_release_intent(
+            artifact=req.artifact,
+            requested_by=who,
+            prl1_only=req.prl1_only,
+            target_envs=req.target_envs,
+            df_only=req.df_only,
+            note=req.note,
+            jira_ticket=req.jira_ticket,
+            change_details=req.change_details,
+            build_run_url=req.build_run_url,
+        )
 
 
 @app.post("/api/release-queue/batch")
@@ -665,7 +670,8 @@ def release_queue_add_batch(req: QueueBatchRequest, request: Request):
         return {"ok": False, "error": "No charts given — add at least one row."}
     # Resolved HERE, not in the rows' threads: a pool thread does not inherit
     # this request's context, and the caller must be the same for every row.
-    who, refused = identity.actor(req.requested_by, _caller(request))
+    caller = _caller(request)
+    who, refused = identity.actor(req.requested_by, caller)
     if refused:
         return {"ok": False, "error": refused}
 
@@ -686,8 +692,16 @@ def release_queue_add_batch(req: QueueBatchRequest, request: Request):
             logger.exception("batch queue failed for %s", row.artifact)
             return {"ok": False, "error": str(e)}
 
+    # Each row runs on a pool thread, which starts with an EMPTY context — found
+    # live: with IDENTITY_REQUIRED a signed-in user's rows were all refused. Each
+    # row gets its own copy of this request's context, with the caller bound.
+    def _in_context(row: QueueRow) -> dict:
+        with identity.activate(caller):
+            return _queue(row)
+
+    contexts = [contextvars.copy_context() for _ in rows]
     with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
-        outcomes = list(pool.map(_queue, rows))
+        outcomes = list(pool.map(lambda ctx, row: ctx.run(_in_context, row), contexts, rows))
 
     results = [
         {"artifact": row.artifact.strip(), **outcome}
@@ -791,10 +805,12 @@ def release_queue_withdraw(req: QueueWithdrawRequest, request: Request):
     'withdrawn' event; nothing is deleted)."""
     from .tools import release_queue
 
-    who, refused = identity.actor(req.requested_by, _caller(request))
+    caller = _caller(request)
+    who, refused = identity.actor(req.requested_by, caller)
     if refused:
         return {"ok": False, "error": refused}
-    return release_queue.withdraw_intent(req.artifact_name, who, req.artifact_version)
+    with identity.activate(caller):
+        return release_queue.withdraw_intent(req.artifact_name, who, req.artifact_version)
 
 
 @app.get("/api/release-insights")

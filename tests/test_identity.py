@@ -239,3 +239,29 @@ def test_a_settled_pending_pr_keeps_who_confirmed_it():
                "artifact_name": "a", "artifact_version": "1", "requested_by": "dev.one@example.com"}
     [row] = R.resolution_rows([pending], "merged", None, "approver")
     assert row["requested_by"] == "dev.one@example.com"
+
+
+def test_required_mode_lets_a_signed_in_user_queue_through_the_forms(monkeypatch):
+    """Found in round 3: the REST endpoints verified the caller but never bound
+    it, and the batch rows run on pool threads with an empty context — so the
+    queue tool's own check refused a SIGNED-IN user in required mode."""
+    from release_agent.tools import release_queue as RQ
+
+    monkeypatch.setattr(identity.settings, "identity_required", True, raising=False)
+    monkeypatch.setattr(RQ, "queue_enabled", lambda: True, raising=False)
+    seen = []
+
+    def fake_intent(**kw):
+        who, refused = identity.actor(kw["requested_by"], identity.current())
+        seen.append((who, refused))
+        return {"ok": not refused, "error": refused}
+
+    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent", fake_intent)
+    rows = [APP.QueueRow(artifact="a:1", build_run_url="u", jira_ticket="J-1"),
+            APP.QueueRow(artifact="b:2", build_run_url="u", jira_ticket="J-2")]
+    out = APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=rows, requested_by="typed@x.com", change_details="d"), _req(rctoken()))
+    assert out["ok"] and not out["refused"]
+    assert seen == [("dev.one@example.com", "")] * 2
+    single = APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="t@x.com"), _req(rctoken()))
+    assert single["ok"]
