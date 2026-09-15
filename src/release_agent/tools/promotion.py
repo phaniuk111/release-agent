@@ -716,6 +716,14 @@ def open_release_pr(
     # working->SIT->UAT whole-branch merge conflicted permanently once SIT/UAT
     # histories diverged — observed live on deployment-repo PRs #93, #96, #103.)
     uat_path = _deployment_path("uat")
+    # The override REPLACES the file: a chart on UAT now and not in `entries`
+    # leaves UAT. Reported so it is logged as removed — otherwise the derived
+    # per-environment state would show it deployed forever.
+    before = _read_include(repo, settings.uat_branch, uat_path)
+    kept = {e.get("helm_chart_name") for e in entries if isinstance(e, dict)}
+    dropped = [{"name": b.get("helm_chart_name"), "tag": b.get("helm_chart_version")}
+               for b in before if isinstance(b, dict) and b.get("helm_chart_name")
+               and b.get("helm_chart_name") not in kept]
     res = _promote_targeted(
         repo,
         [(uat_path, _replace_with(entries))],
@@ -753,6 +761,7 @@ def open_release_pr(
             "files_updated": ["uat/deployment.json"],
             # Only when it landed: before the merge the live file is the OLD one.
             "uat_charts": uat_now if res["delivered"] else None,
+            "dropped": dropped,
             "prs": res["prs"],
             "deploy_run": res.get("deploy_run"),
             "note": note,

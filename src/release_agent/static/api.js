@@ -71,6 +71,7 @@ export function whoami() {
 
 // ---- monitoring ---------------------------------------------------------------
 export const monitoring = (fresh) => get('/api/monitoring' + (fresh ? '?fresh=1' : ''));
+export const monitoringAlertPolicy = (name) => get('/api/monitoring/alert-policy?' + query({ name }));
 
 // ---- release queue ----------------------------------------------------------
 export const QUEUE_PATH = '/api/release-queue';

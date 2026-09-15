@@ -215,3 +215,27 @@ def test_diagnostics_say_whether_the_token_verified():
     assert ok["signed_in"] and ok["email"] != "dev.one@example.com", "masked"
     bad = APP._verified_identity({"x-asm-rctoken": rctoken(aud="other")})
     assert not bad["signed_in"] and "audience" in bad["reason"].lower()
+
+
+def test_deploys_and_releases_record_who_confirmed(monkeypatch):
+    """Found in E2E: deploy and release events carried no actor. With identity
+    on, the verified caller who confirmed is recorded — never a typed email."""
+    from release_agent.tools import release_queue as RQ
+
+    written = []
+    monkeypatch.setattr(RQ, "_insert", lambda rows: written.extend(rows) or {"ok": True})
+    with identity.activate(identity.Caller(email="dev.one@example.com")):
+        RQ.record_deployment("uat", [{"name": "a", "tag": "1"}], "o/deploy", 7)
+        RQ.mark_released("R1", 8, [{"name": "a", "tag": "1"}])
+    RQ.record_deployment("uat", [{"name": "b", "tag": "2"}], "o/deploy", 9)
+    assert [w["requested_by"] for w in written] == ["dev.one@example.com", "dev.one@example.com", None]
+
+
+def test_a_settled_pending_pr_keeps_who_confirmed_it():
+    from release_agent.tools import pr_reconcile as R
+
+    pending = {"event_type": "pending", "note": R.pending_note("deployed", "a:1"),
+               "deployment_repo": "o/d", "pr_number": 5, "environment": "prd",
+               "artifact_name": "a", "artifact_version": "1", "requested_by": "dev.one@example.com"}
+    [row] = R.resolution_rows([pending], "merged", None, "approver")
+    assert row["requested_by"] == "dev.one@example.com"

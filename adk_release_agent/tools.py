@@ -455,10 +455,13 @@ def withdraw_release_intent(artifact_name: str, requested_by: str = "") -> dict[
 
 
 def monitoring_checks() -> dict[str, Any]:
-    """Run the team's configured monitoring checks NOW (PromQL expressions that
-    return series only when something is wrong). Each check comes back with
-    state firing / ok / unknown, the firing series (labels + value, capped) and,
-    for unknown, the error and a likely fix. Read-only."""
+    """Run the monitoring checks NOW (PromQL expressions that return series
+    only when something is wrong): Composer DAG runs, Dataflow jobs, GKE
+    restarts, targets down, Google API 5xx, plus the team's own. Each comes back
+    with state firing / ok / unknown / no_data (nothing to measure in this
+    project — NOT healthy), the firing series (labels + value, capped),
+    `watching` (how much an ok check measured) and, for unknown, the error and a
+    likely fix. Read-only."""
     from release_agent.tools import monitoring as _mon
 
     return _mon.run_checks()

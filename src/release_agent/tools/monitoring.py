@@ -1,21 +1,25 @@
-"""The Monitoring pill: named PromQL checks, and read-only questions about metrics.
+"""The Monitoring pill: PromQL checks, and read-only questions about metrics.
 
 A CHECK is a PromQL expression that returns series only when something is
-wrong — ``up == 0``, ``increase(errors[10m]) > 0`` — so "firing" is simply
-"returned a non-zero series". Checks are configuration (MONITOR_CHECKS), not
-code, because only the team knows which of its metrics mean trouble; the
-default watches scrape targets that stopped answering.
+wrong — ``up == 0``, ``increase(failed_runs[1h]) > 0`` — so "firing" is
+"returned a non-zero series". That alone cannot tell healthy from UNMEASURED:
+``up == 0`` is just as empty in a project with no targets at all. So a check
+also names what it ``needs`` — the data it measures — and a check whose needs
+returns nothing is ``no_data`` ("not measured here"), never "OK". Healthy
+checks report how much they are watching ("OK · watching 17").
 
-Answers are facts from Prometheus, capped so one broad query cannot flood a
-chat turn or the page: at most ``_MAX_SERIES`` series come back, each with its
-labels and value, plus the true count. PromQL itself cannot write, so nothing
-here can change anything.
+The built-in pack watches what this team ships, using metrics Managed Service
+for Prometheus serves from Cloud Monitoring with no setup — Composer DAG runs,
+Dataflow jobs, GKE container restarts — plus Prometheus scrape targets and
+Google API errors. MONITOR_CHECKS adds the team's own checks to it.
 
-Same endpoint and auth as the /api/diagnostics PromQL probe: Managed Service
-for Prometheus in PROMETHEUS_PROJECT (default GOOGLE_CLOUD_PROJECT) via the
-pod's identity, or PROMETHEUS_URL. Managed Prometheus also answers PromQL over
-Cloud Monitoring's own metrics (``serviceruntime_googleapis_com:…``,
-``composer_googleapis_com:…``), so a check can watch GCP services too.
+This pod does not notify anyone. Periodic evaluation and notification belong
+to Cloud Monitoring alerting — it runs whether or not this pod is up, dedupes,
+and delivers to email / Chat / Teams / PagerDuty channels. ``alert_policy``
+turns any check into that policy, ready to apply; the portal writes nothing.
+
+Answers are capped (``_MAX_SERIES``) so one broad query cannot flood a chat
+turn or the page. PromQL itself cannot write.
 """
 from __future__ import annotations
 
@@ -31,26 +35,86 @@ from . import promql_probe as _probe
 _MAX_SERIES = 20
 _MAX_QUERY_LEN = 2000
 
-DEFAULT_CHECKS = [{
-    "name": "Scrape targets down",
-    "query": "up == 0",
-    "severity": "error",
-    "description": "Targets Prometheus can no longer scrape — a crashed pod or a broken exporter.",
-}]
+
+def _ns_filter() -> str:
+    names = [n.strip() for n in (settings.monitor_namespaces or "").split(",") if n.strip()]
+    return f',namespace_name=~"{"|".join(names)}"' if names else ""
+
+
+def builtin_checks() -> list[dict[str, str]]:
+    """What a release team wants watched, from metrics that need no setup.
+
+    Metric names are Cloud Monitoring's, as Managed Prometheus exposes them
+    (``composer.googleapis.com/workflow/run_count`` →
+    ``composer_googleapis_com:workflow_run_count``); ``monitored_resource``
+    picks the resource type where a metric has several.
+
+    ``needs`` looks over the SAME window as the check. An instant selector only
+    sees series with a sample in the last five minutes, and delta metrics (API
+    requests, DAG runs) report only when something happens — so a quiet hour
+    read as "not measured" while the check itself would have fired.
+    """
+    k8s = f'monitored_resource="k8s_container"{_ns_filter()}'
+    return [
+        {
+            "name": "Composer DAG runs failed (1h)",
+            "severity": "error",
+            "query": ('sum by (environment_name, workflow_name) (increase('
+                      'composer_googleapis_com:workflow_run_count{monitored_resource="cloud_composer_workflow",'
+                      'state="failed"}[1h])) > 0'),
+            "needs": ('count(count_over_time(composer_googleapis_com:workflow_run_count{'
+                      'monitored_resource="cloud_composer_workflow"}[1h]))'),
+            "description": "Airflow DAG runs that ended failed in the last hour, by environment and DAG.",
+        },
+        {
+            "name": "Dataflow jobs failed (1h)",
+            "severity": "error",
+            "query": ('max by (job_name) (max_over_time('
+                      'dataflow_googleapis_com:job_is_failed{monitored_resource="dataflow_job"}[1h])) > 0'),
+            "needs": 'count(max_over_time(dataflow_googleapis_com:job_is_failed{monitored_resource="dataflow_job"}[1h]))',
+            "description": "Dataflow jobs reported failed in the last hour.",
+        },
+        {
+            "name": "GKE containers restarting (1h)",
+            "severity": "error",
+            "query": (f'sum by (namespace_name, pod_name, container_name) (increase('
+                      f'kubernetes_io:container_restart_count{{{k8s}}}[1h])) > 0'),
+            "needs": f'count(count_over_time(kubernetes_io:container_restart_count{{{k8s}}}[1h]))',
+            "description": "Containers that restarted in the last hour — crash loops, OOM kills, failing probes.",
+        },
+        {
+            "name": "Prometheus targets down",
+            "severity": "error",
+            "query": "up == 0",
+            "needs": "count(up)",
+            "description": "Scrape targets Prometheus can no longer reach — a crashed pod or a broken exporter.",
+        },
+        {
+            "name": "Google API 5xx errors (1h)",
+            "severity": "warn",
+            "query": ('sum by (service) (increase(serviceruntime_googleapis_com:api_request_count{'
+                      'monitored_resource="consumed_api",response_code_class="5xx"}[1h])) > 0'),
+            "needs": ('count(count_over_time(serviceruntime_googleapis_com:api_request_count{'
+                      'monitored_resource="consumed_api"}[1h]))'),
+            "description": "Server errors from Google APIs this project calls (BigQuery, Vertex AI, Dataflow…).",
+        },
+    ]
 
 
 def configured_checks() -> tuple[list[dict[str, str]], str]:
-    """(checks, config error). A broken MONITOR_CHECKS is reported, not ignored."""
+    """(built-ins + the team's checks, config error). A broken MONITOR_CHECKS is
+    reported, never silently dropped."""
+    checks = builtin_checks() if settings.monitor_default_checks else []
     raw = (settings.monitor_checks or "").strip()
     if not raw:
-        return list(DEFAULT_CHECKS), ""
+        return checks, ""
     try:
         data = json.loads(raw)
     except ValueError as e:
-        return [], f"MONITOR_CHECKS is not valid JSON: {e}"
+        return checks, f"MONITOR_CHECKS is not valid JSON: {e}"
     if not isinstance(data, list):
-        return [], "MONITOR_CHECKS must be a JSON list of {name, query}."
-    checks, problems = [], []
+        return checks, "MONITOR_CHECKS must be a JSON list of {name, query}."
+    problems = []
     for i, c in enumerate(data):
         if not isinstance(c, dict) or not str(c.get("name") or "").strip() \
                 or not str(c.get("query") or "").strip():
@@ -60,6 +124,7 @@ def configured_checks() -> tuple[list[dict[str, str]], str]:
         checks.append({
             "name": str(c["name"]).strip(),
             "query": str(c["query"]).strip(),
+            "needs": str(c.get("needs") or "").strip(),
             "severity": severity if severity in ("error", "warn") else "error",
             "description": str(c.get("description") or "").strip(),
         })
@@ -129,36 +194,93 @@ def _firing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for r in rows if r.get("value") not in (None, 0.0)]
 
 
+def _watching(res: dict[str, Any]) -> int:
+    """How much a ``needs`` query found: a count() answers with its value, a
+    plain selector with its series."""
+    rows = res.get("series") or []
+    if len(rows) == 1 and not rows[0].get("labels"):
+        return int(rows[0].get("value") or 0)
+    return int(res.get("count") or 0)
+
+
+def _run_one(check: dict[str, str], session, target) -> dict[str, Any]:
+    out: dict[str, Any] = {**check, "count": 0, "series": [], "error": "", "hint": "", "watching": None}
+    if check.get("needs"):
+        need = run_query(check["needs"], session=session, target=target)
+        if not need.get("ok"):
+            return {**out, "state": "unknown", "error": need.get("error", ""), "hint": need.get("hint", "")}
+        out["watching"] = _watching(need)
+        if not out["watching"]:
+            return {**out, "state": "no_data"}
+    res = run_query(check["query"], session=session, target=target)
+    if not res.get("ok"):
+        return {**out, "state": "unknown", "error": res.get("error", ""), "hint": res.get("hint", "")}
+    firing = _firing(res.get("series") or [])
+    return {**out, "state": "firing" if firing else "ok", "count": len(firing), "series": firing[:10]}
+
+
 def run_checks(session=None) -> dict[str, Any]:
-    """Every configured check, now. A check that cannot run is ``unknown`` —
-    never "OK", because silence from a broken check is how outages hide."""
+    """Every configured check, now, concurrently. ``unknown`` (could not run)
+    and ``no_data`` (nothing to measure here) are never reported as OK."""
+    from concurrent.futures import ThreadPoolExecutor
+
     checks, config_error = configured_checks()
     target = _probe.resolve_target()
+    project = target.get("base_url", "").split("/projects/")[-1].split("/")[0] if target.get("managed") else ""
     out: dict[str, Any] = {
         "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "source": ("Managed Service for Prometheus" if target.get("managed") else target.get("base_url", "")),
+        "source": (f"Managed Service for Prometheus · {project}" if target.get("managed")
+                   else target.get("base_url", "")),
         "config_error": config_error,
         "checks": [],
     }
-    if target.get("configured"):
+    error = ""
+    if target.get("configured") and session is None:
         try:
-            session = session or _probe._session(target)[0]
+            session = _probe._session(target)[0]
         except Exception as e:  # noqa: BLE001
-            out["error"] = f"no credentials: {type(e).__name__}: {e}"[:300]
-    for check in checks:
-        res = run_query(check["query"], session=session, target=target) if "error" not in out else \
-            {"ok": False, "error": out["error"]}
-        firing = _firing(res.get("series") or []) if res.get("ok") else []
-        out["checks"].append({
-            **check,
-            "state": "unknown" if not res.get("ok") else ("firing" if firing else "ok"),
-            "count": len(firing),
-            "series": firing[:10],
-            "error": res.get("error", ""),
-            "hint": res.get("hint", ""),
-        })
+            error = f"no credentials: {type(e).__name__}: {e}"[:300]
+    if error or not target.get("configured"):
+        why = error or "PromQL is not configured — set PROMETHEUS_URL or GOOGLE_CLOUD_PROJECT."
+        out["checks"] = [{**c, "state": "unknown", "error": why, "hint": "", "count": 0,
+                          "series": [], "watching": None} for c in checks]
+    else:
+        with ThreadPoolExecutor(max_workers=min(6, max(1, len(checks)))) as pool:
+            out["checks"] = list(pool.map(lambda c: _run_one(c, session, target), checks))
     states = [c["state"] for c in out["checks"]]
-    out["firing"] = states.count("firing")
-    out["unknown"] = states.count("unknown")
-    out["ok"] = bool(out["checks"]) and not out["firing"] and not out["unknown"] and not config_error
+    out["counts"] = {s: states.count(s) for s in ("firing", "ok", "unknown", "no_data")}
+    out["firing"], out["unknown"] = out["counts"]["firing"], out["counts"]["unknown"]
+    # Healthy means something was measured and nothing is wrong.
+    out["ok"] = bool(out["counts"]["ok"]) and not out["firing"] and not out["unknown"] \
+        and not config_error
     return out
+
+
+def alert_policy(check: dict[str, str]) -> dict[str, Any]:
+    """The Cloud Monitoring alert policy that watches ``check`` every minute —
+    so notification runs in Cloud Monitoring, not in this pod. Pure.
+
+    Apply with the REST API (projects.alertPolicies.create) or
+    ``gcloud alpha monitoring policies create --policy-from-file=…``, then add
+    notification channels (email, Google Chat, Teams webhook, PagerDuty).
+    """
+    return {
+        "displayName": f"Dev Portal: {check['name']}",
+        "combiner": "OR",
+        "severity": "ERROR" if check.get("severity", "error") == "error" else "WARNING",
+        "conditions": [{
+            "displayName": check["name"],
+            "conditionPrometheusQueryLanguage": {
+                "query": check["query"],
+                "duration": "60s",
+                "evaluationInterval": "60s",
+            },
+        }],
+        "documentation": {
+            "mimeType": "text/markdown",
+            "content": (f"{check.get('description') or check['name']}\n\n"
+                        f"Fires when this PromQL returns a series:\n\n`{check['query']}`\n\n"
+                        "Open the Dev Portal's Monitoring pill and use *Ask why* to investigate."),
+        },
+        "notificationChannels": [],
+    }

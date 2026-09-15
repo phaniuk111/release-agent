@@ -455,6 +455,18 @@ def monitoring_endpoint(fresh: int = 0):
     return result
 
 
+@app.get("/api/monitoring/alert-policy")
+def monitoring_alert_policy(name: str):
+    """A check as a Cloud Monitoring alert policy (JSON) — for the team to apply,
+    so notification runs in Cloud Monitoring. The portal writes nothing."""
+    from .tools.monitoring import alert_policy, configured_checks
+
+    check = next((c for c in configured_checks()[0] if c["name"] == name), None)
+    if check is None:
+        return {"ok": False, "error": f"no check named {name!r}"}
+    return {"ok": True, "policy": alert_policy(check)}
+
+
 @app.get("/api/release-status")
 def release_status_endpoint(fresh: int = 0):
     """Today's PRD release window — read live from GitHub so every session/developer

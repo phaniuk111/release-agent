@@ -269,6 +269,15 @@ def withdraw_intent(artifact_name: str, actor: str, expected_version: str = "") 
     return result
 
 
+def _acting_user() -> str | None:
+    """Who confirmed this change — the gateway-verified caller of the request it
+    runs in (release_agent.identity), or None when identity is off. Only ever a
+    VERIFIED identity: a typed email never reaches a deploy or release event."""
+    from ..identity import current_email
+
+    return current_email() or None
+
+
 def mark_released(
     release_name: str, pr_number: int | None, artifacts: list[dict[str, str]]
 ) -> dict[str, Any]:
@@ -281,7 +290,7 @@ def mark_released(
             "event_id": uuid.uuid4().hex,
             "event_type": "released",
             "event_ts": now,
-            "requested_by": None,
+            "requested_by": _acting_user(),
             "artifact_name": a.get("name"),
             "artifact_version": a.get("tag"),
             "prl1_only": None,
@@ -321,7 +330,7 @@ def record_deployment(
             "event_id": uuid.uuid4().hex,
             "event_type": event_type,
             "event_ts": now,
-            "requested_by": None,
+            "requested_by": _acting_user(),
             "artifact_name": a.get("name"),
             "artifact_version": a.get("tag"),
             "prl1_only": None,

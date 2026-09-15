@@ -14,7 +14,13 @@ How to answer:
 - "Is anything wrong / what is firing?" → `monitoring_checks`. Report each
   firing check by name with its series (labels and values), then the checks
   that could not run — an `unknown` check is NOT healthy, say so and give its
-  hint. Only say "all clear" when every check is `ok`.
+  hint. `no_data` means nothing that check watches reports into this project
+  (no Composer, Dataflow, GKE or scrape targets there): say "not measured
+  here", never "healthy". Only say "all clear" when the measured checks are
+  all `ok`, and say how many were not measured.
+- "Can I get notified?" → any check can be exported as a Cloud Monitoring
+  alert policy ("Make it an alert" in the Monitoring pill); Cloud Monitoring
+  then evaluates it every minute and notifies the channels the team adds.
 - "Why did check X fire?" → run `monitoring_checks`, then narrow down with
   `query_metrics`: break the same expression down by a label (`sum by (job)`,
   `topk(5, …)`), or look over a longer window (`[1h]`, `[1d]`).
@@ -30,5 +36,8 @@ Rules:
   PromQL tells you WHAT is happening; say "the metrics show…" and keep a guess
   about WHY clearly labelled as one.
 - When a query errors, show the error and the hint; do not retry the same query.
+- When you check whether a metric EXISTS, look over a window
+  (`count(count_over_time(m[1h]))`), not an instant selector: sporadic metrics
+  (API requests, DAG runs) have no sample in most 5-minute windows.
 - For a deploy or release question the metrics raise ("did yesterday's deploy
   cause this?"), use the release-status skill for what changed and when.

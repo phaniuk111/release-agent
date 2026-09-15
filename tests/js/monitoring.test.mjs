@@ -2,16 +2,30 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { explainPrompt, formatValue, monitoringSummary, seriesLabel }
+import { explainPrompt, formatValue, monitoringSummary, orderChecks, seriesLabel, watchingText }
     from '../../src/release_agent/static/core/monitoring.js';
 
-test('the summary counts firing and broken checks, and never calls a broken one OK', () => {
+test('the summary names every state and never calls an unmeasured project OK', () => {
     assert.equal(monitoringSummary({ checks: [] }), 'no checks configured');
     assert.equal(monitoringSummary({ checks: [{ state: 'ok' }] }), 'the check is OK');
     assert.equal(monitoringSummary({ checks: [{ state: 'ok' }, { state: 'ok' }] }), 'all 2 checks OK');
     assert.equal(monitoringSummary({ checks: [{ state: 'firing' }, { state: 'unknown' }, { state: 'ok' }] }),
-        '1 firing · 1 could not run');
+        '1 firing · 1 could not run · 1 OK');
+    assert.equal(monitoringSummary({ checks: [{ state: 'ok' }, { state: 'no_data' }, { state: 'no_data' }] }),
+        '1 OK · 2 not measured here');
     assert.equal(monitoringSummary(null), 'no checks configured');
+});
+
+test('what needs a human comes first', () => {
+    const order = orderChecks([{ name: 'a', state: 'no_data' }, { name: 'b', state: 'ok' },
+        { name: 'c', state: 'firing' }, { name: 'd', state: 'unknown' }, { name: 'e', state: 'firing' }]);
+    assert.deepEqual(order.map(c => c.name), ['c', 'e', 'd', 'b', 'a']);
+});
+
+test('a healthy check says how much it watched', () => {
+    assert.equal(watchingText({ watching: 17 }), 'watching 17');
+    assert.equal(watchingText({ watching: 0 }), '');
+    assert.equal(watchingText({ watching: null }), '');
 });
 
 test('series labels drop Prometheus bookkeeping', () => {

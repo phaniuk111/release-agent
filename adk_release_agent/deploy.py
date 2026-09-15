@@ -402,6 +402,9 @@ def _record_deploy_event(req: dict[str, Any], environment: str, result: dict[str
 
                 record_pending(environment, req.get("images") or [], repo,
                                final.get("number"), on_merge="deployed", tag="deployed")
+                if result.get("dropped"):
+                    record_pending(environment, result["dropped"], repo, final.get("number"),
+                                   on_merge="removed", tag="dropped by override")
             return
         # PRD staging returns pr_number; the UAT promote chain returns a prs list —
         # record the terminal (last-merged) PR of the chain.
@@ -417,5 +420,15 @@ def _record_deploy_event(req: dict[str, Any], environment: str, result: dict[str
             pr_number=int(pr_number) if pr_number else None,
             note=str(result.get("action") or ""),
         )
+        # A UAT override that left a chart out took it OFF UAT — that landed too.
+        if result.get("dropped"):
+            _rq.record_deployment(
+                environment=environment,
+                artifacts=result["dropped"],
+                deployment_repo=repo,
+                pr_number=int(pr_number) if pr_number else None,
+                note="dropped by override",
+                event_type="removed",
+            )
     except Exception:
         pass

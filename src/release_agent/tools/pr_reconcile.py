@@ -154,7 +154,8 @@ def resolution_rows(
             "event_id": uuid.uuid5(uuid.NAMESPACE_URL, identity).hex,
             "event_type": event_type,
             "event_ts": _iso(when),
-            "requested_by": None,
+            # Whoever confirmed the change — the reviewer is in the note.
+            "requested_by": ev.get("requested_by"),
             "artifact_name": ev.get("artifact_name"),
             "artifact_version": ev.get("artifact_version"),
             "prl1_only": None,

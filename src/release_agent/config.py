@@ -147,12 +147,23 @@ class Settings(BaseSettings):
     promql_probe_query: str = Field(
         default="", validation_alias=AliasChoices("PROMQL_PROBE_QUERY"),
     )
-    # Monitoring pill: named PromQL checks, JSON list of
-    # {"name", "query", "severity": "error"|"warn", "description"}. A check is
-    # FIRING when its query returns any series with a non-zero value. Empty =
-    # the built-in "scrape targets down" check (up == 0).
+    # Monitoring pill: the team's own PromQL checks, JSON list of
+    # {"name", "query", "needs", "severity": "error"|"warn", "description"} —
+    # ADDED to the built-in pack (tools/monitoring.py). A check FIRES when its
+    # query returns a non-zero series; "needs" is the data it measures, and a
+    # check whose needs returns nothing is "not measured here", never "OK".
     monitor_checks: str = Field(
         default="", validation_alias=AliasChoices("MONITOR_CHECKS"),
+    )
+    # The built-in pack: Composer DAG runs, Dataflow jobs, GKE restarts, targets
+    # down, Google API 5xx. false = only MONITOR_CHECKS.
+    monitor_default_checks: bool = Field(
+        default=True, validation_alias=AliasChoices("MONITOR_DEFAULT_CHECKS"),
+    )
+    # Scope the GKE restart check to these namespaces (comma list); empty = all.
+    # A shared cluster's other teams' pods are rarely this team's alert.
+    monitor_namespaces: str = Field(
+        default="", validation_alias=AliasChoices("MONITOR_NAMESPACES"),
     )
     # Who is calling: the mesh's signed user token. Empty header = off (forms ask
     # for an email, as before). Set to x-asm-rctoken for Cloud Service Mesh user

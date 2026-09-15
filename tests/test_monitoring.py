@@ -42,26 +42,74 @@ def vector(*rows):
 def target(monkeypatch):
     monkeypatch.setattr(M._probe, "resolve_target", lambda: dict(TARGET))
     monkeypatch.setattr(M.settings, "monitor_checks", "", raising=False)
+    monkeypatch.setattr(M.settings, "monitor_default_checks", True, raising=False)
+    monkeypatch.setattr(M.settings, "monitor_namespaces", "", raising=False)
 
 
-def test_default_check_is_targets_down():
+def only(monkeypatch, *checks):
+    """Just these checks — no built-in pack."""
+    monkeypatch.setattr(M.settings, "monitor_default_checks", False, raising=False)
+    monkeypatch.setattr(M.settings, "monitor_checks", json.dumps(list(checks)), raising=False)
+
+
+def test_the_builtin_pack_watches_what_the_team_ships_and_says_what_it_needs():
     checks, err = M.configured_checks()
-    assert err == "" and checks[0]["query"] == "up == 0"
+    names = [c["name"] for c in checks]
+    assert err == "" and names[:4] == ["Composer DAG runs failed (1h)", "Dataflow jobs failed (1h)",
+                                       "GKE containers restarting (1h)", "Prometheus targets down"]
+    assert all(c["needs"] for c in checks), "every built-in can tell healthy from unmeasured"
+    assert "composer_googleapis_com:workflow_run_count" in checks[0]["query"]
 
 
-def test_checks_from_config_and_bad_entries_reported(monkeypatch):
+def test_namespaces_scope_the_gke_check(monkeypatch):
+    monkeypatch.setattr(M.settings, "monitor_namespaces", "release-copilot, payments", raising=False)
+    gke = next(c for c in M.configured_checks()[0] if c["name"].startswith("GKE"))
+    scope = 'namespace_name=~"release-copilot|payments"'
+    assert scope in gke["query"] and scope in gke["needs"]
+
+
+def test_team_checks_add_to_the_pack_and_bad_entries_are_reported(monkeypatch):
     monkeypatch.setattr(M.settings, "monitor_checks", json.dumps([
-        {"name": "DAG failures", "query": "sum(x) > 0", "severity": "warn"},
+        {"name": "Workflow errors", "query": "sum(x) > 0", "needs": "count(x)", "severity": "warn"},
         {"name": "no query"},
     ]), raising=False)
     checks, err = M.configured_checks()
-    assert [c["name"] for c in checks] == ["DAG failures"] and checks[0]["severity"] == "warn"
-    assert "entry 2" in err
+    assert checks[-1]["name"] == "Workflow errors" and checks[-1]["needs"] == "count(x)"
+    assert len(checks) == len(M.builtin_checks()) + 1 and "entry 2" in err
     monkeypatch.setattr(M.settings, "monitor_checks", "{not json", raising=False)
-    assert M.configured_checks()[0] == [] and "not valid JSON" in M.configured_checks()[1]
+    assert "not valid JSON" in M.configured_checks()[1]
+    monkeypatch.setattr(M.settings, "monitor_default_checks", False, raising=False)
+    assert M.configured_checks()[0] == []
+
+
+def test_nothing_to_measure_is_no_data_never_ok(monkeypatch):
+    """The bug users saw: 'up == 0' is empty in a project with NO targets, and
+    the pill said OK. With needs, it says 'not measured here'."""
+    only(monkeypatch, {"name": "down", "query": "up == 0", "needs": "count(up)"})
+    out = M.run_checks(session=_Prom({"count(up)": vector(), "up == 0": vector()}))
+    assert out["checks"][0]["state"] == "no_data" and out["ok"] is False
+    healthy = M.run_checks(session=_Prom({"count(up)": vector(({}, 17)), "up == 0": vector()}))
+    assert healthy["checks"][0]["state"] == "ok" and healthy["checks"][0]["watching"] == 17
+    assert healthy["ok"] is True
+
+
+def test_a_broken_needs_query_is_unknown(monkeypatch):
+    only(monkeypatch, {"name": "x", "query": "up == 0", "needs": "count(("})
+    out = M.run_checks(session=_Prom({"count((": _Resp(400, {"status": "error", "error": "parse error"})}))
+    assert out["checks"][0]["state"] == "unknown"
+
+
+def test_every_check_becomes_a_cloud_monitoring_alert_policy():
+    check = M.builtin_checks()[0]
+    policy = M.alert_policy(check)
+    cond = policy["conditions"][0]["conditionPrometheusQueryLanguage"]
+    assert cond["query"] == check["query"] and cond["evaluationInterval"] == "60s"
+    assert policy["severity"] == "ERROR" and policy["notificationChannels"] == []
+    assert M.alert_policy({**check, "severity": "warn"})["severity"] == "WARNING"
 
 
 def test_firing_ok_and_unknown(monkeypatch):
+    monkeypatch.setattr(M.settings, "monitor_default_checks", False, raising=False)
     monkeypatch.setattr(M.settings, "monitor_checks", json.dumps([
         {"name": "down", "query": "up == 0"},
         {"name": "errors", "query": "increase(err[10m]) > 0"},
@@ -81,7 +129,8 @@ def test_firing_ok_and_unknown(monkeypatch):
     assert out["firing"] == 1 and out["unknown"] == 1 and out["ok"] is False
 
 
-def test_an_unreachable_endpoint_is_unknown_never_ok():
+def test_an_unreachable_endpoint_is_unknown_never_ok(monkeypatch):
+    only(monkeypatch, {"name": "d", "query": "up == 0"})
     out = M.run_checks(session=_Prom({"up == 0": ConnectionError("proxy said no")}))
     assert out["checks"][0]["state"] == "unknown" and out["ok"] is False
 
@@ -137,3 +186,11 @@ def test_a_promql_typo_is_blamed_on_the_query_not_the_project():
     bad_project = _Resp(400, {"error": {"message": "Request contains an invalid argument."}})
     res = M.run_query("up", session=_Prom({"up": bad_project}), target=managed)
     assert "project" in res["hint"]
+
+
+def test_needs_look_over_the_checks_own_window():
+    """Found live: an instant count() of a delta metric is empty whenever the
+    last five minutes were quiet, so a 1h/7d check read as 'not measured'."""
+    for c in M.builtin_checks():
+        if "[1h]" in c["query"]:
+            assert "[1h]" in c["needs"], c["name"]
