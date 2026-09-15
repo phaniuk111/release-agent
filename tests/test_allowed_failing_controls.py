@@ -47,11 +47,23 @@ def queue(monkeypatch):
 
 # --- which controls the setting names ------------------------------------------------
 @pytest.mark.parametrize("name, token, expected", [
+    # "1691": the name CONTAINS the number, whatever the format around it
     ("RCTLDEF0001691", "1691", True),
-    ("RCTLDEF0001691 - vulnerability scan", "1691", True),
-    ("rctldef0001691", "RCTLDEF0001691", True),
-    ("RCTLDEF0016910", "1691", False),       # contains 1691, but it is control 16910
+    ("RCTLDEF0001691 - Peer review evidence", "1691", True),
+    ("RCTL-1691 peer review", "1691", True),
+    ("Control 1691: peer review", "1691", True),
+    ("1691_peer_review", "1691", True),
+    ("RCTLDEF_0001691", "1691", True),
+    ("RCTLDEF0001691v2", "1691", True),
+    ("CTL1691B check", "1691", True),
+    # ...but a bigger number that merely contains the digits is another control
+    ("RCTLDEF0016910", "1691", False),
+    ("RCTLDEF0021691", "1691", False),
     ("RCTLDEF0000104", "1691", False),
+    # full ID, and explicit wildcard patterns
+    ("rctldef0001691 (build)", "RCTLDEF0001691", True),
+    ("RCTLDEF0021691", "*1691*", True),
+    ("Peer review - RCTLDEF0001691", "*peer review*", True),
     ("RCTLDEF0001691", "", False),
 ])
 def test_a_token_names_a_control_by_its_id(name, token, expected):

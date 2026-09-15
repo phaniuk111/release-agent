@@ -248,40 +248,41 @@ def _is_control_step(name: str) -> bool:
     return any(low.startswith(p.strip().lower()) for p in settings.control_prefixes)
 
 
-def _trailing_number(word: str) -> int | None:
-    digits = ""
-    for ch in reversed(word):
-        if not ch.isdigit():
-            break
-        digits = ch + digits
-    return int(digits) if digits else None
+def _digit_runs(text: str) -> list[int]:
+    """Every run of digits in ``text``, as numbers: 'RCTLDEF0001691v2' → [1691, 2]."""
+    runs, digits = [], ""
+    for ch in text + " ":
+        if ch.isdigit():
+            digits += ch
+        elif digits:
+            runs.append(int(digits))
+            digits = ""
+    return runs
 
 
 def control_matches(control_name: str, token: str) -> bool:
-    """Does ``token`` name this control? Pure.
+    """Does ``token`` name this control? Pure. A PATTERN, not the exact name:
 
-    The full ID matches ("RCTLDEF0001691"), and so does a bare number against an
-    ID ENDING in it, leading zeros ignored ("1691" → RCTLDEF0001691 — but not
-    RCTLDEF0016910, whose number merely contains it).
+      "1691"          the name CONTAINS the number 1691 — any run of digits equal
+                      to it, leading zeros ignored: RCTLDEF0001691, RCTL-1691,
+                      "Control 1691: …", RCTLDEF0001691v2. A bigger number that
+                      merely contains the digits is a different control
+                      (RCTLDEF0016910, RCTLDEF0021691) and does not match.
+      "*1691*"        a wildcard pattern (* and ?) over the whole name,
+                      case-insensitive — for a plain "contains" match.
+      "RCTLDEF0001691" any other text: the name contains it, case-insensitive.
     """
+    from fnmatch import fnmatchcase
+
     token = (token or "").strip().lower()
+    name = (control_name or "").lower()
     if not token:
         return False
-    words, word = [], ""
-    for ch in (control_name or "").lower():
-        if ch.isalnum():
-            word += ch
-        elif word:
-            words.append(word)
-            word = ""
-    if word:
-        words.append(word)
-    for w in words:
-        if w == token:
-            return True
-        if token.isdigit() and _trailing_number(w) == int(token):
-            return True
-    return False
+    if "*" in token or "?" in token:
+        return fnmatchcase(name, token)
+    if token.isdigit():
+        return int(token) in _digit_runs(name)
+    return token in name
 
 
 def allowed_to_fail(control_name: str) -> bool:

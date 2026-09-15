@@ -159,8 +159,10 @@ config:
   # Controls allowed to FAIL at queue time (CARE and DF) — e.g. one that can be a
   # false positive, closed by hand. The chart is queued and the control shows as
   # OPEN in the release queue's Controls column; releases are not stopped by it.
-  # Any other failed control or step still refuses. "1691" matches an ID ending
-  # in 1691 (RCTLDEF0001691); a full ID works too. Comma list; empty = none.
+  # Any other failed control or step still refuses. A PATTERN, not the exact
+  # name: "1691" = the control name contains the number 1691 (RCTLDEF0001691,
+  # RCTL-1691, "Control 1691: …" — not RCTLDEF0016910); "*1691*" = wildcard
+  # over the name; other text = the name contains it. Comma list; empty = none.
   QUEUE_ALLOWED_FAILING_CONTROLS: "1691"
   QUEUE_REQUIRE_RUN_MATCH: "true"
   BUILD_TAG_STEP: "Generate Git tag"
