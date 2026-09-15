@@ -13,6 +13,7 @@ For more advanced setups, consider running behind a reverse proxy (nginx/traefik
 with proper auth, TLS, and observability.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import identity
 from .adk_service import get_adk_chat_service
 from .config import settings as app_settings
 from .session_creds import SessionCredentials, get_store
@@ -98,6 +100,27 @@ def get_or_create_thread_id(thread_id: str | None) -> str:
     if not thread_id:
         return f"fastapi-{uuid.uuid4().hex[:8]}"
     return thread_id
+
+
+def _caller(request: Request) -> identity.Caller | None:
+    """The verified signed-in user, or None (identity off / no valid token)."""
+    return identity.from_headers(request.headers)[0]
+
+
+def _owner(caller: identity.Caller | None) -> str | None:
+    """Who a thread's token belongs to: the caller when identity is on, else
+    None — no ownership check, exactly as before identity existed."""
+    return caller.email if caller else ("" if identity.enabled() else None)
+
+
+@app.get("/api/whoami")
+def whoami(request: Request):
+    """Who the portal thinks you are, so forms stop asking for an email."""
+    caller, why = identity.from_headers(request.headers)
+    if caller:
+        return {"signed_in": True, "email": caller.email, "name": caller.name, "source": "gateway"}
+    return {"signed_in": False, "identity_enabled": identity.enabled(), "reason": why,
+            "required": identity.enabled() and app_settings.identity_required}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -319,7 +342,7 @@ def _chat_error_message(exc: BaseException) -> str:
 
 
 @app.post("/api/chat")
-async def chat_endpoint(req: ChatRequest):
+async def chat_endpoint(req: ChatRequest, request: Request):
     """Streaming chat endpoint using Server-Sent Events (SSE).
 
     Production notes:
@@ -328,6 +351,7 @@ async def chat_endpoint(req: ChatRequest):
       instead of in-memory services.
     """
     thread_id = get_or_create_thread_id(req.thread_id)
+    caller = await asyncio.to_thread(_caller, request)   # may fetch the issuer's keys
 
     logger.info(f"Chat request | thread={thread_id} | msg_len={len(req.message)}")
 
@@ -336,7 +360,7 @@ async def chat_endpoint(req: ChatRequest):
         # every GitHub tool call resolves them; falls back to server config when
         # the session isn't connected. contextvars propagate across await/threads.
         try:
-            with _session_store.activate(thread_id):
+            with identity.activate(caller), _session_store.activate(thread_id, owner=_owner(caller)):
                 async for event in adk_chat_service.stream_chat(req.message, thread_id):
                     if event.get("type") == "interrupt":
                         logger.info(f"Interrupt emitted | thread={thread_id}")
@@ -359,7 +383,7 @@ async def chat_endpoint(req: ChatRequest):
 
 
 @app.post("/api/session/connect")
-async def session_connect_endpoint(req: SessionConnectRequest):
+async def session_connect_endpoint(req: SessionConnectRequest, request: Request):
     """Connect this chat thread to GitHub with the user's PAT token.
 
     The PAT is held in memory only and never logged or returned (the response
@@ -367,7 +391,10 @@ async def session_connect_endpoint(req: SessionConnectRequest):
     this user against the server-configured repositories.
     """
     thread_id = get_or_create_thread_id(req.thread_id)
-    creds = SessionCredentials(pat_token=req.pat_token or "")
+    caller = await asyncio.to_thread(_caller, request)
+    # Bound to the verified caller: someone else who learns this thread id gets
+    # a thread without the token, not a session running as this person.
+    creds = SessionCredentials(pat_token=req.pat_token or "", owner=_owner(caller))
     if not creds.pat_token:
         return {"ok": False, "error": "A PAT token is required to connect."}
 
@@ -377,18 +404,21 @@ async def session_connect_endpoint(req: SessionConnectRequest):
 
 
 @app.get("/api/session/status")
-async def session_status_endpoint(thread_id: str = ""):
+async def session_status_endpoint(request: Request, thread_id: str = ""):
     """Return the (token-masked) connection status for a thread."""
-    creds = _session_store.get(thread_id) if thread_id else None
+    caller = await asyncio.to_thread(_caller, request)
+    creds = _session_store.get(thread_id, owner=_owner(caller)) if thread_id else None
     if creds is None:
         return {"connected": False, "token_preview": ""}
     return creds.public_status()
 
 
 @app.post("/api/session/disconnect")
-async def session_disconnect_endpoint(req: SessionThreadRequest):
+async def session_disconnect_endpoint(req: SessionThreadRequest, request: Request):
     """Clear a thread's stored repo + PAT (called on New Thread / Disconnect)."""
-    _session_store.clear(req.thread_id)
+    caller = await asyncio.to_thread(_caller, request)
+    if _session_store.get(req.thread_id, owner=_owner(caller)) is not None:
+        _session_store.clear(req.thread_id)      # only its owner may drop it
     return {"ok": True, "connected": False}
 
 
@@ -405,6 +435,24 @@ async def session_disconnect_endpoint(req: SessionThreadRequest):
 # passes fresh=1 (after a chat turn, or the manual refresh) and bypasses it.
 _STATUS_TTL_SECONDS = 15.0
 _status_cache: dict = {"at": 0.0, "value": None}
+
+# The checks are the same for everyone; a team opening the pill at once should
+# not each run every query. fresh=1 (the refresh button) bypasses it.
+_MONITOR_TTL_SECONDS = 30.0
+_monitor_cache: dict = {"at": 0.0, "value": None}
+
+
+@app.get("/api/monitoring")
+def monitoring_endpoint(fresh: int = 0):
+    """The team's PromQL checks, run now (or within the last 30s)."""
+    from .tools.monitoring import run_checks
+
+    if not fresh and _monitor_cache["value"] is not None \
+            and time.time() - _monitor_cache["at"] < _MONITOR_TTL_SECONDS:
+        return _monitor_cache["value"]
+    result = run_checks()
+    _monitor_cache.update(at=time.time(), value=result)
+    return result
 
 
 @app.get("/api/release-status")
@@ -560,15 +608,18 @@ def release_queue_get():
 
 
 @app.post("/api/release-queue")
-def release_queue_add(req: QueueAddRequest):
+def release_queue_add(req: QueueAddRequest, request: Request):
     """Queue a chart:version for the next release (the 'Monday dev' path).
     Runs the courtesy build check and reports last-time routing, same as the
     conversational intake."""
     from adk_release_agent.tools import queue_release_intent
 
+    who, refused = identity.actor(req.requested_by, _caller(request))
+    if refused:
+        return {"ok": False, "error": refused}
     return queue_release_intent(
         artifact=req.artifact,
-        requested_by=req.requested_by,
+        requested_by=who,
         prl1_only=req.prl1_only,
         target_envs=req.target_envs,
         df_only=req.df_only,
@@ -580,7 +631,7 @@ def release_queue_add(req: QueueAddRequest):
 
 
 @app.post("/api/release-queue/batch")
-def release_queue_add_batch(req: QueueBatchRequest):
+def release_queue_add_batch(req: QueueBatchRequest, request: Request):
     """Queue several charts in one submission.
 
     Each row is gated independently and PARTIAL SUCCESS is the point: a failed
@@ -600,12 +651,17 @@ def release_queue_add_batch(req: QueueBatchRequest):
     rows = [r for r in req.rows if (r.artifact or "").strip()]
     if not rows:
         return {"ok": False, "error": "No charts given — add at least one row."}
+    # Resolved HERE, not in the rows' threads: a pool thread does not inherit
+    # this request's context, and the caller must be the same for every row.
+    who, refused = identity.actor(req.requested_by, _caller(request))
+    if refused:
+        return {"ok": False, "error": refused}
 
     def _queue(row: QueueRow) -> dict:
         try:
             return queue_release_intent(
                 artifact=row.artifact.strip(),
-                requested_by=req.requested_by,
+                requested_by=who,
                 prl1_only=row.prl1_only,
                 target_envs=row.target_envs,
                 df_only=row.df_only,
@@ -718,12 +774,15 @@ def release_draft(req: ReleaseDraftRequest):
 
 
 @app.post("/api/release-queue/withdraw")
-def release_queue_withdraw(req: QueueWithdrawRequest):
+def release_queue_withdraw(req: QueueWithdrawRequest, request: Request):
     """Withdraw a chart from the next-release queue (append-only: writes a
     'withdrawn' event; nothing is deleted)."""
     from .tools import release_queue
 
-    return release_queue.withdraw_intent(req.artifact_name, req.requested_by, req.artifact_version)
+    who, refused = identity.actor(req.requested_by, _caller(request))
+    if refused:
+        return {"ok": False, "error": refused}
+    return release_queue.withdraw_intent(req.artifact_name, who, req.artifact_version)
 
 
 @app.get("/api/release-insights")
@@ -1109,13 +1168,37 @@ def _identity_report(request: Request) -> dict:
         # nothing about identity (x-asm-rctoken, say) — invisible to the name
         # match above. Decoding it is the only way to know.
         "jwt_claims": _jwt_findings(headers),
+        # What the app actually USES: the configured header, signature-checked.
+        "verified": _verified_identity(headers),
         "note": (
-            "Discovery only — nothing in the app reads these yet. If a header here "
-            "carries the signed-in user, it can replace the typed 'requested_by' "
-            "and the hardcoded session user. Values are masked; JWTs are decoded "
-            "WITHOUT signature verification, to see what they carry — not to trust it."
+            "jwt_claims is discovery: decoded WITHOUT verification, to see what a "
+            "token carries. 'verified' is what the app trusts — IDENTITY_HEADER's "
+            "token, checked against the issuer's keys. Values are masked."
         ),
     }
+
+
+def _verified_identity(headers: dict) -> dict:
+    caller, why = identity.from_headers(headers)
+    out = {
+        "enabled": identity.enabled(),
+        "header": app_settings.identity_header,
+        "signed_in": caller is not None,
+        "required": app_settings.identity_required,
+    }
+    if identity.enabled():
+        out.update({
+            "issuer": app_settings.identity_issuer,
+            "jwks_url": app_settings.identity_jwks_url,
+            "audience_checked": bool(app_settings.identity_audience),
+        })
+        if not app_settings.identity_audience:
+            out["hint"] = "set IDENTITY_AUDIENCE to the token's aud — without it any RCToken from this issuer is accepted"
+    if caller:
+        out["email"] = _mask_identity(caller.email)
+    else:
+        out["reason"] = why
+    return out
 
 @app.get("/api/diagnostics")
 def diagnostics(request: Request):

@@ -60,6 +60,18 @@ export async function getContext(path, fallback, timeoutMs = CONTEXT_TIMEOUT_MS)
     }
 }
 
+// ---- who is signed in ------------------------------------------------------
+let whoPromise = null;
+/** The gateway-verified user ({signed_in, email, name}) — fetched once per page.
+ * Never blocks a form: a slow or failing call reads as "not signed in". */
+export function whoami() {
+    if (!whoPromise) whoPromise = getContext('/api/whoami', { signed_in: false }, 5000);
+    return whoPromise;
+}
+
+// ---- monitoring ---------------------------------------------------------------
+export const monitoring = (fresh) => get('/api/monitoring' + (fresh ? '?fresh=1' : ''));
+
 // ---- release queue ----------------------------------------------------------
 export const QUEUE_PATH = '/api/release-queue';
 export const getQueue = () => get(QUEUE_PATH);

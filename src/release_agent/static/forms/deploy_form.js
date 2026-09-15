@@ -2,6 +2,7 @@ import { deployTemplatePath, getContext } from '../api.js';
 import { sendMessage } from '../chat.js';
 import { ctxNote, opening, withDismiss } from './common.js';
 import { showDfDeployForm } from './df_deploy_form.js';
+import { showMonitoring } from './monitoring.js';
 import { parseDeployInclude } from './parse.js';
 import { showQueueForm } from './queue_form.js';
 import { showQueueTable } from './queue_table.js';
@@ -18,6 +19,7 @@ export async function showDeployForm(env, name, version) {
     if (env === 'df-release') { showReleaseForm('df'); return; }
     if (env === 'queue') { showQueueForm(); return; }
     if (env === 'queue-table') { showQueueTable(); return; }
+    if (env === 'monitoring') { showMonitoring(); return; }
     const isProd = env === 'prod';
     const accentT = isProd ? 'text-amber-300' : 'text-emerald-300';
     const accentBtn = isProd ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500';

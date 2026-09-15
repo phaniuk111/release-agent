@@ -196,7 +196,9 @@ pygithub==2.9.1
 pygments==2.20.0
     # via rich
 pyjwt==2.13.0
-    # via pygithub
+    # via
+    #   pygithub
+    #   release-copilot
 pynacl==1.6.2
     # via pygithub
 python-dateutil==2.9.0.post0

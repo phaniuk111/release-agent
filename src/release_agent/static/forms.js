@@ -11,5 +11,6 @@ export { showQueueTable } from './forms/queue_table.js';
 export { showReleaseForm } from './forms/release_form.js';
 export { showDfDeployForm } from './forms/df_deploy_form.js';
 export { showDeployForm } from './forms/deploy_form.js';
+export { showMonitoring } from './forms/monitoring.js';
 export { parseDeployIntent, parseDeployInclude } from './forms/parse.js';
 export { queueDestination } from './core/queue.js';

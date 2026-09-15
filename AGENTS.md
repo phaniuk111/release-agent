@@ -11,8 +11,9 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
 | `src/release_agent/app_fastapi.py` | FastAPI app: chat SSE endpoint, session-PAT endpoints, queue/insights/deploy-template APIs, inline HTML shell |
 | `src/release_agent/adk_service.py` | Router: deterministic deploy parser → classifier fallback → chat agent; CONFIRM-token + yes/no approval resume paths |
 | `src/release_agent/agent/parsing.py` | Pure text parsing: image:tag extraction, env detection, JSON payload parser, queue-intent veto. No LLM, no regex |
-| `src/release_agent/tools/` | GitHub/BQ tool layer (source of truth for all facts): `promotion.py` (deploy PR chains SIT→UAT→PRD), `release_fileset.py` (CARE/DF release model), `git_snapshot.py` (Dulwich checkout + API commit — no git binary), `clone_probe.py` (diagnostics: which fetch paths the proxy allows), `release_queue.py` (BQ event log), `pr_reconcile.py` (settles PRs merged/closed outside the chat), `chg_defaults.py` (change-request fields from facts: release name/number, standard wording), `controls.py` (build verification, RCTLD control parsing), `release_window.py` (release guard), `manifest.py`, `_common.py` (GitHub client, session PAT resolution) |
-| `src/release_agent/session_creds.py` | Per-thread GitHub PAT: memory-only, masked, never logged/stored |
+| `src/release_agent/tools/` | GitHub/BQ tool layer (source of truth for all facts): `promotion.py` (deploy PR chains SIT→UAT→PRD), `release_fileset.py` (CARE/DF release model), `git_snapshot.py` (Dulwich checkout + API commit — no git binary), `clone_probe.py` (diagnostics: which fetch paths the proxy allows), `monitoring.py` (MONITOR_CHECKS PromQL checks + read-only queries for the Monitoring pill/skill), `release_queue.py` (BQ event log), `pr_reconcile.py` (settles PRs merged/closed outside the chat), `chg_defaults.py` (change-request fields from facts: release name/number, standard wording), `controls.py` (build verification, RCTLD control parsing), `release_window.py` (release guard), `manifest.py`, `_common.py` (GitHub client, session PAT resolution) |
+| `src/release_agent/session_creds.py` | Per-thread GitHub PAT: memory-only, masked, never logged/stored; bound to its owner when identity is on |
+| `src/release_agent/identity.py` | Signed-in user from the mesh's RCToken (IDENTITY_HEADER) — signature-VERIFIED against the issuer's JWKS, never just decoded; the verified email beats any typed one |
 | `src/release_agent/static/` | ES-module frontend in three layers (see `static/README.md`): `core/` pure rules shared with the Backstage port (queue routing/wording, validation, formatting; tested in `tests/js/`), `api.js` every backend call, and screens — `forms/` (one module per form: queue form + table, CARE/DF release, deploys, chat parsers), `chat.js` (SSE, markdown, ```chart blocks → vendored Chart.js), `palette.js` (pills + ⌘K), `insights.js`, `status.js` (banner) |
 | `adk_release_agent/` | ADK app: `agent.py` (skills-routed chat agent + ROOT_INSTRUCTION), `deploy.py` (preview→token→apply), `deploy_workflow.py` (deterministic Workflow graph: gate → apply / cancel), `tools.py` (ADK wrappers incl. queue eligibility gate), `safety.py` (MutationGuardPlugin), `intent.py` (classify-only fallback), `tracing.py`, `skills/*/SKILL.md` (per-domain instructions + tool unlock lists) |
 | `bigquery/` | Event-table provisioning: terraform module + `release_intents.schema.json` (single source of truth) |
@@ -55,7 +56,8 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    failed build or failed control (RCTLDEF*/RLFT/RFTL prefixes,
    case-insensitive, steps or jobs) → refused with the failures listed.
 5. **Secrets**: PATs are memory-only per thread and masked everywhere; nothing
-   sensitive in git, BQ, or traces. `.env`, `.claude/launch.json`, `traces/` stay
+   sensitive in git, BQ, or traces. Identity comes only from a VERIFIED token (identity.py) —
+   a header value is never trusted just because it is present. `.env`, `.claude/launch.json`, `traces/` stay
    untracked.
 6. **LLM boundaries**: facts come from tools; charts/tables are model-emitted specs
    rendered by deterministic code (vendored Chart.js, no CDN — Tailwind, Font Awesome and Inter are vendored too, `static/vendor/`); the classifier routes

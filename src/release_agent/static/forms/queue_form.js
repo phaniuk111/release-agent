@@ -2,7 +2,7 @@ import { escapeHtml as esc } from '../core/format.js';
 import { batchRow, queueSubmissionProblems, tickHint } from '../core/queue.js';
 import { getContext, QUEUE_PATH, queueBatch } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
-import { ctxNote, opening, withDismiss } from './common.js';
+import { ctxNote, lockToSignedIn, opening, withDismiss } from './common.js';
 
 // ---- Add to next release (intake queue) ----------------------------------
 // A dev ready on Monday registers chart:version + routing here; DevOps sees
@@ -133,6 +133,7 @@ export async function showQueueForm() {
     };
     const emailEl = mk('Your email *', 'q-email', 'you@company.com');
     emailEl.value = localStorage.getItem('queue_email') || '';
+    lockToSignedIn(emailEl);
     wrap.appendChild(grid);
 
     // Change context: the dev's what-and-why becomes the CHG description draft
@@ -281,7 +282,7 @@ export async function showQueueForm() {
             { email, details, ticks: ticks() });
         if (problems.length) { err.innerHTML = problems.map(esc).join('<br>'); return; }
 
-        localStorage.setItem('queue_email', email);
+        if (!emailEl.dataset.signedIn) localStorage.setItem('queue_email', email);
         submit.disabled = true;
         submit.textContent = filled.length > 1 ? 'Checking ' + filled.length + ' builds…' : 'Queueing…';
         let result = null;

@@ -1,6 +1,6 @@
 import { escapeHtml as esc, shortName, timeAgo } from '../core/format.js';
 import { queueDestination } from '../core/queue.js';
-import { getContext, QUEUE_PATH, withdrawFromQueue } from '../api.js';
+import { getContext, QUEUE_PATH, whoami, withdrawFromQueue } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
 import { ctxNote, opening, withDismiss } from './common.js';
 import { showQueueForm } from './queue_form.js';
@@ -125,6 +125,15 @@ function _confirmRemove(wrap, scroller, q, index) {
     const go = tr.querySelector('.q-remove-go');
     const err = tr.querySelector('.q-remove-err');
     (email.value ? go : email).focus();
+    // Signed in: the removal is recorded against the verified user — no field.
+    whoami().then(who => {
+        if (!who || !who.signed_in || !who.email || !email.isConnected) return;
+        email.value = who.email;
+        email.dataset.signedIn = '1';
+        email.replaceWith(Object.assign(document.createElement('span'), {
+            className: 'text-slate-400 text-[11px]', textContent: 'as ' + who.email }));
+        go.focus();
+    });
     tr.querySelector('.q-remove-cancel').addEventListener('click', () => tr.remove());
     go.addEventListener('click', async () => {
         const who = email.value.trim();
@@ -136,7 +145,7 @@ function _confirmRemove(wrap, scroller, q, index) {
                                             artifact_version: q.artifact_version || '', requested_by: who });
         } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
         if (res && res.ok) {
-            try { localStorage.setItem('queue_email', who); } catch (e) {}
+            if (!email.dataset.signedIn) { try { localStorage.setItem('queue_email', who); } catch (e) {} }
             loadReleaseStatus(true);
             _renderQueueTable(wrap, { ok: true, text: 'Removed ' + label + ' from the next release.' });
         } else if (res && res.stale) {

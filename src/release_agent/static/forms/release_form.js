@@ -1,6 +1,6 @@
 import { escapeHtml as esc } from '../core/format.js';
 import { forRelease, releaseRouteText } from '../core/queue.js';
-import { getContext, QUEUE_PATH, releaseDefaults, releaseDraft } from '../api.js';
+import { getContext, QUEUE_PATH, releaseDefaults, releaseDraft, whoami } from '../api.js';
 import { sendMessage } from '../chat.js';
 import { ctxNote, opening, withDismiss } from './common.js';
 
@@ -166,6 +166,12 @@ export async function showReleaseForm(kind) {
     // The initiator is the person creating the release: remembered from the
     // last one they created, else the email they queue with.
     try { initEl.value = localStorage.getItem('release_initiator') || localStorage.getItem('queue_email') || ''; } catch (e) {}
+    // Signed in: default to the verified user. Still editable — a change can be
+    // raised on someone's behalf — but only replaces a value nobody typed here.
+    whoami().then(who => {
+        if (who && who.signed_in && who.email && !initEl.dataset.edited) initEl.value = who.email;
+    });
+    initEl.addEventListener('input', () => { initEl.dataset.edited = '1'; });
     const autoNote = document.createElement('div');
     autoNote.className = 'text-[10px] text-slate-500 -mt-1 mb-2';
     autoNote.textContent = 'Filled from the queue and the release history — set the start and end, ' +

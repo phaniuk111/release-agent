@@ -1,6 +1,21 @@
 // Helpers every form card shares. The screens themselves are one module each
 // in this folder; core/ holds their rules and ../api.js every backend call.
 import { escapeHtml as esc } from '../core/format.js';
+import { whoami } from '../api.js';
+
+// When the gateway has signed the person in, the server records THAT email
+// whatever a field says — so the field shows it and stops being editable,
+// rather than inviting a value that would be silently replaced.
+export async function lockToSignedIn(input) {
+    const who = await whoami();
+    if (!who || !who.signed_in || !who.email) return null;
+    input.value = who.email;
+    input.readOnly = true;
+    input.dataset.signedIn = '1';
+    input.title = 'Signed in through the gateway — recorded as you';
+    input.classList.add('opacity-70');
+    return who;
+}
 
 // An accidentally-opened form is long (CARE Release especially) and used to
 // leave the user scrolling past it. Every form card gets a ✕ in its corner, and

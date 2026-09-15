@@ -22,6 +22,7 @@ from release_agent.agent.parsing import (
     _try_parse_json_payload,
     is_queue_intent,
 )
+from release_agent.config import settings as _settings
 from release_agent.tools.gh_tools import assemble_entry, plan_deploy, _normalize_entry
 
 from .tools import _invoke_tool
@@ -197,9 +198,10 @@ def prepare_deploy_preview(
     env = "prod" if env in ("prod", "prd", "production") else "uat"
     req["environment"] = env
     if req.get("deployment_type") == "release":
-        # Live release model: generate the file-set locally NOW (clone + updater
-        # script, no push) so the preview shows the real diff, partition and RCTL
-        # timeline. Apply then only pushes + opens the release PR.
+        # Live release model: generate the file-set locally NOW (checkout +
+        # updater script, nothing written to GitHub) so the preview shows the real
+        # diff, partition and RCTL timeline. Apply then commits it through the API
+        # and opens the release PR.
         from release_agent.tools import release_fileset as _rf
 
         prep = _rf.prepare_release_fileset(req["release"])
@@ -220,6 +222,9 @@ def prepare_deploy_preview(
             "status": "awaiting_confirmation",
             "environment": env,
             "image_tags": prep["release_name"],
+            # A release is created INTO SIT and promoted from there — the deploy
+            # heading ("Deploy … to PROD") described something else entirely.
+            "heading": f"Create release {prep['release_name']} → {_settings.sit_branch}",
             "token": token,
             "proposed": prep["preview"],
             "deployment_repo": "",

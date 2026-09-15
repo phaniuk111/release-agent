@@ -41,6 +41,15 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 _USER_ID = "fastapi-user"
+
+
+def _user_id() -> str:
+    """ADK sessions are keyed per verified caller when identity is on, so one
+    person's thread id never resumes another person's conversation or pending
+    approval; everyone shares the fixed id when it is off, as before."""
+    from . import identity
+
+    return identity.current_email() or _USER_ID
 # name attached to the resume function-response; matches ADK's RequestInput tool.
 _REQUEST_INPUT_NAME = "adk_request_input"
 # ADK's tool-confirmation long-running function-call name (prod-ops confirmation).
@@ -479,7 +488,7 @@ class AdkChatService:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Run the deploy Workflow's preview turn and surface the confirmation interrupt."""
         async for event in self.deploy_runner.run_async(
-            user_id=_USER_ID,
+            user_id=_user_id(),
             session_id=_session_id(thread_id, "deploy"),
             new_message=_content_from_text(message),
         ):
@@ -501,7 +510,9 @@ class AdkChatService:
                         "token": token,
                         "proposed": pending.get("preview", {}),
                         "environment": environment,
-                        "message": f"Reply with exactly `{token}` to apply this deploy.",
+                        "message": (f"Reply with exactly `{token}` to create this release."
+                                    if request.get("deployment_type") == "release"
+                                    else f"Reply with exactly `{token}` to apply this deploy."),
                     },
                 }
                 break
@@ -514,7 +525,7 @@ class AdkChatService:
         self._pending_deploy.pop(thread_id, None)
         result: dict[str, Any] | None = None
         async for event in self.deploy_runner.run_async(
-            user_id=_USER_ID,
+            user_id=_user_id(),
             session_id=_session_id(thread_id, "deploy"),
             new_message=_confirmation_response(token, confirmed),
         ):
@@ -540,7 +551,7 @@ class AdkChatService:
         interrupted = False
         mutated = False          # did this turn change release/deploy state?
         async for event in self.chat_runner.run_async(
-            user_id=_USER_ID,
+            user_id=_user_id(),
             session_id=_session_id(thread_id, "chat"),
             invocation_id=invocation_id,
             new_message=content,
@@ -572,7 +583,7 @@ class AdkChatService:
     async def _chat_session(self, thread_id: str):
         return await self.session_service.get_session(
             app_name=self.chat_runner.app_name,
-            user_id=_USER_ID,
+            user_id=_user_id(),
             session_id=_session_id(thread_id, "chat"),
         )
 
@@ -640,7 +651,7 @@ class AdkChatService:
         try:
             session = await self.session_service.get_session(
                 app_name=self.deploy_runner.app_name,
-                user_id=_USER_ID,
+                user_id=_user_id(),
                 session_id=_session_id(thread_id, "deploy"),
             )
         except Exception:
@@ -654,7 +665,7 @@ class AdkChatService:
         try:
             session = await self.session_service.get_session(
                 app_name=chat_app.name,
-                user_id=_USER_ID,
+                user_id=_user_id(),
                 session_id=_session_id(thread_id, "chat"),
             )
             if session is not None:

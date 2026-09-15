@@ -140,6 +140,13 @@ def test_single_repo_setups_do_not_pay_for_a_second_read(monkeypatch):
 
 # ---------------------------------------------- multi-chart intake (batch)
 
+def _add_batch(req):
+    """The endpoint as a request with no gateway token (identity off) calls it."""
+    from types import SimpleNamespace
+
+    return APP.release_queue_add_batch(req, SimpleNamespace(headers={}))
+
+
 def _row(artifact, run="https://gh/actions/runs/1", jira="ABC-1"):
     return {"artifact": artifact, "build_run_url": run, "jira_ticket": jira}
 
@@ -165,7 +172,7 @@ def test_a_failed_control_on_one_row_does_not_discard_the_others(monkeypatch):
                 "failed_controls": ["RCTLDEF0000043"],
                 "failed_controls_detail": [{"control": "RCTLDEF0000043", "job": "build"}]},
     })
-    out = APP.release_queue_add_batch(APP.QueueBatchRequest(
+    out = _add_batch(APP.QueueBatchRequest(
         rows=[APP.QueueRow(**_row("a:1")), APP.QueueRow(**_row("b:2"))],
         requested_by="dev@acme.com", change_details="d",
     ))
@@ -177,7 +184,7 @@ def test_a_failed_control_on_one_row_does_not_discard_the_others(monkeypatch):
 
 def test_all_rows_refused_is_not_reported_as_a_split(monkeypatch):
     _batch(monkeypatch, {"a:1": {"ok": False, "error": "nope"}})
-    out = APP.release_queue_add_batch(APP.QueueBatchRequest(
+    out = _add_batch(APP.QueueBatchRequest(
         rows=[APP.QueueRow(**_row("a:1"))], requested_by="d@e.com", change_details="d"))
     assert out["ok"] is False and out["split"] is False
 
@@ -186,7 +193,7 @@ def test_each_row_carries_its_own_ticket_and_run(monkeypatch):
     """One build run builds one tag, and a change spanning charts often spans
     tickets — so neither can be a shared field."""
     calls = _batch(monkeypatch, {"a:1": {"ok": True}, "b:2": {"ok": True}})
-    APP.release_queue_add_batch(APP.QueueBatchRequest(
+    _add_batch(APP.QueueBatchRequest(
         rows=[
             APP.QueueRow(**_row("a:1", run="https://gh/actions/runs/11", jira="ABC-1")),
             APP.QueueRow(**_row("b:2", run="https://gh/actions/runs/22", jira="ABC-2")),
@@ -209,7 +216,7 @@ def test_one_exploding_row_does_not_kill_the_batch(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr("adk_release_agent.tools.queue_release_intent", _queue)
-    out = APP.release_queue_add_batch(APP.QueueBatchRequest(
+    out = _add_batch(APP.QueueBatchRequest(
         rows=[APP.QueueRow(**_row("boom:1")), APP.QueueRow(**_row("fine:1"))],
         requested_by="d@e.com", change_details="d"))
     assert [q["artifact"] for q in out["queued"]] == ["fine:1"]
@@ -217,6 +224,6 @@ def test_one_exploding_row_does_not_kill_the_batch(monkeypatch):
 
 
 def test_an_empty_submission_is_refused():
-    out = APP.release_queue_add_batch(APP.QueueBatchRequest(
+    out = _add_batch(APP.QueueBatchRequest(
         rows=[], requested_by="d@e.com", change_details="d"))
     assert out["ok"] is False and "at least one" in out["error"]

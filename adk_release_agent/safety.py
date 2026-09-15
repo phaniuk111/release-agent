@@ -99,7 +99,8 @@ _SCOPE_WORDS = frozenset(
     rfrl rftl pr prs pull request jira chg rmg uat prd prl1 sit prod production
     staging environment env manifest artifact artifactory dataflow df composer
     dag dags rollback pipeline workflow run runs onboard onboarding api apis
-    endpoint credentials auth cutoff window""".split()
+    endpoint credentials auth cutoff window monitoring monitor metric metrics promql
+    prometheus alert alerts firing""".split()
 )
 # Environments and other bare tokens that carry meaning on their own.
 _SCOPE_PREFIXES = ("confirm-",)
@@ -132,8 +133,9 @@ _CLASSIFY_PROMPT = """You screen ONE chat message for a software RELEASE portal.
 
 The portal covers: releases, deploys and promotions between environments; the
 next-release intake queue; build verification and release controls; deployment
-pull requests; release history and what is deployed where; and guiding API
-CONSUMERS through onboarding. It also covers BACKGROUND questions about any of
+pull requests; release history and what is deployed where; monitoring — the
+team's PromQL checks, metrics and alerts; and guiding API CONSUMERS through
+onboarding. It also covers BACKGROUND questions about any of
 that ("what is a helm chart?", "how does the queue work?", "what can you do?").
 
 Crucially, it also covers SHORT or VAGUE questions from someone already working

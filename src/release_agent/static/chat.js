@@ -4,6 +4,7 @@
 import { getThreadId, rotateThreadId } from './state.js';
 import { openChat, sessionDisconnect } from './api.js';
 import { escapeHtml } from './core/format.js';
+import { liftFences } from './core/fences.js';
 import { parseDeployIntent, showDeployForm } from './forms.js';
 import { renderConnectionStatus } from './connect.js';
 import { showCapabilities } from './palette.js';
@@ -134,7 +135,10 @@ export { escapeHtml };
 // Minimal, safe markdown -> HTML for streamed assistant text.
 export function renderMarkdown(t) {
     t = _extractChartBlocks(t);
-    t = escapeHtml(t);
+    // Fenced blocks leave BEFORE any inline rule runs and come back last, as
+    // <pre> — their backticks and newlines are not markdown (core/fences.js).
+    const fenced = liftFences(t);
+    t = escapeHtml(fenced.text);
     // [text](url) markdown links -> stash so the bare-URL linkifier below
     // doesn't double-wrap the URL inside the href attribute.
     const _links = [];
@@ -155,6 +159,11 @@ export function renderMarkdown(t) {
     // \n -> <br>, but never adjacent to block elements (tables/charts render
     // their own spacing; stray <br> around them doubles the gaps).
     t = t.split('\n').join('<br>');
+    t = t.replace(/(<br>)*CODESLOT(\d+)ENDCODE(<br>)*/g, function(m, a, i) {
+        return '<pre class="my-2 rounded-lg bg-slate-950/40 border border-slate-800 px-2 py-1 text-[11px] ' +
+               'text-slate-200 overflow-x-auto"><code>' +
+               escapeHtml(fenced.blocks[+i].code) + '</code></pre>';
+    });
     t = t.replace(/(<br>)+(<div)/g, '$2').replace(/(<\/div>)(<br>)+/g, '$1');
     return t;
 }

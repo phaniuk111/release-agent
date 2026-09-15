@@ -79,8 +79,13 @@ def proxy_hint(url: str) -> str | None:
     return None
 
 
-def _http_hint(status: int, target: dict, principal: str) -> str:
+def _http_hint(status: int, target: dict, principal: str, message: str = "") -> str:
     who = principal or "the pod's service account"
+    # A PromQL syntax error is ALSO a 400 from the managed service — seen live as
+    # 'invalid parameter "query": … parse error' — and is the query's fault, not
+    # the project's.
+    if status == 400 and ("parse error" in message or 'parameter "query"' in message):
+        return "the PromQL itself does not parse — fix the expression; access is fine."
     if target.get("managed"):
         project = target["base_url"].split("/projects/")[-1].split("/")[0]
         if status == 403:

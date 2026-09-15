@@ -161,8 +161,8 @@ config:
   BQ_TABLE: "release_intents"
   BQ_LOCATION: "US"
   BQ_AUTO_CREATE: "false"   # keep false in cluster; true only for local dev
-  # PromQL access — checked by /api/diagnostics (section "promql"), nothing else
-  # uses it yet. Empty PROMETHEUS_URL = Managed Service for Prometheus in
+  # PromQL access — checked by /api/diagnostics (section "promql") and used by
+  # the Monitoring pill + chat. Empty PROMETHEUS_URL = Managed Service for Prometheus in
   # PROMETHEUS_PROJECT (empty = GOOGLE_CLOUD_PROJECT); the pod's service account
   # needs roles/monitoring.viewer there. Or any Prometheus HTTP API base, e.g.
   # http://prometheus-operated.monitoring.svc:9090 (then add .svc to NO_PROXY).
@@ -170,6 +170,26 @@ config:
   PROMETHEUS_PROJECT: ""
   PROMETHEUS_AUTH: "auto"     # auto | google | none
   PROMQL_PROBE_QUERY: ""      # optional: the query you plan to rely on
+  # Monitoring pill: JSON list of {"name","query","severity":"error|warn","description"}.
+  # A check FIRES when its query returns a non-zero series, so write it to return
+  # series only when something is wrong. Empty = one check: up == 0 (targets down).
+  # Managed Prometheus also serves GCP metrics, e.g. failed Composer DAG runs:
+  #   [{"name":"DAG runs failed (1h)","severity":"error",
+  #     "query":"sum by (workflow_name) (increase(composer_googleapis_com:workflow_run_count{state=\"failed\"}[1h])) > 0"}]
+  MONITOR_CHECKS: ""
+  # ============================ [FEATURE] identity =========================
+  # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
+  # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's
+  # JWKS (signature, issuer, expiry, audience) and the verified email replaces
+  # typed emails (queue/withdraw), keys chat sessions per person and binds a
+  # thread's GitHub token to its owner. Empty = off, forms ask for an email.
+  # The JWKS host is cluster-local: fetched without the egress proxy.
+  IDENTITY_HEADER: ""                      # x-asm-rctoken for CSM user auth
+  IDENTITY_JWKS_URL: "http://authservice.asm-user-auth.svc.cluster.local:10004/_gcp_user_auth/jwks"
+  IDENTITY_ISSUER: "authservice.asm-user-auth.svc.cluster.local"
+  IDENTITY_AUDIENCE: ""                    # the RCToken's aud (UserAuthConfig) — set it
+  IDENTITY_EMAIL_CLAIM: "attributes.email,email"
+  IDENTITY_REQUIRED: "false"               # true = refuse queue writes with no verified user
   # CARE/DF release forms: lets devs type bare name:version (they can always
   # paste full URLs instead — UI-overridable per artifact line).
   ARTIFACTORY_BASE_URL: ""

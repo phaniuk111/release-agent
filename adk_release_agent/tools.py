@@ -205,9 +205,14 @@ def queue_release_intent(
     control, a control that has not passed yet, or a run with no controls at
     all makes the chart INELIGIBLE (eligible=false, with failed_controls /
     failed_steps / open_controls listed) so the dev fixes and re-runs first.
-    Re-queuing a chart replaces its version."""
+    Re-queuing a chart replaces its version. When the portal knows who is
+    signed in, that verified email is recorded and requested_by is ignored."""
+    from release_agent import identity
     from release_agent.tools import release_queue as _rq
 
+    requested_by, refused = identity.actor(requested_by, identity.current())
+    if refused:
+        return {"ok": False, "eligible": False, "error": refused}
     name, version = _rq._split_artifact(artifact)
     verified: bool | None = None
     warnings: list[str] = []
@@ -438,10 +443,36 @@ def queue_release_intent(
 def withdraw_release_intent(artifact_name: str, requested_by: str = "") -> dict[str, Any]:
     """Withdraw a chart from the next-release intake queue (e.g. 'remove my
     risk-fetcher from the queue'). Only touches the queue — never a live
-    environment or an open release."""
+    environment or an open release. The signed-in user, when known, is who
+    the removal is recorded against."""
+    from release_agent import identity
     from release_agent.tools import release_queue as _rq
 
+    requested_by, refused = identity.actor(requested_by, identity.current())
+    if refused:
+        return {"ok": False, "error": refused}
     return _rq.withdraw_intent(artifact_name, requested_by)
+
+
+def monitoring_checks() -> dict[str, Any]:
+    """Run the team's configured monitoring checks NOW (PromQL expressions that
+    return series only when something is wrong). Each check comes back with
+    state firing / ok / unknown, the firing series (labels + value, capped) and,
+    for unknown, the error and a likely fix. Read-only."""
+    from release_agent.tools import monitoring as _mon
+
+    return _mon.run_checks()
+
+
+def query_metrics(promql: str) -> dict[str, Any]:
+    """Run ONE read-only PromQL instant query against the team's Prometheus
+    (Managed Service for Prometheus, which also exposes Cloud Monitoring's GCP
+    metrics as e.g. serviceruntime_googleapis_com:api_request_count). Returns
+    at most 20 series ({labels, value}) plus the true count and whether it was
+    truncated. Use aggregations (sum by, topk, count) to keep answers small."""
+    from release_agent.tools import monitoring as _mon
+
+    return _mon.run_query(promql)
 
 
 def list_release_queue() -> dict[str, Any]:
@@ -519,10 +550,14 @@ QUEUE_TOOLS = [
     list_allowed_images,
 ]
 
+# Monitoring: PromQL checks and ad-hoc metric questions. PromQL cannot write.
+MONITORING_TOOLS = [monitoring_checks, query_metrics]
+
 ADK_CHAT_TOOLS = list(
     {
         id(tool): tool
-        for tool in (STATUS_TOOLS + PR_TOOLS + CONTROLS_TOOLS + OPS_TOOLS + QUEUE_TOOLS)
+        for tool in (STATUS_TOOLS + PR_TOOLS + CONTROLS_TOOLS + OPS_TOOLS + QUEUE_TOOLS
+                     + MONITORING_TOOLS)
     }.values()
 )
 

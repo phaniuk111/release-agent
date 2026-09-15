@@ -95,6 +95,8 @@ class SessionCredentials:
     # if a future UI collects them independently).
     build_repo: str = field(default="")
     deploy_repo: str = field(default="")
+    # The verified signed-in user who connected it (identity on), else None.
+    owner: str | None = None
 
     def __post_init__(self) -> None:
         self.repo = _normalize_repo(self.repo)
@@ -130,20 +132,30 @@ class SessionCredentialStore:
     def set(self, thread_id: str, creds: SessionCredentials) -> None:
         self._by_thread[thread_id] = creds
 
-    def get(self, thread_id: str) -> SessionCredentials | None:
-        return self._by_thread.get(thread_id)
+    def get(self, thread_id: str, owner: str | None = None) -> SessionCredentials | None:
+        """The thread's creds — withheld from anyone but their owner.
+
+        ``owner`` None means identity is off: no check, as before. A thread id is
+        not a secret (it sits in the browser's storage), so with identity on it
+        must not be enough to run as someone else's GitHub token.
+        """
+        creds = self._by_thread.get(thread_id)
+        if creds is not None and owner is not None and creds.owner is not None \
+                and creds.owner != owner:
+            return None
+        return creds
 
     def clear(self, thread_id: str) -> None:
         self._by_thread.pop(thread_id, None)
 
     @contextlib.contextmanager
-    def activate(self, thread_id: str) -> Iterator[SessionCredentials | None]:
+    def activate(self, thread_id: str, owner: str | None = None) -> Iterator[SessionCredentials | None]:
         """Bind this thread's stored creds to the contextvar for a request.
 
-        No-op (but still resets) when the thread has no stored credentials, so
-        the agent transparently falls back to the server-wide config.
+        No-op (but still resets) when the thread has no stored credentials — or
+        they belong to someone else — so the agent falls back to server config.
         """
-        creds = self._by_thread.get(thread_id)
+        creds = self.get(thread_id, owner)
         token = _active.set(creds)
         try:
             yield creds

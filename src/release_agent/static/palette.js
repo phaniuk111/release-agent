@@ -37,6 +37,7 @@ export const CAPABILITIES = [
     {group:'Check',   icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RCTLD control gates for a tag',     send:false, text:'check build controls for <image>:<tag> before a PRD release'},
     {group:'Check',   icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/controls',    send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
     {group:'Check',   icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
+    {group:'Check',   icon:'fa-heart-pulse',       label:'Monitoring',           desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
     {group:'Check',   icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
     {group:'Onboarding', icon:'fa-plug',           label:'Consumer onboarding',  desc:'how to start using our APIs — access, auth, first call, going live', send:true,  text:'I want to onboard to your APIs — walk me through it step by step'},
 ];

@@ -147,6 +147,40 @@ class Settings(BaseSettings):
     promql_probe_query: str = Field(
         default="", validation_alias=AliasChoices("PROMQL_PROBE_QUERY"),
     )
+    # Monitoring pill: named PromQL checks, JSON list of
+    # {"name", "query", "severity": "error"|"warn", "description"}. A check is
+    # FIRING when its query returns any series with a non-zero value. Empty =
+    # the built-in "scrape targets down" check (up == 0).
+    monitor_checks: str = Field(
+        default="", validation_alias=AliasChoices("MONITOR_CHECKS"),
+    )
+    # Who is calling: the mesh's signed user token. Empty header = off (forms ask
+    # for an email, as before). Set to x-asm-rctoken for Cloud Service Mesh user
+    # auth — the token is VERIFIED against the issuer's keys, never just read.
+    identity_header: str = Field(
+        default="", validation_alias=AliasChoices("IDENTITY_HEADER"),
+    )
+    identity_jwks_url: str = Field(
+        default="http://authservice.asm-user-auth.svc.cluster.local:10004/_gcp_user_auth/jwks",
+        validation_alias=AliasChoices("IDENTITY_JWKS_URL"),
+    )
+    identity_issuer: str = Field(
+        default="authservice.asm-user-auth.svc.cluster.local",
+        validation_alias=AliasChoices("IDENTITY_ISSUER"),
+    )
+    # The RCToken audience (UserAuthConfig). Empty = not checked — set it.
+    identity_audience: str = Field(
+        default="", validation_alias=AliasChoices("IDENTITY_AUDIENCE"),
+    )
+    # Dotted claim paths; the mesh nests mapped claims under "attributes".
+    identity_email_claim: str = Field(
+        default="attributes.email,email", validation_alias=AliasChoices("IDENTITY_EMAIL_CLAIM"),
+    )
+    # true = queue/withdraw writes are REFUSED without a verified caller, instead
+    # of falling back to the typed email.
+    identity_required: bool = Field(
+        default=False, validation_alias=AliasChoices("IDENTITY_REQUIRED"),
+    )
     # Dataflow flex-template deploys: repo hosting the DF deploy workflow. Deploying
     # means workflow_dispatch of df_deploy_workflow with {image, tag, environment}.
     df_deploy_repo: str = Field(
