@@ -62,7 +62,7 @@ def test_the_in_flight_guard_is_checked_against_the_target_repo(monkeypatch, rep
         lambda: type("C", (), {"get_repo": staticmethod(lambda full: _Repo(full))})(),
     )
 
-    def _blocker(repo, exclude_head=""):
+    def _blocker(repo, exclude_head="", branches=None):
         checked.append(repo.full)
         return None                      # no blocker in either repo
 
@@ -86,7 +86,7 @@ def test_the_banner_reports_care_and_df_separately(monkeypatch):
     repos with different PRs and different guards."""
     calls = []
 
-    def _status(deployment_repo: str = ""):
+    def _status(deployment_repo: str = "", kind: str = "care"):
         calls.append(deployment_repo)
         if deployment_repo == "acme/df-deploy":
             return {"prd_release_pr": {"number": 7, "url": "u7", "charts": []},
@@ -106,7 +106,7 @@ def test_the_banner_reports_care_and_df_separately(monkeypatch):
 
 
 def test_a_df_failure_does_not_blank_the_care_status(monkeypatch):
-    def _status(deployment_repo: str = ""):
+    def _status(deployment_repo: str = "", kind: str = "care"):
         if deployment_repo:
             raise RuntimeError("DF repo unreachable")
         return {"prd_release_pr": None, "prd_charts": [], "blocking_pr": None}
@@ -124,7 +124,7 @@ def test_a_df_failure_does_not_blank_the_care_status(monkeypatch):
 def test_single_repo_setups_do_not_pay_for_a_second_read(monkeypatch):
     calls = []
 
-    def _status(deployment_repo: str = ""):
+    def _status(deployment_repo: str = "", kind: str = "care"):
         calls.append(deployment_repo)
         return {"prd_release_pr": None, "prd_charts": [], "blocking_pr": None}
 

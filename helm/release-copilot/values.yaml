@@ -99,6 +99,11 @@ config:
   # release repo (DEPLOY_REPO) so the two releases have independent branch chains
   # and independent in-flight guards. Empty = one repo for both.
   DF_RELEASE_REPO: ""
+  # DF_RELEASE_REPO's branch chain, in order — "env:BRANCH,…". The FIRST is where
+  # the release PR lands, the rest are what "promote the DF release to <env>"
+  # targets. No SIT here: the PR goes straight to RELEASE_UAT. The in-flight
+  # guard for DF watches exactly these branches. Empty = the CARE chain below.
+  DF_RELEASE_BRANCHES: "uat:RELEASE_UAT,prd:RELEASE_PRD"
   # Repo hosting the DF deploy workflow named by DF_DEPLOY_WORKFLOW below. NO
   # fallback: empty means DF deploys are refused. UI-overridable via the DF
   # form's Advanced field.
@@ -235,7 +240,9 @@ config:
   CONSOLE_LINKS: ""
 
   # ================== [OPTIONAL] safe defaults — tune to process =============
-  # Promotion branches in DEPLOY_REPO; prl1_only charts stop at UAT/PRL1.
+  # CARE promotion branches in DEPLOY_REPO: the release PR lands on SIT, then
+  # UAT, then PRD or PRL1 (prl1_only charts stop at UAT/PRL1). DF releases use
+  # DF_RELEASE_BRANCHES above.
   SIT_BRANCH: "SIT"
   UAT_BRANCH: "UAT"
   PRD_BRANCH: "PRD"

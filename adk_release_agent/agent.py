@@ -80,8 +80,9 @@ Critical safety boundary:
   require the exact CONFIRM token.
 - EXCEPTION: "promote (the) release to uat/prd/prl1" with NO chart:version means
   promoting the current release's FILE-SET to that environment branch. That is a
-  release-ops operation — load the release-ops skill and call `promote_release`.
-  Do not ask for a chart:version.
+  release-ops operation — load the release-ops skill and call `promote_release`
+  (the CARE release) or `promote_df_release` (the Dataflow / DF release — its own
+  repo and branch chain). Do not ask for a chart:version.
 - EXCEPTION: "add/queue X for the NEXT release" (the intake queue) is a note to
   DevOps, not a deploy — load the release-queue skill. Queueing needs no CONFIRM
   token and no approval; never describe it as a deployment.
@@ -95,6 +96,8 @@ Two DIFFERENT confirmation flows — never mix their wording:
   them on a yes/no approval prompt. Do NOT mention CONFIRM tokens for these.
   If the user rejects one, say plainly that nothing was changed and they can ask
   again when ready — do not lecture about tokens or workflows.
+  Once an approved tool returns its result, REPORT that result. Never call the
+  same operation again in that turn — it already ran.
 """
 
 # App name follows the ADK convention of matching the agent package directory so
@@ -152,6 +155,7 @@ def _chat_additional_tools():
         "merge_prod_release": True,
         "remove_from_release": _remove_needs_confirmation,
         "promote_release": _promote_needs_confirmation,
+        "promote_df_release": _promote_needs_confirmation,
     }
     return [
         FunctionTool(tool, require_confirmation=confirm[tool.__name__])

@@ -506,7 +506,7 @@ def release_status_endpoint(fresh: int = 0):
         from concurrent.futures import ThreadPoolExecutor
 
         executor = ThreadPoolExecutor(max_workers=1)
-        df_future = executor.submit(get_release_status, deployment_repo=df_repo)
+        df_future = executor.submit(get_release_status, deployment_repo=df_repo, kind="df")
     try:
         status = get_release_status()
     except Exception as e:
@@ -532,7 +532,9 @@ def release_status_endpoint(fresh: int = 0):
             df_status = df_future.result()
             status["df"] = {
                 "repo": df_repo,
-                "prd_release_pr": df_status.get("prd_release_pr"),
+                # DF has no daily staging PR: a PR open on its own chain IS the
+                # DF release in flight (release PR or a pending promotion).
+                "prd_release_pr": df_status.get("prd_release_pr") or df_status.get("blocking_pr"),
                 "prd_charts": df_status.get("prd_charts") or [],
                 "blocking_pr": df_status.get("blocking_pr"),
                 "error": df_status.get("error"),
@@ -1338,6 +1340,27 @@ def diagnostics(request: Request):
             if not all(branches.values()):
                 info["hint"] = ("missing branches — set SIT_BRANCH/UAT_BRANCH/"
                                 "PRD_BRANCH/PRL1_BRANCH to your real branch names")
+            # The DF release repo keeps its own chain (DF_RELEASE_BRANCHES).
+            df_repo = (settings.df_release_repo or "").strip()
+            if df_repo and df_repo != repo.full_name:
+                from .tools.release_chain import chain
+
+                df_info: dict = {"repo": df_repo, "chain": " → ".join(b for _, b in chain("df"))}
+                try:
+                    df_gh = client.get_repo(df_repo)
+                    df_branches = {}
+                    for _, name in chain("df"):
+                        try:
+                            df_gh.get_branch(name)
+                            df_branches[name] = True
+                        except Exception:
+                            df_branches[name] = False
+                    df_info["branches"] = df_branches
+                    if not all(df_branches.values()):
+                        df_info["hint"] = "missing branches — set DF_RELEASE_BRANCHES to the DF repo's real chain"
+                except Exception as e:
+                    df_info["error"] = f"{type(e).__name__}: {e}"[:200]
+                info["df_release"] = df_info
             report["github"] = info
     except Exception as e:
         report["github"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}

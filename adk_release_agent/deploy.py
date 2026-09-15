@@ -224,7 +224,8 @@ def prepare_deploy_preview(
             "image_tags": prep["release_name"],
             # A release is created INTO SIT and promoted from there — the deploy
             # heading ("Deploy … to PROD") described something else entirely.
-            "heading": f"Create release {prep['release_name']} → {_settings.sit_branch}",
+            "heading": f"Create {'DF ' if prep.get('kind') == 'df' else ''}release "
+                       f"{prep['release_name']} → {prep.get('landing_branch') or _settings.sit_branch}",
             "token": token,
             "proposed": prep["preview"],
             "deployment_repo": "",

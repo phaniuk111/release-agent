@@ -112,6 +112,14 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("DF_RELEASE_REPO", "DATAFLOW_RELEASE_REPO"),
     )
+    # The DF release repo's own branch chain, in order: the FIRST is where the
+    # release PR lands, the rest are promotion targets — e.g.
+    # "uat:RELEASE_UAT,prd:RELEASE_PRD" (no SIT: the PR goes straight to UAT).
+    # Empty = the CARE chain (SIT_BRANCH, UAT_BRANCH, PRD_BRANCH, PRL1_BRANCH).
+    df_release_branches: str = Field(
+        default="",
+        validation_alias=AliasChoices("DF_RELEASE_BRANCHES"),
+    )
     # Composer DAGs repo. A DF deploy builds a flex template under a VERSION path
     # in a bucket; the DAGs that launch it carry that version as the fallback of
     # `dag_run.conf['version'] | default('…')`, so the deploy is only half-done

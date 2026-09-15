@@ -279,7 +279,8 @@ def _acting_user() -> str | None:
 
 
 def mark_released(
-    release_name: str, pr_number: int | None, artifacts: list[dict[str, str]]
+    release_name: str, pr_number: int | None, artifacts: list[dict[str, str]],
+    deployment_repo: str = "",
 ) -> dict[str, Any]:
     """Drain the queue after a release PR merged: one 'released' event per
     shipped artifact ({'name': ..., 'tag': ...}). Best-effort — callers must
@@ -296,7 +297,7 @@ def mark_released(
             "prl1_only": None,
             "df_only": None,
             "note": None,
-            "deployment_repo": None,
+            "deployment_repo": str(deployment_repo or "").strip() or None,
             "release_name": release_name,
             "pr_number": pr_number,
             "build_verified": None,

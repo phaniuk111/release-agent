@@ -375,6 +375,8 @@ export async function showReleaseForm(kind) {
             // A DF release is all DF images; a CARE release carries none.
             df_images: isDf ? Array.from(new Set(parseNames())) : [],
             artefact: artifacts,
+            // Picks the branch chain server-side (CARE: SIT→UAT→PRD; DF: its own).
+            release_kind: isDf ? 'df' : 'care',
         };
         sendMessage(JSON.stringify(payload));
     });

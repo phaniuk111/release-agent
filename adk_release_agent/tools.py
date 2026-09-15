@@ -168,14 +168,30 @@ def retrigger_deployment_workflow(
 def promote_release(
     target: str, release_branch: str = "", deployment_repo: str = ""
 ) -> dict[str, Any]:
-    """Promote the current release's file-set to the next environment branch
+    """Promote the current CARE release's file-set to the next environment branch
     (uat, prd or prl1). Copies the release's changed files verbatim via a
     change-branch PR — use after a release has been created. deployment_repo
     (owner/repo) targets a non-default deployment repo — pass it only when the
-    user names one."""
+    user names one. For the Dataflow (DF) release use promote_df_release."""
     return _invoke_tool(
         "promote_release",
-        {"target": target, "release_branch": release_branch, "deployment_repo": deployment_repo},
+        {"target": target, "release_branch": release_branch,
+         "deployment_repo": deployment_repo, "kind": "care"},
+    )
+
+
+def promote_df_release(target: str, release_branch: str = "") -> dict[str, Any]:
+    """Promote the current DATAFLOW (DF) release's file-set along the DF release
+    repo's own branch chain (DF_RELEASE_BRANCHES, e.g. RELEASE_UAT -> RELEASE_PRD):
+    a DF release lands on its UAT branch directly, so the target is normally prd.
+    Use for 'promote the DF release to prd' / 'promote the dataflow release'.
+    For the CARE release use promote_release."""
+    # A tool of its own rather than a flag on promote_release: found live, the
+    # model sent "promote the DF release" to the CARE release when the kind was
+    # only an optional argument. A tool name is a signal it does not skip.
+    return _invoke_tool(
+        "promote_release",
+        {"target": target, "release_branch": release_branch, "deployment_repo": "", "kind": "df"},
     )
 
 
@@ -462,8 +478,11 @@ def monitoring_checks() -> dict[str, Any]:
     project — NOT healthy), the firing series (labels + value, capped),
     `watching` (how much an ok check measured) and, for unknown, the error and a
     likely fix. Read-only."""
+    from release_agent import features, identity
     from release_agent.tools import monitoring as _mon
 
+    if not features.allowed("monitoring", identity.current()):
+        return {"ok": False, "error": features.refusal("monitoring")}
     return _mon.run_checks()
 
 
@@ -473,8 +492,11 @@ def query_metrics(promql: str) -> dict[str, Any]:
     metrics as e.g. serviceruntime_googleapis_com:api_request_count). Returns
     at most 20 series ({labels, value}) plus the true count and whether it was
     truncated. Use aggregations (sum by, topk, count) to keep answers small."""
+    from release_agent import features, identity
     from release_agent.tools import monitoring as _mon
 
+    if not features.allowed("monitoring", identity.current()):
+        return {"ok": False, "error": features.refusal("monitoring")}
     return _mon.run_query(promql)
 
 
@@ -538,6 +560,7 @@ OPS_TOOLS = [
     retrigger_deployment_workflow,
     merge_prod_release,
     promote_release,
+    promote_df_release,
     find_prs,
     get_pr_details,
 ]

@@ -190,7 +190,7 @@ def wired(monkeypatch, remote):
     monkeypatch.setattr(G, "repo_url", lambda repo_full: remote)
     monkeypatch.setattr(RF, "_resolve_github_token", lambda: "")
     monkeypatch.setattr(RF, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda name: gh_repo))
-    monkeypatch.setattr(RF, "_open_prd_pr_blocker", lambda repo: None)
+    monkeypatch.setattr(RF, "_open_prd_pr_blocker", lambda repo, **kw: None)
     monkeypatch.setattr(RF, "_merge_pr", lambda pr, method: (True, "merged"))
     monkeypatch.setattr(RF.settings, "sit_branch", "sit", raising=False)
     monkeypatch.setattr(RF.settings, "artifactory_base_url", "", raising=False)

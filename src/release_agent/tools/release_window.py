@@ -37,14 +37,14 @@ def _release_guard_branches() -> list[str]:
     return branches or [settings.prd_branch]
 
 
-def _open_prd_pr_blocker(repo, exclude_head: str = ""):
+def _open_prd_pr_blocker(repo, exclude_head: str = "", branches: list[str] | None = None):
     """First OPEN PR into any release-guard branch that is NOT today's staging PR.
 
     A PR already targeting PRD/PRL1/... (e.g. a manually raised UAT -> PRD promotion)
     means a release is in flight — staging MORE charts on top would create two
     competing releases, so adds are blocked until it's merged or closed.
     ``exclude_head`` skips today's own release/prd/<date> staging PR."""
-    for base in _release_guard_branches():
+    for base in (branches or _release_guard_branches()):
         try:
             prs = repo.get_pulls(state="open", base=base, sort="created", direction="desc")
             for pr in itertools.islice(prs, 30):
@@ -77,14 +77,16 @@ def _today_prd_pr(repo):
     return None
 
 
-def get_release_status(deployment_repo: str = "") -> dict:
+def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
     """Current deploy status (UTC): charts live on UAT and PRD, today's accumulating PRD
     release PR (the charts staged for prod, shipped when someone releases).
     GitHub is the cross-session source of truth, so every session sees the same answer.
 
     ``deployment_repo`` selects which release is being reported: CARE and DF are
     raised in different repos, so each has its own PRs, branches and guard.
-    Empty = the configured CARE repo."""
+    Empty = the configured CARE repo. ``kind`` "df" watches the DF chain
+    (DF_RELEASE_BRANCHES) and has no daily PRD staging PR — that is CARE's."""
+    from .release_chain import guard_branches
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
@@ -100,8 +102,9 @@ def get_release_status(deployment_repo: str = "") -> dict:
         repo = _get_github_client().get_repo(deployment_repo or active_deploy_repo())
         uat = _charts(repo, "uat")
         prd = _charts(repo, "prd")
-        pr = _today_prd_pr(repo)
-        blocker = _open_prd_pr_blocker(repo, exclude_head=_prd_release_branch())
+        pr = _today_prd_pr(repo) if kind != "df" else None
+        blocker = _open_prd_pr_blocker(repo, exclude_head=_prd_release_branch(),
+                                       branches=guard_branches(kind))
     except Exception as e:
         return {
             **base, "error": str(e), "uat_charts": [], "prd_charts": [],

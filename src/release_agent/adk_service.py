@@ -239,6 +239,28 @@ def _is_positive_response(text: str) -> bool:
     return text.strip().lower() in {"y", "yes", "true", "confirm", "confirmed", "ok", "proceed"}
 
 
+def _original_call(pending: PendingAdkCall) -> tuple[str, str] | None:
+    """(tool name, canonical args) of the operation a confirmation is FOR."""
+    original = (pending.args or {}).get("originalFunctionCall") or {}
+    name = original.get("name") or ""
+    if not name:
+        return None
+    return name, json.dumps(original.get("args") or {}, sort_keys=True)
+
+
+def _result_note(event: Any, tool_name: str) -> str:
+    """The human sentence a tool's result carries (``note``), if it returned one."""
+    for response in event.get_function_responses() or []:
+        if (getattr(response, "name", "") or "") != tool_name:
+            continue
+        body = getattr(response, "response", None) or {}
+        if isinstance(body, dict) and isinstance(body.get("result"), dict):
+            body = body["result"]
+        if isinstance(body, dict) and body.get("note"):
+            return str(body["note"])
+    return ""
+
+
 def _pending_call_from_event(event: Any) -> PendingAdkCall | None:
     """Return a pending tool-confirmation call if this chat event is a HITL pause."""
     long_running_ids = getattr(event, "long_running_tool_ids", None) or set()
@@ -277,6 +299,7 @@ _TOOL_LABELS = {
     "get_build_controls": "Reading the build controls",
     "get_build_report": "Diagnosing the build run",
     "promote_release": "Promoting the release file-set",
+    "promote_df_release": "Promoting the DF release file-set",
     "remove_from_release": "Removing from the release",
     "merge_prod_release": "Releasing the staged PRD batch",
     "retrigger_deployment_workflow": "Re-running the deployment workflow",
@@ -299,6 +322,7 @@ def _progress_label(name: str, args: dict[str, Any]) -> str:
 # the cached snapshot alone (the ⟳ button forces a live read on demand).
 _STATE_CHANGING_TOOLS = frozenset({
     "promote_release",
+    "promote_df_release",
     "merge_prod_release",
     "remove_from_release",
     "retrigger_deployment_workflow",
@@ -360,10 +384,11 @@ def _confirmation_interrupt_payload(pending: PendingAdkCall) -> dict[str, Any]:
             "SIT → UAT → PRD. **Once released, no new charts can be added to this "
             "release** — later prod deploys start a new release."
         )
-    elif function == "promote_release":
+    elif function in ("promote_release", "promote_df_release"):
         target = str((original.get("args") or {}).get("target", "")).upper() or "the target environment"
+        which = "DF release" if function == "promote_df_release" else "release"
         hint = (
-            f"Promote the current release's file-set to **{target}**? This copies the "
+            f"Promote the current {which}'s file-set to **{target}**? This copies the "
             "release files onto that environment branch and merges the promotion PR."
         )
     else:
@@ -417,10 +442,12 @@ class AdkChatService:
             # Consumed — clear it in both places, or a later message would be
             # read as answering an approval that has already been decided.
             await self._persist_pending_call(thread_id, None)
+            approved = _original_call(pending_call) if _is_positive_response(message) else None
             async for event in self._run_chat_agent(
                 _content_from_pending_reply(message, pending_call),
                 thread_id,
                 invocation_id=pending_call.invocation_id,
+                approved=approved,
             ):
                 yield event
             return
@@ -540,6 +567,7 @@ class AdkChatService:
         content: types.Content,
         thread_id: str,
         invocation_id: str | None = None,
+        approved: tuple[str, str] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat turn, surfacing prod-ops confirmations and persisting memory.
 
@@ -550,6 +578,9 @@ class AdkChatService:
         """
         interrupted = False
         mutated = False          # did this turn change release/deploy state?
+        said_anything = False
+        approved_note = ""       # the approved operation's own result sentence
+        repeat = None            # the model asking to run the approved operation AGAIN
         async for event in self.chat_runner.run_async(
             user_id=_user_id(),
             session_id=_session_id(thread_id, "chat"),
@@ -562,8 +593,17 @@ class AdkChatService:
                 mutated = True
             text = _text_from_event(event)
             if text:
+                said_anything = True
                 yield {"type": "token", "content": text}
+            if approved:
+                approved_note = _result_note(event, approved[0]) or approved_note
             pending = _pending_call_from_event(event)
+            if pending is not None and approved and approved_note and _original_call(pending) == approved:
+                # Seen live: after an approved PRD promotion ran, the model asked to
+                # run the SAME promotion again — a second approval for something
+                # already done. Decline it here instead of asking the person.
+                repeat = pending
+                break
             if pending is not None:
                 self._pending_adk_calls[thread_id] = pending
                 await self._persist_pending_call(thread_id, pending)
@@ -571,6 +611,21 @@ class AdkChatService:
                 interrupted = True
                 break
 
+        if repeat is not None:
+            # Answer the repeat with "no" so the session never holds an open
+            # approval, and say what actually happened: the one approved run.
+            # The model's reply to that "no" is not shown — it would describe a
+            # rejection the person never made.
+            logger.info("Declined a repeat of an already-approved %s | thread=%s", approved[0], thread_id)
+            async for _ in self.chat_runner.run_async(
+                user_id=_user_id(),
+                session_id=_session_id(thread_id, "chat"),
+                invocation_id=repeat.invocation_id,
+                new_message=_content_from_pending_reply("no", repeat),
+            ):
+                pass
+            if not said_anything:
+                yield {"type": "token", "content": approved_note}
         if not interrupted and settings.adk_memory_enabled:
             await self._persist_session_to_memory(thread_id)
         yield {"type": "done", "mutated": mutated}
