@@ -187,6 +187,20 @@ config:
   MONITOR_CHECKS: ""
   MONITOR_DEFAULT_CHECKS: "true"
   MONITOR_NAMESPACES: ""        # scope the GKE restart check, e.g. "release-copilot"
+  # ============================ [OPTIONAL] preview features ================
+  # Ship a feature in the image without showing it to everyone. Only
+  # PREVIEW_USERS see PREVIEW_GROUPS (pill groups) and may use PREVIEW_FEATURES
+  # (refused server-side — API and chat — for everyone else).
+  # Two ways to test:
+  #  - identity on (IDENTITY_HEADER): list testers' VERIFIED emails here, in prod.
+  #  - identity off: a second Helm release for testers only, same image, its own
+  #    path, with PREVIEW_USERS: "*" —
+  #      helm install release-copilot-preview ./helm/release-copilot -f prod-values.yaml \
+  #        --set virtualService.pathPrefix=/dev-portal-preview \
+  #        --set-string config.PREVIEW_USERS='*'
+  PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
+  PREVIEW_GROUPS: "Check"            # comma list of pill groups (palette.js GROUPS)
+  PREVIEW_FEATURES: "monitoring"     # comma list of gated server features
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's

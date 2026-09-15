@@ -187,6 +187,13 @@ class Settings(BaseSettings):
     identity_email_claim: str = Field(
         default="attributes.email,email", validation_alias=AliasChoices("IDENTITY_EMAIL_CLAIM"),
     )
+    # Preview features (release_agent.features): built and deployed, shown only
+    # to PREVIEW_USERS — verified gateway emails, or "*" for a testers-only
+    # deployment. PREVIEW_GROUPS hides pill groups; PREVIEW_FEATURES gates the
+    # server side too (API + chat tools), so a hidden pill is not one question away.
+    preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
+    preview_groups: str = Field(default="Check", validation_alias=AliasChoices("PREVIEW_GROUPS"))
+    preview_features: str = Field(default="monitoring", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
     identity_required: bool = Field(

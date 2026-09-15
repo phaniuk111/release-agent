@@ -28,7 +28,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import identity
+from . import features, identity
 from .adk_service import get_adk_chat_service
 from .config import settings as app_settings
 from .session_creds import SessionCredentials, get_store
@@ -119,13 +119,14 @@ def whoami(request: Request):
     """Who the portal thinks you are, so forms stop asking for an email."""
     caller, why = identity.from_headers(request.headers)
     if caller:
-        return {"signed_in": True, "email": caller.email, "name": caller.name, "source": "gateway"}
+        return {"signed_in": True, "email": caller.email, "name": caller.name, "source": "gateway",
+                "preview": features.is_preview_user(caller)}
     return {"signed_in": False, "identity_enabled": identity.enabled(), "reason": why,
             "required": identity.enabled() and app_settings.identity_required}
 
 
 @app.get("/", response_class=HTMLResponse)
-async def chat_page():
+async def chat_page(request: Request):
     """Serve a clean, self-contained chat UI."""
     html = """
 <!DOCTYPE html>
@@ -311,11 +312,18 @@ async def chat_page():
     <!-- Vendored Chart.js (no CDN — must work behind the corporate proxy).
          Loaded before the module bundle so `Chart` is global when charts render. -->
     <script src="static/vendor/chart.umd.min.js?v={APP_STARTED}"></script>
+    <script>window.PORTAL_UI = {PORTAL_UI};</script>
     <script type="module" src="static/main.js?v={APP_STARTED}"></script>
 </body>
 </html>
     """
-    return HTMLResponse(content=html.replace("{APP_STARTED}", APP_STARTED))
+    # This caller's view, decided HERE and baked into the page: a preview pill is
+    # never rendered for someone who may not see it — no flash while a fetch
+    # resolves. The labels are no secret (they sit in palette.js); what is gated
+    # is the feature itself, server-side (features.allowed).
+    caller = await asyncio.to_thread(_caller, request)
+    ui = json.dumps(features.ui_config(caller)).replace("<", "\\u003c")
+    return HTMLResponse(content=html.replace("{APP_STARTED}", APP_STARTED).replace("{PORTAL_UI}", ui))
 
 
 def _chat_error_message(exc: BaseException) -> str:
@@ -444,9 +452,14 @@ _monitor_cache: dict = {"at": 0.0, "value": None}
 
 
 @app.get("/api/monitoring")
-def monitoring_endpoint(fresh: int = 0):
+def monitoring_endpoint(request: Request, fresh: int = 0):
     """The team's PromQL checks, run now (or within the last 30s)."""
+    from fastapi.responses import JSONResponse
+
     from .tools.monitoring import run_checks
+
+    if not features.allowed("monitoring", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("monitoring")})
 
     if not fresh and _monitor_cache["value"] is not None \
             and time.time() - _monitor_cache["at"] < _MONITOR_TTL_SECONDS:
@@ -457,10 +470,15 @@ def monitoring_endpoint(fresh: int = 0):
 
 
 @app.get("/api/monitoring/alert-policy")
-def monitoring_alert_policy(name: str):
+def monitoring_alert_policy(request: Request, name: str):
     """A check as a Cloud Monitoring alert policy (JSON) — for the team to apply,
     so notification runs in Cloud Monitoring. The portal writes nothing."""
+    from fastapi.responses import JSONResponse
+
     from .tools.monitoring import alert_policy, configured_checks
+
+    if not features.allowed("monitoring", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("monitoring")})
 
     check = next((c for c in configured_checks()[0] if c["name"] == name), None)
     if check is None:

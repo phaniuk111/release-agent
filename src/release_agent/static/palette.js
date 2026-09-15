@@ -2,7 +2,12 @@
 // palette (⌘K / "/" / the header button). Every capability lists here; typing
 // in the palette only filters.
 import { sendMessage } from './chat.js';
+import { visibleCapabilities } from './core/capabilities.js';
 import { showDeployForm } from './forms.js';
+
+// This person's view, baked into the page by the server (features.py): preview
+// groups are left out for everyone except the people testing them.
+const visible = () => visibleCapabilities(GROUPS, CAPABILITIES, window.PORTAL_UI);
 
 // Groups follow the WEEK, not the code: a dev queues on Monday, DevOps cuts the
 // release on Thursday, deploys are the per-chart pushes in between, and checks
@@ -76,8 +81,9 @@ export function showCapabilities() {
     // A labelled row per group. The label sits in a fixed-width column on wide
     // screens and above the pills once that no longer fits, so the pill rows
     // stay aligned without a media query.
-    GROUPS.forEach(group => {
-        const members = CAPABILITIES.filter(c => c.group === group.name);
+    const { groups, capabilities } = visible();
+    groups.forEach(group => {
+        const members = capabilities.filter(c => c.group === group.name);
         if (!members.length) return;              // a group with nothing in it is not a heading
         const style = GROUP_STYLE[group.name] || GROUP_STYLE.Check;
 
@@ -88,6 +94,14 @@ export function showCapabilities() {
         heading.className = 'shrink-0 sm:w-16 sm:pt-1 text-[10px] uppercase tracking-wider ' + style.label;
         heading.textContent = group.name;
         heading.title = group.hint;
+        if (group.preview) {
+            // Testers only — say so, so nobody takes it for a released feature.
+            const tag = document.createElement('div');
+            tag.className = 'text-[9px] text-amber-300/80';
+            tag.textContent = 'preview';
+            tag.title = 'Visible only to preview users (PREVIEW_USERS) — not released';
+            heading.appendChild(tag);
+        }
         block.appendChild(heading);
 
         const row = document.createElement('div');
@@ -117,7 +131,7 @@ export function showCapabilities() {
 // release forms landed there too).
 const CATEGORY_ORDER = GROUPS.map(g => g.name);
 function paletteActions() {
-    return CAPABILITIES.map(c => ({
+    return visible().capabilities.map(c => ({
         label: c.label, desc: c.desc, icon: c.icon, category: c.group,
         run: () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send),
     }));

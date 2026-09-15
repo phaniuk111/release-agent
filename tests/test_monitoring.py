@@ -168,10 +168,14 @@ def test_the_endpoint_caches_but_refresh_bypasses(monkeypatch):
 
     calls = []
     monkeypatch.setattr("release_agent.tools.monitoring.run_checks", lambda: calls.append(1) or {"checks": []})
+    from types import SimpleNamespace
+
     monkeypatch.setattr(APP, "_monitor_cache", {"at": 0.0, "value": None})
-    APP.monitoring_endpoint()
-    APP.monitoring_endpoint()
-    APP.monitoring_endpoint(fresh=1)
+    monkeypatch.setattr(APP.features, "allowed", lambda feature, caller: True)
+    req = SimpleNamespace(headers={})
+    APP.monitoring_endpoint(req)
+    APP.monitoring_endpoint(req)
+    APP.monitoring_endpoint(req, fresh=1)
     assert len(calls) == 2
 
 
