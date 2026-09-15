@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import datetime as _dt
 import threading
+import logging
 import uuid
 from typing import Any
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 # Reference schema. In cluster deployments the table is provisioned SEPARATELY
 # (terraform: bigquery/terraform consuming bigquery/release_intents.schema.json)
@@ -51,6 +54,7 @@ _SCHEMA = [
     ("change_details", "STRING"),  # dev's what-changed-and-why, feeds change_description
     ("build_run_url", "STRING"),  # the Actions run that built the tag — eligibility evidence
     ("target_envs", "STRING"),  # queue-time intent, e.g. "prd,prl1" — see the JSON schema
+    ("allowed_failures", "STRING"),  # controls that FAILED but were allowed to queue
 ]
 
 _lock = threading.Lock()
@@ -126,6 +130,28 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 
+_ALLOWED_NOTE = "[control failed, allowed: "
+
+
+def _fold_allowed_into_note(row: dict[str, Any]) -> dict[str, Any]:
+    row = dict(row)
+    failed = row.pop("allowed_failures", None)
+    if failed:
+        row["note"] = (f"{_ALLOWED_NOTE}{failed}] " + (row.get("note") or "")).strip()
+    return row
+
+
+def _allowed_and_note(ev: dict[str, Any]) -> tuple[str, str]:
+    """(allowed failures, note) — reading back a failure that a table without the
+    column kept in the note, so it is still SHOWN as failed, not as verified."""
+    note = ev.get("note") or ""
+    allowed = ev.get("allowed_failures") or ""
+    if not allowed and note.startswith(_ALLOWED_NOTE) and "]" in note:
+        end = note.index("]")
+        allowed, note = note[len(_ALLOWED_NOTE):end].strip(), note[end + 1:].strip()
+    return allowed, note
+
+
 def _insert(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not queue_enabled():
         return _disabled()
@@ -135,6 +161,12 @@ def _insert(rows: list[dict[str, Any]]) -> dict[str, Any]:
         errors = client.insert_rows_json(
             _table_id(), rows, row_ids=[r["event_id"] for r in rows]
         )
+        if errors and "allowed_failures" in str(errors) and any("allowed_failures" in r for r in rows):
+            # The table predates the column (bigquery/release_intents.schema.json):
+            # keep the fact in the note rather than lose the queue entry.
+            logger.warning("release_intents has no allowed_failures column — add it (additive, nullable)")
+            rows = [_fold_allowed_into_note(r) for r in rows]
+            errors = client.insert_rows_json(_table_id(), rows, row_ids=[r["event_id"] for r in rows])
         if errors:
             return {"ok": False, "error": f"BigQuery insert failed: {errors}"}
         # state changed — drop the derived caches
@@ -186,6 +218,7 @@ def add_intent(
     change_details: str = "",
     build_run_url: str = "",
     target_envs: str = "",
+    allowed_failures: list[str] | None = None,
 ) -> dict[str, Any]:
     """Queue an artifact for the next release. Re-queuing the same chart
     replaces it in the derived queue (latest event wins) — that's how a dev
@@ -216,6 +249,10 @@ def add_intent(
         "build_run_url": str(build_run_url or "").strip() or None,
         "target_envs": _norm_envs(target_envs),
     }
+    if allowed_failures:
+        # Only when there is one: a table not yet migrated has no such column,
+        # and every clean build would otherwise fail to queue on it.
+        row["allowed_failures"] = ", ".join(allowed_failures)
     result = _insert([row])
     if result.get("ok"):
         result["intent"] = {k: v for k, v in row.items() if v is not None}
@@ -524,6 +561,7 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         etype = ev.get("event_type")
         if etype == "queued":
+            allowed, note = _allowed_and_note(ev)
             state[name] = {
                 "artifact_name": name,
                 "artifact_version": ev.get("artifact_version"),
@@ -531,13 +569,14 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "requested_at": ev.get("event_ts"),
                 "prl1_only": bool(ev.get("prl1_only")),
                 "df_only": bool(ev.get("df_only")),
-                "note": ev.get("note") or "",
+                "note": note,
                 "deployment_repo": ev.get("deployment_repo") or "",
                 "build_verified": ev.get("build_verified"),
                 "jira_ticket": ev.get("jira_ticket") or "",
                 "change_details": ev.get("change_details") or "",
                 "build_run_url": ev.get("build_run_url") or "",
                 "target_envs": ev.get("target_envs") or "",
+                "allowed_failures": allowed,
             }
         elif etype in ("withdrawn", "released"):
             state.pop(name, None)

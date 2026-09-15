@@ -1,5 +1,5 @@
 import { escapeHtml as esc } from '../core/format.js';
-import { forRelease, releaseRouteText } from '../core/queue.js';
+import { buildStatus, forRelease, releaseRouteText } from '../core/queue.js';
 import { getContext, QUEUE_PATH, releaseDefaults, releaseDraft, whoami } from '../api.js';
 import { sendMessage } from '../chat.js';
 import { ctxNote, opening, withDismiss } from './common.js';
@@ -262,7 +262,10 @@ export async function showReleaseForm(kind) {
             row.className = 'flex items-center gap-2 text-[11px] text-slate-300 font-mono py-0.5 cursor-pointer';
             const cb = document.createElement('input');
             cb.type = 'checkbox'; cb.checked = true; cb.dataset.q = q.artifact_name;
-            const badge = (q.build_verified === true)
+            const st = buildStatus(q);
+            const badge = st.state === 'allowed'
+                ? ' <i class="fa-solid fa-triangle-exclamation text-amber-400" title="' + esc(st.title) + '"></i>'
+                : st.state === 'verified'
                 ? ' <i class="fa-solid fa-circle-check text-emerald-400" title="build verified at queue time"></i>'
                 : (q.build_verified === false)
                     ? ' <i class="fa-solid fa-triangle-exclamation text-amber-400" title="no traceable build at queue time"></i>' : '';

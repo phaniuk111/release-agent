@@ -1,5 +1,5 @@
 import { escapeHtml as esc, shortName, timeAgo } from '../core/format.js';
-import { queueDestination } from '../core/queue.js';
+import { controlsSummary, queueDestination } from '../core/queue.js';
 import { getContext, QUEUE_PATH, whoami, withdrawFromQueue } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
 import { ctxNote, opening, withDismiss } from './common.js';
@@ -62,7 +62,7 @@ async function _renderQueueTable(wrap, flash) {
         scroller.className = 'overflow-x-auto';
         const th = (t, cls) => '<th class="text-left font-medium px-2 py-1 whitespace-nowrap ' + (cls || '') + '">' + t + '</th>';
         let html = '<table class="w-full text-[11px] queue-table"><thead class="text-slate-500 border-b border-slate-700"><tr>' +
-            th('Chart') + th('Destination') + th('JIRA') + th('Build') + th('Queued by') +
+            th('Chart') + th('Destination') + th('JIRA') + th('Build') + th('Controls') + th('Queued by') +
             th('', 'text-right') + '</tr></thead><tbody>';
         items.forEach((q, i) => {
             const label = esc(q.artifact_name) + ':' + esc(q.artifact_version || '');
@@ -71,6 +71,13 @@ async function _renderQueueTable(wrap, flash) {
                 ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check mr-1"></i>verified</span>'
                 : '<span class="text-amber-400" title="no verified build at queue time">' +
                   '<i class="fa-solid fa-triangle-exclamation mr-1"></i>not verified</span>';
+            // Failed controls by number (allowed by policy), else "all passed".
+            const cs = controlsSummary(q);
+            const controls = '<span class="' +
+                (cs.state === 'passed' ? 'text-emerald-400' : cs.state === 'failed' ? 'text-red-400' : 'text-slate-500') +
+                '" title="' + esc(cs.title) + '"><i class="fa-solid ' +
+                (cs.state === 'passed' ? 'fa-circle-check' : cs.state === 'failed' ? 'fa-circle-xmark' : 'fa-circle-minus') +
+                ' mr-1"></i>' + esc(cs.label) + '</span>';
             const run = q.build_run_url
                 ? ' <a href="' + esc(q.build_run_url) + '" target="_blank" rel="noopener" ' +
                   'class="text-sky-400 hover:underline" title="The GitHub Actions run that built it">run</a>' : '';
@@ -81,6 +88,7 @@ async function _renderQueueTable(wrap, flash) {
                 '<td class="px-2 py-1.5 text-slate-300 whitespace-nowrap">' + esc(queueDestination(q)) + '</td>' +
                 '<td class="px-2 py-1.5 text-amber-300/80 whitespace-nowrap">' + esc(q.jira_ticket || '—') + '</td>' +
                 '<td class="px-2 py-1.5 whitespace-nowrap">' + build + run + '</td>' +
+                '<td class="px-2 py-1.5 whitespace-nowrap">' + controls + '</td>' +
                 '<td class="px-2 py-1.5 text-slate-400 whitespace-nowrap" title="' +
                     esc((q.requested_by || '') + (q.requested_at ? ' · ' + q.requested_at : '')) + '">' +
                     esc(shortName(q.requested_by) || '—') +
@@ -110,7 +118,7 @@ function _confirmRemove(wrap, scroller, q, index) {
     const label = q.artifact_name + ':' + (q.artifact_version || '');
     const tr = document.createElement('tr');
     tr.className = 'queue-confirm';
-    tr.innerHTML = '<td colspan="6" class="px-2 py-2 bg-slate-900/60">' +
+    tr.innerHTML = '<td colspan="7" class="px-2 py-2 bg-slate-900/60">' +
         '<div class="flex flex-wrap items-center gap-2">' +
         '<span class="text-slate-300">Remove <b class="font-mono">' + esc(label) + '</b> from the next release? ' +
         '<span class="text-slate-500">It stays in the history.</span></span>' +

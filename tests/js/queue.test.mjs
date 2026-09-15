@@ -92,3 +92,26 @@ test('a batch row carries the artifact, its run and the routing', () => {
         jira_ticket: 'REL-1', df_only: false, prl1_only: true, target_envs: 'prl1',
     });
 });
+
+test('a control allowed to fail is shown as failed, never as verified', async () => {
+    const { buildStatus } = await import('../../src/release_agent/static/core/queue.js');
+    assert.equal(buildStatus({ build_verified: true }).state, 'verified');
+    const allowed = buildStatus({ build_verified: true, allowed_failures: 'RCTLDEF0001691 in job build' });
+    assert.equal(allowed.state, 'allowed');
+    assert.ok(allowed.label.includes('failed') && allowed.title.includes('RCTLDEF0001691'));
+    assert.equal(buildStatus({ build_verified: null }).state, 'unverified');
+    assert.equal(buildStatus(null).state, 'unverified');
+});
+
+test('the Controls column names failed controls by number, else says all passed', async () => {
+    const { controlsSummary } = await import('../../src/release_agent/static/core/queue.js');
+    const failed = controlsSummary({ build_verified: true,
+        allowed_failures: 'RCTLDEF0001691 - Peer review evidence in job build-deploy-publish' });
+    assert.equal(failed.state, 'failed');
+    assert.equal(failed.label, '1691 failed');
+    assert.ok(failed.title.includes('Peer review evidence'));
+    assert.equal(controlsSummary({ build_verified: true, allowed_failures: 'RCTLDEF0001691, RCTLDEF0000043 in job b' }).label,
+        '1691, 43 failed');
+    assert.equal(controlsSummary({ build_verified: true }).label, 'all passed');
+    assert.equal(controlsSummary({ build_verified: null }).label, 'not checked');
+});

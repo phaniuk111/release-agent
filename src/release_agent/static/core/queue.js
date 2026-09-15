@@ -120,3 +120,47 @@ export function batchRow(row, ticks) {
         ...ticksToFlags(ticks),
     };
 }
+
+/**
+ * How a queued chart's build reads. A control allowed to fail
+ * (QUEUE_ALLOWED_FAILING_CONTROLS) still FAILED — it never reads as "verified".
+ * @param {{build_verified?: boolean|null, allowed_failures?: string}} q
+ * @returns {{state: 'verified'|'allowed'|'unverified', label: string, title: string}}
+ */
+export function buildStatus(q) {
+    const allowed = String((q && q.allowed_failures) || '').trim();
+    if (q && q.build_verified === true && allowed) {
+        return { state: 'allowed', label: 'control failed (allowed)',
+                 title: allowed + ' FAILED — allowed by policy; every other control passed' };
+    }
+    if (q && q.build_verified === true) {
+        return { state: 'verified', label: 'verified', title: 'every control passed at queue time' };
+    }
+    return { state: 'unverified', label: 'not verified', title: 'no verified build at queue time' };
+}
+
+/** "RCTLDEF0001691 - Peer review evidence in job x" → "1691" (the ID's number). */
+function controlNumber(entry) {
+    const id = String(entry || '').trim().split(/[\s-]/)[0] || '';
+    let digits = '';
+    for (let i = id.length - 1; i >= 0 && id[i] >= '0' && id[i] <= '9'; i--) digits = id[i] + digits;
+    return digits ? String(parseInt(digits, 10)) : id;
+}
+
+/**
+ * The queue table's Controls column: the numbers of the controls that failed
+ * (allowed by policy), or "all passed", or "not checked".
+ * @param {{build_verified?: boolean|null, allowed_failures?: string}} q
+ * @returns {{state: 'passed'|'failed'|'unknown', label: string, title: string}}
+ */
+export function controlsSummary(q) {
+    const allowed = String((q && q.allowed_failures) || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (allowed.length) {
+        return { state: 'failed', label: allowed.map(controlNumber).join(', ') + ' failed',
+                 title: allowed.join('\n') + '\n— failed, allowed by policy; every other control passed' };
+    }
+    if (q && q.build_verified === true) {
+        return { state: 'passed', label: 'all passed', title: 'every release control passed on the build run' };
+    }
+    return { state: 'unknown', label: 'not checked', title: 'no verified build run at queue time' };
+}

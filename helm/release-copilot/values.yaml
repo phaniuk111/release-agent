@@ -156,6 +156,11 @@ config:
   QUEUE_REQUIRE_CONTROLS_PASS: "true"
   # ...and only with the run that built exactly that chart:version — read from
   # the tag that triggered the run, or the line its tag step logs (below).
+  # Controls allowed to FAIL at queue time: the chart is still queued, and the
+  # failure stays visible (queue table, release form, change request). Any other
+  # failed control or step still refuses. "1691" matches an ID ending in 1691
+  # (RCTLDEF0001691); a full ID works too. Comma list; empty = none allowed.
+  QUEUE_ALLOWED_FAILING_CONTROLS: "1691"
   QUEUE_REQUIRE_RUN_MATCH: "true"
   BUILD_TAG_STEP: "Generate Git tag"
   BUILD_TAG_MARKER: "TAG_GENERATED="

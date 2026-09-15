@@ -347,7 +347,11 @@ export async function showQueueForm() {
         if (!queued.length) return;
         const line = (q) => {
             const open = q.open_controls || [];
-            const badge = q.eligible === true
+            const allowed = q.allowed_failures || [];
+            const badge = q.eligible === true && allowed.length
+                ? '<span class="text-amber-400" title="allowed by policy — recorded as failed">⚠ queued, but ' +
+                  allowed.map(esc).join(', ') + ' FAILED (allowed)</span>'
+                : q.eligible === true
                 ? '<span class="text-emerald-400">✓ build + controls passed</span>'
                 : open.length
                     ? '<span class="text-amber-400">⚠ ' + open.length + ' control(s) not passed yet: ' +

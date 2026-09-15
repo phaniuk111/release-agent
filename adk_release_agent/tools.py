@@ -344,9 +344,22 @@ def queue_release_intent(
          "status": c.get("status"), "conclusion": c.get("conclusion")}
         for c in controls if not c.get("passed") and not c.get("failed")
     ]
+    # QUEUE_ALLOWED_FAILING_CONTROLS: some controls may fail without stopping the
+    # chart — it is queued, but recorded and shown as failed. Everything else
+    # still refuses, and a control implemented as a whole JOB takes its own
+    # failed steps with it (they are that control's failure, not a second one).
+    from release_agent.tools.controls import allowed_to_fail
+
+    allowed_detail = [c for c in failed_detail if allowed_to_fail(str(c.get("control") or ""))]
+    failed_detail = [c for c in failed_detail if c not in allowed_detail]
+    allowed_jobs = {c.get("job") for c in allowed_detail if c.get("job") == c.get("control")}
     failed_controls = [c.get("control") for c in failed_detail]
-    failed_steps = report.get("failed_steps") or []
-    if failed_controls or not report.get("run_succeeded"):
+    failed_steps = [s for s in (report.get("failed_steps") or [])
+                    if not (isinstance(s, dict) and s.get("job") in allowed_jobs)]
+    # The run failing is explained by the allowed controls only when nothing
+    # else failed; a run that failed with no step or control detail still refuses.
+    run_ok = report.get("run_succeeded") or (bool(allowed_detail) and not failed_steps)
+    if failed_controls or failed_steps or not run_ok:
         return {
             "ok": False,
             "eligible": False,
@@ -362,7 +375,12 @@ def queue_release_intent(
                 "re-run the build, then queue again with the new run."
             ),
         }
-    verified = report.get("gate") == "PASS"
+    # PASS = every control passed; with allowed failures, every OTHER one did.
+    allowed_failures = [
+        f"{c.get('control')}{' in job ' + c['job'] if c.get('job') and c.get('job') != c.get('control') else ''}"
+        for c in allowed_detail
+    ]
+    verified = report.get("gate") == "PASS" or (bool(allowed_detail) and not open_detail)
     if not verified and _settings.queue_require_controls_pass:
         # Only a PASS queues. "Nothing failed" is not "passed": a control still
         # running (or skipped) has proven nothing yet, and a run where no step
@@ -433,9 +451,16 @@ def queue_release_intent(
         change_details=change_details,
         build_run_url=run_url,
         target_envs=target_envs,
+        allowed_failures=allowed_failures,
     )
     if result.get("ok"):
         result["eligible"] = True if verified else None
+        if allowed_failures:
+            result["allowed_failures"] = allowed_failures
+            warnings.insert(0, (
+                f"Queued with {', '.join(allowed_failures)} FAILED — allowed by policy "
+                "(QUEUE_ALLOWED_FAILING_CONTROLS). It stays marked as failed on the queue "
+                "entry and in the change request."))
         if warnings:
             result["warnings"] = warnings
         # The UI lists these by name; the sentence in warnings is the chat lane's

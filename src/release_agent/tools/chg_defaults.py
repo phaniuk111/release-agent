@@ -151,13 +151,18 @@ def build_defaults(
 
     verified = [i for i in items if i.get("build_verified") is True]
     unverified = [i["name"] for i in items if i.get("build_verified") is not True]
+    # A control allowed to fail still FAILED — the change request says so, by name.
+    allowed = [f"{i['name']} ({i['allowed_failures']})" for i in items if i.get("allowed_failures")]
     if count and not unverified:
         verification = ("Every build was verified at queue time from its GitHub Actions run, "
-                        "with all release controls (RCTLD) passing.")
+                        + ("with all release controls (RCTLD) passing." if not allowed else
+                           f"with all release controls (RCTLD) passing except: {'; '.join(allowed)} "
+                           "— failed, allowed by policy."))
     elif count:
         verification = (f"{len(verified)} of {count} builds were verified at queue time; "
                         f"{', '.join(unverified)} {_plural(len(unverified), 'was', 'were')} not "
-                        "— review before approving.")
+                        "— review before approving."
+                        + (f" Controls failed but allowed by policy: {'; '.join(allowed)}." if allowed else ""))
     else:
         verification = ""
 

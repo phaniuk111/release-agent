@@ -248,6 +248,48 @@ def _is_control_step(name: str) -> bool:
     return any(low.startswith(p.strip().lower()) for p in settings.control_prefixes)
 
 
+def _trailing_number(word: str) -> int | None:
+    digits = ""
+    for ch in reversed(word):
+        if not ch.isdigit():
+            break
+        digits = ch + digits
+    return int(digits) if digits else None
+
+
+def control_matches(control_name: str, token: str) -> bool:
+    """Does ``token`` name this control? Pure.
+
+    The full ID matches ("RCTLDEF0001691"), and so does a bare number against an
+    ID ENDING in it, leading zeros ignored ("1691" → RCTLDEF0001691 — but not
+    RCTLDEF0016910, whose number merely contains it).
+    """
+    token = (token or "").strip().lower()
+    if not token:
+        return False
+    words, word = [], ""
+    for ch in (control_name or "").lower():
+        if ch.isalnum():
+            word += ch
+        elif word:
+            words.append(word)
+            word = ""
+    if word:
+        words.append(word)
+    for w in words:
+        if w == token:
+            return True
+        if token.isdigit() and _trailing_number(w) == int(token):
+            return True
+    return False
+
+
+def allowed_to_fail(control_name: str) -> bool:
+    """Is this control's failure allowed at queue time (QUEUE_ALLOWED_FAILING_CONTROLS)?"""
+    tokens = [t for t in (settings.queue_allowed_failing_controls or "").split(",") if t.strip()]
+    return any(control_matches(control_name, t) for t in tokens)
+
+
 def _collect_controls(run) -> list[dict]:
     """Enumerate a build run's release controls with pass/fail. Controls may be
     STEPS inside a job (RCTLDEF… in build-deploy-publish) or entire JOBS named
