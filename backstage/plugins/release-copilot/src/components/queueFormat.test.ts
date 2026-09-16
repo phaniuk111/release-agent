@@ -1,4 +1,4 @@
-import { describeRefusal, shortName, timeAgo } from './queueFormat';
+import { controlsSummary, describeRefusal, queuedNotice, shortName, timeAgo } from './queueFormat';
 
 describe('describeRefusal — why a row was not queued', () => {
   it('names a failed control and its job (it used to print "undefined")', () => {
@@ -40,5 +40,45 @@ describe('timeAgo / shortName', () => {
     expect(timeAgo(undefined, now)).toBe('');
     expect(timeAgo('nonsense', now)).toBe('');
     expect(shortName('dev@example.com')).toBe('dev');
+  });
+});
+
+describe('controlsSummary — the release queue Controls column', () => {
+  it('shows an allowed control as OPEN, by number, with what to do', () => {
+    const open = controlsSummary({
+      build_verified: true,
+      allowed_failures: 'RCTLDEF0001691 - Peer review evidence in job build-deploy-publish',
+    });
+    expect(open.state).toBe('open');
+    expect(open.label).toBe('1691 open');
+    expect(open.title).toContain('close it manually');
+  });
+
+  it('names every allowed control', () => {
+    expect(controlsSummary({ build_verified: true, allowed_failures: 'RCTLDEF0001691, RCTLDEF0000043 in job b' }).label)
+      .toBe('1691, 43 open');
+  });
+
+  it('says all passed, or not checked', () => {
+    expect(controlsSummary({ build_verified: true }).label).toBe('all passed');
+    expect(controlsSummary({ build_verified: null }).label).toBe('not checked');
+    expect(controlsSummary({}).state).toBe('unknown');
+  });
+});
+
+describe('queuedNotice — what the Add dialog says', () => {
+  it('names a control left open instead of claiming everything passed', () => {
+    const text = queuedNotice([
+      { artifact: 'payments-api:9.1.1', allowed_failures: ['RCTLDEF0001691 - Peer review evidence in job build'] },
+    ]);
+    expect(text).toContain('1691 open');
+    expect(text).toContain('close it manually');
+    expect(text).not.toContain('controls passed.');
+  });
+
+  it('says controls passed when nothing is open', () => {
+    expect(queuedNotice([{ artifact: 'a:1' }, { artifact: 'b:2' }])).toBe(
+      'Queued a:1, b:2 — build and controls passed.',
+    );
   });
 });

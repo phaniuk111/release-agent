@@ -23,7 +23,7 @@ import AddIcon from '@material-ui/icons/Add';
 import RefreshIcon from '@material-ui/icons/Refresh';
 import { Progress } from '@backstage/core-components';
 import { apiGet, apiPost, useApiBase } from '../api';
-import { describeRefusal, Refusal, shortName, timeAgo } from './queueFormat';
+import { controlsSummary, describeRefusal, queuedNotice, Refusal, shortName, timeAgo } from './queueFormat';
 
 // The last email typed here, so withdrawing and queueing do not ask twice.
 const EMAIL_KEY = 'release-copilot:email';
@@ -48,6 +48,9 @@ type QueueItem = {
   requested_by?: string;
   requested_at?: string;
   build_verified?: boolean | null;
+  // Controls that FAILED on the build run but were allowed to queue
+  // (QUEUE_ALLOWED_FAILING_CONTROLS) — shown as open, to be closed by hand.
+  allowed_failures?: string;
   build_run_url?: string;
   note?: string;
   prl1_only?: boolean;
@@ -123,6 +126,9 @@ function describeTicks(t: Ticks): string {
   if (t.prd) return 'PRD pipeline — release files still cover PRL1.';
   return 'Goes to UAT and PRL1 — held back from PRD.';
 }
+
+/** Controls column: passed, a control left open, or nothing measured. */
+const CONTROL_COLOUR: Record<string, string> = { passed: '#34d399', open: '#fbbf24', unknown: '#94a3b8' };
 
 /** How a queued row reads back in the table. */
 function describeDestination(prl1Only?: boolean, dfOnly?: boolean, targetEnvs?: string): string {
@@ -257,7 +263,7 @@ export function QueueTab() {
       const result = await apiPost<{
         ok?: boolean;
         error?: string;
-        queued?: Array<{ artifact?: string }>;
+        queued?: Array<{ artifact?: string; allowed_failures?: string[] }>;
         refused?: Refusal[];
         split?: boolean;
       }>(apiBase, '/api/release-queue/batch', {
@@ -294,7 +300,7 @@ export function QueueTab() {
         await refresh();
         return;
       }
-      setNotice(`Queued ${queued.map(q => q.artifact).join(', ')} — build and controls passed.`);
+      setNotice(queuedNotice(queued));
       setDialogOpen(false);
       setRows([
         {
@@ -396,13 +402,16 @@ export function QueueTab() {
                 <TableCell>Destination</TableCell>
                 <TableCell>Jira</TableCell>
                 <TableCell>Build</TableCell>
+                <TableCell>Controls</TableCell>
                 <TableCell>Queued by</TableCell>
                 <TableCell>Note</TableCell>
                 <TableCell align="right" />
               </TableRow>
             </TableHead>
             <TableBody>
-              {items.map((it, idx) => (
+              {items.map((it, idx) => {
+                const controls = controlsSummary(it);
+                return (
                 <TableRow key={idx}>
                   <TableCell style={{ fontFamily: 'ui-monospace, monospace' }}>
                     {it.artifact_name}:{it.artifact_version}
@@ -424,6 +433,9 @@ export function QueueTab() {
                       </>
                     )}
                   </TableCell>
+                  <TableCell title={controls.title}>
+                    <span style={{ color: CONTROL_COLOUR[controls.state] }}>{controls.label}</span>
+                  </TableCell>
                   <TableCell title={`${it.requested_by ?? ''} ${it.requested_at ?? ''}`}>
                     {shortName(it.requested_by) || '—'}
                     <Typography variant="caption" display="block" color="textSecondary">
@@ -437,7 +449,8 @@ export function QueueTab() {
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
           </div>

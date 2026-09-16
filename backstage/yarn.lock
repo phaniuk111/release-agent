@@ -5483,6 +5483,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@internal/plugin-release-copilot@workspace:plugins/release-copilot"
   dependencies:
+    "@backstage/cli": "npm:^0.36.5"
     "@backstage/core-components": "npm:^0.18.13"
     "@backstage/core-plugin-api": "npm:^1.12.9"
     "@backstage/frontend-plugin-api": "npm:^0.18.0"

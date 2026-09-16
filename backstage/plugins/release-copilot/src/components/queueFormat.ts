@@ -58,3 +58,48 @@ export function timeAgo(iso?: string, now: number = Date.now()): string {
 
 /** "dev@example.com" → "dev". */
 export const shortName = (email?: string) => String(email ?? '').split('@')[0];
+
+/** "RCTLDEF0001691 - Peer review evidence in job x" → "1691" (the ID's number). */
+function controlNumber(entry: string): string {
+  const id = entry.trim().split(/[\s-]/)[0] ?? '';
+  const digits = id.match(/\d+$/)?.[0];
+  return digits ? String(parseInt(digits, 10)) : id;
+}
+
+/**
+ * The release queue's Controls column — the one place an allowed control shows.
+ * It failed on the build run but may be a false positive, so it reads "open"
+ * (to close by hand), never "failed"; the release is not stopped by it.
+ * Mirrors the portal's core/queue.js controlsSummary.
+ */
+export function controlsSummary(q: { build_verified?: boolean | null; allowed_failures?: string }): {
+  state: 'passed' | 'open' | 'unknown';
+  label: string;
+  title: string;
+} {
+  const allowed = String(q?.allowed_failures ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (allowed.length) {
+    return {
+      state: 'open',
+      label: `${allowed.map(controlNumber).join(', ')} open`,
+      title: `${allowed.join('\n')}\n— failed on the build run, possibly a false positive: close it manually. Every other control passed.`,
+    };
+  }
+  if (q?.build_verified === true) {
+    return { state: 'passed', label: 'all passed', title: 'every release control passed on the build run' };
+  }
+  return { state: 'unknown', label: 'not checked', title: 'no verified build run at queue time' };
+}
+
+/** What the Add dialog says after queueing — naming a control left open. */
+export function queuedNotice(queued: Array<{ artifact?: string; allowed_failures?: string[] }>): string {
+  const names = queued.map(q => q.artifact).filter(Boolean).join(', ');
+  const open = queued.flatMap(q => q.allowed_failures ?? []);
+  if (open.length) {
+    return `Queued ${names} — ${open.map(controlNumber).join(', ')} open: it failed on the build run and may be a false positive, so close it manually. Every other control passed.`;
+  }
+  return `Queued ${names} — build and controls passed.`;
+}
