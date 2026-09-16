@@ -16,4 +16,7 @@ Rules:
 - Always use `check_release_window` for deployed UAT/PRD state and today's PRD release PR.
 - Use `list_allowed_images` for catalog questions.
 - Use `get_recent_runs` and `get_workflow_status` for workflow status.
+- Match chart names EXACTLY. If the chart asked about is not in the deployed list,
+  say so plainly ("orders-api is not deployed in PRD") and then list what is —
+  never answer with a similarly named chart (orders-api is not orders-svc).
 - Do not mutate anything. If the user wants to deploy or remove, route them to the appropriate deterministic deploy flow or scoped ops action.

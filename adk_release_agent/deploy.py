@@ -22,6 +22,7 @@ from release_agent.agent.parsing import (
     _try_parse_json_payload,
     is_queue_intent,
 )
+from release_agent.config import settings as _settings
 from release_agent.tools.gh_tools import assemble_entry, plan_deploy, _normalize_entry
 
 from .tools import _invoke_tool
@@ -149,12 +150,17 @@ def _image_tags(req: dict[str, Any]) -> str:
     return ",".join(f"{image['name']}:{image['tag']}" for image in req.get("images", []))
 
 
-def _extract_confirmation_token(text: str) -> str:
+def _extract_prefixed_token(text: str, prefix: str) -> str:
     for token in str(text).replace("`", " ").replace(",", " ").split():
         cleaned = token.strip().strip(".;:!?)(")
-        if cleaned.upper().startswith("CONFIRM-"):
+        if cleaned.upper().startswith(prefix):
             return cleaned.upper()
     return ""
+
+
+def _extract_confirmation_token(text: str) -> str:
+    return _extract_prefixed_token(text, "CONFIRM-")
+
 
 
 def prepare_deploy_preview(
@@ -192,9 +198,10 @@ def prepare_deploy_preview(
     env = "prod" if env in ("prod", "prd", "production") else "uat"
     req["environment"] = env
     if req.get("deployment_type") == "release":
-        # Live release model: generate the file-set locally NOW (clone + updater
-        # script, no push) so the preview shows the real diff, partition and RCTL
-        # timeline. Apply then only pushes + opens the release PR.
+        # Live release model: generate the file-set locally NOW (checkout +
+        # updater script, nothing written to GitHub) so the preview shows the real
+        # diff, partition and RCTL timeline. Apply then commits it through the API
+        # and opens the release PR.
         from release_agent.tools import release_fileset as _rf
 
         prep = _rf.prepare_release_fileset(req["release"])
@@ -215,6 +222,10 @@ def prepare_deploy_preview(
             "status": "awaiting_confirmation",
             "environment": env,
             "image_tags": prep["release_name"],
+            # A release is created INTO SIT and promoted from there — the deploy
+            # heading ("Deploy … to PROD") described something else entirely.
+            "heading": f"Create {'DF ' if prep.get('kind') == 'df' else ''}release "
+                       f"{prep['release_name']} → {prep.get('landing_branch') or _settings.sit_branch}",
             "token": token,
             "proposed": prep["preview"],
             "deployment_repo": "",
@@ -252,6 +263,12 @@ def apply_confirmed_deploy(
     Workflow. Passing it is what lets a confirmation be applied by a process
     that never served the preview — a replica, or the same pod after a restart.
     Omitted, we fall back to the in-process dict.
+
+    A token is SINGLE-USE: it is consumed before anything is mutated, so a
+    failure halfway cannot leave it re-sendable to apply the same change twice.
+    Every failure comes back as a result, never an exception — a caller running
+    this inside a resumable Workflow node must not see the node fail, because a
+    failed node re-runs on resume (ADK 2.9) and would repeat the side effects.
     """
     _cleanup_expired_previews()
     token = _extract_confirmation_token(confirmation_text)
@@ -270,14 +287,32 @@ def apply_confirmed_deploy(
             "error": "No matching pending deploy preview. Run prepare_deploy_preview first.",
         }
 
+    # Consume first. Whatever happens below, this token cannot apply again.
+    _PENDING_PREVIEWS.pop(token, None)
     req = pending["request"]
     env = (req.get("environment") or "uat").lower()
+    try:
+        return _apply(req, env, token)
+    except Exception as e:  # noqa: BLE001 — surfaced as an honest result, see docstring
+        return {
+            "ok": False,
+            "status": "apply_error",
+            "confirmed_token": token,
+            "error": f"{type(e).__name__}: {e}"[:400],
+            "note": (
+                "The deploy failed part-way, so some of it may already have been "
+                "applied — check the deploy repo's open PRs before retrying. "
+                f"{token} is spent; preview again to retry."
+            ),
+        }
+
+
+def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
     args: dict[str, Any]
     if req.get("deployment_type") == "release":
         from release_agent.tools import release_fileset as _rf
 
         result = _rf.apply_release_fileset(req.get("release_prep") or {})
-        _PENDING_PREVIEWS.pop(token, None)
         result.setdefault("ok", True)
         result["confirmed_token"] = token
         return result
@@ -287,21 +322,20 @@ def apply_confirmed_deploy(
         if req.get("deployment_repo"):
             args["deployment_repo"] = req["deployment_repo"]
         result = _invoke_tool("deploy_dataflow", args)
-        _PENDING_PREVIEWS.pop(token, None)
         result.setdefault("ok", True)
         result["confirmed_token"] = token
-        # DISPATCH FIRST, then bump. The other order would leave the DAGs
-        # pointing at a template that does not exist yet if the build fails;
-        # this order leaves a template nothing uses, which is recoverable.
         dags = req.get("dag_files") or []
         if dags and result.get("ok"):
-            from release_agent.tools import composer as _composer
-
-            result["dag_bump"] = _composer.apply_dag_bump(
-                dags, image["tag"], env, image=image["name"],
-                run_url=((result.get("run") or {}) or {}).get("url") or "",
-                repo=req.get("composer_repo") or "",
-            )
+            # DISPATCH FIRST, then raise the DAG PR — raised straight away, not
+            # after the run finishes. The PR only proposes the change; the reply
+            # and the PR body both link the run, and merging once it is green is
+            # the person's call. Dispatch-first means a failed build leaves a
+            # template nothing uses, never DAGs pointing at a missing one.
+            result["dag_bump"] = apply_dag_request({
+                "dag_files": list(dags), "version": image["tag"], "environment": env,
+                "image": image["name"], "composer_repo": req.get("composer_repo") or "",
+            }, run_url=((result.get("run") or {}) or {}).get("url") or ""
+               or result.get("runs_page") or "")
         _record_deploy_event(req, f"dataflow-{env}", result)
         return result
     if req.get("entries"):
@@ -320,11 +354,25 @@ def apply_confirmed_deploy(
         args["deployment_repo"] = req["deployment_repo"]
 
     result = _invoke_tool("open_release_pr", args)
-    _PENDING_PREVIEWS.pop(token, None)
     result.setdefault("ok", True)
     result["confirmed_token"] = token
     _record_deploy_event(req, env, result)
     return result
+
+
+def apply_dag_request(dag_request: dict[str, Any], run_url: str = "") -> dict[str, Any]:
+    """Raise the Composer DAG PR a DF deploy asked for. Never raises: a failure
+    is reported beside a deploy that already dispatched, not instead of it."""
+    try:
+        from release_agent.tools import composer as _composer
+
+        return _composer.apply_dag_bump(
+            dag_request.get("dag_files") or [], dag_request.get("version") or "",
+            dag_request.get("environment") or "uat", image=dag_request.get("image") or "",
+            run_url=run_url, repo=dag_request.get("composer_repo") or "",
+        )
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
 
 
 def _record_deploy_event(req: dict[str, Any], environment: str, result: dict[str, Any]) -> None:
@@ -355,6 +403,9 @@ def _record_deploy_event(req: dict[str, Any], environment: str, result: dict[str
 
                 record_pending(environment, req.get("images") or [], repo,
                                final.get("number"), on_merge="deployed", tag="deployed")
+                if result.get("dropped"):
+                    record_pending(environment, result["dropped"], repo, final.get("number"),
+                                   on_merge="removed", tag="dropped by override")
             return
         # PRD staging returns pr_number; the UAT promote chain returns a prs list —
         # record the terminal (last-merged) PR of the chain.
@@ -370,5 +421,15 @@ def _record_deploy_event(req: dict[str, Any], environment: str, result: dict[str
             pr_number=int(pr_number) if pr_number else None,
             note=str(result.get("action") or ""),
         )
+        # A UAT override that left a chart out took it OFF UAT — that landed too.
+        if result.get("dropped"):
+            _rq.record_deployment(
+                environment=environment,
+                artifacts=result["dropped"],
+                deployment_repo=repo,
+                pr_number=int(pr_number) if pr_number else None,
+                note="dropped by override",
+                event_type="removed",
+            )
     except Exception:
         pass

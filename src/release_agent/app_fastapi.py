@@ -13,6 +13,8 @@ For more advanced setups, consider running behind a reverse proxy (nginx/traefik
 with proper auth, TLS, and observability.
 """
 
+import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -26,6 +28,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import features, identity
 from .adk_service import get_adk_chat_service
 from .config import settings as app_settings
 from .session_creds import SessionCredentials, get_store
@@ -100,8 +103,30 @@ def get_or_create_thread_id(thread_id: str | None) -> str:
     return thread_id
 
 
+def _caller(request: Request) -> identity.Caller | None:
+    """The verified signed-in user, or None (identity off / no valid token)."""
+    return identity.from_headers(request.headers)[0]
+
+
+def _owner(caller: identity.Caller | None) -> str | None:
+    """Who a thread's token belongs to: the caller when identity is on, else
+    None — no ownership check, exactly as before identity existed."""
+    return caller.email if caller else ("" if identity.enabled() else None)
+
+
+@app.get("/api/whoami")
+def whoami(request: Request):
+    """Who the portal thinks you are, so forms stop asking for an email."""
+    caller, why = identity.from_headers(request.headers)
+    if caller:
+        return {"signed_in": True, "email": caller.email, "name": caller.name, "source": "gateway",
+                "preview": features.is_preview_user(caller)}
+    return {"signed_in": False, "identity_enabled": identity.enabled(), "reason": why,
+            "required": identity.enabled() and app_settings.identity_required}
+
+
 @app.get("/", response_class=HTMLResponse)
-async def chat_page():
+async def chat_page(request: Request):
     """Serve a clean, self-contained chat UI."""
     html = """
 <!DOCTYPE html>
@@ -126,11 +151,17 @@ async def chat_page():
         document.head.appendChild(base);
     })();
     </script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Everything the page needs is served by the portal itself (static/vendor,
+         see its README): no public CDN, so a proxy that blocks one cannot leave
+         the page unstyled. -->
+    <link rel="stylesheet" href="static/vendor/fontawesome/css/fontawesome.min.css">
+    <link rel="stylesheet" href="static/vendor/fontawesome/css/solid.min.css">
+    <link rel="stylesheet" href="static/vendor/fontawesome/css/brands.min.css">
     <style>
+        @font-face {
+            font-family: 'Inter'; font-style: normal; font-weight: 100 900; font-display: swap;
+            src: url('static/vendor/inter/inter-latin-wght-normal.woff2') format('woff2');
+        }
         * { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif; }
         body {
             color: #e5e7eb;
@@ -152,6 +183,7 @@ async def chat_page():
         .chat-container::-webkit-scrollbar-thumb { background: rgba(148,163,184,.18); border-radius: 99px; }
         .chat-container::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.30); }
         .message { max-width: 84%; line-height: 1.6; animation: rise .28s cubic-bezier(.2,.8,.2,1); }
+        .message.queue-table-card { max-width: 100%; }   /* a table needs the room; Remove must stay visible */
         @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
         .bot { background: rgba(30,41,59,.6); border: 1px solid rgba(148,163,184,.10); }
         .user { background: linear-gradient(135deg, #10b981, #2dd4bf); color: #04241c; font-weight: 500; }
@@ -169,6 +201,10 @@ async def chat_page():
         .send-btn:active { transform: scale(.97); }
         .navbtn { transition: background .15s, border-color .15s; }
     </style>
+    <!-- After the page's own styles, where the in-browser Tailwind used to inject
+         its rules, so conflicting rules resolve exactly as before. Built by
+         scripts/css/build.sh. -->
+    <link rel="stylesheet" href="static/vendor/tailwind.css?v={APP_STARTED}">
 </head>
 <body class="text-white">
     <div class="max-w-6xl mx-auto px-4 py-6 flex gap-4 items-start">
@@ -276,15 +312,46 @@ async def chat_page():
     <!-- Vendored Chart.js (no CDN — must work behind the corporate proxy).
          Loaded before the module bundle so `Chart` is global when charts render. -->
     <script src="static/vendor/chart.umd.min.js?v={APP_STARTED}"></script>
+    <script>window.PORTAL_UI = {PORTAL_UI};</script>
     <script type="module" src="static/main.js?v={APP_STARTED}"></script>
 </body>
 </html>
     """
-    return HTMLResponse(content=html.replace("{APP_STARTED}", APP_STARTED))
+    # This caller's view, decided HERE and baked into the page: a preview pill is
+    # never rendered for someone who may not see it — no flash while a fetch
+    # resolves. The labels are no secret (they sit in palette.js); what is gated
+    # is the feature itself, server-side (features.allowed).
+    caller = await asyncio.to_thread(_caller, request)
+    ui = json.dumps(features.ui_config(caller)).replace("<", "\\u003c")
+    return HTMLResponse(content=html.replace("{APP_STARTED}", APP_STARTED).replace("{PORTAL_UI}", ui))
+
+
+def _chat_error_message(exc: BaseException) -> str:
+    """What to tell the user when a chat turn fails.
+
+    A Vertex 429 that survived the model's retries is not an internal error:
+    Gemini runs on a shared capacity pool, and it was busy. Saying "internal
+    error" sent people looking for a bug. The cause is usually wrapped a few
+    exceptions deep, so the whole chain is inspected.
+    """
+    seen, cur = set(), exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        text = f"{type(cur).__name__} {cur}"
+        if "429" in text or "RESOURCE_EXHAUSTED" in text or "ResourceExhausted" in text:
+            return ("The AI model is busy right now (Vertex AI rate limit — shared "
+                    "capacity, not something you did). Nothing was changed; please "
+                    "try again in a minute.")
+        if "503" in text or "UNAVAILABLE" in text:
+            return ("The AI model is briefly unavailable. Nothing was changed; "
+                    "please try again in a moment.")
+        cur = cur.__cause__ or cur.__context__
+    return ("Something went wrong processing that message — nothing was changed. "
+            "Try again; if it persists, the server log has the details.")
 
 
 @app.post("/api/chat")
-async def chat_endpoint(req: ChatRequest):
+async def chat_endpoint(req: ChatRequest, request: Request):
     """Streaming chat endpoint using Server-Sent Events (SSE).
 
     Production notes:
@@ -293,6 +360,7 @@ async def chat_endpoint(req: ChatRequest):
       instead of in-memory services.
     """
     thread_id = get_or_create_thread_id(req.thread_id)
+    caller = await asyncio.to_thread(_caller, request)   # may fetch the issuer's keys
 
     logger.info(f"Chat request | thread={thread_id} | msg_len={len(req.message)}")
 
@@ -301,17 +369,15 @@ async def chat_endpoint(req: ChatRequest):
         # every GitHub tool call resolves them; falls back to server config when
         # the session isn't connected. contextvars propagate across await/threads.
         try:
-            with _session_store.activate(thread_id):
+            with identity.activate(caller), _session_store.activate(thread_id, owner=_owner(caller)):
                 async for event in adk_chat_service.stream_chat(req.message, thread_id):
                     if event.get("type") == "interrupt":
                         logger.info(f"Interrupt emitted | thread={thread_id}")
                     yield f"data: {json.dumps(event)}\n\n"
 
-        except Exception:
+        except Exception as exc:
             logger.exception(f"Error in chat stream | thread={thread_id}")
-            error_payload = json.dumps(
-                {"type": "error", "content": "Internal error processing request"}
-            )
+            error_payload = json.dumps({"type": "error", "content": _chat_error_message(exc)})
             yield f"data: {error_payload}\n\n"
 
     return StreamingResponse(
@@ -326,7 +392,7 @@ async def chat_endpoint(req: ChatRequest):
 
 
 @app.post("/api/session/connect")
-async def session_connect_endpoint(req: SessionConnectRequest):
+async def session_connect_endpoint(req: SessionConnectRequest, request: Request):
     """Connect this chat thread to GitHub with the user's PAT token.
 
     The PAT is held in memory only and never logged or returned (the response
@@ -334,7 +400,10 @@ async def session_connect_endpoint(req: SessionConnectRequest):
     this user against the server-configured repositories.
     """
     thread_id = get_or_create_thread_id(req.thread_id)
-    creds = SessionCredentials(pat_token=req.pat_token or "")
+    caller = await asyncio.to_thread(_caller, request)
+    # Bound to the verified caller: someone else who learns this thread id gets
+    # a thread without the token, not a session running as this person.
+    creds = SessionCredentials(pat_token=req.pat_token or "", owner=_owner(caller))
     if not creds.pat_token:
         return {"ok": False, "error": "A PAT token is required to connect."}
 
@@ -344,18 +413,21 @@ async def session_connect_endpoint(req: SessionConnectRequest):
 
 
 @app.get("/api/session/status")
-async def session_status_endpoint(thread_id: str = ""):
+async def session_status_endpoint(request: Request, thread_id: str = ""):
     """Return the (token-masked) connection status for a thread."""
-    creds = _session_store.get(thread_id) if thread_id else None
+    caller = await asyncio.to_thread(_caller, request)
+    creds = _session_store.get(thread_id, owner=_owner(caller)) if thread_id else None
     if creds is None:
         return {"connected": False, "token_preview": ""}
     return creds.public_status()
 
 
 @app.post("/api/session/disconnect")
-async def session_disconnect_endpoint(req: SessionThreadRequest):
+async def session_disconnect_endpoint(req: SessionThreadRequest, request: Request):
     """Clear a thread's stored repo + PAT (called on New Thread / Disconnect)."""
-    _session_store.clear(req.thread_id)
+    caller = await asyncio.to_thread(_caller, request)
+    if _session_store.get(req.thread_id, owner=_owner(caller)) is not None:
+        _session_store.clear(req.thread_id)      # only its owner may drop it
     return {"ok": True, "connected": False}
 
 
@@ -372,6 +444,46 @@ async def session_disconnect_endpoint(req: SessionThreadRequest):
 # passes fresh=1 (after a chat turn, or the manual refresh) and bypasses it.
 _STATUS_TTL_SECONDS = 15.0
 _status_cache: dict = {"at": 0.0, "value": None}
+
+# The checks are the same for everyone; a team opening the pill at once should
+# not each run every query. fresh=1 (the refresh button) bypasses it.
+_MONITOR_TTL_SECONDS = 30.0
+_monitor_cache: dict = {"at": 0.0, "value": None}
+
+
+@app.get("/api/monitoring")
+def monitoring_endpoint(request: Request, fresh: int = 0):
+    """The team's PromQL checks, run now (or within the last 30s)."""
+    from fastapi.responses import JSONResponse
+
+    from .tools.monitoring import run_checks
+
+    if not features.allowed("monitoring", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("monitoring")})
+
+    if not fresh and _monitor_cache["value"] is not None \
+            and time.time() - _monitor_cache["at"] < _MONITOR_TTL_SECONDS:
+        return _monitor_cache["value"]
+    result = run_checks()
+    _monitor_cache.update(at=time.time(), value=result)
+    return result
+
+
+@app.get("/api/monitoring/alert-policy")
+def monitoring_alert_policy(request: Request, name: str):
+    """A check as a Cloud Monitoring alert policy (JSON) — for the team to apply,
+    so notification runs in Cloud Monitoring. The portal writes nothing."""
+    from fastapi.responses import JSONResponse
+
+    from .tools.monitoring import alert_policy, configured_checks
+
+    if not features.allowed("monitoring", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("monitoring")})
+
+    check = next((c for c in configured_checks()[0] if c["name"] == name), None)
+    if check is None:
+        return {"ok": False, "error": f"no check named {name!r}"}
+    return {"ok": True, "policy": alert_policy(check)}
 
 
 @app.get("/api/release-status")
@@ -394,7 +506,7 @@ def release_status_endpoint(fresh: int = 0):
         from concurrent.futures import ThreadPoolExecutor
 
         executor = ThreadPoolExecutor(max_workers=1)
-        df_future = executor.submit(get_release_status, deployment_repo=df_repo)
+        df_future = executor.submit(get_release_status, deployment_repo=df_repo, kind="df")
     try:
         status = get_release_status()
     except Exception as e:
@@ -420,7 +532,9 @@ def release_status_endpoint(fresh: int = 0):
             df_status = df_future.result()
             status["df"] = {
                 "repo": df_repo,
-                "prd_release_pr": df_status.get("prd_release_pr"),
+                # DF has no daily staging PR: a PR open on its own chain IS the
+                # DF release in flight (release PR or a pending promotion).
+                "prd_release_pr": df_status.get("prd_release_pr") or df_status.get("blocking_pr"),
                 "prd_charts": df_status.get("prd_charts") or [],
                 "blocking_pr": df_status.get("blocking_pr"),
                 "error": df_status.get("error"),
@@ -477,6 +591,8 @@ class QueueBatchRequest(BaseModel):
 class QueueWithdrawRequest(BaseModel):
     artifact_name: str
     requested_by: str = ""
+    # The version shown when the person clicked; refused if the queue moved on.
+    artifact_version: str = ""
 
 
 _known_charts_cache: dict = {"at": 0.0, "charts": []}
@@ -525,27 +641,34 @@ def release_queue_get():
 
 
 @app.post("/api/release-queue")
-def release_queue_add(req: QueueAddRequest):
+def release_queue_add(req: QueueAddRequest, request: Request):
     """Queue a chart:version for the next release (the 'Monday dev' path).
     Runs the courtesy build check and reports last-time routing, same as the
     conversational intake."""
     from adk_release_agent.tools import queue_release_intent
 
-    return queue_release_intent(
-        artifact=req.artifact,
-        requested_by=req.requested_by,
-        prl1_only=req.prl1_only,
-        target_envs=req.target_envs,
-        df_only=req.df_only,
-        note=req.note,
-        jira_ticket=req.jira_ticket,
-        change_details=req.change_details,
-        build_run_url=req.build_run_url,
-    )
+    caller = _caller(request)
+    who, refused = identity.actor(req.requested_by, caller)
+    if refused:
+        return {"ok": False, "error": refused}
+    # Bound for the call: the queue tool checks identity itself (it is the same
+    # tool the chat uses), and a REST request has no chat turn binding it.
+    with identity.activate(caller):
+        return queue_release_intent(
+            artifact=req.artifact,
+            requested_by=who,
+            prl1_only=req.prl1_only,
+            target_envs=req.target_envs,
+            df_only=req.df_only,
+            note=req.note,
+            jira_ticket=req.jira_ticket,
+            change_details=req.change_details,
+            build_run_url=req.build_run_url,
+        )
 
 
 @app.post("/api/release-queue/batch")
-def release_queue_add_batch(req: QueueBatchRequest):
+def release_queue_add_batch(req: QueueBatchRequest, request: Request):
     """Queue several charts in one submission.
 
     Each row is gated independently and PARTIAL SUCCESS is the point: a failed
@@ -565,12 +688,18 @@ def release_queue_add_batch(req: QueueBatchRequest):
     rows = [r for r in req.rows if (r.artifact or "").strip()]
     if not rows:
         return {"ok": False, "error": "No charts given — add at least one row."}
+    # Resolved HERE, not in the rows' threads: a pool thread does not inherit
+    # this request's context, and the caller must be the same for every row.
+    caller = _caller(request)
+    who, refused = identity.actor(req.requested_by, caller)
+    if refused:
+        return {"ok": False, "error": refused}
 
     def _queue(row: QueueRow) -> dict:
         try:
             return queue_release_intent(
                 artifact=row.artifact.strip(),
-                requested_by=req.requested_by,
+                requested_by=who,
                 prl1_only=row.prl1_only,
                 target_envs=row.target_envs,
                 df_only=row.df_only,
@@ -583,8 +712,16 @@ def release_queue_add_batch(req: QueueBatchRequest):
             logger.exception("batch queue failed for %s", row.artifact)
             return {"ok": False, "error": str(e)}
 
+    # Each row runs on a pool thread, which starts with an EMPTY context — found
+    # live: with IDENTITY_REQUIRED a signed-in user's rows were all refused. Each
+    # row gets its own copy of this request's context, with the caller bound.
+    def _in_context(row: QueueRow) -> dict:
+        with identity.activate(caller):
+            return _queue(row)
+
+    contexts = [contextvars.copy_context() for _ in rows]
     with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
-        outcomes = list(pool.map(_queue, rows))
+        outcomes = list(pool.map(lambda ctx, row: ctx.run(_in_context, row), contexts, rows))
 
     results = [
         {"artifact": row.artifact.strip(), **outcome}
@@ -604,6 +741,59 @@ def release_queue_add_batch(req: QueueBatchRequest):
 class ReleaseDraftRequest(BaseModel):
     artifacts: list[str] = []   # "name:version" of the TICKED items
     kind: str = "care"          # care | df
+
+
+class ReleaseDefaultsRequest(BaseModel):
+    artifacts: list[str] = []   # the artifact lines as they stand in the form
+    kind: str = "care"          # care | df
+    repo: str = ""              # the release's target repo — its PRs number the release
+    date: str = ""              # YYYY-MM-DD, the browser's date or the chosen start
+    number: int | None = None   # the release number from this form's first call — later
+                                # recomputes pass it back so they never wait on GitHub
+
+
+@app.post("/api/release-defaults")
+def release_defaults(req: ReleaseDefaultsRequest):
+    """Every change-request field except start and end, from the facts here.
+
+    Standard wording, no model call — cheap enough to recompute on every tick.
+    Artifacts are matched against the queue for their JIRA, details and build
+    verification; an artifact typed straight into the form has none of those
+    and is described as unverified, because it was never checked.
+    """
+    import datetime as _dt
+
+    from .tools import chg_defaults, release_queue
+
+    try:
+        day = _dt.date.fromisoformat(req.date[:10]) if req.date else _dt.date.today()
+    except ValueError:
+        day = _dt.date.today()
+    queue = {}
+    try:
+        for q in release_queue.current_queue().get("queue") or []:
+            queue[(q.get("artifact_name"), q.get("artifact_version"))] = q
+    except Exception:
+        logger.debug("release-defaults: queue unavailable; describing items without it", exc_info=True)
+
+    items, seen = [], set()
+    for line in req.artifacts:
+        name, version = release_queue._split_artifact(line)
+        if not name or not version or (name, version) in seen:
+            continue
+        seen.add((name, version))
+        q = queue.get((name, version)) or {}
+        items.append({
+            "name": name, "version": version,
+            "jira_ticket": q.get("jira_ticket"), "change_details": q.get("change_details"),
+            "requested_by": q.get("requested_by"), "build_verified": q.get("build_verified"),
+            "prl1_only": q.get("prl1_only"),
+        })
+    repo = (req.repo or "").strip() or (
+        app_settings.df_release_repo if req.kind == "df" else "") or app_settings.deploy_repo
+    number = req.number if (req.number or 0) > 0 else chg_defaults.next_release_number_for_repo(repo)
+    return {"ok": True, "fields": chg_defaults.build_defaults(items, req.kind, day, number),
+            "number": number, "numbered_from": repo if number else ""}
 
 
 @app.post("/api/release-draft")
@@ -630,12 +820,17 @@ def release_draft(req: ReleaseDraftRequest):
 
 
 @app.post("/api/release-queue/withdraw")
-def release_queue_withdraw(req: QueueWithdrawRequest):
+def release_queue_withdraw(req: QueueWithdrawRequest, request: Request):
     """Withdraw a chart from the next-release queue (append-only: writes a
     'withdrawn' event; nothing is deleted)."""
     from .tools import release_queue
 
-    return release_queue.withdraw_intent(req.artifact_name, req.requested_by)
+    caller = _caller(request)
+    who, refused = identity.actor(req.requested_by, caller)
+    if refused:
+        return {"ok": False, "error": refused}
+    with identity.activate(caller):
+        return release_queue.withdraw_intent(req.artifact_name, who, req.artifact_version)
 
 
 @app.get("/api/release-insights")
@@ -1021,13 +1216,37 @@ def _identity_report(request: Request) -> dict:
         # nothing about identity (x-asm-rctoken, say) — invisible to the name
         # match above. Decoding it is the only way to know.
         "jwt_claims": _jwt_findings(headers),
+        # What the app actually USES: the configured header, signature-checked.
+        "verified": _verified_identity(headers),
         "note": (
-            "Discovery only — nothing in the app reads these yet. If a header here "
-            "carries the signed-in user, it can replace the typed 'requested_by' "
-            "and the hardcoded session user. Values are masked; JWTs are decoded "
-            "WITHOUT signature verification, to see what they carry — not to trust it."
+            "jwt_claims is discovery: decoded WITHOUT verification, to see what a "
+            "token carries. 'verified' is what the app trusts — IDENTITY_HEADER's "
+            "token, checked against the issuer's keys. Values are masked."
         ),
     }
+
+
+def _verified_identity(headers: dict) -> dict:
+    caller, why = identity.from_headers(headers)
+    out = {
+        "enabled": identity.enabled(),
+        "header": app_settings.identity_header,
+        "signed_in": caller is not None,
+        "required": app_settings.identity_required,
+    }
+    if identity.enabled():
+        out.update({
+            "issuer": app_settings.identity_issuer,
+            "jwks_url": app_settings.identity_jwks_url,
+            "audience_checked": bool(app_settings.identity_audience),
+        })
+        if not app_settings.identity_audience:
+            out["hint"] = "set IDENTITY_AUDIENCE to the token's aud — without it any RCToken from this issuer is accepted"
+    if caller:
+        out["email"] = _mask_identity(caller.email)
+    else:
+        out["reason"] = why
+    return out
 
 @app.get("/api/diagnostics")
 def diagnostics(request: Request):
@@ -1044,6 +1263,10 @@ def diagnostics(request: Request):
       vertex.ok false + 429              -> quota; request an increase
       github.ok false + 404              -> wrong repo, or the token can't see it
       bq.ok false + 404 Not found: Table -> table not provisioned yet
+      clone_paths.verdict.summary        -> which way of getting the deploy repo's
+                                            files works here (git / tarball / API)
+      promql.access.ok false + 403       -> grant roles/monitoring.viewer to promql.principal
+      promql.data.series 0               -> reachable, but no metrics in that project
     """
     import os as _os
 
@@ -1062,6 +1285,7 @@ def diagnostics(request: Request):
             "github_token_present": bool(_resolve_github_token()),
             "HTTPS_PROXY": _os.getenv("HTTPS_PROXY") or "(none)",
             "NO_PROXY": _os.getenv("NO_PROXY") or "(default)",
+            "PROMETHEUS_URL": settings.prometheus_url or "(managed service in the project)",
             "BQ": (
                 f"{settings.bq_project or settings.gcp_project}."
                 f"{settings.bq_dataset}.{settings.bq_table}"
@@ -1116,43 +1340,42 @@ def diagnostics(request: Request):
             if not all(branches.values()):
                 info["hint"] = ("missing branches — set SIT_BRANCH/UAT_BRANCH/"
                                 "PRD_BRANCH/PRL1_BRANCH to your real branch names")
+            # The DF release repo keeps its own chain (DF_RELEASE_BRANCHES).
+            df_repo = (settings.df_release_repo or "").strip()
+            if df_repo and df_repo != repo.full_name:
+                from .tools.release_chain import chain
+
+                df_info: dict = {"repo": df_repo, "chain": " → ".join(b for _, b in chain("df"))}
+                try:
+                    df_gh = client.get_repo(df_repo)
+                    df_branches = {}
+                    for _, name in chain("df"):
+                        try:
+                            df_gh.get_branch(name)
+                            df_branches[name] = True
+                        except Exception:
+                            df_branches[name] = False
+                    df_info["branches"] = df_branches
+                    if not all(df_branches.values()):
+                        df_info["hint"] = "missing branches — set DF_RELEASE_BRANCHES to the DF repo's real chain"
+                except Exception as e:
+                    df_info["error"] = f"{type(e).__name__}: {e}"[:200]
+                info["df_release"] = df_info
             report["github"] = info
     except Exception as e:
         report["github"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
 
-    # The REST API and the GIT endpoint are different hosts and may be allowed
-    # separately by the proxy. The CARE/DF release flow clones over https to
-    # github.com, so a working API says nothing about whether a release can run.
+    # Creating a release needs the deploy repo's files on disk, and each way of
+    # getting them runs over a different host the proxy may allow separately
+    # (git endpoint / codeload / REST). Probe all three — cheaply, nothing is
+    # downloaded — plus the repo's size and a branch listing through Dulwich's
+    # own transport, which is what the release checkout uses. See tools/clone_probe.
     try:
-        import os as _os2
-        import subprocess as _sp
+        from .tools.clone_probe import probe_clone_paths
 
-        from .tools.release_fileset import _authed_clone_url
-
-        host = settings.github_base_url.split("://")[-1].split("/")[0] if settings.github_base_url else "github.com"
-        # Use the SAME authenticated URL the release flow builds — an anonymous
-        # ls-remote fails on a private repo for reasons that have nothing to do
-        # with the proxy, which would send an operator chasing a phantom.
-        url = _authed_clone_url(active_deploy_repo())
-        env = {**_os2.environ, "GIT_TERMINAL_PROMPT": "0"}   # never block on a credential prompt
-        probe = _sp.run(
-            ["git", "ls-remote", url, "HEAD"],
-            capture_output=True, text=True, timeout=30, env=env,
-        )
-        if probe.returncode == 0:
-            report["git_https"] = {"ok": True, "host": host}
-        else:
-            # git echoes the remote URL on failure — strip the embedded token.
-            detail = (probe.stderr or probe.stdout).strip()
-            token = _resolve_github_token() or ""
-            if token:
-                detail = detail.replace(token, "***")
-            report["git_https"] = {
-                "ok": False, "host": host, "error": detail[:300],
-                "hint": "release creation clones over this path — check proxy access and SSO for the token",
-            }
+        report["clone_paths"] = probe_clone_paths(active_deploy_repo())
     except Exception as e:
-        report["git_https"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+        report["clone_paths"] = {"error": f"{type(e).__name__}: {e}"[:300]}
 
     # BigQuery: only meaningful when the queue feature is switched on.
     try:
@@ -1168,10 +1391,20 @@ def diagnostics(request: Request):
     except Exception as e:
         report["bq"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
 
+    # PromQL: reachable, permitted (and as whom), and is there data to read.
+    # Informational — it does not gate "ok"; the portal itself does not need it.
+    try:
+        from .tools.promql_probe import probe_promql
+
+        report["promql"] = probe_promql()
+    except Exception as e:
+        report["promql"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+
     report["ok"] = bool(
         report["vertex"].get("ok")
         and report["github"].get("ok")
-        and report["git_https"].get("ok")
+        # Release creation: Dulwich can list the base branch (no git binary needed).
+        and ((report.get("clone_paths") or {}).get("verdict") or {}).get("release_ready_today")
     )
     report["identity"] = _identity_report(request)
     return report

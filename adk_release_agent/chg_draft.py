@@ -92,9 +92,9 @@ def draft_change_request(items: list[dict[str, Any]], kind: str = "care") -> dic
         context += ("\n\nNOTE: this is a Dataflow release. These are flex-template images "
                     "deployed by workflow dispatch, not Helm charts.")
     try:
-        from google import genai
+        from ._genai import classifier_client
 
-        client = genai.Client()
+        client = classifier_client()
         response = client.models.generate_content(
             model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             contents=context,

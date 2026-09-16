@@ -41,6 +41,15 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 _USER_ID = "fastapi-user"
+
+
+def _user_id() -> str:
+    """ADK sessions are keyed per verified caller when identity is on, so one
+    person's thread id never resumes another person's conversation or pending
+    approval; everyone shares the fixed id when it is off, as before."""
+    from . import identity
+
+    return identity.current_email() or _USER_ID
 # name attached to the resume function-response; matches ADK's RequestInput tool.
 _REQUEST_INPUT_NAME = "adk_request_input"
 # ADK's tool-confirmation long-running function-call name (prod-ops confirmation).
@@ -230,6 +239,28 @@ def _is_positive_response(text: str) -> bool:
     return text.strip().lower() in {"y", "yes", "true", "confirm", "confirmed", "ok", "proceed"}
 
 
+def _original_call(pending: PendingAdkCall) -> tuple[str, str] | None:
+    """(tool name, canonical args) of the operation a confirmation is FOR."""
+    original = (pending.args or {}).get("originalFunctionCall") or {}
+    name = original.get("name") or ""
+    if not name:
+        return None
+    return name, json.dumps(original.get("args") or {}, sort_keys=True)
+
+
+def _result_note(event: Any, tool_name: str) -> str:
+    """The human sentence a tool's result carries (``note``), if it returned one."""
+    for response in event.get_function_responses() or []:
+        if (getattr(response, "name", "") or "") != tool_name:
+            continue
+        body = getattr(response, "response", None) or {}
+        if isinstance(body, dict) and isinstance(body.get("result"), dict):
+            body = body["result"]
+        if isinstance(body, dict) and body.get("note"):
+            return str(body["note"])
+    return ""
+
+
 def _pending_call_from_event(event: Any) -> PendingAdkCall | None:
     """Return a pending tool-confirmation call if this chat event is a HITL pause."""
     long_running_ids = getattr(event, "long_running_tool_ids", None) or set()
@@ -268,6 +299,7 @@ _TOOL_LABELS = {
     "get_build_controls": "Reading the build controls",
     "get_build_report": "Diagnosing the build run",
     "promote_release": "Promoting the release file-set",
+    "promote_df_release": "Promoting the DF release file-set",
     "remove_from_release": "Removing from the release",
     "merge_prod_release": "Releasing the staged PRD batch",
     "retrigger_deployment_workflow": "Re-running the deployment workflow",
@@ -290,6 +322,7 @@ def _progress_label(name: str, args: dict[str, Any]) -> str:
 # the cached snapshot alone (the ⟳ button forces a live read on demand).
 _STATE_CHANGING_TOOLS = frozenset({
     "promote_release",
+    "promote_df_release",
     "merge_prod_release",
     "remove_from_release",
     "retrigger_deployment_workflow",
@@ -351,10 +384,11 @@ def _confirmation_interrupt_payload(pending: PendingAdkCall) -> dict[str, Any]:
             "SIT → UAT → PRD. **Once released, no new charts can be added to this "
             "release** — later prod deploys start a new release."
         )
-    elif function == "promote_release":
+    elif function in ("promote_release", "promote_df_release"):
         target = str((original.get("args") or {}).get("target", "")).upper() or "the target environment"
+        which = "DF release" if function == "promote_df_release" else "release"
         hint = (
-            f"Promote the current release's file-set to **{target}**? This copies the "
+            f"Promote the current {which}'s file-set to **{target}**? This copies the "
             "release files onto that environment branch and merges the promotion PR."
         )
     else:
@@ -408,10 +442,12 @@ class AdkChatService:
             # Consumed — clear it in both places, or a later message would be
             # read as answering an approval that has already been decided.
             await self._persist_pending_call(thread_id, None)
+            approved = _original_call(pending_call) if _is_positive_response(message) else None
             async for event in self._run_chat_agent(
                 _content_from_pending_reply(message, pending_call),
                 thread_id,
                 invocation_id=pending_call.invocation_id,
+                approved=approved,
             ):
                 yield event
             return
@@ -433,10 +469,20 @@ class AdkChatService:
                 return
             if token in adk_deploy._PENDING_PREVIEWS:
                 # Stateless fallback (e.g. reconnect with no tracked invocation).
-                result = adk_deploy.apply_confirmed_deploy(message)
+                result = await asyncio.to_thread(adk_deploy.apply_confirmed_deploy, message)
                 yield {"type": "token", "content": self._format_deploy_apply_result(result)}
                 yield {"type": "done", "mutated": True}
                 return
+            # A token that matches nothing: already used (tokens are single-use),
+            # cancelled, or expired. Say so plainly — handing it to the chat model
+            # produced a guess about what the user "intended to confirm".
+            yield {"type": "token", "content": (
+                f"`{token}` isn't waiting on this thread — it was already used, "
+                "cancelled, or has expired. Nothing was applied. Preview the deploy "
+                "again to get a new token."
+            )}
+            yield {"type": "done"}
+            return
 
         if _looks_like_deploy_request(message):
             log_router_decision(thread_id, message, "deploy_workflow:deterministic")
@@ -469,7 +515,7 @@ class AdkChatService:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Run the deploy Workflow's preview turn and surface the confirmation interrupt."""
         async for event in self.deploy_runner.run_async(
-            user_id=_USER_ID,
+            user_id=_user_id(),
             session_id=_session_id(thread_id, "deploy"),
             new_message=_content_from_text(message),
         ):
@@ -491,7 +537,9 @@ class AdkChatService:
                         "token": token,
                         "proposed": pending.get("preview", {}),
                         "environment": environment,
-                        "message": f"Reply with exactly `{token}` to apply this deploy.",
+                        "message": (f"Reply with exactly `{token}` to create this release."
+                                    if request.get("deployment_type") == "release"
+                                    else f"Reply with exactly `{token}` to apply this deploy."),
                     },
                 }
                 break
@@ -504,7 +552,7 @@ class AdkChatService:
         self._pending_deploy.pop(thread_id, None)
         result: dict[str, Any] | None = None
         async for event in self.deploy_runner.run_async(
-            user_id=_USER_ID,
+            user_id=_user_id(),
             session_id=_session_id(thread_id, "deploy"),
             new_message=_confirmation_response(token, confirmed),
         ):
@@ -519,6 +567,7 @@ class AdkChatService:
         content: types.Content,
         thread_id: str,
         invocation_id: str | None = None,
+        approved: tuple[str, str] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat turn, surfacing prod-ops confirmations and persisting memory.
 
@@ -529,8 +578,11 @@ class AdkChatService:
         """
         interrupted = False
         mutated = False          # did this turn change release/deploy state?
+        said_anything = False
+        approved_note = ""       # the approved operation's own result sentence
+        repeat = None            # the model asking to run the approved operation AGAIN
         async for event in self.chat_runner.run_async(
-            user_id=_USER_ID,
+            user_id=_user_id(),
             session_id=_session_id(thread_id, "chat"),
             invocation_id=invocation_id,
             new_message=content,
@@ -541,8 +593,17 @@ class AdkChatService:
                 mutated = True
             text = _text_from_event(event)
             if text:
+                said_anything = True
                 yield {"type": "token", "content": text}
+            if approved:
+                approved_note = _result_note(event, approved[0]) or approved_note
             pending = _pending_call_from_event(event)
+            if pending is not None and approved and approved_note and _original_call(pending) == approved:
+                # Seen live: after an approved PRD promotion ran, the model asked to
+                # run the SAME promotion again — a second approval for something
+                # already done. Decline it here instead of asking the person.
+                repeat = pending
+                break
             if pending is not None:
                 self._pending_adk_calls[thread_id] = pending
                 await self._persist_pending_call(thread_id, pending)
@@ -550,6 +611,21 @@ class AdkChatService:
                 interrupted = True
                 break
 
+        if repeat is not None:
+            # Answer the repeat with "no" so the session never holds an open
+            # approval, and say what actually happened: the one approved run.
+            # The model's reply to that "no" is not shown — it would describe a
+            # rejection the person never made.
+            logger.info("Declined a repeat of an already-approved %s | thread=%s", approved[0], thread_id)
+            async for _ in self.chat_runner.run_async(
+                user_id=_user_id(),
+                session_id=_session_id(thread_id, "chat"),
+                invocation_id=repeat.invocation_id,
+                new_message=_content_from_pending_reply("no", repeat),
+            ):
+                pass
+            if not said_anything:
+                yield {"type": "token", "content": approved_note}
         if not interrupted and settings.adk_memory_enabled:
             await self._persist_session_to_memory(thread_id)
         yield {"type": "done", "mutated": mutated}
@@ -562,7 +638,7 @@ class AdkChatService:
     async def _chat_session(self, thread_id: str):
         return await self.session_service.get_session(
             app_name=self.chat_runner.app_name,
-            user_id=_USER_ID,
+            user_id=_user_id(),
             session_id=_session_id(thread_id, "chat"),
         )
 
@@ -624,24 +700,27 @@ class AdkChatService:
         even when the preview was served by a different process. Returns None on
         any failure: a routing hint must never break a chat turn.
         """
+        return await self._deploy_state_value(thread_id, "deploy_confirm_token")
+
+    async def _deploy_state_value(self, thread_id: str, key: str) -> str | None:
         try:
             session = await self.session_service.get_session(
                 app_name=self.deploy_runner.app_name,
-                user_id=_USER_ID,
+                user_id=_user_id(),
                 session_id=_session_id(thread_id, "deploy"),
             )
         except Exception:
-            logger.debug("pending-token lookup failed for %s", thread_id, exc_info=True)
+            logger.debug("deploy-state lookup (%s) failed for %s", key, thread_id, exc_info=True)
             return None
-        token = ((session.state if session else None) or {}).get("deploy_confirm_token")
-        return str(token) if token else None
+        value = ((session.state if session else None) or {}).get(key)
+        return str(value) if value else None
 
     async def _persist_session_to_memory(self, thread_id: str) -> None:
         """Best-effort: add the finished chat session to the memory service."""
         try:
             session = await self.session_service.get_session(
                 app_name=chat_app.name,
-                user_id=_USER_ID,
+                user_id=_user_id(),
                 session_id=_session_id(thread_id, "chat"),
             )
             if session is not None:
@@ -651,6 +730,12 @@ class AdkChatService:
 
     @staticmethod
     def _format_deploy_apply_result(result: dict[str, Any]) -> str:
+        # An apply that failed part-way may have landed some of it, so "Not
+        # applied" would be false: the note — what may and may not have
+        # happened, and that the token is spent — is the whole answer.
+        if result.get("status") == "apply_error":
+            parts = [str(result.get("note") or "").strip(), str(result.get("error") or "").strip()]
+            return "\n\n".join(p for p in parts if p) or "The deploy did not complete."
         if result.get("ok") is False:
             # Prefer the tool's own explanation (e.g. the one-release-at-a-time
             # guard's note naming the blocking PR) over a generic failure line.
@@ -663,8 +748,16 @@ class AdkChatService:
         bump = result.get("dag_bump")
         if isinstance(bump, dict):
             if bump.get("ok") and bump.get("pr_url"):
+                run = result.get("run") or {}
+                run_link = (f"[Run #{run.get('id')}]({run['url']})" if run.get("url")
+                            else (f"[the DF runs]({result['runs_page']})"
+                                  if result.get("runs_page") else "the DF run"))
+                # Raised at dispatch, before the build finishes, on purpose:
+                # whether the run is good enough to merge on is the person's
+                # call, so hand them the run right beside the PR.
                 note += (f"\n\nComposer DAGs: [PR #{bump.get('pr_number')}]({bump['pr_url']}) "
-                         "raised — merge it once the run above is green.")
+                         f"raised. Check {run_link} and merge the PR only once it is "
+                         "green — that call is yours; nothing merges automatically.")
             elif bump.get("ok"):
                 note += f"\n\nComposer DAGs: {bump.get('note') or 'no change needed'}."
             else:

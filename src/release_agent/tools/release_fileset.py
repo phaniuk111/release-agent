@@ -7,13 +7,15 @@ feature branch -> SIT -> UAT -> PRD/PRL1.
 
 The agent orchestrates the script rather than reimplementing it:
 
-  prepare : clone the deploy repo, cut release/<slug> from SIT, write the
-            transient release_details.json to a temp dir OUTSIDE the repo,
-            run the repo's updater script, commit locally. Nothing is pushed.
-            Returns a preview: changed files, env partition, RCTL timeline.
-  apply   : push the branch, open the release PR (feature -> SIT) with a
-            machine-readable changed-files marker, auto-merge (or report
-            pending), clean the workdir.
+  prepare : check out SIT's tip (Dulwich, no git binary — see git_snapshot),
+            write the transient release_details.json to a temp dir OUTSIDE
+            the repo, run the repo's updater script, stage what it changed.
+            Nothing is written to GitHub. Returns a preview: changed files,
+            env partition, RCTL timeline.
+  apply   : commit the staged file-set onto SIT's tip and create
+            release/<slug> through the Git Data API, open the release PR
+            (feature -> SIT) with a machine-readable changed-files marker,
+            auto-merge (or report pending), clean the workdir.
   promote : copy the release's changed file-set VERBATIM from the release
             branch to the next branch (SIT -> UAT -> PRD/PRL1) via a
             short-lived change branch + PR — same targeted mechanism as chart
@@ -41,6 +43,7 @@ from ._common import (
     _resolve_github_token,
     active_deploy_repo,
 )
+from . import git_snapshot, release_chain
 from .promotion import _merge_pr
 from .release_window import _open_prd_pr_blocker
 
@@ -129,6 +132,9 @@ def validate_release(payload: dict) -> tuple[dict | None, list[str]]:
     repo = str(payload.get("deployment_repo") or "").strip()
     if repo and ("/" not in repo or repo.startswith("/") or repo.endswith("/")):
         errors.append(f"'deployment_repo' must be owner/repo (got {repo!r}).")
+    kind = str(payload.get("release_kind") or "").strip().lower()
+    if kind and kind not in release_chain.KINDS:
+        errors.append(f"'release_kind' must be care or df (got {kind!r}).")
 
     if errors:
         return None, errors
@@ -169,16 +175,10 @@ def partition_environments(details: dict) -> dict:
 
 # --- prepare / apply ---------------------------------------------------------
 def _run(cmd: list[str], cwd: str, timeout: int = 120) -> tuple[int, str]:
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    # No .pyc files: the updater's own imports must not show up as changed files.
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
     return r.returncode, (r.stdout + r.stderr).strip()
-
-
-def _authed_clone_url(repo_full: str) -> str:
-    token = _resolve_github_token() or ""
-    host = "github.com"
-    if settings.github_base_url:
-        host = settings.github_base_url.split("://")[-1].split("/")[0]
-    return f"https://x-access-token:{token}@{host}/{repo_full}.git"
 
 
 def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
@@ -187,11 +187,14 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
     if errors:
         return {"ok": False, "errors": errors}
 
-    # Form-supplied target repo wins; empty falls back to session/config default.
-    repo_full = str(payload.get("deployment_repo") or "").strip() or active_deploy_repo()
+    kind = release_chain.kind_of(details, str(payload.get("release_kind") or "").strip().lower())
+    # Form-supplied target repo wins; empty falls back to this kind's repo.
+    repo_full = str(payload.get("deployment_repo") or "").strip() or (
+        (settings.df_release_repo if kind == "df" else "") or active_deploy_repo())
+    landing = release_chain.landing(kind)
     try:
         gh_repo = _get_github_client().get_repo(repo_full)
-        blocker = _open_prd_pr_blocker(gh_repo)
+        blocker = _open_prd_pr_blocker(gh_repo, branches=release_chain.guard_branches(kind))
     except Exception as e:
         return {"ok": False, "errors": [f"Could not reach {repo_full}: {e}"]}
     if blocker is not None:
@@ -208,16 +211,10 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
     workdir = tempfile.mkdtemp(prefix="release-fileset-")
     repo_dir = os.path.join(workdir, "repo")
     try:
-        rc, out = _run(
-            ["git", "clone", "--depth", "50", "--branch", settings.sit_branch,
-             _authed_clone_url(repo_full), repo_dir],
-            cwd=workdir, timeout=180,
+        git_snapshot.clone_branch(
+            git_snapshot.repo_url(repo_full), landing, repo_dir,
+            _resolve_github_token() or "",
         )
-        if rc != 0:
-            raise RuntimeError(f"clone failed: {out[-500:]}")
-        rc, out = _run(["git", "checkout", "-b", branch], cwd=repo_dir)
-        if rc != 0:
-            raise RuntimeError(f"branch failed: {out[-300:]}")
 
         # Transient release_details.json — OUTSIDE the repo so it can never be committed.
         details_path = os.path.join(workdir, "release_details.json")
@@ -234,20 +231,9 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         if rc != 0:
             raise RuntimeError(f"updater script failed:\n{script_output[-800:]}")
 
-        _run(["git", "add", "-A"], cwd=repo_dir)
-        rc, staged = _run(["git", "diff", "--cached", "--name-only"], cwd=repo_dir)
-        changed_files = sorted(line.strip() for line in staged.splitlines() if line.strip())
+        changed_files = git_snapshot.changed_paths(git_snapshot.stage_all(repo_dir))
         if not changed_files:
             raise RuntimeError("updater script produced no file changes")
-        author = f"{details['change_initiator'].split('@')[0]} <{details['change_initiator']}>"
-        rc, out = _run(
-            ["git", "-c", f"user.name={details['change_initiator'].split('@')[0]}",
-             "-c", f"user.email={details['change_initiator']}",
-             "commit", "--author", author, "-m", details["release_name"]],
-            cwd=repo_dir,
-        )
-        if rc != 0:
-            raise RuntimeError(f"commit failed: {out[-300:]}")
 
         # RCTL timeline read back from the file the script just generated.
         timeline = []
@@ -290,12 +276,15 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         "details": details,             # the inputs apply regenerates from
         "fileset_hash": fileset_hash,
         "deployment_repo": repo_full,
+        "kind": kind,
+        "landing_branch": landing,
         "artifacts": artifact_pairs,
         "preview": {
             "release": details["release_name"],
             "window": f"{details['start_date']} -> {details['end_date']}",
             "initiator": details["change_initiator"],
             "deployment_repo": repo_full,
+            "lands_on": landing,
             "changed_files": changed_files,
             "environments": partition_environments(details),
             "rctl_timeline": timeline,
@@ -336,7 +325,14 @@ def apply_release_fileset(prep: dict) -> dict:
         details, expected = prep.get("details"), prep.get("fileset_hash")
         if not details:
             return {"ok": False, "error": "Prepared release is incomplete — start the release again."}
-        regenerated = prepare_release_fileset(dict(details), _keep_workdir=True)
+        # details is exactly release_details.json, which carries neither the
+        # target repo nor the kind — found in testing: without them a DF release
+        # in its own repo regenerated against the CARE repo.
+        regenerated = prepare_release_fileset(
+            {**details, "deployment_repo": prep.get("deployment_repo") or "",
+             "release_kind": prep.get("kind") or ""},
+            _keep_workdir=True,
+        )
         if not regenerated.get("ok"):
             return {"ok": False,
                     "error": "; ".join(regenerated.get("errors", ["could not regenerate the release"]))}
@@ -356,12 +352,21 @@ def apply_release_fileset(prep: dict) -> dict:
     if not workdir or not os.path.isdir(repo_dir):
         return {"ok": False, "error": "Prepared release workdir is gone — start the release again."}
     try:
-        rc, out = _run(["git", "push", "-u", "origin", branch], cwd=repo_dir, timeout=180)
-        if rc != 0:
-            return {"ok": False, "error": f"push failed: {out[-400:]}"}
-
         repo_full = prep.get("deployment_repo") or active_deploy_repo()
         gh_repo = _get_github_client().get_repo(repo_full)
+        initiator = (prep.get("details") or {}).get("change_initiator") or ""
+        try:
+            sha = git_snapshot.commit_via_api(
+                gh_repo, repo_dir, git_snapshot.stage_all(repo_dir),
+                git_snapshot.base_commit(repo_dir), prep.get("release_name") or branch,
+                initiator.split("@")[0] or "release-copilot", initiator or "release-copilot@localhost",
+            )
+            gh_repo.create_git_ref(f"refs/heads/{branch}", sha)
+        except Exception as e:  # noqa: BLE001 — nothing was pushed; say why
+            msg = str(getattr(e, "data", None) or e)
+            if "already exists" in msg.lower():
+                msg = f"branch {branch} already exists in {repo_full} — delete it or pick another release name"
+            return {"ok": False, "error": f"could not create {branch}: {msg[:400]}"}
         preview = prep.get("preview", {})
         body = (
             f"Release **{prep.get('release_name')}** — file-set generated by "
@@ -369,15 +374,16 @@ def apply_release_fileset(prep: dict) -> dict:
             f"Window: {preview.get('window')}\nInitiator: {preview.get('initiator')}\n\n"
             f"{_FILES_MARKER} {json.dumps(preview.get('changed_files', []))}\n"
         )
+        kind = prep.get("kind") or "care"
+        landing = prep.get("landing_branch") or release_chain.landing(kind)
         pr = gh_repo.create_pull(
             title=prep.get("release_name"), body=body,
-            head=branch, base=settings.sit_branch,
+            head=branch, base=landing,
         )
         merged, detail = _merge_pr(pr, "merge")
         note = (
             f"Release PR #{pr.number} ({pr.html_url}) {'merged into' if merged else 'opened against'} "
-            f"{settings.sit_branch}{'' if merged else f' — {detail}'}. "
-            f"Promote with 'promote release to uat' then 'promote release to prd/prl1'."
+            f"{landing}{'' if merged else f' — {detail}'}. {release_chain.next_steps(kind)}"
         )
         if merged:
             # Drain the intake queue: shipped charts get 'released' events so next
@@ -386,7 +392,8 @@ def apply_release_fileset(prep: dict) -> dict:
                 from . import release_queue as _rq
 
                 _rq.mark_released(
-                    prep.get("release_name") or "", pr.number, prep.get("artifacts") or []
+                    prep.get("release_name") or "", pr.number, prep.get("artifacts") or [],
+                    deployment_repo=repo_full,
                 )
             except Exception:
                 pass
@@ -414,17 +421,28 @@ def cleanup_prepared_release(prep: dict) -> None:
 
 
 # --- promotion of the file-set ----------------------------------------------
-def _latest_release_pr(gh_repo):
-    """Most recent release PR into SIT carrying the changed-files marker."""
+def _latest_release_pr(gh_repo, kinds=("care",)):
+    """(PR, kind): the most recent release PR carrying the changed-files marker,
+    looking on each kind's landing branch. Several kinds may share a repo, so
+    the newest (highest-numbered) wins — PR numbers only grow."""
     import itertools
 
-    for state in ("open", "closed"):
-        for pr in itertools.islice(
-            gh_repo.get_pulls(state=state, base=settings.sit_branch, sort="created", direction="desc"), 30
-        ):
-            if pr.head.ref.startswith("release/") and _FILES_MARKER in (pr.body or ""):
-                return pr
-    return None
+    best = (None, "")
+    seen = set()
+    for kind in kinds:
+        landing = release_chain.landing(kind)
+        if landing in seen:
+            continue
+        seen.add(landing)
+        for state in ("open", "closed"):
+            found = next((pr for pr in itertools.islice(
+                gh_repo.get_pulls(state=state, base=landing, sort="created", direction="desc"), 30)
+                if pr.head.ref.startswith("release/") and _FILES_MARKER in (pr.body or "")), None)
+            if found is not None:
+                if best[0] is None or found.number > best[0].number:
+                    best = (found, kind)
+                break
+    return best
 
 
 def _release_files_from_pr(pr) -> list[str]:
@@ -464,8 +482,36 @@ def _workflow_chart_entries(text: str) -> list[dict[str, str]]:
     return entries
 
 
+_ARTEFACT_FILE = "artefact-provider/artefact.json"
+
+
+def _promoted_artifacts(gh_repo, kind: str, env: str, files: list[str], release_branch: str):
+    """What a promotion put into ``env``, for the event log — read ONLY from files
+    the release itself generated. Found live: a DF promotion read the CARE helm
+    workflow that happened to sit on the branch (a DF release never writes it)
+    and logged a chart that was not in the release at all.
+
+    CARE: the env's governed-deploy workflow (its exact helm deploy set).
+    DF:   the release's artefact list — DF images never enter helm workflows.
+    """
+    if kind == "df":
+        if _ARTEFACT_FILE not in files:
+            return []
+        try:
+            data = json.loads(_read_raw(gh_repo, _ARTEFACT_FILE, release_branch) or "{}")
+        except json.JSONDecodeError:
+            return []
+        return [{"name": nv[0], "tag": nv[1]} for a in (data.get("artefact") or [])
+                if isinstance(a, str) and (nv := _artifact_name_version(a))]
+    workflow = f".github/workflows/deploy_with_sdlc_governance_{env}.yaml"
+    if workflow not in files:
+        return []
+    return _workflow_chart_entries(_read_raw(gh_repo, workflow, release_branch) or "")
+
+
 class PromoteReleaseInput(BaseModel):
-    target: str = Field(..., description="Branch to promote the release file-set to: uat, prd, or prl1.")
+    target: str = Field(..., description="Environment to promote the release file-set to: uat, prd, or prl1 "
+                                         "(a DF release lands on its UAT branch directly — promote it to prd).")
     release_branch: str = Field(
         default="",
         description="Release branch (release/<slug>). Empty = the latest release PR's branch.",
@@ -474,39 +520,56 @@ class PromoteReleaseInput(BaseModel):
         default="",
         description="Deployment repo (owner/repo) the release lives in. Empty = the configured default.",
     )
+    kind: str = Field(
+        default="",
+        description="'df' for the Dataflow release, 'care' for the CARE release. Empty = work it out "
+                    "from the repo and the latest release PR.",
+    )
 
 
 @tool(args_schema=PromoteReleaseInput)
-def promote_release(target: str, release_branch: str = "", deployment_repo: str = "") -> str:
-    """Promote the current release's FILE-SET to the next environment branch
-    (SIT -> UAT -> PRD/PRL1): copies the release's changed files verbatim onto the
-    target via a short-lived change branch + PR (auto-merged when allowed)."""
+def promote_release(target: str, release_branch: str = "", deployment_repo: str = "", kind: str = "") -> str:
+    """Promote the current release's FILE-SET to the next environment branch of its
+    chain (CARE: SIT -> UAT -> PRD/PRL1; DF: DF_RELEASE_BRANCHES, e.g. RELEASE_UAT ->
+    RELEASE_PRD): copies the release's changed files verbatim onto the target via
+    a short-lived change branch + PR (auto-merged when allowed)."""
     t = target.strip().lower()
-    branch_map = {
-        "uat": settings.uat_branch,
-        "prd": settings.prd_branch,
-        "prod": settings.prd_branch,
-        "prl1": settings.prl1_branch,
-    }
-    if t not in branch_map:
-        return json.dumps({"ok": False, "error": f"Unknown target '{target}' (use uat, prd or prl1)."})
-    target_branch = branch_map[t]
-
+    kind = kind.strip().lower()
+    if kind and kind not in release_chain.KINDS:
+        return json.dumps({"ok": False, "error": f"Unknown release kind '{kind}' (use care or df)."})
     try:
-        repo_full = str(deployment_repo or "").strip() or active_deploy_repo()
+        repo_full = str(deployment_repo or "").strip() or (
+            (settings.df_release_repo if kind == "df" else "") or active_deploy_repo())
         gh_repo = _get_github_client().get_repo(repo_full)
     except Exception as e:
         return json.dumps({"ok": False, "error": f"GitHub error: {e}"})
 
-    pr = None
+    # Which kind's chain: given, or the repo's own (a separate DF repo is DF),
+    # or whichever kind has the newest release PR in a shared repo.
+    df_repo = (settings.df_release_repo or "").strip()
+    if kind:
+        kinds = (kind,)
+    elif df_repo and repo_full == df_repo and df_repo != settings.deploy_repo:
+        kinds = ("df",)
+    else:
+        kinds = ("care", "df")
+    pr, found_kind = _latest_release_pr(gh_repo, kinds)
+    kind = found_kind or kinds[0]
+    branch_map = release_chain.targets(kind)
+    if t not in branch_map:
+        envs = [e for e in branch_map if e != "prod"]
+        lands = release_chain.landing(kind)
+        why = (f"the {kind.upper()} release lands on {lands} directly" if t == release_chain.chain(kind)[0][0]
+               else f"unknown target '{target}'")
+        return json.dumps({"ok": False, "error": f"Cannot promote to {target}: {why} — use {' or '.join(envs)}."})
+    target_branch = branch_map[t]
+
     if not release_branch:
-        pr = _latest_release_pr(gh_repo)
         if pr is None:
             return json.dumps({"ok": False, "error": "No release PR with a file marker found — create a release first."})
         release_branch = pr.head.ref
         files = _release_files_from_pr(pr)
     else:
-        pr = _latest_release_pr(gh_repo)
         files = _release_files_from_pr(pr) if pr and pr.head.ref == release_branch else []
     if not files:
         return json.dumps({"ok": False, "error": f"Could not determine the release file list for {release_branch}."})
@@ -558,12 +621,7 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             from . import release_queue as _rq
 
             key = "prd" if t in ("prd", "prod") else t
-            wf_text = _read_raw(
-                gh_repo,
-                f".github/workflows/deploy_with_sdlc_governance_{key}.yaml",
-                release_branch,
-            )
-            charts = _workflow_chart_entries(wf_text or "")
+            charts = _promoted_artifacts(gh_repo, kind, key, files, release_branch)
             if charts and merged:
                 _rq.record_deployment(
                     environment=key,

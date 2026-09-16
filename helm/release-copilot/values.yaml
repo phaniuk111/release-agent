@@ -58,7 +58,7 @@ proxy:
   # TLS-INSPECTING proxy? (symptom: "certificate verify failed: self-signed
   # certificate in certificate chain"). Put the corporate root CA in a ConfigMap
   # and reference it here — the chart mounts it and points requests, OpenSSL and
-  # git at it. Verify from THIS image, not another pod: corporate base images
+  # the release checkout (Dulwich) at it. Verify from THIS image, not another pod: corporate base images
   # often already trust the CA and hide the problem.
   #   kubectl -n <ns> create configmap corp-proxy-ca --from-file=ca.crt=/path/to/root-ca.crt
   # caBundle:
@@ -99,6 +99,11 @@ config:
   # release repo (DEPLOY_REPO) so the two releases have independent branch chains
   # and independent in-flight guards. Empty = one repo for both.
   DF_RELEASE_REPO: ""
+  # DF_RELEASE_REPO's branch chain, in order — "env:BRANCH,…". The FIRST is where
+  # the release PR lands, the rest are what "promote the DF release to <env>"
+  # targets. No SIT here: the PR goes straight to RELEASE_UAT. The in-flight
+  # guard for DF watches exactly these branches. Empty = the CARE chain below.
+  DF_RELEASE_BRANCHES: "uat:RELEASE_UAT,prd:RELEASE_PRD"
   # Repo hosting the DF deploy workflow named by DF_DEPLOY_WORKFLOW below. NO
   # fallback: empty means DF deploys are refused. UI-overridable via the DF
   # form's Advanced field.
@@ -126,10 +131,42 @@ config:
   # send it. For a workflow declaring module + binary_version:
   #   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
   DF_DISPATCH_INPUTS: '{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}'
+  # CARE/DF release forms fill every change-request field except start and end.
+  # The release name is "<prefix><Month Dayth YYYY> : Release <N>", N read from
+  # the deploy repo's own release PRs — set your team's label as the prefix
+  # (include a trailing space). The three prose fields use standard wording built
+  # from facts (builds verified, controls, JIRA keys, environments); give your
+  # change board's own wording here to override. Placeholders: {count} {noun}
+  # {items} {names} {jira_keys} {pipeline} {prl1_note} {verification}
+  # {rollback} {unchanged} {release_name}. Empty = the built-in wording.
+  RELEASE_NAME_PREFIX: ""
+  CHG_RISK_TEMPLATE: ""
+  CHG_CONSEQUENCE_TEMPLATE: ""
+  CHG_IMPACT_TEMPLATE: ""
+  # Limit on building a deploy preview (a release preview clones the deploy repo
+  # and runs its updater). Also under virtualService.timeout, so a slow preview
+  # ends with an explanation rather than a dropped stream.
+  DEPLOY_PREVIEW_TIMEOUT_SECONDS: "100"
   # JIRA (read-only). Empty base URL = no lookup; the ticket is stored as typed.
   # The token itself is NOT here — it comes from jiraToken.existingSecret below.
   JIRA_BASE_URL: ""           # e.g. https://your-org.atlassian.net
   JIRA_USER_EMAIL: ""         # technical account the token belongs to
+  # "Add to next release" queues a chart only when its build run's controls ALL
+  # passed; "false" lets a run with open or unmatched controls in with a warning.
+  QUEUE_REQUIRE_CONTROLS_PASS: "true"
+  # ...and only with the run that built exactly that chart:version — read from
+  # the tag that triggered the run, or the line its tag step logs (below).
+  # Controls allowed to FAIL at queue time (CARE and DF) — e.g. one that can be a
+  # false positive, closed by hand. The chart is queued and the control shows as
+  # OPEN in the release queue's Controls column; releases are not stopped by it.
+  # Any other failed control or step still refuses. A PATTERN, not the exact
+  # name: "1691" = the control name contains the number 1691 (RCTLDEF0001691,
+  # RCTL-1691, "Control 1691: …" — not RCTLDEF0016910); "*1691*" = wildcard
+  # over the name; other text = the name contains it. Comma list; empty = none.
+  QUEUE_ALLOWED_FAILING_CONTROLS: "1691"
+  QUEUE_REQUIRE_RUN_MATCH: "true"
+  BUILD_TAG_STEP: "Generate Git tag"
+  BUILD_TAG_MARKER: "TAG_GENERATED="
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
   # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
   # EMPTY BQ_DATASET DISABLES the whole feature cleanly.
@@ -137,6 +174,59 @@ config:
   BQ_TABLE: "release_intents"
   BQ_LOCATION: "US"
   BQ_AUTO_CREATE: "false"   # keep false in cluster; true only for local dev
+  # PromQL access — checked by /api/diagnostics (section "promql") and used by
+  # the Monitoring pill + chat. Empty PROMETHEUS_URL = Managed Service for Prometheus in
+  # PROMETHEUS_PROJECT (empty = GOOGLE_CLOUD_PROJECT); the pod's service account
+  # needs roles/monitoring.viewer there. Or any Prometheus HTTP API base, e.g.
+  # http://prometheus-operated.monitoring.svc:9090 (then add .svc to NO_PROXY).
+  PROMETHEUS_URL: ""
+  PROMETHEUS_PROJECT: ""
+  PROMETHEUS_AUTH: "auto"     # auto | google | none
+  PROMQL_PROBE_QUERY: ""      # optional: the query you plan to rely on
+  # Monitoring pill. A built-in pack runs with no setup — Composer DAG runs
+  # failed, Dataflow jobs failed, GKE containers restarting, Prometheus targets
+  # down, Google API 5xx — each also knowing what it NEEDS, so a project where
+  # it has nothing to measure shows "not measured here", never "OK".
+  # MONITOR_CHECKS ADDS the team's own: JSON list of
+  #   {"name","query","needs","severity":"error|warn","description"}
+  # where query returns series only when something is wrong and needs returns
+  # the data it measures, e.g. a workflow-state metric:
+  #   [{"name":"Workflow errors (1h)","query":"sum by (workflow) (increase(workflow_errors_total[1h])) > 0",
+  #     "needs":"count(count_over_time(workflow_errors_total[1h]))"}]
+  # Give needs the SAME window as the query: an instant selector only sees the
+  # last 5 minutes, so a sporadic metric would read "not measured" when quiet.
+  # Notifications: "Make it an alert" turns a check into a Cloud Monitoring alert
+  # policy (evaluated every minute by Cloud Monitoring, sent to your channels).
+  MONITOR_CHECKS: ""
+  MONITOR_DEFAULT_CHECKS: "true"
+  MONITOR_NAMESPACES: ""        # scope the GKE restart check, e.g. "release-copilot"
+  # ============================ [OPTIONAL] preview features ================
+  # Ship a feature in the image without showing it to everyone. Only
+  # PREVIEW_USERS see PREVIEW_GROUPS (pill groups) and may use PREVIEW_FEATURES
+  # (refused server-side — API and chat — for everyone else).
+  # Two ways to test:
+  #  - identity on (IDENTITY_HEADER): list testers' VERIFIED emails here, in prod.
+  #  - identity off: a second Helm release for testers only, same image, its own
+  #    path, with PREVIEW_USERS: "*" —
+  #      helm install release-copilot-preview ./helm/release-copilot -f prod-values.yaml \
+  #        --set virtualService.pathPrefix=/dev-portal-preview \
+  #        --set-string config.PREVIEW_USERS='*'
+  PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
+  PREVIEW_GROUPS: "Check"            # comma list of pill groups (palette.js GROUPS)
+  PREVIEW_FEATURES: "monitoring"     # comma list of gated server features
+  # ============================ [FEATURE] identity =========================
+  # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
+  # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's
+  # JWKS (signature, issuer, expiry, audience) and the verified email replaces
+  # typed emails (queue/withdraw), keys chat sessions per person and binds a
+  # thread's GitHub token to its owner. Empty = off, forms ask for an email.
+  # The JWKS host is cluster-local: fetched without the egress proxy.
+  IDENTITY_HEADER: ""                      # x-asm-rctoken for CSM user auth
+  IDENTITY_JWKS_URL: "http://authservice.asm-user-auth.svc.cluster.local:10004/_gcp_user_auth/jwks"
+  IDENTITY_ISSUER: "authservice.asm-user-auth.svc.cluster.local"
+  IDENTITY_AUDIENCE: ""                    # the RCToken's aud (UserAuthConfig) — set it
+  IDENTITY_EMAIL_CLAIM: "attributes.email,email"
+  IDENTITY_REQUIRED: "false"               # true = refuse queue writes with no verified user
   # CARE/DF release forms: lets devs type bare name:version (they can always
   # paste full URLs instead — UI-overridable per artifact line).
   ARTIFACTORY_BASE_URL: ""
@@ -158,7 +248,9 @@ config:
   CONSOLE_LINKS: ""
 
   # ================== [OPTIONAL] safe defaults — tune to process =============
-  # Promotion branches in DEPLOY_REPO; prl1_only charts stop at UAT/PRL1.
+  # CARE promotion branches in DEPLOY_REPO: the release PR lands on SIT, then
+  # UAT, then PRD or PRL1 (prl1_only charts stop at UAT/PRL1). DF releases use
+  # DF_RELEASE_BRANCHES above.
   SIT_BRANCH: "SIT"
   UAT_BRANCH: "UAT"
   PRD_BRANCH: "PRD"
@@ -188,6 +280,11 @@ config:
   ADK_EVENT_COMPACTION: "true"
   ADK_MEMORY_ENABLED: "true"    # in-memory / per-pod — keep replicaCount: 1
   ADK_CONFIRM_PROD_OPS: "true"
+  # Retries on Gemini 429/5xx with backoff. Vertex runs Gemini on a shared
+  # capacity pool, so a 429 means "busy right now", not a quota you can raise;
+  # most clear within seconds. What survives the retries reaches the user as
+  # "the model is busy — try again", not as an internal error.
+  GEMINI_RETRY_ATTEMPTS: "4"
   # Off-topic screening for free-form chat: off | log | enforce. "log" records
   # what it WOULD refuse without refusing anything — run that against real
   # traffic first, then switch to "enforce". Guards SPEND, not safety: the
@@ -327,6 +424,8 @@ virtualService:
     - istio-ingress/asm-ingressgateway
   # Long timeout: a promote streams over SSE and polls for the created PR (~40s),
   # well past Envoy's 15s route default. Use "0s" to disable entirely for SSE.
+  # DEPLOY_PREVIEW_TIMEOUT_SECONDS is sized to fit inside this — raise them
+  # together, or a slow preview is cut mid-answer.
   timeout: "120s"
   retries: {}
     # attempts: 2

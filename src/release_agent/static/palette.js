@@ -2,7 +2,12 @@
 // palette (⌘K / "/" / the header button). Every capability lists here; typing
 // in the palette only filters.
 import { sendMessage } from './chat.js';
+import { visibleCapabilities } from './core/capabilities.js';
 import { showDeployForm } from './forms.js';
+
+// This person's view, baked into the page by the server (features.py): preview
+// groups are left out for everyone except the people testing them.
+const visible = () => visibleCapabilities(GROUPS, CAPABILITIES, window.PORTAL_UI);
 
 // Groups follow the WEEK, not the code: a dev queues on Monday, DevOps cuts the
 // release on Thursday, deploys are the per-chart pushes in between, and checks
@@ -21,7 +26,7 @@ export const GROUPS = [
 // otherwise the text is pre-filled so the user edits the image:tag first.
 export const CAPABILITIES = [
     {group:'Release', icon:'fa-cart-plus',         label:'Add to next release',  desc:'queue your chart:version now — DevOps picks it up on release day', form:'queue'},
-    {group:'Release', icon:'fa-list-ul',           label:'Check release queue', desc:"what's queued for the next release — who added it, routing, JIRA, build status", send:true,  text:"what's queued for the next release?"},
+    {group:'Release', icon:'fa-list-ul',           label:'Check release queue', desc:"what's queued for the next release, as a table — who added it, routing, JIRA, build; remove a row", form:'queue-table'},
     {group:'Release', icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
     {group:'Release', icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
     {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
@@ -37,6 +42,7 @@ export const CAPABILITIES = [
     {group:'Check',   icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RCTLD control gates for a tag',     send:false, text:'check build controls for <image>:<tag> before a PRD release'},
     {group:'Check',   icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/controls',    send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
     {group:'Check',   icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
+    {group:'Check',   icon:'fa-heart-pulse',       label:'Monitoring',           desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
     {group:'Check',   icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
     {group:'Onboarding', icon:'fa-plug',           label:'Consumer onboarding',  desc:'how to start using our APIs — access, auth, first call, going live', send:true,  text:'I want to onboard to your APIs — walk me through it step by step'},
 ];
@@ -75,8 +81,9 @@ export function showCapabilities() {
     // A labelled row per group. The label sits in a fixed-width column on wide
     // screens and above the pills once that no longer fits, so the pill rows
     // stay aligned without a media query.
-    GROUPS.forEach(group => {
-        const members = CAPABILITIES.filter(c => c.group === group.name);
+    const { groups, capabilities } = visible();
+    groups.forEach(group => {
+        const members = capabilities.filter(c => c.group === group.name);
         if (!members.length) return;              // a group with nothing in it is not a heading
         const style = GROUP_STYLE[group.name] || GROUP_STYLE.Check;
 
@@ -87,6 +94,14 @@ export function showCapabilities() {
         heading.className = 'shrink-0 sm:w-16 sm:pt-1 text-[10px] uppercase tracking-wider ' + style.label;
         heading.textContent = group.name;
         heading.title = group.hint;
+        if (group.preview) {
+            // Testers only — say so, so nobody takes it for a released feature.
+            const tag = document.createElement('div');
+            tag.className = 'text-[9px] text-amber-300/80';
+            tag.textContent = 'preview';
+            tag.title = 'Visible only to preview users (PREVIEW_USERS) — not released';
+            heading.appendChild(tag);
+        }
         block.appendChild(heading);
 
         const row = document.createElement('div');
@@ -116,7 +131,7 @@ export function showCapabilities() {
 // release forms landed there too).
 const CATEGORY_ORDER = GROUPS.map(g => g.name);
 function paletteActions() {
-    return CAPABILITIES.map(c => ({
+    return visible().capabilities.map(c => ({
         label: c.label, desc: c.desc, icon: c.icon, category: c.group,
         run: () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send),
     }));

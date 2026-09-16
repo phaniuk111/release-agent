@@ -145,3 +145,87 @@ def test_only_state_changing_tools_mark_a_turn_mutated():
     assert S._changes_release_state(ev("release_stats", "find_prs")) is False
     assert S._changes_release_state(ev("list_release_queue")) is False
     assert S._changes_release_state(ev()) is False
+
+
+# --- a repeat of an operation the person just approved --------------------------
+class _Ev:
+    """Just enough of an ADK Event for the chat lane."""
+
+    def __init__(self, text="", calls=(), responses=(), long_running=(), invocation_id="inv-1"):
+        from google.genai import types as _t
+
+        self.content = _t.Content(role="model", parts=[_t.Part(text=text)]) if text else None
+        self._calls, self._responses = list(calls), list(responses)
+        self.long_running_tool_ids = set(long_running)
+        self.invocation_id = invocation_id
+
+    def get_function_calls(self):
+        return self._calls
+
+    def get_function_responses(self):
+        return self._responses
+
+
+def _confirmation_call(call_id, target="prd"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id=call_id, name="adk_request_confirmation", args={
+        "originalFunctionCall": {"id": "orig-" + call_id, "name": "promote_release", "args": {"target": target}},
+        "toolConfirmation": {"hint": "?"}})
+
+
+def test_a_repeat_of_the_just_approved_operation_is_declined_not_asked_again(monkeypatch):
+    """Seen live: after 'yes' ran the PRD promotion (#150 merged), the model asked
+    to run the SAME promotion again — a second approval for something done."""
+    from types import SimpleNamespace
+
+    from release_agent.adk_service import PendingAdkCall
+
+    service = AdkChatService()
+    runs = []
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            runs.append(kw["new_message"].parts[0].function_response.response)
+            if len(runs) == 1:          # the approved run: the tool result, then a repeat request
+                yield _Ev(responses=[SimpleNamespace(name="promote_release", response={
+                    "ok": True, "note": "Release file-set promoted to PRD via PR #150 (merged)."})])
+                yield _Ev(calls=[_confirmation_call("c2")], long_running=["c2"])
+            else:                       # the portal's "no" to the repeat
+                yield _Ev(text="Okay, I have cancelled the promotion.")
+
+    service.chat_runner = _Runner()
+    service._pending_adk_calls["t-rep"] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
+        args=_confirmation_call("c1").args)
+    events = _collect(service, "yes", thread_id="t-rep")
+
+    assert runs == [{"confirmed": True}, {"confirmed": False}], "the repeat was answered 'no'"
+    assert "interrupt" not in _types(events), "no second approval for the person"
+    text = "".join(e["content"] for e in _token_events(events))
+    assert "promoted to PRD via PR #150" in text and "cancelled" not in text
+    assert "t-rep" not in service._pending_adk_calls
+
+
+def test_a_different_operation_after_an_approval_still_asks(monkeypatch):
+    from types import SimpleNamespace
+
+    from release_agent.adk_service import PendingAdkCall
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(responses=[SimpleNamespace(name="promote_release", response={"note": "done"})])
+            yield _Ev(calls=[_confirmation_call("c2", target="prl1")], long_running=["c2"])
+
+    service.chat_runner = _Runner()
+    service._pending_adk_calls["t-diff"] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
+        args=_confirmation_call("c1").args)
+    events = _collect(service, "yes", thread_id="t-diff")
+    assert "interrupt" in _types(events), "PRL1 is a different operation — the person decides"

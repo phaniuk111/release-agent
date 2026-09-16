@@ -112,6 +112,14 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("DF_RELEASE_REPO", "DATAFLOW_RELEASE_REPO"),
     )
+    # The DF release repo's own branch chain, in order: the FIRST is where the
+    # release PR lands, the rest are promotion targets — e.g.
+    # "uat:RELEASE_UAT,prd:RELEASE_PRD" (no SIT: the PR goes straight to UAT).
+    # Empty = the CARE chain (SIT_BRANCH, UAT_BRANCH, PRD_BRANCH, PRL1_BRANCH).
+    df_release_branches: str = Field(
+        default="",
+        validation_alias=AliasChoices("DF_RELEASE_BRANCHES"),
+    )
     # Composer DAGs repo. A DF deploy builds a flex template under a VERSION path
     # in a bucket; the DAGs that launch it carry that version as the fallback of
     # `dag_run.conf['version'] | default('…')`, so the deploy is only half-done
@@ -129,6 +137,75 @@ class Settings(BaseSettings):
     composer_dag_dir_pattern: str = Field(
         default="{env}",
         validation_alias=AliasChoices("COMPOSER_DAG_DIR_PATTERN", "COMPOSER_DAG_DIR"),
+    )
+    # PromQL access, checked by /api/diagnostics. Empty URL = Managed Service for
+    # Prometheus in PROMETHEUS_PROJECT (default GOOGLE_CLOUD_PROJECT); otherwise
+    # any Prometheus-compatible HTTP API base, e.g. http://prometheus.monitoring:9090.
+    prometheus_url: str = Field(
+        default="", validation_alias=AliasChoices("PROMETHEUS_URL", "PROMQL_URL"),
+    )
+    prometheus_project: str = Field(
+        default="", validation_alias=AliasChoices("PROMETHEUS_PROJECT"),
+    )
+    # auto = Google auth for monitoring.googleapis.com, none elsewhere; or google / none.
+    prometheus_auth: str = Field(
+        default="auto", validation_alias=AliasChoices("PROMETHEUS_AUTH"),
+    )
+    # Optional: the query you actually plan to rely on, to prove its metric exists.
+    promql_probe_query: str = Field(
+        default="", validation_alias=AliasChoices("PROMQL_PROBE_QUERY"),
+    )
+    # Monitoring pill: the team's own PromQL checks, JSON list of
+    # {"name", "query", "needs", "severity": "error"|"warn", "description"} —
+    # ADDED to the built-in pack (tools/monitoring.py). A check FIRES when its
+    # query returns a non-zero series; "needs" is the data it measures, and a
+    # check whose needs returns nothing is "not measured here", never "OK".
+    monitor_checks: str = Field(
+        default="", validation_alias=AliasChoices("MONITOR_CHECKS"),
+    )
+    # The built-in pack: Composer DAG runs, Dataflow jobs, GKE restarts, targets
+    # down, Google API 5xx. false = only MONITOR_CHECKS.
+    monitor_default_checks: bool = Field(
+        default=True, validation_alias=AliasChoices("MONITOR_DEFAULT_CHECKS"),
+    )
+    # Scope the GKE restart check to these namespaces (comma list); empty = all.
+    # A shared cluster's other teams' pods are rarely this team's alert.
+    monitor_namespaces: str = Field(
+        default="", validation_alias=AliasChoices("MONITOR_NAMESPACES"),
+    )
+    # Who is calling: the mesh's signed user token. Empty header = off (forms ask
+    # for an email, as before). Set to x-asm-rctoken for Cloud Service Mesh user
+    # auth — the token is VERIFIED against the issuer's keys, never just read.
+    identity_header: str = Field(
+        default="", validation_alias=AliasChoices("IDENTITY_HEADER"),
+    )
+    identity_jwks_url: str = Field(
+        default="http://authservice.asm-user-auth.svc.cluster.local:10004/_gcp_user_auth/jwks",
+        validation_alias=AliasChoices("IDENTITY_JWKS_URL"),
+    )
+    identity_issuer: str = Field(
+        default="authservice.asm-user-auth.svc.cluster.local",
+        validation_alias=AliasChoices("IDENTITY_ISSUER"),
+    )
+    # The RCToken audience (UserAuthConfig). Empty = not checked — set it.
+    identity_audience: str = Field(
+        default="", validation_alias=AliasChoices("IDENTITY_AUDIENCE"),
+    )
+    # Dotted claim paths; the mesh nests mapped claims under "attributes".
+    identity_email_claim: str = Field(
+        default="attributes.email,email", validation_alias=AliasChoices("IDENTITY_EMAIL_CLAIM"),
+    )
+    # Preview features (release_agent.features): built and deployed, shown only
+    # to PREVIEW_USERS — verified gateway emails, or "*" for a testers-only
+    # deployment. PREVIEW_GROUPS hides pill groups; PREVIEW_FEATURES gates the
+    # server side too (API + chat tools), so a hidden pill is not one question away.
+    preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
+    preview_groups: str = Field(default="Check", validation_alias=AliasChoices("PREVIEW_GROUPS"))
+    preview_features: str = Field(default="monitoring", validation_alias=AliasChoices("PREVIEW_FEATURES"))
+    # true = queue/withdraw writes are REFUSED without a verified caller, instead
+    # of falling back to the typed email.
+    identity_required: bool = Field(
+        default=False, validation_alias=AliasChoices("IDENTITY_REQUIRED"),
     )
     # Dataflow flex-template deploys: repo hosting the DF deploy workflow. Deploying
     # means workflow_dispatch of df_deploy_workflow with {image, tag, environment}.
@@ -159,6 +236,13 @@ class Settings(BaseSettings):
     df_dispatch_inputs: str = Field(
         default='{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}',
         validation_alias=AliasChoices("DF_DISPATCH_INPUTS", "DATAFLOW_DISPATCH_INPUTS"),
+    )
+    # Upper bound on building a deploy preview (a release preview clones the
+    # deploy repo and runs its updater script). Kept under the gateway timeout so
+    # a slow preview ends with an explanation instead of a dropped stream.
+    deploy_preview_timeout_seconds: float = Field(
+        default=100.0,
+        validation_alias=AliasChoices("DEPLOY_PREVIEW_TIMEOUT_SECONDS"),
     )
     # JIRA (read-only) — a technical account resolves the ticket a developer
     # types at queue time, so a typo'd key cannot reach the change record and the
@@ -307,6 +391,35 @@ class Settings(BaseSettings):
         default=["RCTLD", "RLFT", "RFTL"],
         validation_alias=AliasChoices("CONTROL_PREFIXES", "RELEASE_CONTROL_PREFIXES"),
     )
+    # Queue only builds whose controls ALL passed. False = the old behaviour: a
+    # run with controls still open, or none matched, is queued with a warning.
+    queue_require_controls_pass: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("QUEUE_REQUIRE_CONTROLS_PASS"),
+    )
+    # ...and only with the run that built exactly that chart:version (its trigger
+    # tag, or the tag its tag-generation step logged). False = warn only.
+    # Controls whose FAILURE does not stop a chart being queued (CARE or DF) — it
+    # can be a false positive, closed by hand. It shows as OPEN in the release
+    # queue only; releases are not stopped by it. Comma list of PATTERNS (see
+    # controls.control_matches): "1691" = the name contains that number,
+    # "*1691*" = wildcard, other text = contained. Any OTHER failure refuses.
+    queue_allowed_failing_controls: str = Field(
+        default="",
+        validation_alias=AliasChoices("QUEUE_ALLOWED_FAILING_CONTROLS"),
+    )
+    queue_require_run_match: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("QUEUE_REQUIRE_RUN_MATCH"),
+    )
+    # How a build run records the tag it created: the step's name and the log
+    # line prefix it prints, e.g. "TAG_GENERATED=orders-api-1.2.3".
+    build_tag_step: str = Field(
+        default="Generate Git tag", validation_alias=AliasChoices("BUILD_TAG_STEP"),
+    )
+    build_tag_marker: str = Field(
+        default="TAG_GENERATED=", validation_alias=AliasChoices("BUILD_TAG_MARKER"),
+    )
     # Block a PRD release when any build control failed (fail-closed). When a build
     # run can't be located we don't hard-block; the agent asks for the run id.
     prd_require_controls: bool = Field(
@@ -415,6 +528,29 @@ class Settings(BaseSettings):
     # then switch to "enforce". This guards spend, not safety: the mutation
     # guard and the deterministic deploy Workflow are what stop mutations, and
     # they are unaffected by this setting.
+    # Change-request defaults for the CARE/DF release forms (tools/chg_defaults).
+    # Release names follow "<prefix><Month Dayth YYYY> : Release <N>"; N is read
+    # from the deploy repo's own release PRs. The prefix is a team's own label —
+    # set it in values, keep internal names out of code.
+    release_name_prefix: str = Field(
+        default="",
+        validation_alias=AliasChoices("RELEASE_NAME_PREFIX"),
+    )
+    # A change board's own wording for the three prose fields. Empty = the
+    # standard fact-built wording. Placeholders: {count} {noun} {items} {names}
+    # {jira_keys} {pipeline} {prl1_note} {verification} {rollback} {unchanged}
+    # {release_name}.
+    chg_risk_template: str = Field(default="", validation_alias=AliasChoices("CHG_RISK_TEMPLATE"))
+    chg_consequence_template: str = Field(
+        default="", validation_alias=AliasChoices("CHG_CONSEQUENCE_TEMPLATE"))
+    chg_impact_template: str = Field(default="", validation_alias=AliasChoices("CHG_IMPACT_TEMPLATE"))
+    # Retries on Gemini calls that come back 429 (Vertex dynamic shared quota:
+    # the shared pool was busy, not a quota you exceeded) or 503. Backoff with
+    # jitter; the last failure surfaces to the user as "model busy, try again".
+    gemini_retry_attempts: int = Field(
+        default=4,
+        validation_alias=AliasChoices("GEMINI_RETRY_ATTEMPTS"),
+    )
     scope_guard: str = Field(
         default="log",
         validation_alias=AliasChoices("SCOPE_GUARD", "RELEASE_SCOPE_GUARD"),

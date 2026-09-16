@@ -78,10 +78,10 @@ def _sounds_deployish(message: str) -> bool:
 
 def _classify(message: str) -> dict | None:
     """One model call -> intent dict, or None on any failure."""
-    from google import genai
+    from ._genai import classifier_client
 
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    client = genai.Client()
+    client = classifier_client()
     response = client.models.generate_content(
         model=model,
         contents=_CLASSIFY_PROMPT + message.strip(),

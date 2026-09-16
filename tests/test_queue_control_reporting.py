@@ -7,6 +7,7 @@ are still open says the opposite of what happened.
 import pytest
 
 from adk_release_agent import tools as T
+from release_agent.config import settings
 from release_agent.tools import release_queue as RQ
 
 
@@ -21,7 +22,8 @@ def queue(monkeypatch):
 
         monkeypatch.setattr(T, "_invoke_tool", fake_invoke)
         # imported inside the function, so patch the source module
-        monkeypatch.setattr(RQ, "add_intent", lambda **kw: {"ok": True, "intent": kw})
+        monkeypatch.setattr(RQ, "add_intent",
+                            lambda **kw: _run.writes.append(kw) or {"ok": True, "intent": kw})
         monkeypatch.setattr(RQ, "_fetch_events", lambda: [])
         return T.queue_release_intent(
             artifact=kwargs.pop("artifact", "payments-api:1.4.2"),
@@ -33,6 +35,7 @@ def queue(monkeypatch):
             **kwargs,
         )
 
+    _run.writes = []
     return _run
 
 
@@ -62,9 +65,47 @@ def test_a_failed_control_is_named_with_its_job(queue):
     assert result["failed_controls_detail"][0]["job"] == "publish-helm-chart"
 
 
-def test_open_controls_are_named_not_reported_as_absent(queue):
-    """Regression: this used to say "no RLFT/RFTL control steps were found" —
-    the opposite of the truth when controls exist and simply have not run."""
+OPEN = dict(
+    gate="UNKNOWN",
+    controls=[{"control": "RCTLDEF0001691", "job": "publish-helm-chart",
+               "failed": False, "passed": False, "status": "queued"}],
+    open_controls=[{"control": "RCTLDEF0001691", "job": "publish-helm-chart",
+                    "status": "queued", "conclusion": None}],
+)
+
+
+def test_a_control_that_has_not_passed_yet_is_refused_and_named(queue):
+    """Nothing failed is not the same as passed: a control still queued has
+    proven nothing, so the chart is not queued — and the control is named."""
+    result = queue(_report(**OPEN))
+    assert result["ok"] is False and result["eligible"] is False
+    assert result["open_controls"][0]["control"] == "RCTLDEF0001691"
+    assert "RCTLDEF0001691 in job publish-helm-chart (queued)" in result["error"]
+    assert "must pass" in result["error"]
+    assert queue.writes == [], "nothing reached the queue"
+
+
+def test_a_run_with_no_controls_at_all_is_refused(queue):
+    """The dangerous case: nothing matched the prefixes, so nothing shows the
+    controls ran. It used to queue "ungated" with a warning."""
+    result = queue(_report(gate="UNKNOWN"))
+    assert result["ok"] is False and result["eligible"] is False
+    assert "No step or job" in result["error"] and "RCTLD" in result["error"]
+    assert result["open_controls"] == [] and queue.writes == []
+
+
+def test_a_passing_run_is_still_queued(queue):
+    result = queue(_report(gate="PASS", controls=[
+        {"control": "RLFT-scan", "job": "build", "failed": False, "passed": True}]))
+    assert result["ok"] is True and result["eligible"] is True
+    assert queue.writes[0]["build_verified"] is True
+
+
+def test_open_controls_are_named_not_reported_as_absent(queue, monkeypatch):
+    """(Lenient mode, QUEUE_REQUIRE_CONTROLS_PASS=false.) Regression: this used
+    to say "no RLFT/RFTL control steps were found" — the opposite of the truth
+    when controls exist and simply have not run."""
+    monkeypatch.setattr(settings, "queue_require_controls_pass", False)
     result = queue(_report(
         gate="UNKNOWN",
         controls=[{"control": "RCTLDEF0001691", "job": "publish-helm-chart",
@@ -80,9 +121,10 @@ def test_open_controls_are_named_not_reported_as_absent(queue):
     assert "were found" not in warning
 
 
-def test_no_matching_control_says_so_explicitly(queue):
-    """The dangerous case: nothing matched, so the build is queued UNGATED.
-    That must not read like a run whose controls simply have not finished."""
+def test_no_matching_control_says_so_explicitly(queue, monkeypatch):
+    """(Lenient mode.) Nothing matched, so the build is queued UNGATED. That
+    must not read like a run whose controls simply have not finished."""
+    monkeypatch.setattr(settings, "queue_require_controls_pass", False)
     result = queue(_report(gate="UNKNOWN"))
     warning = " ".join(result["warnings"])
     assert "NO step or job matched" in warning

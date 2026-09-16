@@ -8,6 +8,18 @@ apply sequence is declarative, testable, and enforced by the graph topology:
     START ─▶ deploy_gate ─┬─(confirmed)─▶ apply_deploy
                           └─(rejected)──▶ cancel_deploy
 
+A Dataflow deploy that names Composer DAGs raises the DAG PR in the same apply,
+right after the dispatch, and the reply links the DF run beside it: whether the
+run is green enough to merge on is the person's call, not the graph's.
+
+Every node that touches GitHub runs its blocking work on a worker thread. A
+``FunctionNode`` calls a sync function straight on the event loop, so a clone or
+a burst of API calls there stalled every other request on the pod.
+
+No node lets an exception escape. On ADK 2.9 a failed node re-runs when its
+workflow resumes, so a node that raised after creating PRs would create them
+again; each failure is returned as an honest outcome instead.
+
 ``deploy_gate`` is a human-in-the-loop node: on the first pass it builds the exact
 deployment-JSON preview (minting a ``CONFIRM-xxxxxx`` token) and pauses on an ADK
 ``RequestInput`` interrupt. When the run is resumed with the user's confirmation,
@@ -18,6 +30,7 @@ and is fully unit-testable through ``InMemoryRunner``.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Optional
 
@@ -88,12 +101,12 @@ def _change_request_preview(change_request: Any) -> str:
 
 def _preview_text(
     preview: dict[str, Any], token: str, env: str, image_tags: str, change_request: Any = None,
-    deployment_repo: str = "",
+    deployment_repo: str = "", heading: str = "",
 ) -> str:
     """Human-readable preview shown to the user before confirmation."""
     repo_line = f"\n\n**Deployment repo:** `{deployment_repo}`" if deployment_repo else ""
     return (
-        f"**Deploy {image_tags} to {str(env).upper()}**\n\n"
+        f"**{heading or f'Deploy {image_tags} to {str(env).upper()}'}**\n\n"
         "```json\n" + json.dumps(preview, indent=2) + "\n```"
         + repo_line
         + _change_request_preview(change_request)
@@ -109,7 +122,23 @@ async def _deploy_gate(ctx: Any, node_input: str):
     Resumed pass: decide ``confirmed`` vs ``rejected`` from the reply payload.
     """
     if not ctx.resume_inputs:
-        result = deploy.prepare_deploy_preview(message=node_input)
+        from release_agent.config import settings
+
+        limit = float(settings.deploy_preview_timeout_seconds)
+        try:
+            # A release preview clones the deploy repo and runs its updater —
+            # seconds of blocking work that must not sit on the event loop.
+            result = await asyncio.wait_for(
+                asyncio.to_thread(deploy.prepare_deploy_preview, message=node_input),
+                timeout=limit,
+            )
+        except asyncio.TimeoutError:
+            result = {"ok": False, "error": (
+                f"Building the preview took longer than {int(limit)}s, so it was "
+                "abandoned — nothing was changed. Try again; if it keeps happening, "
+                "the deploy repo or GitHub is slow to answer.")}
+        except Exception as e:  # noqa: BLE001
+            result = {"ok": False, "error": f"Could not build the preview: {e}"}
         if not result.get("ok"):
             # Nothing previewable — route to cancel carrying the error.
             yield Event(
@@ -126,6 +155,7 @@ async def _deploy_gate(ctx: Any, node_input: str):
             result["image_tags"],
             result.get("change_request"),
             result.get("deployment_repo") or "",
+            result.get("heading") or "",
         )
         yield Event(
             content=types.Content(role="model", parts=[types.Part.from_text(text=text)]),
@@ -136,7 +166,7 @@ async def _deploy_gate(ctx: Any, node_input: str):
         )
         yield RequestInput(
             interrupt_id=token,
-            message=f"Reply with exactly {token} to apply this deploy.",
+            message=result.get("message") or f"Reply with exactly {token} to apply this deploy.",
         )
         return
 
@@ -152,18 +182,29 @@ async def _deploy_gate(ctx: Any, node_input: str):
     )
 
 
-def _apply_deploy(node_input: dict[str, Any], deploy_pending: dict | None = None) -> "DeployOutcome":
+def _outcome(result: dict[str, Any]) -> dict[str, Any]:
+    """A terminal output, validated against DeployOutcome (extra fields kept)."""
+    return DeployOutcome(**result).model_dump()
+
+
+async def _apply_deploy(node_input: dict[str, Any], deploy_pending: dict | None = None):
     """Apply the confirmed deploy via the existing token-gated apply helper.
 
     ``deploy_pending`` is bound from ctx.state by ADK — it is the preview the
     gate node persisted. Handing it to the apply helper is what removes the
     dependency on the process that served the preview still being alive.
+
+    The token and the pending preview are cleared from session state BEFORE the
+    apply runs. A CONFIRM token is single-use: were a later resume able to find
+    them, the same change could be applied twice.
     """
     token = (node_input or {}).get("token") or ""
-    return DeployOutcome(**deploy.apply_confirmed_deploy(token, pending=deploy_pending or None))
+    yield Event(state={_TOKEN_STATE_KEY: None, _PENDING_STATE_KEY: None})
+    result = await asyncio.to_thread(deploy.apply_confirmed_deploy, token, deploy_pending or None)
+    yield Event(output=_outcome(result))
 
 
-def _cancel_deploy(node_input: dict[str, Any], deploy_pending: dict | None = None) -> "DeployOutcome":
+async def _cancel_deploy(node_input: dict[str, Any], deploy_pending: dict | None = None):
     """Discard the pending preview and report a non-mutating cancellation.
 
     A rejected release has a prepared workdir to clean up, and on a replica that
@@ -178,9 +219,14 @@ def _cancel_deploy(node_input: dict[str, Any], deploy_pending: dict | None = Non
     if prep:
         from release_agent.tools import release_fileset as _rf
 
-        _rf.cleanup_prepared_release(prep)
-    return DeployOutcome(
-        ok=False, status="cancelled", token=token, error=payload.get("error")
+        try:
+            await asyncio.to_thread(_rf.cleanup_prepared_release, prep)
+        except Exception:  # noqa: BLE001 — tidiness only; the cancel still stands
+            pass
+    yield Event(
+        output=_outcome({"ok": False, "status": "cancelled", "token": token,
+                         "error": payload.get("error")}),
+        state={_TOKEN_STATE_KEY: None, _PENDING_STATE_KEY: None},
     )
 
 

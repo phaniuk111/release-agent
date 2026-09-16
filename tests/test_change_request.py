@@ -404,3 +404,49 @@ def test_uat_deploy_blocked_at_sit_says_to_run_it_again(monkeypatch):
     [pending] = out["pending_prs"]
     assert pending["stage"] == "→SIT" and pending["final"] is False
     assert "then run this again" in out["note"]
+
+
+def _other(version):
+    return {**_chart(version), "helm_chart_name": "svc-b"}
+
+
+def test_a_uat_override_reports_the_charts_it_takes_off(monkeypatch):
+    """Found in E2E: the override REPLACES uat/deployment.json, so a chart left
+    out leaves UAT — and was never logged, leaving it 'deployed' forever."""
+    from release_agent.tools import promotion as P
+
+    initial = {b: {"uat/deployment.json": {"include": [_chart("1.0.0"), _other("3.0.0")]}}
+               for b in ("SIT", "UAT")}
+    repo = _FakeRepo(initial)
+
+    class _Github:
+        def get_repo(self, full):
+            return repo
+
+    monkeypatch.setattr(P, "_get_github_client", lambda: _Github())
+    monkeypatch.setattr(P, "active_deploy_repo", lambda: "example-org/deploy")
+    out = json.loads(P.open_release_pr.invoke({"environment": "uat", "image_tags": "svc-a:2.0.0"}))
+    assert out["action"] == "deployed"
+    assert out["dropped"] == [{"name": "svc-b", "tag": "3.0.0"}]
+
+
+def test_dropped_charts_are_logged_removed_or_pending_removal(monkeypatch):
+    from adk_release_agent import deploy as D
+    from release_agent.tools import pr_reconcile as R
+    from release_agent.tools import release_queue as RQ
+
+    written = []
+    monkeypatch.setattr(RQ, "record_deployment", lambda **kw: written.append(kw))
+    req = {"images": [{"name": "svc-a", "tag": "2.0.0"}], "deployment_repo": "o/d"}
+    D._record_deploy_event(req, "uat", {"ok": True, "action": "deployed", "prs": [{"number": 8}],
+                                        "dropped": [{"name": "svc-b", "tag": "3.0.0"}]})
+    assert [(w["event_type"] if "event_type" in w else "deployed", w["artifacts"][0]["name"])
+            for w in written] == [("deployed", "svc-a"), ("removed", "svc-b")]
+    assert written[1]["pr_number"] == 8
+
+    written.clear()
+    D._record_deploy_event(req, "uat", {"ok": True, "action": "pending_review",
+                                        "pending_prs": [{"number": 9, "final": True}],
+                                        "dropped": [{"name": "svc-b", "tag": "3.0.0"}]})
+    notes = [R.parse_pending_note(w["note"]) for w in written]
+    assert [n[0] for n in notes] == ["deployed", "removed"], "settles as removed when the PR merges"

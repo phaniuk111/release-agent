@@ -1,7 +1,10 @@
 // Chat core: markdown rendering, message DOM, the /api/chat SSE stream, and
 // the confirmation/approval replies. Everything here is rendering + transport;
 // all decisions live server-side.
-import { API_BASE, getThreadId, rotateThreadId } from './state.js';
+import { getThreadId, rotateThreadId } from './state.js';
+import { openChat, sessionDisconnect } from './api.js';
+import { escapeHtml } from './core/format.js';
+import { liftFences } from './core/fences.js';
 import { parseDeployIntent, showDeployForm } from './forms.js';
 import { renderConnectionStatus } from './connect.js';
 import { showCapabilities } from './palette.js';
@@ -126,23 +129,16 @@ function _renderTables(t) {
     return out.join('\n');
 }
 
-// HTML-escape untrusted text before it enters innerHTML. Quotes MUST be escaped
-// too: model output and tool results (PR titles, branch names, BQ notes) can
-// carry a `"` that would otherwise break out of an attribute value — the
-// indirect-prompt-injection path ADK's safety guidance calls out.
-export function escapeHtml(value) {
-    return String(value == null ? '' : value)
-        .split('&').join('&amp;')
-        .split('<').join('&lt;')
-        .split('>').join('&gt;')
-        .split('"').join('&quot;')
-        .split("'").join('&#39;');
-}
+// HTML escaping lives in core/format.js; re-exported for existing importers.
+export { escapeHtml };
 
 // Minimal, safe markdown -> HTML for streamed assistant text.
 export function renderMarkdown(t) {
     t = _extractChartBlocks(t);
-    t = escapeHtml(t);
+    // Fenced blocks leave BEFORE any inline rule runs and come back last, as
+    // <pre> — their backticks and newlines are not markdown (core/fences.js).
+    const fenced = liftFences(t);
+    t = escapeHtml(fenced.text);
     // [text](url) markdown links -> stash so the bare-URL linkifier below
     // doesn't double-wrap the URL inside the href attribute.
     const _links = [];
@@ -163,6 +159,11 @@ export function renderMarkdown(t) {
     // \n -> <br>, but never adjacent to block elements (tables/charts render
     // their own spacing; stray <br> around them doubles the gaps).
     t = t.split('\n').join('<br>');
+    t = t.replace(/(<br>)*CODESLOT(\d+)ENDCODE(<br>)*/g, function(m, a, i) {
+        return '<pre class="my-2 rounded-lg bg-slate-950/40 border border-slate-800 px-2 py-1 text-[11px] ' +
+               'text-slate-200 overflow-x-auto"><code>' +
+               escapeHtml(fenced.blocks[+i].code) + '</code></pre>';
+    });
     t = t.replace(/(<br>)+(<div)/g, '$2').replace(/(<\/div>)(<br>)+/g, '$1');
     return t;
 }
@@ -263,11 +264,7 @@ export async function sendMessage(overrideText) {
     const botMsg = addMessage('bot', '<span class="dots"><span></span><span></span><span></span></span>', true);
 
     try {
-        const res = await fetch(API_BASE + '/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, thread_id: getThreadId() })
-        });
+        const res = await openChat(message, getThreadId());
 
         if (!res.ok) throw new Error(await res.text());
 
@@ -385,11 +382,7 @@ export function sendConfirmation() {
 export async function newThread() {
     // Drop the old thread's stored repo + PAT on the server, then rotate.
     try {
-        await fetch(API_BASE + '/api/session/disconnect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ thread_id: getThreadId() })
-        });
+        await sessionDisconnect(getThreadId());
     } catch (e) {}
     const threadId = rotateThreadId();
     document.getElementById('thread-label').textContent = threadId;

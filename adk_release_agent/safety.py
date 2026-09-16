@@ -14,6 +14,7 @@ returning an error dict (the tool never executes).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -98,7 +99,8 @@ _SCOPE_WORDS = frozenset(
     rfrl rftl pr prs pull request jira chg rmg uat prd prl1 sit prod production
     staging environment env manifest artifact artifactory dataflow df composer
     dag dags rollback pipeline workflow run runs onboard onboarding api apis
-    endpoint credentials auth cutoff window""".split()
+    endpoint credentials auth cutoff window monitoring monitor metric metrics promql
+    prometheus alert alerts firing""".split()
 )
 # Environments and other bare tokens that carry meaning on their own.
 _SCOPE_PREFIXES = ("confirm-",)
@@ -131,8 +133,9 @@ _CLASSIFY_PROMPT = """You screen ONE chat message for a software RELEASE portal.
 
 The portal covers: releases, deploys and promotions between environments; the
 next-release intake queue; build verification and release controls; deployment
-pull requests; release history and what is deployed where; and guiding API
-CONSUMERS through onboarding. It also covers BACKGROUND questions about any of
+pull requests; release history and what is deployed where; monitoring — the
+team's PromQL checks, metrics and alerts; and guiding API CONSUMERS through
+onboarding. It also covers BACKGROUND questions about any of
 that ("what is a helm chart?", "how does the queue work?", "what can you do?").
 
 Crucially, it also covers SHORT or VAGUE questions from someone already working
@@ -156,11 +159,11 @@ def _classify_in_scope(message: str) -> bool | None:
     """One cheap call -> in/out, or None on ANY failure (caller allows)."""
     import json
 
-    from google import genai
+    from ._genai import classifier_client
 
     from release_agent.config import settings
 
-    client = genai.Client()
+    client = classifier_client()
     response = client.models.generate_content(
         model=settings.gemini_model or "gemini-2.5-flash",
         contents=_CLASSIFY_PROMPT + message.strip(),
@@ -239,7 +242,8 @@ class ScopeGuardPlugin(BasePlugin):
             if _looks_in_scope(text):
                 return None
             # Stage 2 decides. Anything other than a confident false is allowed.
-            if self._classify(text) is not False:
+            # A blocking model call — off the event loop, or every chat waits on it.
+            if await asyncio.to_thread(self._classify, text) is not False:
                 return None
         except Exception:
             logger.exception("scope_guard: could not screen the message — allowing it")

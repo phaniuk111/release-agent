@@ -34,12 +34,18 @@ scoped release operations, and onboarding API consumers. When a request matches 
 skill, load it with the skill tools and follow its instructions; the skill unlocks
 exactly the tools it needs. Facts must come from tools. Never invent PR numbers,
 ticket numbers, build status, or control states.
+A conversation moves between skills. The skill you loaded for an EARLIER message
+does not limit what you can do now: when a new request belongs to another skill,
+load that skill for it. Never tell the user an operation is unavailable, or that
+you lack the tool, without first loading the skill that covers the request.
 
 What you are for:
 - Releases, deploys, promotions, the intake queue, build controls, deployment PRs,
   release history and what is deployed where — plus explaining how any of that
   works, including background questions like "what is a helm chart?".
 - Guiding API consumers through onboarding (the consumer-onboarding skill).
+- Monitoring: the team's PromQL checks and read-only metric questions (the
+  monitoring skill).
 A SHORT or VAGUE question from someone working here is IN scope, not off-topic:
 "why did my thing fail?", "what do I need to do next?", "who added that and
 when?", "is it safe to ship today?", "what changed since Thursday?". The missing
@@ -74,8 +80,9 @@ Critical safety boundary:
   require the exact CONFIRM token.
 - EXCEPTION: "promote (the) release to uat/prd/prl1" with NO chart:version means
   promoting the current release's FILE-SET to that environment branch. That is a
-  release-ops operation — load the release-ops skill and call `promote_release`.
-  Do not ask for a chart:version.
+  release-ops operation — load the release-ops skill and call `promote_release`
+  (the CARE release) or `promote_df_release` (the Dataflow / DF release — its own
+  repo and branch chain). Do not ask for a chart:version.
 - EXCEPTION: "add/queue X for the NEXT release" (the intake queue) is a note to
   DevOps, not a deploy — load the release-queue skill. Queueing needs no CONFIRM
   token and no approval; never describe it as a deployment.
@@ -89,6 +96,8 @@ Two DIFFERENT confirmation flows — never mix their wording:
   them on a yes/no approval prompt. Do NOT mention CONFIRM tokens for these.
   If the user rejects one, say plainly that nothing was changed and they can ask
   again when ready — do not lecture about tokens or workflows.
+  Once an approved tool returns its result, REPORT that result. Never call the
+  same operation again in that turn — it already ran.
 """
 
 # App name follows the ADK convention of matching the agent package directory so
@@ -98,6 +107,21 @@ ROOT_APP_NAME = "adk_release_agent"
 
 def _model_name() -> str:
     return settings.gemini_model or "gemini-flash-latest"
+
+
+def gemini_retry_options():
+    """Retries for the chat agent's model — the full budget, since a failed call
+    here fails the user's turn. See _genai.RETRYABLE_STATUS for what retries."""
+    from ._genai import retry_options
+
+    return retry_options(settings.gemini_retry_attempts)
+
+
+def _model():
+    """The chat agent's model, with transport retries on transient failures."""
+    from google.adk.models.google_llm import Gemini
+
+    return Gemini(model=_model_name(), retry_options=gemini_retry_options())
 
 
 # Environment words that mark a high-impact PRODUCTION scope.
@@ -115,29 +139,29 @@ def _promote_needs_confirmation(target: str = "", **kwargs) -> bool:
 
 
 def _chat_additional_tools():
-    """Read/ops tools surfaced via skill activation.
+    """Read/ops tools surfaced via skill activation, each run off the event loop.
 
     When ``adk_confirm_prod_ops`` is on, the high-impact ops mutations are wrapped
     with ADK tool confirmation: ``merge_prod_release`` always confirms; a prod
     ``remove_from_release`` confirms while UAT passes straight through.
     """
+    tools = [release_tools.off_event_loop(tool) for tool in release_tools.ADK_CHAT_TOOLS]
     if not settings.adk_confirm_prod_ops:
-        return release_tools.ADK_CHAT_TOOLS
+        return tools
 
     from google.adk.tools import FunctionTool
 
-    wrapped = {
-        "merge_prod_release": FunctionTool(
-            release_tools.merge_prod_release, require_confirmation=True
-        ),
-        "remove_from_release": FunctionTool(
-            release_tools.remove_from_release, require_confirmation=_remove_needs_confirmation
-        ),
-        "promote_release": FunctionTool(
-            release_tools.promote_release, require_confirmation=_promote_needs_confirmation
-        ),
+    confirm = {
+        "merge_prod_release": True,
+        "remove_from_release": _remove_needs_confirmation,
+        "promote_release": _promote_needs_confirmation,
+        "promote_df_release": _promote_needs_confirmation,
     }
-    return [wrapped.get(tool.__name__, tool) for tool in release_tools.ADK_CHAT_TOOLS]
+    return [
+        FunctionTool(tool, require_confirmation=confirm[tool.__name__])
+        if tool.__name__ in confirm else tool
+        for tool in tools
+    ]
 
 
 def _skill_toolset():
@@ -177,7 +201,7 @@ def build_root_agent():
 
     return Agent(
         name="release_copilot_adk",
-        model=_model_name(),
+        model=_model(),
         description="ADK Release Copilot: Skills route to scoped tools; deploys run a deterministic Workflow.",
         instruction=ROOT_INSTRUCTION,
         tools=tools,

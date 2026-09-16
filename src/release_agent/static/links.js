@@ -13,8 +13,8 @@
 // Every URL is config (CONSOLE_LINKS) and ships EMPTY. An unset link still
 // renders — as a dead chip whose tooltip names the variable — so the strip
 // documents what is left to fill in instead of silently disappearing.
-import { API_BASE } from './state.js';
-import { escapeHtml as esc } from './chat.js';
+import { consoleLinks } from './api.js';
+import { escapeHtml as esc } from './core/format.js';
 
 const ENV_KEY = 'console_env';
 
@@ -105,8 +105,7 @@ export async function renderConsoleLinks() {
     if (!box || !document.getElementById('cl-row')) return;
     let data;
     try {
-        const res = await fetch(API_BASE + '/api/console-links');
-        data = await res.json();
+        data = await consoleLinks();
     } catch (e) {
         return;                 // decoration, not a feature — a failed fetch stays silent
     }

@@ -1,8 +1,8 @@
 // One-line release status strip — reads the PRD-release-PR API shape:
 // { date_utc, now_utc, uat_charts, prd_charts,
 //   prd_release_pr: {number,url,charts,can_merge_now}, pending_to_prod, reason }
-import { API_BASE } from './state.js';
-import { escapeHtml as esc } from './chat.js';
+import { releaseStatus } from './api.js';
+import { escapeHtml as esc } from './core/format.js';
 
 function _chartList(arr) {
     return (arr || []).map(function(c){ return esc(c.helm_chart_name) + ':' + esc(c.helm_chart_version); })
@@ -85,8 +85,7 @@ export async function loadReleaseStatus(fresh) {
     const title  = document.getElementById('rb-title');
     const detail = document.getElementById('rb-detail');
     try {
-        const res = await fetch(API_BASE + '/api/release-status' + (fresh ? '?fresh=1' : ''));
-        const s = await res.json();
+        const s = await releaseStatus(fresh);
         banner.classList.remove('hidden');
         if (s.error) {
             dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';

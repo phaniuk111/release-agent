@@ -6,6 +6,8 @@ and dictionary returns, which ADK can expose as Function Tools.
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 from typing import Any
 
@@ -31,6 +33,22 @@ def _invoke_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str
     if hasattr(tool, "invoke"):
         return _coerce_tool_result(tool.invoke(payload))
     return _coerce_tool_result(tool(**payload))
+
+
+def off_event_loop(fn):
+    """The same tool, run on a worker thread when the chat agent calls it.
+
+    ADK runs a sync tool directly on the event loop (its thread-pool option only
+    applies to live/audio mode), and the whole app is one event loop: while one
+    person's tool waits on GitHub — a run poll can take ~12s — every other
+    person's chat stream stalls. ``functools.wraps`` keeps the name, docstring
+    and signature ADK builds the tool declaration from; the session PAT is a
+    contextvar, which ``to_thread`` carries across.
+    """
+    @functools.wraps(fn)
+    async def run(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    return run
 
 
 def check_release_window() -> dict[str, Any]:
@@ -150,14 +168,30 @@ def retrigger_deployment_workflow(
 def promote_release(
     target: str, release_branch: str = "", deployment_repo: str = ""
 ) -> dict[str, Any]:
-    """Promote the current release's file-set to the next environment branch
+    """Promote the current CARE release's file-set to the next environment branch
     (uat, prd or prl1). Copies the release's changed files verbatim via a
     change-branch PR — use after a release has been created. deployment_repo
     (owner/repo) targets a non-default deployment repo — pass it only when the
-    user names one."""
+    user names one. For the Dataflow (DF) release use promote_df_release."""
     return _invoke_tool(
         "promote_release",
-        {"target": target, "release_branch": release_branch, "deployment_repo": deployment_repo},
+        {"target": target, "release_branch": release_branch,
+         "deployment_repo": deployment_repo, "kind": "care"},
+    )
+
+
+def promote_df_release(target: str, release_branch: str = "") -> dict[str, Any]:
+    """Promote the current DATAFLOW (DF) release's file-set along the DF release
+    repo's own branch chain (DF_RELEASE_BRANCHES, e.g. RELEASE_UAT -> RELEASE_PRD):
+    a DF release lands on its UAT branch directly, so the target is normally prd.
+    Use for 'promote the DF release to prd' / 'promote the dataflow release'.
+    For the CARE release use promote_release."""
+    # A tool of its own rather than a flag on promote_release: found live, the
+    # model sent "promote the DF release" to the CARE release when the kind was
+    # only an optional argument. A tool name is a signal it does not skip.
+    return _invoke_tool(
+        "promote_release",
+        {"target": target, "release_branch": release_branch, "deployment_repo": "", "kind": "df"},
     )
 
 
@@ -180,13 +214,21 @@ def queue_release_intent(
     DevOps, the change context — jira_ticket (e.g. REL-1234) and change_details
     (what changed and why) — and build_run_url, the GitHub Actions run that
     built the tag. build_run_url is REQUIRED: nothing is queued without it —
-    the run is checked NOW, and a failed build or failed RLFT/RFTL control
-    makes the chart INELIGIBLE (eligible=false with failed_controls and
-    failed_steps listed) so the dev fixes and re-runs first. A clean run
-    queues as eligible (build_verified=true). Re-queuing a chart replaces
-    its version."""
+    the run is checked NOW: it must be the run that built exactly this
+    chart:version (the tag that triggered it, or the tag its tag step logged),
+    and only a run whose build succeeded and whose controls ALL passed is
+    queued (build_verified=true). A failed build or
+    control, a control that has not passed yet, or a run with no controls at
+    all makes the chart INELIGIBLE (eligible=false, with failed_controls /
+    failed_steps / open_controls listed) so the dev fixes and re-runs first.
+    Re-queuing a chart replaces its version. When the portal knows who is
+    signed in, that verified email is recorded and requested_by is ignored."""
+    from release_agent import identity
     from release_agent.tools import release_queue as _rq
 
+    requested_by, refused = identity.actor(requested_by, identity.current())
+    if refused:
+        return {"ok": False, "eligible": False, "error": refused}
     name, version = _rq._split_artifact(artifact)
     verified: bool | None = None
     warnings: list[str] = []
@@ -271,6 +313,24 @@ def queue_release_intent(
                 "(…/actions/runs/<id>) in the build repo. Nothing was queued."
             ),
         }
+    # One run, one artifact: the run's controls vouch only for what it built.
+    from release_agent.config import settings as _settings
+
+    run_id = (report.get("run") or {}).get("id")
+    if _settings.queue_require_run_match and run_id and report.get("repo"):
+        from release_agent.tools.controls import match_run_to_artifact
+
+        match = match_run_to_artifact(report["repo"], run_id, name, version)
+        if not match.get("ok"):
+            return {
+                "ok": False,
+                "eligible": False,
+                "artifact": f"{name}:{version}",
+                "run_url": (report.get("run") or {}).get("url") or run_url,
+                "built_tags": match.get("built") or [],
+                "error": match.get("reason") + " Nothing was queued.",
+                "reason": match.get("reason"),
+            }
     # `controls` is the source of truth for the VERDICT — deriving from it means a
     # report without the convenience keys still refuses an ineligible build,
     # rather than reading as "no failures" and queueing it.
@@ -284,9 +344,22 @@ def queue_release_intent(
          "status": c.get("status"), "conclusion": c.get("conclusion")}
         for c in controls if not c.get("passed") and not c.get("failed")
     ]
+    # QUEUE_ALLOWED_FAILING_CONTROLS: some controls may fail without stopping the
+    # chart — it is queued, but recorded and shown as failed. Everything else
+    # still refuses, and a control implemented as a whole JOB takes its own
+    # failed steps with it (they are that control's failure, not a second one).
+    from release_agent.tools.controls import allowed_to_fail
+
+    allowed_detail = [c for c in failed_detail if allowed_to_fail(str(c.get("control") or ""))]
+    failed_detail = [c for c in failed_detail if c not in allowed_detail]
+    allowed_jobs = {c.get("job") for c in allowed_detail if c.get("job") == c.get("control")}
     failed_controls = [c.get("control") for c in failed_detail]
-    failed_steps = report.get("failed_steps") or []
-    if failed_controls or not report.get("run_succeeded"):
+    failed_steps = [s for s in (report.get("failed_steps") or [])
+                    if not (isinstance(s, dict) and s.get("job") in allowed_jobs)]
+    # The run failing is explained by the allowed controls only when nothing
+    # else failed; a run that failed with no step or control detail still refuses.
+    run_ok = report.get("run_succeeded") or (bool(allowed_detail) and not failed_steps)
+    if failed_controls or failed_steps or not run_ok:
         return {
             "ok": False,
             "eligible": False,
@@ -302,7 +375,43 @@ def queue_release_intent(
                 "re-run the build, then queue again with the new run."
             ),
         }
-    verified = report.get("gate") == "PASS"
+    # PASS = every control passed; with allowed failures, every OTHER one did.
+    allowed_failures = [
+        f"{c.get('control')}{' in job ' + c['job'] if c.get('job') and c.get('job') != c.get('control') else ''}"
+        for c in allowed_detail
+    ]
+    verified = report.get("gate") == "PASS" or (bool(allowed_detail) and not open_detail)
+    if not verified and _settings.queue_require_controls_pass:
+        # Only a PASS queues. "Nothing failed" is not "passed": a control still
+        # running (or skipped) has proven nothing yet, and a run where no step
+        # or job matched the control prefixes has no controls at all — both
+        # used to queue with a warning, which let an unchecked build into the
+        # release. Say which of the two it is; the fix differs.
+        if open_detail:
+            named = ", ".join(
+                f"{c['control']}{' in job ' + c['job'] if c.get('job') else ''} "
+                f"({c.get('status') or c.get('conclusion') or 'not run'})"
+                for c in open_detail
+            )
+            reason = (f"{len(open_detail)} control(s) had not passed in that run: {named}. "
+                      "Every control must pass before a chart can be queued — let the run "
+                      "finish (or re-run it), then queue with a run where they all pass.")
+        else:
+            prefixes = ", ".join(_settings.control_prefixes)
+            reason = (f"No step or job in that run matched the control prefixes ({prefixes}), "
+                      "so nothing shows the controls ran — it cannot be queued. Use the run of "
+                      "the build workflow that carries the controls, or ask DevOps to check "
+                      "CONTROL_PREFIXES.")
+        return {
+            "ok": False,
+            "eligible": False,
+            "artifact": f"{name}:{version}",
+            "run_url": (report.get("run") or {}).get("url") or run_url,
+            "gate": report.get("gate"),
+            "open_controls": open_detail,
+            "error": reason,
+            "reason": reason,
+        }
     if report.get("gate") == "UNKNOWN":
         # UNKNOWN has two very different causes and the developer's next step
         # differs, so never report them with one message. Saying "no controls
@@ -319,8 +428,6 @@ def queue_release_intent(
                 f"{named}. Re-queue with a run where they pass before release day."
             )
         elif not controls:
-            from release_agent.config import settings as _settings
-
             prefixes = ", ".join(_settings.control_prefixes)
             warnings.append(
                 f"Run succeeded but NO step or job matched the control prefixes "
@@ -328,7 +435,8 @@ def queue_release_intent(
                 f"names in that workflow."
             )
     run_tag = str(report.get("tag") or "")
-    if version and run_tag and version not in run_tag and name not in run_tag:
+    if (not _settings.queue_require_run_match and version and run_tag
+            and version not in run_tag and name not in run_tag):
         warnings.append(
             f"The run built '{run_tag}', which doesn't obviously match {name}:{version} — double-check the URL."
         )
@@ -343,9 +451,17 @@ def queue_release_intent(
         change_details=change_details,
         build_run_url=run_url,
         target_envs=target_envs,
+        allowed_failures=allowed_failures,
     )
     if result.get("ok"):
         result["eligible"] = True if verified else None
+        if allowed_failures:
+            result["allowed_failures"] = allowed_failures
+            warnings.insert(0, (
+                f"Queued. {', '.join(allowed_failures)} is OPEN — it failed on the build run "
+                "and may be a false positive, so it is allowed (QUEUE_ALLOWED_FAILING_CONTROLS) "
+                "and shown as open in the release queue until someone closes it manually. "
+                "The release is not stopped by it."))
         if warnings:
             result["warnings"] = warnings
         # The UI lists these by name; the sentence in warnings is the chat lane's
@@ -369,10 +485,45 @@ def queue_release_intent(
 def withdraw_release_intent(artifact_name: str, requested_by: str = "") -> dict[str, Any]:
     """Withdraw a chart from the next-release intake queue (e.g. 'remove my
     risk-fetcher from the queue'). Only touches the queue — never a live
-    environment or an open release."""
+    environment or an open release. The signed-in user, when known, is who
+    the removal is recorded against."""
+    from release_agent import identity
     from release_agent.tools import release_queue as _rq
 
+    requested_by, refused = identity.actor(requested_by, identity.current())
+    if refused:
+        return {"ok": False, "error": refused}
     return _rq.withdraw_intent(artifact_name, requested_by)
+
+
+def monitoring_checks() -> dict[str, Any]:
+    """Run the monitoring checks NOW (PromQL expressions that return series
+    only when something is wrong): Composer DAG runs, Dataflow jobs, GKE
+    restarts, targets down, Google API 5xx, plus the team's own. Each comes back
+    with state firing / ok / unknown / no_data (nothing to measure in this
+    project — NOT healthy), the firing series (labels + value, capped),
+    `watching` (how much an ok check measured) and, for unknown, the error and a
+    likely fix. Read-only."""
+    from release_agent import features, identity
+    from release_agent.tools import monitoring as _mon
+
+    if not features.allowed("monitoring", identity.current()):
+        return {"ok": False, "error": features.refusal("monitoring")}
+    return _mon.run_checks()
+
+
+def query_metrics(promql: str) -> dict[str, Any]:
+    """Run ONE read-only PromQL instant query against the team's Prometheus
+    (Managed Service for Prometheus, which also exposes Cloud Monitoring's GCP
+    metrics as e.g. serviceruntime_googleapis_com:api_request_count). Returns
+    at most 20 series ({labels, value}) plus the true count and whether it was
+    truncated. Use aggregations (sum by, topk, count) to keep answers small."""
+    from release_agent import features, identity
+    from release_agent.tools import monitoring as _mon
+
+    if not features.allowed("monitoring", identity.current()):
+        return {"ok": False, "error": features.refusal("monitoring")}
+    return _mon.run_query(promql)
 
 
 def list_release_queue() -> dict[str, Any]:
@@ -435,6 +586,7 @@ OPS_TOOLS = [
     retrigger_deployment_workflow,
     merge_prod_release,
     promote_release,
+    promote_df_release,
     find_prs,
     get_pr_details,
 ]
@@ -450,10 +602,14 @@ QUEUE_TOOLS = [
     list_allowed_images,
 ]
 
+# Monitoring: PromQL checks and ad-hoc metric questions. PromQL cannot write.
+MONITORING_TOOLS = [monitoring_checks, query_metrics]
+
 ADK_CHAT_TOOLS = list(
     {
         id(tool): tool
-        for tool in (STATUS_TOOLS + PR_TOOLS + CONTROLS_TOOLS + OPS_TOOLS + QUEUE_TOOLS)
+        for tool in (STATUS_TOOLS + PR_TOOLS + CONTROLS_TOOLS + OPS_TOOLS + QUEUE_TOOLS
+                     + MONITORING_TOOLS)
     }.values()
 )
 
