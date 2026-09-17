@@ -145,8 +145,9 @@ def test_the_verified_email_beats_the_typed_one(monkeypatch):
     seen = {}
     monkeypatch.setattr("adk_release_agent.tools.queue_release_intent",
                         lambda **kw: seen.update(kw) or {"ok": True})
-    APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="typed@else.com"),
-                          _req(rctoken()))
+    APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="typed@else.com"),
+        _req(rctoken()))
     assert seen["requested_by"] == "dev.one@example.com"
 
 
@@ -161,8 +162,9 @@ def test_withdraw_is_recorded_against_the_caller(monkeypatch):
 
 def test_required_mode_refuses_writes_without_a_verified_caller(monkeypatch):
     monkeypatch.setattr(identity.settings, "identity_required", True, raising=False)
-    out = APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="t@x.com"),
-                                _req(rctoken(key=STRANGER)))
+    out = APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="t@x.com"),
+        _req(rctoken(key=STRANGER)))
     assert out["ok"] is False and "Sign-in required" in out["error"]
 
 
@@ -170,14 +172,15 @@ def test_without_required_mode_the_typed_email_still_works(monkeypatch):
     seen = {}
     monkeypatch.setattr("adk_release_agent.tools.queue_release_intent",
                         lambda **kw: seen.update(kw) or {"ok": True})
-    APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="typed@x.com"), _req())
+    APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="typed@x.com"), _req())
     assert seen["requested_by"] == "typed@x.com"
 
 
 def test_whoami_reports_the_caller_or_why_not():
     assert APP.whoami(_req(rctoken()))["email"] == "dev.one@example.com"
     out = APP.whoami(_req(rctoken(key=STRANGER)))
-    assert out["signed_in"] is False and "Signature" in out["reason"]
+    assert out["signed_in"] is False
 
 
 def test_the_chat_tools_record_the_caller_not_what_the_model_typed(monkeypatch):
@@ -263,5 +266,6 @@ def test_required_mode_lets_a_signed_in_user_queue_through_the_forms(monkeypatch
         APP.QueueBatchRequest(rows=rows, requested_by="typed@x.com", change_details="d"), _req(rctoken()))
     assert out["ok"] and not out["refused"]
     assert seen == [("dev.one@example.com", "")] * 2
-    single = APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="t@x.com"), _req(rctoken()))
+    single = APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="t@x.com"), _req(rctoken()))
     assert single["ok"]

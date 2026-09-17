@@ -38,7 +38,6 @@ _ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384"]   # never "none" or 
 class Caller:
     email: str
     name: str = ""
-    subject: str = ""
 
 
 _current: contextvars.ContextVar[Caller | None] = contextvars.ContextVar("caller", default=None)
@@ -137,7 +136,7 @@ def verify(token: str) -> Caller:
         raise ValueError("verified, but the token carries no email claim — "
                          "map one in the mesh's UserAuthConfig")
     name = _claim(claims, "attributes.name") or _claim(claims, "name")
-    return Caller(email=email.lower(), name=name, subject=str(claims.get("sub") or ""))
+    return Caller(email=email.lower(), name=name)
 
 
 def from_headers(headers: Mapping[str, str]) -> tuple[Caller | None, str]:

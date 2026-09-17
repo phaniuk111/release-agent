@@ -154,8 +154,6 @@ config:
   # "Add to next release" queues a chart only when its build run's controls ALL
   # passed; "false" lets a run with open or unmatched controls in with a warning.
   QUEUE_REQUIRE_CONTROLS_PASS: "true"
-  # ...and only with the run that built exactly that chart:version — read from
-  # the tag that triggered the run, or the line its tag step logs (below).
   # Controls allowed to FAIL at queue time (CARE and DF) — e.g. one that can be a
   # false positive, closed by hand. The chart is queued and the control shows as
   # OPEN in the release queue's Controls column; releases are not stopped by it.
@@ -164,6 +162,8 @@ config:
   # RCTL-1691, "Control 1691: …" — not RCTLDEF0016910); "*1691*" = wildcard
   # over the name; other text = the name contains it. Comma list; empty = none.
   QUEUE_ALLOWED_FAILING_CONTROLS: "1691"
+  # ...and only with the run that built exactly that chart:version — read from
+  # the tag that triggered the run, or the line its tag step logs (below).
   QUEUE_REQUIRE_RUN_MATCH: "true"
   # A run whose tag is a BARE version ("5.0.445") names no image. "false" (the
   # default) takes the matching version as proof — a monorepo tags per service
@@ -274,17 +274,8 @@ config:
   # sign-off actually depends on (e.g. a scanner gate) — not every check that
   # happens to run in the pipeline.
   CONTROL_PREFIXES: "RCTLD,RLFT,RFTL"
-  # Fail-closed: block a PRD release when any build control failed.
-  PRD_REQUIRE_CONTROLS: "true"
-  # Release window policy.
-  PRD_CUTOFF_HOUR_UTC: "16"
-  PRD_LEAD_TIME_DAYS: "1"
   # Path (inside DEPLOY_REPO) of the team's release file-set generator.
   RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
-  # Dispatched in DEPLOY_REPO by chat "re-run the deploy for PR #N" to regenerate
-  # a deployment PR's control comments. Matched EXACTLY (case + .yml/.yaml). Set
-  # it only if that workflow exists; nothing else depends on it.
-  ON_MERGE_WORKFLOW: "on-merge-deploy.yml"
   # ADK runtime (leave true).
   ADK_CONTEXT_CACHE: "true"
   ADK_EVENT_COMPACTION: "true"
@@ -328,13 +319,9 @@ config:
   # ADK_CONTEXT_CACHE_TTL_SECONDS: "1800"
   # ADK_COMPACTION_INTERVAL: "20"
   # ADK_COMPACTION_OVERLAP: "3"
-  # REACT_MAX_TOOL_TURNS: "8"
-  # PRD_ONCE_PER_DAY: "true"
   # CHANGE_REQUEST_PATH: "change-request.json"
   # DEPLOYMENT_PATH_PATTERN: "{env}/deployment.json"
   # HELM_VALUES_PATTERN: "{env}/values_{env}.yaml"
-  # ENV_CONFIG_PATH: "configs/images.json"
-  # MANIFEST_PATH: "release-manifest.json"
   # CONFIG_PATH: "image-workflows.json"
 
 # Extra raw env entries appended to the container (list of {name,value|valueFrom}).

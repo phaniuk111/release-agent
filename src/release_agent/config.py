@@ -272,14 +272,10 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("GITHUB_BASE_URL", "GH_BASE_URL"),
     )
-    # Workflow dispatched in DEPLOY_REPO to (re)run the deployment simulation.
-    on_merge_workflow: str = Field(
-        default="on-merge-deploy.yml",
-        validation_alias=AliasChoices("ON_MERGE_WORKFLOW", "RELEASE_ON_MERGE_WORKFLOW"),
-    )
     # --- Branch-based promotion in DEPLOY_REPO (SIT -> UAT -> PRD) ---
-    # During the day, images accumulate on UAT. Only AFTER the daily cutoff is a
-    # single UAT -> PRD PR raised (that PR locks the day's release).
+    # Images accumulate on UAT through the day; the UAT -> PRD PR locks the day's
+    # release. There is NO time-of-day gate — a release can ship at any hour
+    # (release_window.can_merge_now); the old cutoff setting is gone.
     sit_branch: str = Field(
         default="SIT",
         validation_alias=AliasChoices("SIT_BRANCH", "RELEASE_SIT_BRANCH"),
@@ -313,11 +309,6 @@ class Settings(BaseSettings):
     artifactory_base_url: str = Field(
         default="",
         validation_alias=AliasChoices("ARTIFACTORY_BASE_URL"),
-    )
-    # JSON config the promotion updates (same path on each env branch). [legacy]
-    env_config_path: str = Field(
-        default="configs/images.json",
-        validation_alias=AliasChoices("ENV_CONFIG_PATH", "RELEASE_ENV_CONFIG_PATH"),
     )
     # --- Helm-chart deployment model -------------------------------------------
     # The deploy repo carries an env-pathed deployment JSON per environment, shaped
@@ -353,33 +344,12 @@ class Settings(BaseSettings):
         default="change-request.json",
         validation_alias=AliasChoices("CHANGE_REQUEST_PATH", "RELEASE_CHANGE_REQUEST_PATH"),
     )
-    # PRD release policy: at most one PRD PR per day, created before this UTC hour.
-    prd_cutoff_hour_utc: int = Field(
-        default=16,
-        validation_alias=AliasChoices("PRD_CUTOFF_HOUR_UTC", "RELEASE_PRD_CUTOFF_HOUR_UTC"),
-    )
     # Branches that count as "a release in flight": while any OPEN PR targets one
     # of these, add-to-release is blocked (one release at a time). Empty = just
     # the PRD branch. Comma-separated in env, e.g. RELEASE_GUARD_BRANCHES="PRD,PRL1".
     release_guard_branches: Annotated[list[str], NoDecode] = Field(
         default=[],
         validation_alias=AliasChoices("RELEASE_GUARD_BRANCHES", "PRD_GUARD_BRANCHES"),
-    )
-    prd_once_per_day: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("PRD_ONCE_PER_DAY", "RELEASE_PRD_ONCE_PER_DAY"),
-    )
-    # Minimum lead time (days) between raising the UAT->PRD release PR and the
-    # change's start_date. 1 = the start date must be tomorrow or later.
-    prd_lead_time_days: int = Field(
-        default=1,
-        validation_alias=AliasChoices("PRD_LEAD_TIME_DAYS", "RELEASE_PRD_LEAD_TIME_DAYS"),
-    )
-    # Max tool-call turns in the free-form ReAct lane before stopping gracefully
-    # (guards against runaway llm<->tools loops, well under recursion_limit=25).
-    react_max_tool_turns: int = Field(
-        default=8,
-        validation_alias=AliasChoices("REACT_MAX_TOOL_TURNS", "RELEASE_REACT_MAX_TOOL_TURNS"),
     )
     # Step/job-name prefixes that mark release controls in the build pipeline —
     # matched case-insensitively against step AND job names. The live gate is
@@ -427,16 +397,6 @@ class Settings(BaseSettings):
     )
     build_tag_marker: str = Field(
         default="New tag is:", validation_alias=AliasChoices("BUILD_TAG_MARKER"),
-    )
-    # Block a PRD release when any build control failed (fail-closed). When a build
-    # run can't be located we don't hard-block; the agent asks for the run id.
-    prd_require_controls: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("PRD_REQUIRE_CONTROLS", "RELEASE_PRD_REQUIRE_CONTROLS"),
-    )
-    manifest_path: str = Field(
-        default="release-manifest.json",
-        validation_alias=AliasChoices("MANIFEST_PATH", "RELEASE_MANIFEST_PATH"),
     )
     config_path: str = Field(
         default="image-workflows.json",

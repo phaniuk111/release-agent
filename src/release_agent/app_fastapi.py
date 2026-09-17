@@ -108,21 +108,44 @@ def _caller(request: Request) -> identity.Caller | None:
     return identity.from_headers(request.headers)[0]
 
 
+async def _resolve_caller(request: Request) -> identity.Caller | None:
+    """The verified caller, resolved off the event loop for async endpoints.
+
+    identity.from_headers may fetch the issuer's JWKS keys — blocking I/O that
+    must never run on the one event loop this app shares across every user
+    (see the module note on sync vs async endpoints below). Factors out the
+    ``await asyncio.to_thread(_caller, request)`` line repeated across the
+    async endpoints.
+    """
+    return await asyncio.to_thread(_caller, request)
+
+
 def _owner(caller: identity.Caller | None) -> str | None:
     """Who a thread's token belongs to: the caller when identity is on, else
     None — no ownership check, exactly as before identity existed."""
     return caller.email if caller else ("" if identity.enabled() else None)
 
 
+def _actor_or_refusal(typed: str, caller: identity.Caller | None) -> tuple[str, dict | None]:
+    """(who, refusal-response-or-None) for a queue write. Bundles identity.actor's
+    verified-caller-wins resolution with the refusal shape every write endpoint
+    returns unchanged when IDENTITY_REQUIRED refuses an unverified one."""
+    who, refused = identity.actor(typed, caller)
+    if refused:
+        return "", {"ok": False, "error": refused}
+    return who, None
+
+
 @app.get("/api/whoami")
 def whoami(request: Request):
-    """Who the portal thinks you are, so forms stop asking for an email."""
-    caller, why = identity.from_headers(request.headers)
+    """Who the portal thinks you are, so forms stop asking for an email.
+    Trimmed to what the UI actually reads (static/forms/common.js, queue_table.js,
+    release_form.js): signed_in and email. Preview arrives via window.PORTAL_UI;
+    the verified/reason detail lives in /api/diagnostics instead."""
+    caller = _caller(request)
     if caller:
-        return {"signed_in": True, "email": caller.email, "name": caller.name, "source": "gateway",
-                "preview": features.is_preview_user(caller)}
-    return {"signed_in": False, "identity_enabled": identity.enabled(), "reason": why,
-            "required": identity.enabled() and app_settings.identity_required}
+        return {"signed_in": True, "email": caller.email}
+    return {"signed_in": False}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -321,7 +344,7 @@ async def chat_page(request: Request):
     # never rendered for someone who may not see it — no flash while a fetch
     # resolves. The labels are no secret (they sit in palette.js); what is gated
     # is the feature itself, server-side (features.allowed).
-    caller = await asyncio.to_thread(_caller, request)
+    caller = await _resolve_caller(request)
     ui = json.dumps(features.ui_config(caller)).replace("<", "\\u003c")
     return HTMLResponse(content=html.replace("{APP_STARTED}", APP_STARTED).replace("{PORTAL_UI}", ui))
 
@@ -360,7 +383,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
       instead of in-memory services.
     """
     thread_id = get_or_create_thread_id(req.thread_id)
-    caller = await asyncio.to_thread(_caller, request)   # may fetch the issuer's keys
+    caller = await _resolve_caller(request)
 
     logger.info(f"Chat request | thread={thread_id} | msg_len={len(req.message)}")
 
@@ -400,7 +423,7 @@ async def session_connect_endpoint(req: SessionConnectRequest, request: Request)
     this user against the server-configured repositories.
     """
     thread_id = get_or_create_thread_id(req.thread_id)
-    caller = await asyncio.to_thread(_caller, request)
+    caller = await _resolve_caller(request)
     # Bound to the verified caller: someone else who learns this thread id gets
     # a thread without the token, not a session running as this person.
     creds = SessionCredentials(pat_token=req.pat_token or "", owner=_owner(caller))
@@ -415,7 +438,7 @@ async def session_connect_endpoint(req: SessionConnectRequest, request: Request)
 @app.get("/api/session/status")
 async def session_status_endpoint(request: Request, thread_id: str = ""):
     """Return the (token-masked) connection status for a thread."""
-    caller = await asyncio.to_thread(_caller, request)
+    caller = await _resolve_caller(request)
     creds = _session_store.get(thread_id, owner=_owner(caller)) if thread_id else None
     if creds is None:
         return {"connected": False, "token_preview": ""}
@@ -425,7 +448,7 @@ async def session_status_endpoint(request: Request, thread_id: str = ""):
 @app.post("/api/session/disconnect")
 async def session_disconnect_endpoint(req: SessionThreadRequest, request: Request):
     """Clear a thread's stored repo + PAT (called on New Thread / Disconnect)."""
-    caller = await asyncio.to_thread(_caller, request)
+    caller = await _resolve_caller(request)
     if _session_store.get(req.thread_id, owner=_owner(caller)) is not None:
         _session_store.clear(req.thread_id)      # only its owner may drop it
     return {"ok": True, "connected": False}
@@ -438,15 +461,31 @@ async def session_disconnect_endpoint(req: SessionThreadRequest, request: Reques
 # banner loads took 22.7s instead of ~6.5s). As plain `def`, FastAPI runs them
 # in its threadpool and they overlap. /api/chat stays async: it streams and its
 # work is already awaited or dispatched to threads.
+# One small helper for the read endpoints below whose answer is the SAME for
+# everyone (the banner, the monitoring pill, the chart datalist): each keeps its
+# own {"at", "value"} dict (same shape every ad-hoc cache used before, and still
+# a plain module attribute a test can swap out) — _cached() is just the
+# read-or-recompute logic, written once instead of once per cache.
+# fresh=1 (a manual refresh, or right after a chat turn changed something)
+# always bypasses the cache.
+def _cached(cache: dict, ttl: float, fn, *, fresh: bool = False):
+    """fn() unless ``cache`` still holds a value computed within ``ttl`` seconds."""
+    if not fresh and cache["value"] is not None and time.time() - cache["at"] < ttl:
+        return cache["value"]
+    value = fn()
+    cache["at"] = time.time()
+    cache["value"] = value
+    return value
+
+
 # The banner is SHARED state (same answer for everyone) but costs 5 GitHub API
 # calls per load. With a team on one PAT (5000/hr) that is the first thing to
-# exhaust the rate limit, so serve it from a short cache. Anyone who just acted
-# passes fresh=1 (after a chat turn, or the manual refresh) and bypasses it.
+# exhaust the rate limit, so serve it from a short cache.
 _STATUS_TTL_SECONDS = 15.0
 _status_cache: dict = {"at": 0.0, "value": None}
 
 # The checks are the same for everyone; a team opening the pill at once should
-# not each run every query. fresh=1 (the refresh button) bypasses it.
+# not each run every query.
 _MONITOR_TTL_SECONDS = 30.0
 _monitor_cache: dict = {"at": 0.0, "value": None}
 
@@ -461,12 +500,7 @@ def monitoring_endpoint(request: Request, fresh: int = 0):
     if not features.allowed("monitoring", _caller(request)):
         return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("monitoring")})
 
-    if not fresh and _monitor_cache["value"] is not None \
-            and time.time() - _monitor_cache["at"] < _MONITOR_TTL_SECONDS:
-        return _monitor_cache["value"]
-    result = run_checks()
-    _monitor_cache.update(at=time.time(), value=result)
-    return result
+    return _cached(_monitor_cache, _MONITOR_TTL_SECONDS, run_checks, fresh=bool(fresh))
 
 
 @app.get("/api/monitoring/alert-policy")
@@ -486,15 +520,11 @@ def monitoring_alert_policy(request: Request, name: str):
     return {"ok": True, "policy": alert_policy(check)}
 
 
-@app.get("/api/release-status")
-def release_status_endpoint(fresh: int = 0):
-    """Today's PRD release window — read live from GitHub so every session/developer
-    sees the same answer (the PRD PR is the shared source of truth)."""
+def _compute_release_status() -> dict:
+    """The banner's answer, freshly read from GitHub. Raises on failure — the
+    caller decides whether that's worth caching (it isn't: see below)."""
     from .tools.gh_tools import get_release_status
 
-    if not fresh and _status_cache["value"] is not None:
-        if time.time() - _status_cache["at"] < _STATUS_TTL_SECONDS:
-            return _status_cache["value"]
     # CARE and DF live in different repos, so their reads are independent — run
     # them together rather than paying ~6s twice. (This endpoint is a sync `def`,
     # so it is already on a worker thread; these are two more.)
@@ -509,11 +539,10 @@ def release_status_endpoint(fresh: int = 0):
         df_future = executor.submit(get_release_status, deployment_repo=df_repo, kind="df")
     try:
         status = get_release_status()
-    except Exception as e:
-        logger.exception("Error computing release status")
+    except Exception:
         if executor is not None:
             executor.shutdown(wait=False)
-        return {"error": str(e)}
+        raise
     # Banner extra: how many charts are queued for the NEXT release (cached ≤1/min;
     # None/absent when the BQ queue is disabled or unreachable — never an error).
     try:
@@ -544,24 +573,23 @@ def release_status_endpoint(fresh: int = 0):
             status["df"] = {"repo": df_repo, "error": str(e)}
         finally:
             executor.shutdown(wait=False)
-    _status_cache["at"] = time.time()
-    _status_cache["value"] = status
     return status
 
 
+@app.get("/api/release-status")
+def release_status_endpoint(fresh: int = 0):
+    """Today's PRD release window — read live from GitHub so every session/developer
+    sees the same answer (the PRD PR is the shared source of truth)."""
+    try:
+        return _cached(_status_cache, _STATUS_TTL_SECONDS, _compute_release_status, fresh=bool(fresh))
+    except Exception as e:
+        # Deliberately not cached: a transient GitHub error should not pin the
+        # banner to an error for the whole TTL — the next request retries fresh.
+        logger.exception("Error computing release status")
+        return {"error": str(e)}
+
+
 # --- Next-release intake queue (BigQuery-backed) -----------------------------
-class QueueAddRequest(BaseModel):
-    artifact: str  # chart:version (or full artifactory URL)
-    requested_by: str
-    prl1_only: bool = False
-    df_only: bool = False
-    note: str = ""
-    jira_ticket: str = ""
-    change_details: str = ""  # dev's what-changed-and-why → CHG draft on release day
-    build_run_url: str = ""  # Actions run that built the tag → eligibility check at queue time
-    target_envs: str = ""  # queue-time intent, e.g. "prd,prl1"
-
-
 class QueueRow(BaseModel):
     """One chart in a submission. Each has its own build run (one run builds one
     tag) and may carry its own ticket — a change spanning three charts often
@@ -595,28 +623,23 @@ class QueueWithdrawRequest(BaseModel):
     artifact_version: str = ""
 
 
-_known_charts_cache: dict = {"at": 0.0, "charts": []}
+_known_charts_cache: dict = {"at": 0.0, "value": []}
 
 
 def _known_charts() -> list[str]:
     """Chart-name datalist for the queue form — from the build repo's image
     catalog, cached 5 minutes, empty on any failure."""
-    import time as _time
 
-    now = _time.time()
-    if now - _known_charts_cache["at"] < 300:
-        return _known_charts_cache["charts"]
-    charts: list[str] = []
-    try:
-        from .tools.manifest import list_allowed_images
+    def _load() -> list[str]:
+        try:
+            from .tools.manifest import list_allowed_images
 
-        data = json.loads(list_allowed_images())
-        charts = sorted(data.get("allowed_images") or [])
-    except Exception:
-        pass
-    _known_charts_cache["at"] = now
-    _known_charts_cache["charts"] = charts
-    return charts
+            data = json.loads(list_allowed_images())
+            return sorted(data.get("allowed_images") or [])
+        except Exception:
+            return []
+
+    return _cached(_known_charts_cache, 300.0, _load)
 
 
 @app.get("/api/release-queue")
@@ -638,33 +661,6 @@ def release_queue_get():
     result["df_default_repo"] = app_settings.df_release_repo or result["default_repo"]
     result["known_charts"] = _known_charts()
     return result
-
-
-@app.post("/api/release-queue")
-def release_queue_add(req: QueueAddRequest, request: Request):
-    """Queue a chart:version for the next release (the 'Monday dev' path).
-    Runs the courtesy build check and reports last-time routing, same as the
-    conversational intake."""
-    from adk_release_agent.tools import queue_release_intent
-
-    caller = _caller(request)
-    who, refused = identity.actor(req.requested_by, caller)
-    if refused:
-        return {"ok": False, "error": refused}
-    # Bound for the call: the queue tool checks identity itself (it is the same
-    # tool the chat uses), and a REST request has no chat turn binding it.
-    with identity.activate(caller):
-        return queue_release_intent(
-            artifact=req.artifact,
-            requested_by=who,
-            prl1_only=req.prl1_only,
-            target_envs=req.target_envs,
-            df_only=req.df_only,
-            note=req.note,
-            jira_ticket=req.jira_ticket,
-            change_details=req.change_details,
-            build_run_url=req.build_run_url,
-        )
 
 
 @app.post("/api/release-queue/batch")
@@ -691,9 +687,9 @@ def release_queue_add_batch(req: QueueBatchRequest, request: Request):
     # Resolved HERE, not in the rows' threads: a pool thread does not inherit
     # this request's context, and the caller must be the same for every row.
     caller = _caller(request)
-    who, refused = identity.actor(req.requested_by, caller)
-    if refused:
-        return {"ok": False, "error": refused}
+    who, refusal = _actor_or_refusal(req.requested_by, caller)
+    if refusal:
+        return refusal
 
     def _queue(row: QueueRow) -> dict:
         try:
@@ -826,9 +822,9 @@ def release_queue_withdraw(req: QueueWithdrawRequest, request: Request):
     from .tools import release_queue
 
     caller = _caller(request)
-    who, refused = identity.actor(req.requested_by, caller)
-    if refused:
-        return {"ok": False, "error": refused}
+    who, refusal = _actor_or_refusal(req.requested_by, caller)
+    if refusal:
+        return refusal
     with identity.activate(caller):
         return release_queue.withdraw_intent(req.artifact_name, who, req.artifact_version)
 
@@ -929,14 +925,6 @@ def console_links_endpoint():
     }
 
 
-@app.get("/api/deployment-types")
-async def deployment_types_endpoint():
-    """The IDP capability registry — the UI renders deploy cards/forms from this."""
-    from .deployment_types import deployment_types
-
-    return deployment_types()
-
-
 def _df_label(name: str) -> str:
     """'binary_version' -> 'Binary version'. The form is labelled with the target
     workflow's own input names, so what the developer fills in reads the same as
@@ -949,6 +937,9 @@ def _df_label(name: str) -> str:
 # rewritten, but reading it costs a GitHub round-trip on every form open — which
 # behind a TLS-inspecting proxy is the difference between the form opening and
 # the frontend's 5s fetch giving up. Cached per (repo, workflow, ref, mapping).
+# Its own cache, not through _cached(): unlike the caches above, whether this
+# result is worth caching depends on what it computed to (see below), not just
+# on how long ago that was — _cached() always caches whatever fn() returns.
 _DF_FIELDS_TTL_SECONDS = 300.0
 _df_fields_cache: dict = {}
 
