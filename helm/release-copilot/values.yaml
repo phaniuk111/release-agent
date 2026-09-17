@@ -165,6 +165,10 @@ config:
   # over the name; other text = the name contains it. Comma list; empty = none.
   QUEUE_ALLOWED_FAILING_CONTROLS: "1691"
   QUEUE_REQUIRE_RUN_MATCH: "true"
+  # Where a run records the tag it built. BUILD_TAG_STEP names either a STEP or a
+  # whole JOB (a reusable workflow's job is "<caller job> / <job>" in the API —
+  # the last part is what the run page shows, and either form matches); its log
+  # must carry "<BUILD_TAG_MARKER> <tag>". Whitespace and case are ignored.
   BUILD_TAG_STEP: "Create new tag"
   BUILD_TAG_MARKER: "New tag is:"
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY

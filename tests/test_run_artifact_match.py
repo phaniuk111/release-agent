@@ -225,3 +225,66 @@ def test_the_step_name_and_marker_follow_the_configured_ones(monkeypatch):
     monkeypatch.setattr(C.settings, "build_tag_marker", "tag=")
     out = _vitb_repo(monkeypatch, "Tag it", "tag=orders-api-1.2.3\n")
     assert out["verified"] is True and out["tag_generation"]["step"] == "Tag it"
+
+
+# --- the tag step may BE a job -----------------------------------------------------
+# Found live (2026-09-17): the pipeline generates the tag in a reusable-workflow
+# job called "Create new tag", whose own steps are named after the actions they
+# run ("Tag this new commit"). Matching step names alone found nothing, and the
+# refusal blamed the step for logging nothing while its log held the tag.
+
+def _reusable_run(job_name, step_names, job_conclusion="success"):
+    job = SimpleNamespace(
+        id=7, name=job_name, conclusion=job_conclusion, status="completed",
+        steps=[SimpleNamespace(name=n, number=i + 1, status="completed", conclusion="success")
+               for i, n in enumerate(step_names)])
+    return _run(event="push", head="main", jobs=[job])
+
+
+def test_the_tag_job_of_a_reusable_workflow_is_found_by_its_own_name(github):
+    """The API names it "<caller> / <job>"; the run page shows only the last part."""
+    github(_reusable_run("build-deploy-publish / Create new tag",
+                         ["Set up job", "Tag this new commit", "Complete job"]),
+           logs={7: "2026-09-17T09:00:00Z New tag is: orders-api-1.2.3\n"})
+    assert C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3") == {
+        "ok": True, "built": "orders-api-1.2.3", "source": "log"}
+
+
+def test_a_tag_job_that_did_not_succeed_vouches_for_nothing(github):
+    github(_reusable_run("build-deploy-publish / Create new tag", ["Set up job"],
+                         job_conclusion="failure"),
+           logs={7: "New tag is: orders-api-1.2.3\n"})
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "did not succeed" in out["reason"]
+
+
+@pytest.mark.parametrize("configured, name, ok", [
+    ("Create new tag", "build-deploy-publish / Create new tag", True),
+    ("Create new tag", "Create new tag", True),
+    ("Create new tag", "  create NEW tag ", True),
+    ("Create new tag", "Create new tag v2", False),
+    ("Create new tag", "Tag this new commit", False),
+    ("", "Create new tag", False),
+])
+def test_which_names_answer_to_the_configured_one(configured, name, ok):
+    assert C.tag_name_matches(configured, name) is ok
+
+
+def test_an_unreadable_log_does_not_read_as_a_pipeline_that_logged_nothing(github):
+    """A token without actions:read, or a blocked log download, must say so."""
+    github(_reusable_run("Create new tag", ["Set up job"]), logs={})
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "log could not be read" in out["reason"]
+
+
+def test_a_name_that_is_nowhere_in_the_run_says_exactly_that(github):
+    github(_reusable_run("build", ["Set up job", "Build"]), logs={7: "nothing here"})
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "no step or job in that run is named" in out["reason"]
+
+
+def test_a_matching_step_whose_log_has_no_marker_is_reported_as_such(github):
+    github(_reusable_run("build", ["Set up job", C.settings.build_tag_step]),
+           logs={7: "built fine, said nothing about a tag"})
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "has no" in out["reason"]
