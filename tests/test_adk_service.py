@@ -295,3 +295,34 @@ def test_a_silent_deploy_graph_still_answers():
 
     events = asyncio.run(drain())
     assert any(e.get("type") == "token" and e.get("content") for e in events)
+
+
+def _confirmation_pending(function, args):
+    from release_agent.adk_service import PendingAdkCall
+
+    return PendingAdkCall(
+        invocation_id="i", function_call_id="c", function_name="adk_request_confirmation",
+        args={"originalFunctionCall": {"name": function, "args": args},
+              "toolConfirmation": {"hint": "Please approve or reject the tool call "
+                                           f"{function}() by responding with a FunctionResponse "
+                                           "with an expected ToolConfirmation payload."}})
+
+
+def test_a_prod_removal_is_described_in_words_a_person_can_act_on():
+    """Found live: remove_from_release had no hint of its own, so the highest-
+    impact scoped op showed ADK's FunctionResponse boilerplate."""
+    from release_agent.adk_service import _confirmation_interrupt_payload
+
+    p = _confirmation_interrupt_payload(
+        _confirmation_pending("remove_from_release",
+                              {"image_names": "targeted-svc", "environment": "prod"}))
+    assert "targeted-svc" in p["message"] and "PROD" in p["message"]
+    assert "FunctionResponse" not in p["message"]
+
+
+def test_adk_protocol_boilerplate_is_never_shown_as_the_question():
+    from release_agent.adk_service import _confirmation_interrupt_payload
+
+    p = _confirmation_interrupt_payload(_confirmation_pending("some_other_tool", {}))
+    assert "FunctionResponse" not in p["message"]
+    assert p["message"] == "Confirm some_other_tool?"
