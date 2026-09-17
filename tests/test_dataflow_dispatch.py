@@ -275,3 +275,43 @@ def test_form_fields_fall_back_when_the_workflow_is_unavailable(df_config):
     # still labelled from the mapping; just no options to offer
     assert fields["image"]["label"] == "Module"
     assert fields["image"]["options"] == []
+
+
+# --- a refused dispatch is a failure, not a deploy -------------------------------
+# Found live (2026-09-17): GitHub refused a DF workflow_dispatch with 422
+# ("input value not in the list of allowed values"). The tool reported it as an
+# "ERROR …" string, which coerces to {"result": "ERROR …"} carrying no ok flag —
+# so setdefault("ok", True) called it a success, the reply said nothing about the
+# rejection, and the Composer DAG PR was raised anyway, pointing the DAGs at a
+# template version that was never built.
+
+def test_a_refused_dispatch_is_not_reported_as_a_deploy():
+    from adk_release_agent import deploy as D
+
+    out = D._outcome_of({"result": "ERROR deploying dataflow: dispatch was rejected: 422"})
+    assert out["ok"] is False
+    assert "rejected" in out["error"]
+
+
+def test_a_real_dispatch_result_keeps_its_fields():
+    from adk_release_agent import deploy as D
+
+    out = D._outcome_of({"run": {"id": 7, "url": "u"}, "note": "dispatched"})
+    assert out["ok"] is True and out["run"]["id"] == 7 and out["note"] == "dispatched"
+
+
+def test_the_dag_bump_is_skipped_when_the_dispatch_failed(monkeypatch):
+    """The whole point of dispatching BEFORE the bump: a failed build leaves an
+    unused template, never DAGs pointing at a template that does not exist."""
+    from adk_release_agent import deploy as D
+
+    raised = []
+    monkeypatch.setattr(D, "_invoke_tool",
+                        lambda name, args=None: {"result": "ERROR deploying dataflow: refused"})
+    monkeypatch.setattr(D, "apply_dag_request", lambda *a, **k: raised.append(a) or {"ok": True})
+    monkeypatch.setattr(D, "_record_deploy_event", lambda *a, **k: None)
+    req = {"deployment_type": "dataflow", "images": [{"name": "svc", "tag": "1.0"}],
+           "dag_files": ["a.py"], "composer_repo": "o/dags"}
+    result = D._apply(req, "uat", "CONFIRM-123456")
+    assert result["ok"] is False, "a refused dispatch must not read as a deploy"
+    assert raised == [], "no DAG PR may be raised when the dispatch failed"

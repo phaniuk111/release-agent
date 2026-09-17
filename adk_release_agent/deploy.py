@@ -303,6 +303,24 @@ def apply_confirmed_deploy(
         }
 
 
+def _outcome_of(result: dict[str, Any]) -> dict[str, Any]:
+    """Give a tool result an honest ``ok``.
+
+    The GitHub tools report a failure as an "ERROR …" STRING, which coerces to
+    ``{"result": "ERROR …"}`` carrying no ok flag — so ``setdefault("ok", True)``
+    reads a REFUSED operation as a success. Found live: GitHub rejected a DF
+    workflow_dispatch (422, an input value the workflow does not allow); the
+    portal reported a deploy, said nothing about the rejection, and raised the
+    Composer DAG PR anyway — pointing the DAGs at a template version that was
+    never built, which is exactly what dispatching before the bump prevents.
+    """
+    text = result.get("result")
+    if isinstance(text, str) and text.lstrip().upper().startswith("ERROR"):
+        return {"ok": False, "error": text.strip()}
+    result.setdefault("ok", True)
+    return result
+
+
 def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
     args: dict[str, Any]
     if req.get("deployment_type") == "release":
@@ -317,8 +335,7 @@ def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
         args = {"environment": env, "image": image["name"], "tag": image["tag"]}
         if req.get("deployment_repo"):
             args["deployment_repo"] = req["deployment_repo"]
-        result = _invoke_tool("deploy_dataflow", args)
-        result.setdefault("ok", True)
+        result = _outcome_of(_invoke_tool("deploy_dataflow", args))
         result["confirmed_token"] = token
         dags = req.get("dag_files") or []
         if dags and result.get("ok"):
@@ -349,8 +366,7 @@ def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
     if req.get("deployment_repo"):
         args["deployment_repo"] = req["deployment_repo"]
 
-    result = _invoke_tool("open_release_pr", args)
-    result.setdefault("ok", True)
+    result = _outcome_of(_invoke_tool("open_release_pr", args))
     result["confirmed_token"] = token
     _record_deploy_event(req, env, result)
     return result
