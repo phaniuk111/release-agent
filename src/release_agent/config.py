@@ -412,6 +412,14 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("QUEUE_REQUIRE_RUN_MATCH"),
     )
+    # A run whose tag is a BARE version ("5.0.445") names no image. On by default
+    # the matching version is accepted on its own; set this to demand that the
+    # image be listed in image-workflows.json and the run come from that
+    # workflow. A catalogue entry naming a DIFFERENT workflow always refuses.
+    queue_require_image_workflow: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("QUEUE_REQUIRE_IMAGE_WORKFLOW"),
+    )
     # How a build run records the tag it created: the step's name and the log
     # line prefix it prints, e.g. "New tag is: orders-api-1.2.3".
     build_tag_step: str = Field(

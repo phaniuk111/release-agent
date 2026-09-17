@@ -118,18 +118,39 @@ def test_a_push_to_a_branch_is_not_mistaken_for_a_tag(github):
     assert C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")["ok"] is False
 
 
-def test_a_bare_version_counts_only_from_the_images_own_workflow(github):
+def test_a_bare_version_is_tied_to_the_image_by_its_own_workflow(github):
     github(_run(head="1.2.3"), tags={"1.2.3"})
     ok = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
     assert ok["ok"] is True and ok["via_workflow"] == "build-orders-api.yml"
 
+
+def test_a_bare_version_from_another_images_workflow_is_always_refused(github):
+    """The catalogue CONTRADICTS the run — that is evidence, not a gap."""
     github(_run(head="1.2.3", path=".github/workflows/build-payments-api.yml"), tags={"1.2.3"})
     out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
-    assert out["ok"] is False and "build workflow is build-orders-api.yml" in out["reason"]
+    assert out["ok"] is False and "is built by build-orders-api.yml" in out["reason"]
 
+
+def test_an_image_outside_the_catalogue_is_carried_by_the_version_alone(github):
+    """A monorepo tags per service; listing every one in image-workflows.json
+    goes stale, so a matching version is enough unless the setting demands more."""
+    github(_run(head="1.2.3"), tags={"1.2.3"}, workflow=None)
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is True and out["via_version_only"] is True
+
+
+def test_the_catalogue_can_be_made_mandatory(github, monkeypatch):
+    monkeypatch.setattr(C.settings, "queue_require_image_workflow", True, raising=False)
     github(_run(head="1.2.3"), tags={"1.2.3"}, workflow=None)
     out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
     assert out["ok"] is False and "no build workflow in" in out["reason"]
+
+
+def test_a_bare_version_that_is_the_wrong_version_is_still_refused(github):
+    """Relaxing the image tie must not relax the version check."""
+    github(_run(head="1.2.30"), tags={"1.2.30"}, workflow=None)
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "not orders-api:1.2.3" in out["reason"]
 
 
 def test_a_matrix_run_that_built_ours_among_others_counts(github):

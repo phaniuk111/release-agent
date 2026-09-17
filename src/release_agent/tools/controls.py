@@ -535,14 +535,26 @@ def match_run_to_artifact(repo_full: str, run_id: int, image: str, version: str)
             continue
         if names_image:
             return {"ok": True, "built": tag, "source": built["source"]}
-        # A bare version: only the image's own build workflow ties it to the image.
+        # A BARE version ("5.0.445") names no image, so image-workflows.json is
+        # the only thing that can tie it to one. Three cases:
         if image_workflow and run_workflow == image_workflow:
             return {"ok": True, "built": tag, "source": built["source"], "via_workflow": run_workflow}
-        why = (f"{image}'s build workflow is {image_workflow}, but this run is {run_workflow}"
-               if image_workflow else f"{image} has no build workflow in {CONFIG_PATH}")
+        if image_workflow:
+            # The catalogue CONTRADICTS the run — positive evidence that this is
+            # another service's build. Refused whatever the setting says.
+            return {"ok": False, "built": tags, "reason": (
+                f"That run built tag {tag}, but it is not {image}'s build: the tag carries no "
+                f"image name and {CONFIG_PATH} says {image} is built by {image_workflow}, "
+                f"while this run is {run_workflow}. Use the run of {image}'s own build.")}
+        # Not in the catalogue at all. A monorepo tags per service and listing
+        # every one goes stale, so by default the matching version is enough;
+        # QUEUE_REQUIRE_IMAGE_WORKFLOW=true demands the mapping instead.
+        if not settings.queue_require_image_workflow:
+            return {"ok": True, "built": tag, "source": built["source"], "via_version_only": True}
         return {"ok": False, "built": tags, "reason": (
             f"That run built tag {tag}, but nothing ties it to {image}: the tag carries no image "
-            f"name and {why}. Use the run of {image}'s own build.")}
+            f"name and {image} has no build workflow in {CONFIG_PATH}. "
+            f"Use the run of {image}'s own build.")}
     shown = ", ".join(tags[:5]) + (f" (+{len(tags) - 5} more)" if len(tags) > 5 else "")
     return {"ok": False, "built": tags, "reason": (
         f"That run built {shown}, not {label}. Use the run that built {label} — "
