@@ -111,8 +111,8 @@ directly; every change is a PR chain.**
   release PR** — a single day-long PR on a `release/prd/<date>` branch that **accumulates**
   (upsert by chart name) **both** `uat/deployment.json` and `prd/deployment.json`. Every
   prod deploy through the day adds to the same open PR (the staging view).
-- **Release to PROD (promote at cutoff).** Production is **never written directly and never
-  skips SIT/UAT.** After the daily cutoff (`PRD_CUTOFF_HOUR_UTC`, default 16:00 UTC), and
+- **Release to PROD.** Production is **never written directly and never
+  skips SIT/UAT.** There is no time-of-day gate — a release can ship at any hour, and
   only when asked — say *"release prod"* (→ `merge_prod_release`, also a UI quick-action) —
   the staged charts are **promoted through the full chain `… → SIT → UAT → PRD`** (a fresh
   branch cut from current SIT, upserted so existing prod charts are preserved — no
@@ -144,7 +144,7 @@ load, after each turn, and every 60s. Ask in chat: *"what's deployed to prod?"* 
 in today's PRD release PR?"* (`check_release_window`).
 
 - **Config:** `SIT_BRANCH`/`UAT_BRANCH`/`PRD_BRANCH`, `DEPLOYMENT_PATH_PATTERN`
-  (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`, `PRD_CUTOFF_HOUR_UTC`
+  (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`
   (`{env}/values_{env}.yaml`), `UAT_NAMESPACE`/`PRD_NAMESPACE`.
 
 The per-session ADK state is only for *conversation* memory; the deploy state is
@@ -177,12 +177,12 @@ Two clearly separated lanes run on **Google ADK 2.x**:
    domain's tools are surfaced to the model **only when that skill activates**:
    - `release-status` / `release-pr` / `release-controls` — **read-only**
    - `release-ops` — scoped mutations only: `remove_from_release`,
-     `retrigger_deployment_workflow`, `merge_prod_release`
+     `merge_prod_release`, `promote_release` / `promote_df_release`
    - `release-deploy` — **tool-less guard**; defers to the deterministic Workflow
 
    The agent is wrapped in an ADK `App` with a **`MutationGuardPlugin`** that blocks the
-   release-defining mutations (`open_release_pr`, `apply_json_update`, `dispatch_workflow`,
-   `apply_confirmed_deploy`) from the free-form chat path **in code** — not just by prompt.
+   release-defining mutations (`open_release_pr`, `apply_confirmed_deploy`,
+   `deploy_dataflow`) from the free-form chat path **in code** — not just by prompt.
    High-impact prod ops (`merge_prod_release`, a **prod** `remove_from_release`) require an
    ADK tool-confirmation before they run.
 
@@ -327,14 +327,13 @@ GitHub token + the repo env vars:
 # No GOOGLE_CLOUD_PROJECT required — this runner never touches the LLM.
 
 PYTHONPATH=src python -m release_agent.tools_cli                       # list all tools + args
-PYTHONPATH=src python -m release_agent.tools_cli get_build_controls    # show one tool's schema
-PYTHONPATH=src python -m release_agent.tools_cli get_build_controls image=payments-api tag=v1.5.0
+PYTHONPATH=src python -m release_agent.tools_cli get_build_report     # show one tool's schema
+PYTHONPATH=src python -m release_agent.tools_cli get_build_report image=payments-api tag=v1.5.0
 PYTHONPATH=src python -m release_agent.tools_cli find_prs '{"search_term":"payments-api"}'
 ```
 
 Read/query tools are safe to run. The mutating tools (`open_release_pr`,
-`apply_json_update`, `dispatch_workflow`, `remove_from_release`,
-`retrigger_deployment_workflow`) **execute for real** — this runner bypasses the
+`remove_from_release`, `merge_prod_release`) **execute for real** — this runner bypasses the
 human-confirmation gate by design. Add `--dry-run` to simulate them without executing
 (read-only tools still run), so you can sweep the whole toolset safely:
 
