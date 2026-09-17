@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from release_agent.agent.parsing import _try_parse_json_payload
 from release_agent.tools import release_fileset as RF
+from tests.fakes import FakeRepo as _FakeGhRepo
 
 BASE = "https://artifactory.example/com/db/acme-ds"
 
@@ -76,56 +77,6 @@ def test_release_files_marker_roundtrip():
     pr = SimpleNamespace(body=body)
     assert RF._release_files_from_pr(pr) == files
     assert RF._release_files_from_pr(SimpleNamespace(body="no marker")) == []
-
-
-class _FakeContent(SimpleNamespace):
-    pass
-
-
-class _FakeGhRepo:
-    """Branch->path->raw text; enough for promote_release."""
-
-    def __init__(self, files):
-        self.files = files  # {branch: {path: text}}
-        self.prs = []
-        self._n = 0
-
-    def get_git_ref(self, name):
-        return SimpleNamespace(object=SimpleNamespace(sha=name.split("heads/")[1]),
-                               delete=lambda: None)
-
-    def create_git_ref(self, ref, sha):
-        self.files[ref.split("heads/")[1]] = dict(self.files.get(sha, {}))
-
-    def get_contents(self, path, ref=None):
-        if path not in self.files.get(ref, {}):
-            raise Exception("404")
-        return _FakeContent(decoded_content=self.files[ref][path].encode(), sha="sha")
-
-    def update_file(self, path, msg, content, sha, branch):
-        self.files[branch][path] = content
-
-    def create_file(self, path, msg, content, branch):
-        self.files[branch][path] = content
-
-    def get_pulls(self, state="open", base=None, sort=None, direction=None):
-        return [p for p in self.prs if p.state == state and (base is None or p.base.ref == base)]
-
-    def create_pull(self, title, body, head, base):
-        self._n += 1
-        pr = SimpleNamespace(
-            number=self._n, title=title, body=body, state="open",
-            head=SimpleNamespace(ref=head), base=SimpleNamespace(ref=base),
-            html_url=f"http://pr/{self._n}", mergeable=True, mergeable_state="clean",
-            merge_commit_sha="m", update=lambda: None,
-        )
-        def merge(merge_method="squash", _pr=pr):
-            self.files[_pr.base.ref].update(self.files.get(_pr.head.ref, {}))
-            _pr.state = "closed"
-        pr.merge = merge
-        pr.edit = lambda **kw: None
-        self.prs.append(pr)
-        return pr
 
 
 def test_promote_release_copies_fileset(monkeypatch):

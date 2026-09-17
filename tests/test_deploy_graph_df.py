@@ -21,6 +21,7 @@ from google.genai import types  # noqa: E402
 
 from release_agent.config import settings  # noqa: E402
 from release_agent.tools import composer  # noqa: E402
+from tests.fakes import FakeContent as _Blob  # noqa: E402
 
 RUN = {"id": 7, "url": "https://github.com/o/df/actions/runs/7", "status": "queued"}
 RUNS_PAGE = "https://github.com/o/df/actions/workflows/df-deploy.yml"
@@ -187,11 +188,6 @@ def test_the_reply_hands_the_merge_call_to_the_person_with_the_run(github):
 
 
 # --- composer: a retry after a half-finished attempt still opens the PR -------
-
-class _Blob:
-    def __init__(self, text):
-        self.decoded_content, self.sha = text.encode(), "sha"
-
 
 class _PR:
     def __init__(self, n):

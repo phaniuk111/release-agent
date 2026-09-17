@@ -9,6 +9,7 @@ import pytest
 
 from release_agent.config import settings
 from release_agent.tools import dataflow
+from tests.fakes import FakeContent as _FakeContents
 
 
 @pytest.fixture
@@ -195,11 +196,6 @@ def test_unusable_mapping_does_not_break_the_form(df_config):
     df_config(df_dispatch_inputs='{"module": ')
     assert dataflow._dispatch_mapping() == {}
     assert dataflow._field_input_names() == {}
-
-
-class _FakeContents:
-    def __init__(self, text: str):
-        self.decoded_content = text.encode()
 
 
 class _WorkflowRepo:

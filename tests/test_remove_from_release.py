@@ -6,84 +6,10 @@ import pytest
 
 from release_agent.tools import promotion as P
 from release_agent.tools.release_window import _prd_release_branch
+from tests.fakes import FakeRepo as _FakeRepo
 
 UAT_PATH = P._deployment_path("uat")
 PRD_PATH = P._deployment_path("prd")
-
-
-# --- minimal PyGithub stand-in (files[branch][path] = json string, PRs tracked) ---
-
-class _FakeContent:
-    def __init__(self, text):
-        self.decoded_content = text.encode()
-        self.sha = "sha"
-
-
-class _FakeRef:
-    def __init__(self, sha):
-        self.object = SimpleNamespace(sha=sha)
-
-    def delete(self):
-        pass
-
-
-class _FakePR:
-    def __init__(self, repo, head, base):
-        self.repo = repo
-        self.head = SimpleNamespace(ref=head)
-        self.base = SimpleNamespace(ref=base)
-        self.state = "open"
-        repo._pr += 1
-        self.number = repo._pr
-        self.html_url = f"http://pr/{self.number}"
-        self.mergeable, self.mergeable_state, self.merge_commit_sha = True, "clean", "msha"
-
-    def update(self):
-        pass
-
-    def edit(self, state=None, **kwargs):
-        if state:
-            self.state = state
-
-    def merge(self, merge_method="squash"):
-        self.repo.files.setdefault(self.base.ref, {}).update(
-            self.repo.files.get(self.head.ref, {})
-        )
-        self.state = "closed"
-
-
-class _FakeRepo:
-    def __init__(self, initial):
-        self.files = {b: {p: json.dumps(d) for p, d in fs.items()} for b, fs in initial.items()}
-        self.prs = []
-        self._pr = 0
-
-    def get_git_ref(self, name):
-        return _FakeRef(name.split("heads/", 1)[1])  # sha == branch name
-
-    def create_git_ref(self, ref, sha):
-        work = ref.split("heads/", 1)[1]
-        self.files[work] = dict(self.files.get(sha, {}))
-
-    def get_contents(self, path, ref=None):
-        fs = self.files.get(ref, {})
-        if path not in fs:
-            raise Exception("404")
-        return _FakeContent(fs[path])
-
-    def create_file(self, path, msg, content, branch=None):
-        self.files.setdefault(branch, {})[path] = content
-
-    def update_file(self, path, msg, content, sha, branch=None):
-        self.files.setdefault(branch, {})[path] = content
-
-    def create_pull(self, title, body, head, base):
-        pr = _FakePR(self, head, base)
-        self.prs.append(pr)
-        return pr
-
-    def get_pulls(self, state="open", base=None, sort=None, direction=None):
-        return [p for p in self.prs if p.state == state and (base is None or p.base.ref == base)]
 
 
 def _entry(name, version, env="prd"):

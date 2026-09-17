@@ -5,6 +5,7 @@ from adk_release_agent import deploy
 from adk_release_agent.deploy_workflow import _preview_text
 from release_agent.agent.parsing import _try_parse_json_payload
 from release_agent.tools.promotion import _deployment_path, change_request_doc, plan_deploy
+from tests.fakes import FakeRepo as _FakeRepo
 
 
 # --- requirement 1: a prod deploy plans BOTH deployment.json files ---------------
@@ -146,65 +147,6 @@ def test_doc_changed_ignores_updated_at():
     assert _doc_changed({}, {"chg_summary": "S"}) is True
 
 
-class _FakeContent:
-    def __init__(self, text):
-        self.decoded_content = text.encode()
-        self.sha = "sha"
-
-
-class _FakeRef:
-    def __init__(self, sha):
-        self.object = type("O", (), {"sha": sha})()
-
-    def delete(self):
-        pass
-
-
-class _FakePR:
-    def __init__(self, repo, head, base):
-        self.repo, self.head_b, self.base_b = repo, head, base
-        repo._pr += 1
-        self.number = repo._pr
-        self.html_url = f"http://pr/{self.number}"
-        self.mergeable, self.mergeable_state, self.merge_commit_sha = True, "clean", "msha"
-
-    def update(self):
-        pass
-
-    def merge(self, merge_method="squash"):
-        self.repo.files.setdefault(self.base_b, {}).update(self.repo.files.get(self.head_b, {}))
-
-
-class _FakeRepo:
-    """Minimal PyGithub stand-in: files[branch][path] = json string."""
-
-    def __init__(self, initial):
-        self.files = {b: {p: json.dumps(d) for p, d in fs.items()} for b, fs in initial.items()}
-        self._pr = 0
-
-    def get_git_ref(self, name):
-        return _FakeRef(name.split("heads/", 1)[1])  # sha == branch name
-
-    def create_git_ref(self, ref, sha):
-        work = ref.split("heads/", 1)[1]
-        self.files[work] = dict(self.files.get(sha, {}))
-
-    def get_contents(self, path, ref=None):
-        fs = self.files.get(ref, {})
-        if path not in fs:
-            raise Exception("404")
-        return _FakeContent(fs[path])
-
-    def create_file(self, path, msg, content, branch=None):
-        self.files.setdefault(branch, {})[path] = content
-
-    def update_file(self, path, msg, content, sha, branch=None):
-        self.files.setdefault(branch, {})[path] = content
-
-    def create_pull(self, title, body, head, base):
-        return _FakePR(self, head, base)
-
-
 def test_promote_targeted_dedupes_stale_duplicate_entries():
     """A whole-branch SIT->UAT git merge can leave the same chart twice in include[]
     (3-way merge artifact — both sides had it at different positions). A later targeted
@@ -284,7 +226,7 @@ class _ProtectedRepo(_FakeRepo):
         self.protected = set(protected)
 
     def create_pull(self, title, body, head, base):
-        pr = _FakePR(self, head, base)
+        pr = super().create_pull(title, body, head, base)
         if base in self.protected:
             def refuse(merge_method="squash"):
                 raise _ProtectedRefusal()
