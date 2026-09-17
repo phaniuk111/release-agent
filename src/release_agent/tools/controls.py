@@ -24,11 +24,13 @@ class VerifyImageTagInput(BaseModel):
     repo: str = Field(
         default="", description="owner/repo where the build ran. Defaults to the target repo."
     )
+    # Empty = the configured BUILD_TAG_STEP / BUILD_TAG_MARKER, which is what the
+    # agent always passes; only a person debugging another pipeline overrides them.
     tag_generation_step: str = Field(
-        default="Create new tag", description="Step name that generates the git tag"
+        default="", description="Step name that generates the git tag (default: BUILD_TAG_STEP)"
     )
     tag_marker_prefix: str = Field(
-        default="New tag is:", description="Log marker prefix emitted by the tag step"
+        default="", description="Log marker prefix emitted by the tag step (default: BUILD_TAG_MARKER)"
     )
 
 
@@ -86,8 +88,8 @@ def verify_image_tag_build(
     image: str,
     tag: str,
     repo: str = "",
-    tag_generation_step: str = "Create new tag",
-    tag_marker_prefix: str = "New tag is:",
+    tag_generation_step: str = "",
+    tag_marker_prefix: str = "",
 ) -> str:
     """
     Verify that image:tag was actually built correctly BEFORE promoting it.
@@ -97,6 +99,8 @@ def verify_image_tag_build(
     '<tag_marker_prefix><tag>' marker, and reports the run's RLFT release-control steps.
     verified=true only when a matching successful run is found.
     """
+    tag_generation_step = tag_generation_step or settings.build_tag_step
+    tag_marker_prefix = tag_marker_prefix or settings.build_tag_marker
     repo_full = repo or active_build_repo()
     try:
         g = _get_github_client()
@@ -132,6 +136,9 @@ def verify_image_tag_build(
             indent=2,
         )
 
+    # What the log is expected to carry — reported as-is, but MATCHED by reading the
+    # tags out of the line (_tags_from_log): the prefix may be followed by a space,
+    # quotes or colour codes, and a plain "<prefix><tag>" substring would miss them.
     marker = f"{tag_marker_prefix}{tag}"
 
     def _inspect(run):
@@ -160,7 +167,9 @@ def verify_image_tag_build(
             tag_step
             and tag_step.get("conclusion") == "success"
             and tag_step.get("job_id")
-            and marker in _fetch_job_log(repo_full, tag_step["job_id"])
+            and tag in _tags_from_log(
+                _fetch_job_log(repo_full, tag_step["job_id"]), tag_marker_prefix
+            )
         )
         return tag_step, rlft, log_found
 
