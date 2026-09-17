@@ -28,20 +28,16 @@ import time
 from typing import Any
 
 from ._common import settings
+from . import git_snapshot
 
 _TIMEOUT = (10, 30)          # connect, read — a blocked proxy should fail fast
 _LARGE_REPO_MB = 200
 
-
-def _git_host() -> str:
-    """github.com, or the GitHub Enterprise host behind GITHUB_BASE_URL."""
-    base = (settings.github_base_url or "").strip()
-    return base.split("://")[-1].split("/")[0] if base else "github.com"
-
-
-def _scrub(text: str, token: str) -> str:
-    text = str(text)
-    return text.replace(token, "***") if token else text
+# git_snapshot already computes the GitHub host and scrubs a token from error
+# text for the exact same reasons (its Dulwich transport hits the same host,
+# over the same corporate proxy) — reuse rather than duplicate.
+_git_host = git_snapshot.git_host
+_scrub = git_snapshot._scrub
 
 
 def _mask_token_params(text: str) -> str:
@@ -118,8 +114,6 @@ def _probe_codeload(session, gh_repo, ref: str, token: str) -> dict[str, Any]:
 
 def _probe_dulwich(repo_full: str, branch: str, token: str) -> dict[str, Any]:
     """List the base branch through the transport the release checkout uses."""
-    from . import git_snapshot
-
     t0 = time.monotonic()
     try:
         sha = git_snapshot.branch_tip(git_snapshot.repo_url(repo_full), branch, token)

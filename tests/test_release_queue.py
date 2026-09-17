@@ -231,7 +231,6 @@ def test_bq_fully_optional_when_disabled():
         RQ.record_deployment("uat", [{"name": "svc-a", "tag": "1.0.0"}]),
         RQ.mark_released("R1", 1, [{"name": "svc-a", "tag": "1.0.0"}]),
         RQ.history_stats(),
-        RQ.recent_deployments(),
     ):
         assert result["ok"] is False and result.get("disabled") is True
     assert RQ.cached_queue_count() is None  # banner simply omits the count
@@ -350,9 +349,9 @@ def test_build_repo_routing_for_dataflow(monkeypatch):
     captured = {}
     monkeypatch.setattr(T, "_invoke_tool", lambda tool, args: captured.update(args) or {"ok": True})
 
-    T.verify_image_tag_build("df-img", "1.0", dataflow=True)
+    T.get_build_report(image="df-img", tag="1.0", dataflow=True)
     assert captured["repo"] == "org/df-build"
-    T.verify_image_tag_build("svc", "1.0")
+    T.get_build_report(image="svc", tag="1.0")
     assert captured["repo"] == ""  # tool layer falls back to BUILD_REPO
     T.get_build_report(image="df-img", tag="1.0", repo="explicit/repo", dataflow=True)
     assert captured["repo"] == "explicit/repo"

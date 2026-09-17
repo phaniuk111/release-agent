@@ -5,7 +5,7 @@ The agent was simplified from three repo concepts to two: the separate
 - `build_repo` is the canonical code+config+build repo (no hardcoded default — comes
   from env / .env / Helm ConfigMap),
 - the legacy `RELEASE_AGENT_TARGET_REPO` env spelling still resolves (backward compat),
-- `target_repo` no longer exists, and the gh_tools module exposes BUILD_REPO not TARGET_REPO.
+- `target_repo` no longer exists on settings.
 
 No network / GitHub access — pure config + import checks, so it is a fast,
 deterministic regression oracle.
@@ -66,13 +66,6 @@ def test_target_repo_field_is_gone():
     from release_agent.config import settings
 
     assert not hasattr(settings, "target_repo")
-
-
-def test_gh_tools_exposes_build_repo_not_target_repo():
-    import release_agent.tools.gh_tools as gh
-
-    assert hasattr(gh, "BUILD_REPO")
-    assert not hasattr(gh, "TARGET_REPO")
 
 
 def test_deploy_repo_is_independent(monkeypatch):

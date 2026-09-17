@@ -1,11 +1,11 @@
 """Deploy status: what's on UAT vs PRD, plus today's accumulating PRD release PR."""
 
 import itertools
+import json
 
 from ._common import (
     settings,
     tool,
-    json,
     _get_github_client,
     _read_json_file,
     active_deploy_repo,
@@ -31,10 +31,12 @@ def _charts(repo, env: str) -> dict:
 
 
 def _release_guard_branches() -> list[str]:
-    """Branches that count as 'a release in flight' when an open PR targets them.
-    Configurable (RELEASE_GUARD_BRANCHES, e.g. "PRD,PRL1"); default = the PRD branch."""
-    branches = [b.strip() for b in settings.release_guard_branches if b and b.strip()]
-    return branches or [settings.prd_branch]
+    """Branches that count as 'a release in flight' when an open PR targets them —
+    CARE's own guard-branch logic lives in release_chain; this stays as a thin
+    wrapper because promotion.py imports this name directly."""
+    from .release_chain import guard_branches
+
+    return guard_branches("care")
 
 
 def _open_prd_pr_blocker(repo, exclude_head: str = "", branches: list[str] | None = None):
@@ -90,13 +92,9 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
-    cutoff = settings.prd_cutoff_hour_utc
-    cutoff_passed = now.hour >= cutoff
     base = {
         "date_utc": now.date().isoformat(),
         "now_utc": now.strftime("%H:%M"),
-        "cutoff_utc": f"{cutoff:02d}:00",
-        "cutoff_passed": cutoff_passed,
     }
     try:
         repo = _get_github_client().get_repo(deployment_repo or active_deploy_repo())

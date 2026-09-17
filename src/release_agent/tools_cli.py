@@ -10,17 +10,17 @@ Usage:
     python -m release_agent.tools_cli
 
     # show one tool's full schema
-    python -m release_agent.tools_cli get_build_controls
+    python -m release_agent.tools_cli get_build_report
 
     # run a tool — JSON args
     python -m release_agent.tools_cli list_allowed_images
-    python -m release_agent.tools_cli get_build_controls '{"image":"payments-api","tag":"v1.5.0"}'
+    python -m release_agent.tools_cli get_build_report '{"image":"payments-api","tag":"v1.5.0"}'
 
     # run a tool — key=value args (convenience; ints/bools coerced)
     python -m release_agent.tools_cli get_recent_runs limit=5
     python -m release_agent.tools_cli open_release_pr environment=uat image_tags=payments-api:v1.5.0
 
-    # --dry-run: simulate mutating tools (open_release_pr, dispatch_workflow, ...)
+    # --dry-run: simulate mutating tools (open_release_pr, remove_from_release, ...)
     # without executing — read-only tools still run.
     python -m release_agent.tools_cli --dry-run open_release_pr environment=uat image_tags=x:1
 
@@ -39,8 +39,6 @@ _BY_NAME = {t.name: t for t in GH_TOOLS}
 # the runner prints the call it would make. Read-only tools always run.
 _MUTATING = {
     "open_release_pr",
-    "apply_json_update",
-    "dispatch_workflow",
     "remove_from_release",
     "retrigger_deployment_workflow",
 }

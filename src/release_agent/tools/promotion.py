@@ -16,14 +16,15 @@ env-specific values-file + namespace are filled from config.
 Entries are keyed by helm_chart_name (one entry per chart per env file).
 """
 
+import itertools
+import json
+import uuid
+
+from pydantic import BaseModel, Field
+
 from ._common import (
     settings,
     tool,
-    BaseModel,
-    Field,
-    json,
-    itertools,
-    uuid,
     _get_github_client,
     _read_json_file,
     _upsert_json_file,

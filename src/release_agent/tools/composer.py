@@ -72,11 +72,6 @@ def _find_version_spans(text: str) -> list[tuple[int, int, str]]:
         cursor = value_end
 
 
-def current_versions(text: str) -> list[str]:
-    """Every version fallback currently in this DAG, in file order."""
-    return [version for _, _, version in _find_version_spans(text)]
-
-
 def set_default_version(text: str, new_version: str) -> tuple[str, list[str]]:
     """Return (updated_text, versions_replaced).
 

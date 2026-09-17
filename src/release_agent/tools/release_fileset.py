@@ -34,11 +34,11 @@ import sys
 import tempfile
 import uuid
 
+from pydantic import BaseModel, Field
+
 from ._common import (
     settings,
     tool,
-    BaseModel,
-    Field,
     _get_github_client,
     _resolve_github_token,
     active_deploy_repo,

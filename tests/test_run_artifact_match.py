@@ -1,6 +1,5 @@
 """One run, one artifact: a queued chart:version must come with the run that
 built exactly it — a passing run of another image vouches for nothing."""
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -208,44 +207,6 @@ def test_the_check_can_be_relaxed(queue, monkeypatch):
     monkeypatch.setattr(settings, "queue_require_run_match", False)
     out = queue({"ok": False, "built": ["x"], "reason": "wrong run"})
     assert out["ok"] is True
-
-
-# --- the older provenance tool reads the same log ---------------------------------
-
-def _vitb_repo(monkeypatch, step_name, log, tag="orders-api-1.2.3"):
-    """verify_image_tag_build against one run whose tag step logged `log`."""
-    job = SimpleNamespace(id=7, name="build", steps=[
-        SimpleNamespace(name=step_name, number=3, status="completed", conclusion="success")])
-    run = SimpleNamespace(id=99, name="build", html_url="u", head_sha="abc", status="completed",
-                          conclusion="success", created_at=1, jobs=lambda: [job])
-    wf = SimpleNamespace(get_runs=lambda head_sha: [run])
-    repo = SimpleNamespace(get_workflow=lambda w: wf)
-    monkeypatch.setattr(C, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda r: repo))
-    monkeypatch.setattr(C, "_image_build_workflow", lambda repo_obj, image: "build-orders-api.yml")
-    monkeypatch.setattr(C, "_resolve_tag_commit", lambda repo_obj, t: "abcdef1234")
-    monkeypatch.setattr(C, "_fetch_job_log", lambda repo_full, job_id: log)
-    return json.loads(C.verify_image_tag_build("orders-api", tag, repo="o/build"))
-
-
-def test_the_tag_is_found_when_the_log_puts_a_space_after_the_marker(monkeypatch):
-    """The step logs "New tag is: <tag>"; a plain "<marker><tag>" substring
-    search would never match it, and every build would read as unverified."""
-    out = _vitb_repo(monkeypatch, C.settings.build_tag_step,
-                     "2026-09-17T10:00:00Z New tag is: orders-api-1.2.3\n")
-    assert out["verified"] is True and out["tag_generation"]["log_marker_found"] is True
-
-
-def test_a_longer_tag_sharing_our_prefix_does_not_verify_it(monkeypatch):
-    out = _vitb_repo(monkeypatch, C.settings.build_tag_step,
-                     "New tag is: orders-api-1.2.30\n")
-    assert out["verified"] is False
-
-
-def test_the_step_name_and_marker_follow_the_configured_ones(monkeypatch):
-    monkeypatch.setattr(C.settings, "build_tag_step", "Tag it")
-    monkeypatch.setattr(C.settings, "build_tag_marker", "tag=")
-    out = _vitb_repo(monkeypatch, "Tag it", "tag=orders-api-1.2.3\n")
-    assert out["verified"] is True and out["tag_generation"]["step"] == "Tag it"
 
 
 # --- the tag step may BE a job -----------------------------------------------------

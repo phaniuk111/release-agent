@@ -15,16 +15,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import itertools
+import json
 import time
 
-from ._common import (
-    settings,
-    tool,
-    BaseModel,
-    Field,
-    json,
-    _get_github_client,
-)
+from pydantic import BaseModel, Field
+
+from ._common import settings, tool, _get_github_client
 
 
 class DeployDataflowInput(BaseModel):
@@ -133,6 +129,23 @@ def _find_dispatched_run(workflow, before_ids: set, since=None, match: str = "",
     return None, 0
 
 
+def _parse_dispatch_template() -> tuple[dict | None, str]:
+    """(mapping, error) from DF_DISPATCH_INPUTS. mapping is None when the
+    template is empty or unusable; error explains why, for callers that must
+    fail loudly (_dispatch_inputs) — callers that must not (_dispatch_mapping)
+    just look at the mapping and ignore the error."""
+    template = (settings.df_dispatch_inputs or "").strip()
+    if not template:
+        return None, ""
+    try:
+        mapping = json.loads(template)
+    except json.JSONDecodeError as e:
+        return None, f"DF_DISPATCH_INPUTS is not valid JSON ({e}): {template[:80]}"
+    if not isinstance(mapping, dict):
+        return None, "DF_DISPATCH_INPUTS must be a JSON object"
+    return mapping, ""
+
+
 def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
     """Map our values onto the target workflow's declared input names.
 
@@ -143,15 +156,14 @@ def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
     {environment} are substituted. Keys absent from the template are simply not
     sent, which is how a workflow with no environment input is supported.
     """
-    template = (settings.df_dispatch_inputs or "").strip()
-    if not template:
+    mapping, error = _parse_dispatch_template()
+    if mapping is None:
+        if error:
+            # A bad template must break the deploy — dispatching with the raw
+            # image/tag names when the operator meant to rename them would
+            # silently reach the wrong workflow input.
+            raise ValueError(error)
         return {"image": image, "tag": tag, "environment": env}
-    try:
-        mapping = json.loads(template)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"DF_DISPATCH_INPUTS is not valid JSON ({e}): {template[:80]}")
-    if not isinstance(mapping, dict):
-        raise ValueError("DF_DISPATCH_INPUTS must be a JSON object")
     values = {"image": image, "tag": tag, "environment": env}
     out = {}
     for key, raw in mapping.items():
@@ -168,14 +180,8 @@ def _dispatch_mapping() -> dict:
     UI-facing callers want the mapping without inheriting the dispatch path's
     hard failure — a bad template must break the deploy, not blank the form.
     """
-    template = (settings.df_dispatch_inputs or "").strip()
-    if not template:
-        return {}
-    try:
-        mapping = json.loads(template)
-    except json.JSONDecodeError:
-        return {}
-    return mapping if isinstance(mapping, dict) else {}
+    mapping, _error = _parse_dispatch_template()
+    return mapping or {}
 
 
 def _field_input_names() -> dict:

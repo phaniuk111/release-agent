@@ -60,8 +60,6 @@ _SCHEMA = [
 _lock = threading.Lock()
 _client = None
 _table_ready = False
-# The banner polls every turn; don't hit BQ more than once a minute for a count.
-_count_cache: dict[str, Any] = {"at": 0.0, "count": None}
 # Every form open reads the queue (a BQ query job ~2-3s). Cache the reduced
 # queue briefly so opening a form twice, or two users at once, is instant.
 # Short TTL: the queue changes only when someone queues/withdraws, and both
@@ -169,8 +167,7 @@ def _insert(rows: list[dict[str, Any]]) -> dict[str, Any]:
             errors = client.insert_rows_json(_table_id(), rows, row_ids=[r["event_id"] for r in rows])
         if errors:
             return {"ok": False, "error": f"BigQuery insert failed: {errors}"}
-        # state changed — drop the derived caches
-        _count_cache["at"] = 0.0
+        # state changed — drop the derived cache
         _queue_cache["at"] = 0.0
         return {"ok": True}
     except Exception as e:  # never let queue telemetry break a release path
@@ -512,18 +509,6 @@ def history_stats(
     return out
 
 
-def recent_deployments(days: int = 30) -> dict[str, Any]:
-    """Deployment history from the event log — newest first, per chart per env."""
-    if not queue_enabled():
-        return _disabled()
-    try:
-        events = _fetch_events(days)
-    except Exception as e:
-        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
-    deploys = [e for e in reversed(events) if e.get("event_type") == "deployed"]
-    return {"ok": True, "deployments": deploys, "count": len(deploys)}
-
-
 # --- reads -------------------------------------------------------------------
 def _fetch_events(days: int = 120) -> list[dict[str, Any]]:
     client = _get_client()
@@ -635,15 +620,9 @@ def current_queue(use_cache: bool = True) -> dict[str, Any]:
 
 
 def cached_queue_count() -> int | None:
-    """Banner-friendly count: at most one BQ query per minute; None on any issue."""
-    import time
-
+    """Banner-friendly count: current_queue() already caches for 30s and is
+    invalidated on every write, so this is a plain projection over it."""
     if not queue_enabled():
         return None
-    now = time.time()
-    if now - _count_cache["at"] < 60:
-        return _count_cache["count"]
     result = current_queue()
-    _count_cache["at"] = now
-    _count_cache["count"] = result.get("count") if result.get("ok") else None
-    return _count_cache["count"]
+    return result.get("count") if result.get("ok") else None

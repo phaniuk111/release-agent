@@ -153,8 +153,15 @@ def _rows(result_type: str, result: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def run_query(promql: str, session=None, target: dict | None = None) -> dict[str, Any]:
-    """One instant query. Never raises; errors carry the most likely fix."""
+def run_query(promql: str, session=None, target: dict | None = None, *, _raw: bool = False) -> dict[str, Any]:
+    """One instant query. Never raises; errors carry the most likely fix.
+
+    ``_raw`` is private: promql_probe._query shares this function's HTTP call
+    and Prometheus/Google error normalisation, but (per its own module
+    docstring) never interprets series values — only counts and a sample
+    metric name — so on success it gets the untouched result back instead of
+    monitoring's float-cast, capped rows. No normal caller passes this.
+    """
     promql = (promql or "").strip()
     if not promql:
         return {"ok": False, "error": "empty query"}
@@ -185,8 +192,12 @@ def run_query(promql: str, session=None, target: dict | None = None) -> dict[str
                 "error": str(message or r.status_code)[:400],
                 "hint": _probe._http_hint(r.status_code, target, principal, str(message or ""))}
     data = body.get("data") or {}
+    ms = int((time.monotonic() - t0) * 1000)
+    if _raw:
+        return {"ok": True, "query": promql, "ms": ms,
+                "result_type": data.get("resultType"), "result": data.get("result")}
     rows = _rows(str(data.get("resultType") or ""), data.get("result"))
-    return {"ok": True, "query": promql, "ms": int((time.monotonic() - t0) * 1000),
+    return {"ok": True, "query": promql, "ms": ms,
             "count": len(rows), "truncated": len(rows) > _MAX_SERIES, "series": rows[:_MAX_SERIES]}
 
 

@@ -4,33 +4,19 @@ All operations are performed via the GitHub REST API (PyGithub library).
 Works great with a Personal Access Token (set via GH_TOKEN env var).
 """
 
-import base64
-import itertools
 import json
 import os
 import subprocess
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from github import Github, Auth, GithubException
-from pydantic import BaseModel, Field
+from github import Github, Auth
+from pydantic import BaseModel
 
 # Config - using Pydantic settings for consistency
 from ..config import settings
 
-BUILD_REPO = settings.build_repo
-DEPLOY_REPO = settings.deploy_repo
 CONFIG_PATH = settings.config_path
-MANIFEST_PATH = settings.manifest_path
-# Dispatchable-workflow allow-list guarding ``dispatch_workflow``. No longer
-# configurable: the tool is unreachable from the product (MutationGuardPlugin
-# blocks it in chat and it is excluded from the ADK toolset), so its only caller
-# is the local tools CLI. Two env keys that gated nothing in a cluster were more
-# confusing than the literal is restrictive — widen this list in code, not config.
-ALLOWED_WORKFLOWS = {"image-tag-step-report.yml"}
-# Workflow used to (re)run the deployment simulation in DEPLOY_REPO.
-ON_MERGE_WORKFLOW = settings.on_merge_workflow
 
 
 @dataclass
@@ -197,8 +183,3 @@ def _read_json_file(repo, branch: str, path: str) -> dict:
 
 
 # ---- Today's PRD release window (shared across sessions via GitHub) ----
-
-
-
-
-__all__ = ['settings', 'tool', 'BaseModel', 'Field', 'json', 'base64', 'itertools', 'uuid', 'Github', 'Auth', 'GithubException', '_resolve_github_token', '_gh_retry', '_get_github_client', '_read_json_file', '_upsert_json_file', '_parse_pairs', 'active_build_repo', 'active_deploy_repo', 'CONFIG_PATH', 'MANIFEST_PATH', 'ALLOWED_WORKFLOWS', 'ON_MERGE_WORKFLOW', 'BUILD_REPO', 'DEPLOY_REPO']

@@ -33,7 +33,10 @@ with DAG("acme-svc-alpha", schedule=None, catchup=False) as dag:
 
 
 def test_reads_the_current_version():
-    assert C.current_versions(DAG) == ["0.0.494"]
+    # current_versions() was a thin, uncalled wrapper over _find_version_spans
+    # and was removed; this test still pins "reads the current version" against
+    # the real span-finder rather than losing the assertion entirely.
+    assert [v for _, _, v in C._find_version_spans(DAG)] == ["0.0.494"]
 
 
 def test_replaces_only_the_version_characters():
@@ -60,7 +63,7 @@ def test_several_operators_in_one_dag_all_move():
     text = DAG + DAG.replace("0.0.494", "0.0.400")
     out, replaced = C.set_default_version(text, "1.0.0")
     assert replaced == ["0.0.494", "0.0.400"]        # reported in file order
-    assert C.current_versions(out) == ["1.0.0", "1.0.0"]
+    assert [v for _, _, v in C._find_version_spans(out)] == ["1.0.0", "1.0.0"]
 
 
 def test_an_unrelated_default_filter_is_not_touched():
