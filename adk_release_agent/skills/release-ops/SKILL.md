@@ -1,10 +1,9 @@
 ---
 name: release-ops
-description: "Perform tightly scoped release operations: remove or unstage charts, retrigger a deployment workflow, or release today's staged PRD batch."
+description: "Perform tightly scoped release operations: remove or unstage charts, promote a release, or release today's staged PRD batch."
 metadata:
   adk_additional_tools:
     - remove_from_release
-    - retrigger_deployment_workflow
     - merge_prod_release
     - promote_release
     - promote_df_release
@@ -16,7 +15,6 @@ Use this skill only when the user gives a direct operation command, not when the
 
 Allowed actions:
 - `remove_from_release` to unstage chart names from today's PRD release PR, or to remove them from a live environment.
-- `retrigger_deployment_workflow` to rerun deployment workflow for an existing PR.
 - `promote_release` to promote the current release's FILE-SET to the next environment branch (target=uat, prd or prl1). Use for 'promote release to uat/prd/prl1'. Terminal targets (prd, prl1) pause on a yes/no approval.
 - CARE and DF releases are DIFFERENT releases with different repos and branch chains. "DF", "Dataflow" or "df release" → `promote_df_release`; otherwise → `promote_release` (CARE). A DF release lands on its UAT branch directly (no SIT), so its usual promotion is to prd — if the tool says a target is not in the chain, tell the user which targets are. Never call `promote_release` for a DF release.
 - `merge_prod_release` to release today's staged PRD batch — allowed at any time. Releasing finalizes the release: no new charts can be added to it afterwards (later prod deploys start a new release). The tool confirmation warns the user about this before anything ships.
@@ -36,11 +34,5 @@ Narrating the approval flow:
 - If the user approves, summarize what the tool actually did from its result.
 - If the user rejects, reply briefly that nothing was released/removed and they can
   ask again when ready. Do not explain the deploy Workflow or tokens.
-
-Forbidden actions:
-- Do not deploy or add charts.
-- Do not directly mutate deployment JSON.
-- Do not open release PRs from free-form chat.
-- Do not dispatch arbitrary workflows.
 
 For deploy/add requests, tell the user to use the deterministic deploy flow that previews exact JSON and requires the confirmation token.

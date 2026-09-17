@@ -26,7 +26,7 @@ def _before_tool(plugin, tool_name):
 
 def test_mutation_guard_blocks_release_defining_mutations():
     plugin = MutationGuardPlugin()
-    for name in ("open_release_pr", "apply_json_update", "dispatch_workflow", "apply_confirmed_deploy"):
+    for name in ("open_release_pr", "apply_confirmed_deploy", "deploy_dataflow"):
         result = _before_tool(plugin, name)
         assert result is not None
         assert result["error_code"] == "MUTATION_BLOCKED"
@@ -38,13 +38,6 @@ def test_mutation_guard_allows_read_and_scoped_ops_tools():
     # Read tools and the allowed scoped-ops mutations must pass through untouched.
     for name in ("check_release_window", "find_prs", "remove_from_release", "merge_prod_release"):
         assert _before_tool(plugin, name) is None
-
-
-def test_blocked_set_matches_release_defining_mutations():
-    # The plugin's blocked set must cover every release-defining mutation plus the
-    # confirmed-apply entrypoint (which belongs to the deploy Workflow).
-    assert tools.RELEASE_DEFINING_MUTATIONS <= BLOCKED_FREEFORM_TOOLS
-    assert "apply_confirmed_deploy" in BLOCKED_FREEFORM_TOOLS
 
 
 def test_chat_app_registers_mutation_guard_plugin():
@@ -70,6 +63,27 @@ def test_skill_additional_tools_reference_real_chat_tools():
             # The deploy skill is tool-less: deploys run the deterministic Workflow.
             assert not names
     assert declared_any
+
+
+def test_every_chat_tool_is_unlocked_by_some_skill():
+    """The mirror of test_skill_additional_tools_reference_real_chat_tools.
+
+    A tool registered in ADK_CHAT_TOOLS but named by no skill's
+    adk_additional_tools is permanently unreachable: no skill activation ever
+    surfaces it to the model, and nothing else notices — until now.
+    """
+    chat_tool_names = {tool.__name__ for tool in tools.ADK_CHAT_TOOLS}
+    skills_dir = pathlib.Path(agent_module.__file__).parent / "skills"
+
+    unlocked: set[str] = set()
+    for path in sorted(skills_dir.iterdir()):
+        if not path.is_dir():
+            continue
+        skill = load_skill_from_dir(path)
+        unlocked.update(skill.frontmatter.metadata.get("adk_additional_tools") or [])
+
+    unreachable = chat_tool_names - unlocked
+    assert not unreachable, f"registered but unlocked by no skill: {sorted(unreachable)}"
 
 
 def test_free_form_toolset_excludes_release_defining_mutations():

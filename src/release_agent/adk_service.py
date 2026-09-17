@@ -294,15 +294,11 @@ _TOOL_LABELS = {
     "find_prs": "Searching pull requests",
     "get_pr_details": "Reading the pull request",
     "get_pr_comments": "Reading PR comments",
-    "summarize_pr_controls": "Summarizing PR controls",
-    "verify_image_tag_build": "Verifying the build for this tag",
-    "get_build_controls": "Reading the build controls",
     "get_build_report": "Diagnosing the build run",
     "promote_release": "Promoting the release file-set",
     "promote_df_release": "Promoting the DF release file-set",
     "remove_from_release": "Removing from the release",
     "merge_prod_release": "Releasing the staged PRD batch",
-    "retrigger_deployment_workflow": "Re-running the deployment workflow",
 }
 
 
@@ -325,7 +321,6 @@ _STATE_CHANGING_TOOLS = frozenset({
     "promote_df_release",
     "merge_prod_release",
     "remove_from_release",
-    "retrigger_deployment_workflow",
 })
 
 

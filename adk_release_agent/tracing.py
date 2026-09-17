@@ -30,13 +30,8 @@ try:
     from google.adk.plugins.base_plugin import BasePlugin
     from google.adk.tools.base_tool import BaseTool
     from google.adk.tools.tool_context import ToolContext
-
-    _ADK_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - exercised only without google-adk
     BasePlugin = object  # type: ignore[assignment,misc]
-    BaseTool = Any  # type: ignore[assignment,misc]
-    ToolContext = Any  # type: ignore[assignment,misc]
-    _ADK_AVAILABLE = False
 
 _PREVIEW_CHARS = 2000
 

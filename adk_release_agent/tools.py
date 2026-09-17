@@ -86,11 +86,6 @@ def get_pr_comments(pr_number: int, limit: int = 30) -> dict[str, Any]:
     return _invoke_tool("get_pr_comments", {"pr_number": pr_number, "limit": limit})
 
 
-def summarize_pr_controls(pr_number: int) -> dict[str, Any]:
-    """Summarize CHG/RMG tickets and RLFT/RFTL control status from PR comments."""
-    return _invoke_tool("summarize_pr_controls", {"pr_number": pr_number})
-
-
 def _build_repo_for(repo: str, dataflow: bool) -> str:
     """Explicit repo wins; else Dataflow images resolve to DF_BUILD_REPO (their
     builds live in a separate repo from the GKE services'); else config default."""
@@ -103,42 +98,20 @@ def _build_repo_for(repo: str, dataflow: bool) -> str:
     return ""
 
 
-def verify_image_tag_build(
-    image: str, tag: str, repo: str = "", dataflow: bool = False
-) -> dict[str, Any]:
-    """Verify whether an image tag can be traced to a build workflow run.
-    Set dataflow=true for Dataflow images — they are built in a different repo
-    (DF_BUILD_REPO) than the GKE services."""
-    return _invoke_tool(
-        "verify_image_tag_build",
-        {"image": image, "tag": tag, "repo": _build_repo_for(repo, dataflow)},
-    )
-
-
-def get_build_controls(
-    image: str = "", tag: str = "", repo: str = "", run_id: int = 0, dataflow: bool = False
-) -> dict[str, Any]:
-    """Read release build controls for an image tag or explicit workflow run id.
-    Set dataflow=true for Dataflow images (built in DF_BUILD_REPO)."""
-    return _invoke_tool(
-        "get_build_controls",
-        {"image": image, "tag": tag, "repo": _build_repo_for(repo, dataflow), "run_id": run_id},
-    )
-
-
 def get_build_report(
-    image: str = "", tag: str = "", workflow_url: str = "", repo: str = "", dataflow: bool = False
+    image: str = "", tag: str = "", workflow_url: str = "", repo: str = "",
+    run_id: int = 0, dataflow: bool = False,
 ) -> dict[str, Any]:
-    """Full build diagnosis for an image:tag OR a GitHub Actions run URL: which
-    STEPS failed, which controls (RCTLDEF…/RLFT) passed or
+    """Full build diagnosis for an image:tag, a GitHub Actions run URL, or a bare
+    run id: which STEPS failed, which controls (RCTLDEF…/RLFT) passed or
     failed (gate verdict), and whether the tag was built from the default
     branch. Use when a developer asks WHAT failed in their build/run and what
-    to fix. A workflow_url carries its own repo; for image+tag lookups of
-    Dataflow images set dataflow=true (they build in DF_BUILD_REPO)."""
+    to fix. A workflow_url carries its own repo; for image+tag or run_id
+    lookups of Dataflow images set dataflow=true (they build in DF_BUILD_REPO)."""
     return _invoke_tool(
         "get_build_report",
         {"image": image, "tag": tag, "workflow_url": workflow_url,
-         "repo": _build_repo_for(repo, dataflow)},
+         "repo": _build_repo_for(repo, dataflow), "run_id": run_id},
     )
 
 
@@ -152,16 +125,6 @@ def remove_from_release(
     return _invoke_tool(
         "remove_from_release",
         {"image_names": image_names, "environment": environment, "deployment_repo": deployment_repo},
-    )
-
-
-def retrigger_deployment_workflow(
-    pr_number: int, simulate_closed_controls: str = ""
-) -> dict[str, Any]:
-    """Retrigger deployment workflow for an existing deployment PR."""
-    return _invoke_tool(
-        "retrigger_deployment_workflow",
-        {"pr_number": pr_number, "simulate_closed_controls": simulate_closed_controls},
     )
 
 
@@ -558,65 +521,28 @@ def merge_prod_release(deployment_repo: str = "") -> dict[str, Any]:
     return _invoke_tool("merge_prod_release", {"deployment_repo": deployment_repo})
 
 
-STATUS_TOOLS = [
+# Every tool the free-form chat agent can call. The per-domain grouping a skill
+# actually surfaces (status/PR/controls/ops/queue/monitoring) is declared in
+# that skill's own SKILL.md frontmatter (adk_additional_tools) — this flat list
+# is only the full universe those frontmatter lists are checked against.
+ADK_CHAT_TOOLS = [
     check_release_window,
     list_allowed_images,
     get_recent_runs,
     get_workflow_status,
-]
-
-PR_TOOLS = [
     find_prs,
     get_pr_details,
     get_pr_comments,
-    summarize_pr_controls,
-    get_recent_runs,
-    get_workflow_status,
-]
-
-CONTROLS_TOOLS = [
-    verify_image_tag_build,
-    get_build_controls,
     get_build_report,
-    get_recent_runs,
-]
-
-OPS_TOOLS = [
     remove_from_release,
-    retrigger_deployment_workflow,
     merge_prod_release,
     promote_release,
     promote_df_release,
-    find_prs,
-    get_pr_details,
-]
-
-# Next-release intake queue (BigQuery-backed) — conversational adds/withdraws/list,
-# plus stats over the release/deploy history event log.
-QUEUE_TOOLS = [
     queue_release_intent,
     withdraw_release_intent,
     list_release_queue,
     release_stats,
-    verify_image_tag_build,
-    list_allowed_images,
+    monitoring_checks,
+    query_metrics,
 ]
-
-# Monitoring: PromQL checks and ad-hoc metric questions. PromQL cannot write.
-MONITORING_TOOLS = [monitoring_checks, query_metrics]
-
-ADK_CHAT_TOOLS = list(
-    {
-        id(tool): tool
-        for tool in (STATUS_TOOLS + PR_TOOLS + CONTROLS_TOOLS + OPS_TOOLS + QUEUE_TOOLS
-                     + MONITORING_TOOLS)
-    }.values()
-)
-
-# These remain in the deterministic confirmed path, not the ADK free-form toolset.
-RELEASE_DEFINING_MUTATIONS = {
-    "apply_json_update",
-    "dispatch_workflow",
-    "open_release_pr",
-}
 

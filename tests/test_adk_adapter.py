@@ -1,11 +1,14 @@
 from adk_release_agent import deploy, tools
+from adk_release_agent.safety import BLOCKED_FREEFORM_TOOLS
 
 
 def test_adk_chat_tools_exclude_release_defining_mutations():
     names = {tool.__name__ for tool in tools.ADK_CHAT_TOOLS}
 
-    assert not (tools.RELEASE_DEFINING_MUTATIONS & names)
-    assert {"remove_from_release", "retrigger_deployment_workflow", "merge_prod_release"} <= names
+    # Stronger than checking a private duplicate set: this is the SAME set the
+    # MutationGuardPlugin enforces against at runtime.
+    assert not (BLOCKED_FREEFORM_TOOLS & names)
+    assert {"remove_from_release", "merge_prod_release"} <= names
 
 
 def test_adk_tool_result_coercion_preserves_json_objects():

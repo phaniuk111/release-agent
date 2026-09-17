@@ -150,16 +150,12 @@ def _image_tags(req: dict[str, Any]) -> str:
     return ",".join(f"{image['name']}:{image['tag']}" for image in req.get("images", []))
 
 
-def _extract_prefixed_token(text: str, prefix: str) -> str:
+def _extract_confirmation_token(text: str, prefix: str = "CONFIRM-") -> str:
     for token in str(text).replace("`", " ").replace(",", " ").split():
         cleaned = token.strip().strip(".;:!?)(")
         if cleaned.upper().startswith(prefix):
             return cleaned.upper()
     return ""
-
-
-def _extract_confirmation_token(text: str) -> str:
-    return _extract_prefixed_token(text, "CONFIRM-")
 
 
 

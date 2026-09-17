@@ -3,8 +3,6 @@ name: release-controls
 description: "Verify image build provenance and release-control gates for image tags or workflow runs."
 metadata:
   adk_additional_tools:
-    - verify_image_tag_build
-    - get_build_controls
     - get_build_report
     - get_recent_runs
 ---
@@ -12,17 +10,16 @@ metadata:
 Use this skill when the user asks whether an image tag was built, whether release controls passed, what RLFT/RFTL gates are associated with a build — or WHAT FAILED in a build ("my build failed, which step/control?").
 
 Rules:
-- Use `verify_image_tag_build` for image and tag provenance.
+- Use `get_build_report` for provenance, RLFT/RFTL control details, and the
+  failure diagnosis alike: it takes image+tag, a run id, or a pasted GitHub
+  Actions run URL, and returns failed steps, per-control pass/fail, the gate
+  verdict, and built-from-main. Present it as a markdown table (Step/Control |
+  Job | Result with ✅/❌) after a one-line summary with the run link — never
+  raw JSON.
 - There are TWO build repos: GKE services build in the default build repo,
   Dataflow images in a separate one. For a Dataflow image, pass dataflow=true
-  on any image+tag lookup (run-URL lookups need nothing — the URL carries its
-  repo). If unsure which kind the image is, ask.
-- Use `get_build_controls` for RLFT/RFTL control details.
-- Use `get_build_report` when the user wants the failure diagnosis: it takes
-  image+tag OR a pasted GitHub Actions run URL and returns failed steps,
-  per-control pass/fail, the gate verdict, and built-from-main. Present it as
-  a markdown table (Step/Control | Job | Result with ✅/❌) after a one-line
-  summary with the run link — never raw JSON.
+  on any image+tag or run-id lookup (run-URL lookups need nothing — the URL
+  carries its repo). If unsure which kind the image is, ask.
 - Controls are the RCTLDEF… SDLC control steps and the RLFT/RFTL gates —
   whatever matches the configured prefixes; they may be steps inside a job or
   entire jobs. Report their names exactly. A scanner that is not a configured
@@ -37,5 +34,3 @@ Rules:
   the root cause is fixed. Offer to check again once they've re-run it.
 - If image and tag cannot identify the run, ask for the GitHub Actions run
   id or URL.
-- Report control names and states exactly as returned by tools.
-- This skill is read-only and cannot approve, waive, or rerun controls.

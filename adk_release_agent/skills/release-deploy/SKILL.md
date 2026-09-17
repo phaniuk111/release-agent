@@ -20,8 +20,6 @@ chat. They are routed to a deterministic ADK Workflow graph
 Your job here:
 - Confirm the request looks like a deploy and tell the user it will be previewed
   first and require the exact `CONFIRM-xxxxxx` token before anything is applied.
-- Never call `open_release_pr`, `apply_json_update`, `dispatch_workflow`, or any
-  other release-defining mutation directly — a safety plugin will block them.
 - If no `chart:version` can be parsed, ask the user for explicit `chart:version` input.
 - UAT deploys update `uat/deployment.json`; PROD deploys stage both UAT and PRD entries
   according to the existing release process.

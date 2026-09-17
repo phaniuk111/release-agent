@@ -7,7 +7,7 @@ metadata:
     - withdraw_release_intent
     - list_release_queue
     - release_stats
-    - verify_image_tag_build
+    - get_build_report
     - list_allowed_images
 ---
 
@@ -27,7 +27,7 @@ Being a good intake assistant (in order):
    match it against `list_allowed_images` and confirm the resolved name. Never
    queue a chart name you could not ground in the catalog or the user's exact text.
 2. **Get the version from facts, not guesses.** If no version was given, do NOT
-   ask an open question — call `verify_image_tag_build` or `list_allowed_images`
+   ask an open question — call `get_build_report` or `list_allowed_images`
    context to OFFER concrete recent tags ("4.0.154 built 2h ago — use that?").
    If you cannot find candidates, then ask.
 3. **The build run URL is REQUIRED.** Never call the tool without

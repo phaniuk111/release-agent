@@ -24,23 +24,16 @@ try:
     from google.adk.plugins.base_plugin import BasePlugin
     from google.adk.tools.base_tool import BaseTool
     from google.adk.tools.tool_context import ToolContext
-
-    _ADK_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - exercised only without google-adk
     BasePlugin = object  # type: ignore[assignment,misc]
-    BaseTool = Any  # type: ignore[assignment,misc]
-    ToolContext = Any  # type: ignore[assignment,misc]
-    _ADK_AVAILABLE = False
 
 
-# Release-defining mutations that must never run from the free-form chat path.
-# Kept in sync with ``adk_release_agent.tools.RELEASE_DEFINING_MUTATIONS`` plus the
-# confirmed-apply entrypoint, which belongs to the deterministic deploy Workflow.
+# Release-defining mutations that must never run from the free-form chat path:
+# opening a release PR, and the deterministic deploy Workflow's own confirmed-
+# apply entrypoints.
 BLOCKED_FREEFORM_TOOLS = frozenset(
     {
         "open_release_pr",
-        "apply_json_update",
-        "dispatch_workflow",
         "apply_confirmed_deploy",
         "deploy_dataflow",
     }

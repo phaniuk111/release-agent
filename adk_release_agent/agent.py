@@ -105,23 +105,21 @@ Two DIFFERENT confirmation flows — never mix their wording:
 ROOT_APP_NAME = "adk_release_agent"
 
 
-def _model_name() -> str:
-    return settings.gemini_model or "gemini-flash-latest"
-
-
-def gemini_retry_options():
-    """Retries for the chat agent's model — the full budget, since a failed call
-    here fails the user's turn. See _genai.RETRYABLE_STATUS for what retries."""
-    from ._genai import retry_options
-
-    return retry_options(settings.gemini_retry_attempts)
-
-
 def _model():
-    """The chat agent's model, with transport retries on transient failures."""
+    """The chat agent's model, with transport retries on transient failures.
+
+    Retries use the full budget (``gemini_retry_attempts``) since a failed call
+    here fails the user's turn — see ``_genai.RETRYABLE_STATUS`` for what retries.
+    """
     from google.adk.models.google_llm import Gemini
 
-    return Gemini(model=_model_name(), retry_options=gemini_retry_options())
+    from ._genai import retry_options
+
+    model_name = settings.gemini_model or "gemini-flash-latest"
+    return Gemini(
+        model=model_name,
+        retry_options=retry_options(settings.gemini_retry_attempts),
+    )
 
 
 # Environment words that mark a high-impact PRODUCTION scope.
@@ -244,11 +242,9 @@ def build_root_app():
 try:
     app = build_root_app()
     root_agent = app.root_agent
-    ADK_IMPORT_ERROR = None
 except ModuleNotFoundError as exc:
     if exc.name and (exc.name == "google.adk" or exc.name.startswith("google.adk")):
         app = None
         root_agent = None
-        ADK_IMPORT_ERROR = exc
     else:
         raise
