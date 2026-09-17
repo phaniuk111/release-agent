@@ -25,10 +25,10 @@ class VerifyImageTagInput(BaseModel):
         default="", description="owner/repo where the build ran. Defaults to the target repo."
     )
     tag_generation_step: str = Field(
-        default="Generate Git tag", description="Step name that generates the git tag"
+        default="Create new tag", description="Step name that generates the git tag"
     )
     tag_marker_prefix: str = Field(
-        default="TAG_GENERATED=", description="Log marker prefix emitted by the tag step"
+        default="New tag is:", description="Log marker prefix emitted by the tag step"
     )
 
 
@@ -86,8 +86,8 @@ def verify_image_tag_build(
     image: str,
     tag: str,
     repo: str = "",
-    tag_generation_step: str = "Generate Git tag",
-    tag_marker_prefix: str = "TAG_GENERATED=",
+    tag_generation_step: str = "Create new tag",
+    tag_marker_prefix: str = "New tag is:",
 ) -> str:
     """
     Verify that image:tag was actually built correctly BEFORE promoting it.
@@ -390,7 +390,7 @@ def _strip_ansi(line: str) -> str:
 def _tags_from_log(text: str, marker: str) -> list[str]:
     """Every tag logged after ``marker`` (one per built image in a matrix).
 
-    GitHub's log also echoes the step's own script — `echo "TAG_GENERATED=
+    GitHub's log also echoes the step's own script — `echo "New tag is:
     ${GITHUB_REF_NAME}"` — so only a value made of tag characters counts; an
     unexpanded variable or a quoted command fragment is not a tag.
     """

@@ -36,16 +36,16 @@ def test_versions_match_exactly(built, wanted, ok):
 def test_the_echoed_script_line_is_not_a_tag():
     """Seen in a real run's log: GitHub prints the step's script, colour codes
     and all, before its output — the unexpanded variable must not count."""
-    log = ("2026-06-26T10:00:00Z \x1b[36;1mecho \"TAG_GENERATED=${GITHUB_REF_NAME}\"\x1b[0m\n"
-           "2026-06-26T10:00:01Z TAG_GENERATED=orders-api-1.0.0-pass\n")
-    assert C._tags_from_log(log, "TAG_GENERATED=") == ["orders-api-1.0.0-pass"]
+    log = ("2026-06-26T10:00:00Z \x1b[36;1mecho \"New tag is: ${GITHUB_REF_NAME}\"\x1b[0m\n"
+           "2026-06-26T10:00:01Z New tag is: orders-api-1.0.0-pass\n")
+    assert C._tags_from_log(log, "New tag is:") == ["orders-api-1.0.0-pass"]
 
 
 def test_every_tag_a_matrix_run_logged_is_read():
-    log = ("2026-09-12T10:00:00Z TAG_GENERATED=orders-api-1.2.3\n"
-           "noise\n2026-09-12T10:00:01Z echo \"TAG_GENERATED='payments-api-4.0.0'\"\n"
-           "TAG_GENERATED=orders-api-1.2.3\n")
-    assert C._tags_from_log(log, "TAG_GENERATED=") == ["orders-api-1.2.3", "payments-api-4.0.0"]
+    log = ("2026-09-12T10:00:00Z New tag is: orders-api-1.2.3\n"
+           "noise\n2026-09-12T10:00:01Z echo \"New tag is: 'payments-api-4.0.0'\"\n"
+           "New tag is: orders-api-1.2.3\n")
+    assert C._tags_from_log(log, "New tag is:") == ["orders-api-1.2.3", "payments-api-4.0.0"]
 
 
 # --- reading a real run's shape ---------------------------------------------------
@@ -99,15 +99,15 @@ def test_the_right_image_at_another_version_is_refused(github):
 
 
 def test_a_branch_run_is_read_from_its_tag_step_log(github):
-    job = SimpleNamespace(id=7, steps=[_step("Checkout"), _step("Generate Git tag")])
-    github(_run(event="workflow_dispatch", jobs=[job]), logs={7: "TAG_GENERATED=orders-api-1.2.3"})
+    job = SimpleNamespace(id=7, steps=[_step("Checkout"), _step("Create new tag")])
+    github(_run(event="workflow_dispatch", jobs=[job]), logs={7: "New tag is: orders-api-1.2.3"})
     out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
     assert out == {"ok": True, "built": "orders-api-1.2.3", "source": "log"}
 
 
 def test_a_failed_tag_step_proves_nothing(github):
-    job = SimpleNamespace(id=7, steps=[_step("Generate Git tag", "failure")])
-    github(_run(event="workflow_dispatch", jobs=[job]), logs={7: "TAG_GENERATED=orders-api-1.2.3"})
+    job = SimpleNamespace(id=7, steps=[_step("Create new tag", "failure")])
+    github(_run(event="workflow_dispatch", jobs=[job]), logs={7: "New tag is: orders-api-1.2.3"})
     out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
     assert out["ok"] is False and "Can't tell which image and tag" in out["reason"]
 
@@ -132,9 +132,9 @@ def test_a_bare_version_counts_only_from_the_images_own_workflow(github):
 
 
 def test_a_matrix_run_that_built_ours_among_others_counts(github):
-    job = SimpleNamespace(id=7, steps=[_step("Generate Git tag")])
+    job = SimpleNamespace(id=7, steps=[_step("Create new tag")])
     github(_run(event="workflow_dispatch", jobs=[job]),
-           logs={7: "TAG_GENERATED=payments-api-4.0.0\nTAG_GENERATED=orders-api-1.2.3"})
+           logs={7: "New tag is: payments-api-4.0.0\nNew tag is: orders-api-1.2.3"})
     assert C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")["ok"] is True
 
 

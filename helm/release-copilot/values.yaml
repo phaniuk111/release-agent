@@ -165,8 +165,8 @@ config:
   # over the name; other text = the name contains it. Comma list; empty = none.
   QUEUE_ALLOWED_FAILING_CONTROLS: "1691"
   QUEUE_REQUIRE_RUN_MATCH: "true"
-  BUILD_TAG_STEP: "Generate Git tag"
-  BUILD_TAG_MARKER: "TAG_GENERATED="
+  BUILD_TAG_STEP: "Create new tag"
+  BUILD_TAG_MARKER: "New tag is:"
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
   # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
   # EMPTY BQ_DATASET DISABLES the whole feature cleanly.
