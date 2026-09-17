@@ -101,6 +101,23 @@ def expect_plain_answer(*must_not_contain: str):
     return check
 
 
+def expect_names_the_failing_control(*wanted: str):
+    """A controls question must come back with the CONTROL, not a raw step list.
+
+    Both release-status and release-controls can reach a run URL, so the model
+    has a real choice to get wrong: answering from get_workflow_status lists
+    steps and drops the gate verdict, which is the part the person needs.
+    """
+    def check(turn: dict) -> str | None:
+        if turn["interrupt"] is not None:
+            return f"expected a plain answer, got an interrupt: {turn['interrupt']!r}"
+        missing = [w for w in wanted if w.lower() not in turn["text"].lower()]
+        if missing:
+            return f"answer never mentions {missing!r}: {turn['text'][:300]!r}"
+        return None
+    return check
+
+
 @dataclass
 class Case:
     name: str
@@ -146,6 +163,20 @@ CASES = [
         name="catalog question routes to chat tools",
         message="what images can I promote?",
         check=expect_plain_answer("CONFIRM-"),
+    ),
+    # Routing the flaky one: both release-status and release-controls can reach
+    # a run URL, and answering from the wrong one drops the gate verdict.
+    Case(
+        name="a controls question names the control, not a step list",
+        message=("what controls ran on "
+                 "https://github.com/phaniuk111/devops/actions/runs/35273076669 ?"),
+        check=expect_names_the_failing_control("1691"),
+    ),
+    Case(
+        name="'why did my build fail' names the failed control",
+        message=("why did my build fail? "
+                 "https://github.com/phaniuk111/devops/actions/runs/35273088005"),
+        check=expect_names_the_failing_control("0000043"),
     ),
 ]
 

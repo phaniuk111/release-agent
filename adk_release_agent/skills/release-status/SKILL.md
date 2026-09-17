@@ -1,6 +1,6 @@
 ---
 name: release-status
-description: "Answer questions about deployed UAT/PRD charts, today's PRD release window, allowed images, and recent workflow runs."
+description: "Answer questions about deployed UAT/PRD charts, today's PRD release window, allowed images, and which workflow runs exist. NOT for release controls, build gates, or why a build failed — those are release-controls."
 metadata:
   adk_additional_tools:
     - check_release_window
@@ -15,7 +15,10 @@ Rules:
 - Treat GitHub deployment JSON and GitHub Actions as the source of truth.
 - Always use `check_release_window` for deployed UAT/PRD state and today's PRD release PR.
 - Use `list_allowed_images` for catalog questions.
-- Use `get_recent_runs` and `get_workflow_status` for workflow status.
+- Use `get_recent_runs` and `get_workflow_status` for whether a run exists and how
+  it ended. A question naming CONTROLS, RCTLDEF/RLFT/RFTL gates, build eligibility,
+  or WHY a build failed is the release-controls skill — switch to it rather than
+  listing raw steps, which answers the question without its verdict.
 - Match chart names EXACTLY. If the chart asked about is not in the deployed list,
   say so plainly ("orders-api is not deployed in PRD") and then list what is —
   never answer with a similarly named chart (orders-api is not orders-svc).

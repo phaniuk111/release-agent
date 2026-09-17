@@ -1,6 +1,6 @@
 ---
 name: release-controls
-description: "Verify image build provenance and release-control gates for image tags or workflow runs."
+description: "Release controls and build gates: did the RCTLDEF/RLFT/RFTL controls pass, was an image tag really built, and why did a build fail. Use for any question naming a control, a gate, or a GitHub Actions run URL."
 metadata:
   adk_additional_tools:
     - get_build_report
