@@ -49,3 +49,9 @@ release-manifest.json.bak
 .claude/
 traces/
 .vscode/
+
+# Local scratch checkouts — never part of this repo
+.codex/
+# the Backstage PoC checkout (~2GB); the real work lives on branch backstage_poc
+backstage/
+practice/
