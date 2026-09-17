@@ -173,3 +173,38 @@ def get_store() -> SessionCredentialStore:
 def active_credentials() -> SessionCredentials | None:
     """The credentials bound to the current request, if any."""
     return _active.get()
+
+
+def verify_token(token: str) -> tuple[bool, str]:
+    """Is this PAT usable? Returns (ok, login-or-reason). Never raises.
+
+    Connecting used to store whatever was pasted, so a typo'd or expired token
+    reported "Connected" and every GitHub action afterwards failed with a
+    confusing error somewhere else entirely. One call to /user turns that into
+    an immediate, accurate answer at the point the person can fix it.
+    """
+    token = str(token or "").strip()
+    if not token:
+        return False, "A PAT token is required to connect."
+    try:
+        import requests
+
+        from .config import settings
+
+        api = (settings.github_base_url or "https://api.github.com").rstrip("/")
+        r = requests.get(
+            f"{api}/user",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            timeout=15,
+        )
+    except Exception as e:                      # network/proxy trouble, not a bad token
+        return False, f"Could not reach GitHub to check the token: {e}"[:200]
+    if r.status_code == 200:
+        try:
+            return True, str((r.json() or {}).get("login") or "")
+        except Exception:
+            return True, ""
+    if r.status_code in (401, 403):
+        return False, ("GitHub rejected that token (401/403). Check it has not expired and "
+                       "that it carries the scopes this portal needs.")
+    return False, f"GitHub answered {r.status_code} when checking the token."

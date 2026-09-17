@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from . import features, identity
 from .adk_service import get_adk_chat_service
 from .config import settings as app_settings
+from . import session_creds
 from .session_creds import SessionCredentials, get_store
 
 # Production-oriented logging
@@ -429,6 +430,12 @@ async def session_connect_endpoint(req: SessionConnectRequest, request: Request)
     creds = SessionCredentials(pat_token=req.pat_token or "", owner=_owner(caller))
     if not creds.pat_token:
         return {"ok": False, "error": "A PAT token is required to connect."}
+
+    # Check it BEFORE storing: a typo'd or expired token used to report
+    # "Connected" and then fail somewhere else entirely, one operation later.
+    ok, detail = await asyncio.to_thread(session_creds.verify_token, creds.pat_token)
+    if not ok:
+        return {"ok": False, "connected": False, "error": detail}
 
     _session_store.set(thread_id, creds)
     logger.info("Session connected | thread=%s", thread_id)  # never log the token
