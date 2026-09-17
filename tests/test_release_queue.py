@@ -425,3 +425,23 @@ def test_a_row_already_gone_says_so(monkeypatch):
 def test_withdraw_by_name_alone_still_works_for_the_chat_tool(monkeypatch):
     inserted = _live_queue(monkeypatch, {"artifact_name": "svc-a", "artifact_version": "9.9.9"})
     assert RQ.withdraw_intent("svc-a", "dev@example.com")["ok"] is True and inserted
+
+
+def test_a_withdrawal_must_name_who_asked_for_it(monkeypatch):
+    """Found live against the REST endpoint: withdrawing with an empty
+    requester succeeded, writing a `withdrawn` event against nobody into an
+    append-only audit log. The UI validated; the API did not."""
+    import release_agent.tools.release_queue as RQ
+
+    wrote = []
+    monkeypatch.setattr(RQ, "_insert", lambda rows: wrote.extend(rows) or {"ok": True})
+    monkeypatch.setattr(RQ, "current_queue", lambda use_cache=True: {"ok": True, "queue": [
+        {"artifact_name": "svc", "artifact_version": "1.0"}]})
+
+    for empty in ("", "   ", None):
+        out = RQ.withdraw_intent("svc", empty, expected_version="1.0")
+        assert out["ok"] is False and "email" in out["error"].lower()
+    assert wrote == [], "nothing may be recorded for an unattributed withdrawal"
+
+    ok = RQ.withdraw_intent("svc", "dev@example.com", expected_version="1.0")
+    assert ok["ok"] is True and wrote[0]["requested_by"] == "dev@example.com"

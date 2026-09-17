@@ -269,6 +269,12 @@ def withdraw_intent(artifact_name: str, actor: str, expected_version: str = "") 
     name = name.strip()
     if not name:
         return {"ok": False, "error": "artifact_name is required."}
+    # Removing a chart from the release is an AUDIT event in an append-only log:
+    # it has to be recorded against someone. The UI asks; the REST endpoint did
+    # not, so a withdrawal could be written against nobody (found live).
+    if not str(actor or "").strip():
+        return {"ok": False, "error": (
+            "Your email is needed — the removal is recorded against it.")}
     expected = str(expected_version or version_in_name or "").strip()
     if expected:
         live = current_queue(use_cache=False)
