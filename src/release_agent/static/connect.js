@@ -4,6 +4,7 @@
 import { getThreadId } from './state.js';
 import { sessionConnect, sessionStatus } from './api.js';
 import { addMessage } from './chat.js';
+import { labeledField } from './forms/common.js';
 
 export function renderConnectionStatus(s) {
     const icon = document.getElementById('repo-chip-icon');
@@ -37,17 +38,13 @@ export function showConnectForm() {
         '<div class="text-slate-400 text-xs mb-3">Provide your GitHub PAT — all GitHub actions this session run as you. ' +
         'The token stays in memory on the server, is never logged, and is dropped when you start a new thread.</div>';
 
-    const box = document.createElement('div');
-    box.className = 'mb-2';
-    const l = document.createElement('label');
-    l.className = 'text-[11px] text-slate-400 block mb-0.5';
-    l.textContent = 'PAT token';
-    const pat = document.createElement('input');
-    pat.id = 'conn-pat'; pat.type = 'password';
-    pat.placeholder = 'ghp_… (never stored in the browser)';
-    pat.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
-    box.appendChild(l); box.appendChild(pat);
-    wrap.appendChild(box);
+    labeledField(wrap, {
+        label: 'PAT token',
+        id: 'conn-pat',
+        type: 'password',
+        placeholder: 'ghp_… (never stored in the browser)',
+        boxClass: 'mb-2',
+    });
 
     const row = document.createElement('div');
     row.className = 'flex items-center gap-3 mt-1';

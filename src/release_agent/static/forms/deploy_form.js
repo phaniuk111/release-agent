@@ -1,6 +1,6 @@
 import { deployTemplatePath, getContext } from '../api.js';
 import { sendMessage } from '../chat.js';
-import { ctxNote, opening, withDismiss } from './common.js';
+import { ctxNote, labeledField, opening, withDismiss } from './common.js';
 import { showDfDeployForm } from './df_deploy_form.js';
 import { showMonitoring } from './monitoring.js';
 import { parseDeployInclude } from './parse.js';
@@ -63,19 +63,13 @@ export async function showDeployForm(env, name, version) {
     wrap.appendChild(ta);
 
     // Target deployment repo — part of the deploy JSON payload.
-    const repoBox = document.createElement('div');
-    repoBox.className = 'mb-2';
-    const repoLabel = document.createElement('label');
-    repoLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
-    repoLabel.textContent = 'Deployment repo (owner/repo)';
-    const repoInput = document.createElement('input');
-    repoInput.id = 'deploy-repo-' + env;
-    repoInput.type = 'text';
-    repoInput.placeholder = 'e.g. my-org/deployment-repo';
-    repoInput.value = defaultDeployRepo;
-    repoInput.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
-    repoBox.appendChild(repoLabel); repoBox.appendChild(repoInput);
-    wrap.appendChild(repoBox);
+    labeledField(wrap, {
+        label: 'Deployment repo (owner/repo)',
+        id: 'deploy-repo-' + env,
+        placeholder: 'e.g. my-org/deployment-repo',
+        value: defaultDeployRepo,
+        boxClass: 'mb-2',
+    });
 
     // PROD requires a change request — feeds change-request.json in the release PR.
     if (isProd) {
@@ -85,21 +79,11 @@ export async function showDeployForm(env, name, version) {
         wrap.appendChild(hdr);
         const grid = document.createElement('div');
         grid.className = 'grid gap-2 mb-2';
-        const field = (labelText, el, id, type) => {
-            if (type) el.type = type;
-            el.id = id;
-            el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
-            const l = document.createElement('label');
-            l.className = 'text-[11px] text-slate-400 block mb-0.5';
-            l.textContent = labelText;
-            const box = document.createElement('div');
-            box.appendChild(l); box.appendChild(el);
-            grid.appendChild(box);
-        };
-        field('Change summary', document.createElement('input'), 'chg-summary-' + env, 'text');
-        field('Change description', document.createElement('textarea'), 'chg-desc-' + env);
-        field('Start time', document.createElement('input'), 'chg-start-' + env, 'datetime-local');
-        field('End time', document.createElement('input'), 'chg-end-' + env, 'datetime-local');
+        const field = (labelText, spec) => labeledField(grid, Object.assign({ label: labelText }, spec));
+        field('Change summary', { id: 'chg-summary-' + env });
+        field('Change description', { id: 'chg-desc-' + env, tag: 'textarea' });
+        field('Start time', { id: 'chg-start-' + env, type: 'datetime-local' });
+        field('End time', { id: 'chg-end-' + env, type: 'datetime-local' });
         wrap.appendChild(grid);
     }
 

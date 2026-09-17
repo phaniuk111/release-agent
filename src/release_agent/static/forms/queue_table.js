@@ -1,5 +1,5 @@
 import { escapeHtml as esc, shortName, timeAgo } from '../core/format.js';
-import { controlsSummary, queueDestination } from '../core/queue.js';
+import { buildSummary, controlsSummary, queueDestination } from '../core/queue.js';
 import { getContext, QUEUE_PATH, whoami, withdrawFromQueue } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
 import { ctxNote, opening, withDismiss } from './common.js';
@@ -67,10 +67,12 @@ async function _renderQueueTable(wrap, flash) {
         items.forEach((q, i) => {
             const label = esc(q.artifact_name) + ':' + esc(q.artifact_version || '');
             const detail = [q.change_details, q.note].filter(Boolean).join(' · ');
-            const build = q.build_verified === true
-                ? '<span class="text-emerald-400"><i class="fa-solid fa-circle-check mr-1"></i>verified</span>'
-                : '<span class="text-amber-400" title="no verified build at queue time">' +
-                  '<i class="fa-solid fa-triangle-exclamation mr-1"></i>not verified</span>';
+            // The same words the release form's tick-list uses (core/queue.js).
+            const bs = buildSummary(q);
+            const build = '<span class="' + (bs.state === 'verified' ? 'text-emerald-400' : 'text-amber-400') +
+                '" title="' + esc(bs.title) + '"><i class="fa-solid ' +
+                (bs.state === 'verified' ? 'fa-circle-check' : 'fa-triangle-exclamation') +
+                ' mr-1"></i>' + esc(bs.label) + '</span>';
             // An allowed control that failed reads "open" — to close by hand.
             const cs = controlsSummary(q);
             const controls = '<span class="' +

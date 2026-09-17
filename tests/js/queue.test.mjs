@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-    batchRow, envsOf, forRelease, queueDestination, queueSubmissionProblems,
+    batchRow, buildSummary, envsOf, forRelease, queueDestination, queueSubmissionProblems,
     releaseRouteText, tickHint, tickProblem, ticksToFlags,
 } from '../../src/release_agent/static/core/queue.js';
 
@@ -91,6 +91,18 @@ test('a batch row carries the artifact, its run and the routing', () => {
         artifact: 'orders-api:1.0.0', build_run_url: 'https://github.com/o/r/actions/runs/1',
         jira_ticket: 'REL-1', df_only: false, prl1_only: true, target_envs: 'prl1',
     });
+});
+
+test('the build badge reads the same on every screen, and unknown is not a failure', () => {
+    assert.deepEqual(buildSummary({ build_verified: true }).state, 'verified');
+    assert.equal(buildSummary({ build_verified: true }).label, 'verified');
+    assert.ok(buildSummary({ build_verified: true }).title.includes('built this version'));
+    assert.equal(buildSummary({ build_verified: false }).state, 'unverified');
+    assert.equal(buildSummary({ build_verified: false }).label, 'not verified');
+    // Never checked is its own state — the release form shows no badge for it.
+    assert.equal(buildSummary({ build_verified: null }).state, 'unknown');
+    assert.equal(buildSummary({}).state, 'unknown');
+    assert.equal(buildSummary(undefined).label, 'not checked');
 });
 
 test('the Controls column shows an allowed control as open, by number, else all passed', async () => {

@@ -2,18 +2,19 @@
 // the HTML's inline onclick handlers need (ES modules don't create globals).
 import { getThreadId } from './state.js';
 import { addMessage, sendMessage, sendConfirmation, sendApproval, newThread } from './chat.js';
-import { renderConnectionStatus, refreshConnectionStatus, showConnectForm } from './connect.js';
+import { refreshConnectionStatus, showConnectForm } from './connect.js';
 import { showCapabilities, openPalette } from './palette.js';
 import { toggleInsights, renderInsights } from './insights.js';
 import { loadReleaseStatus, toggleBannerDetail, startBannerAgeTicker, showBannerIdle } from './status.js';
 import { renderConsoleLinks } from './links.js';
 
 // Inline onclick handlers in the served HTML (and interrupt-box templates).
+// EXACTLY the names an onclick= names — a global nothing calls is a module
+// boundary quietly given up. Everything else is imported where it is used.
 Object.assign(window, {
     sendMessage, sendConfirmation, sendApproval, newThread,
-    showConnectForm, showCapabilities, openPalette,
+    showConnectForm, openPalette,
     toggleInsights, loadReleaseStatus, toggleBannerDetail,
-    renderConnectionStatus,
 });
 
 document.getElementById('thread-label').textContent = getThreadId();

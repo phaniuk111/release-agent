@@ -5,7 +5,8 @@ import { getThreadId, rotateThreadId } from './state.js';
 import { openChat, sessionDisconnect } from './api.js';
 import { escapeHtml } from './core/format.js';
 import { liftFences } from './core/fences.js';
-import { parseDeployIntent, showDeployForm } from './forms.js';
+import { showDeployForm } from './forms/deploy_form.js';
+import { parseDeployIntent } from './forms/parse.js';
 import { renderConnectionStatus } from './connect.js';
 import { showCapabilities } from './palette.js';
 import { loadReleaseStatus } from './status.js';
@@ -129,9 +130,6 @@ function _renderTables(t) {
     return out.join('\n');
 }
 
-// HTML escaping lives in core/format.js; re-exported for existing importers.
-export { escapeHtml };
-
 // Minimal, safe markdown -> HTML for streamed assistant text.
 export function renderMarkdown(t) {
     t = _extractChartBlocks(t);
@@ -227,15 +225,6 @@ export function addMessage(role, content, isStreaming = false) {
     renderCharts(div);
     chat.scrollTop = chat.scrollHeight;
     return div;
-}
-
-export function updateLastMessage(content) {
-    const chat = document.getElementById('chat');
-    const last = chat.lastElementChild;
-    if (last) {
-        const contentDiv = last.querySelector('div');
-        if (contentDiv) contentDiv.innerHTML = content;
-    }
 }
 
 export async function sendMessage(overrideText) {

@@ -1,7 +1,7 @@
 import { escapeHtml as esc } from '../core/format.js';
 import { dfTemplatePath, getContext } from '../api.js';
 import { sendMessage } from '../chat.js';
-import { ctxNote, opening, withDismiss } from './common.js';
+import { ctxNote, fieldControl, labeledField, opening, withDismiss } from './common.js';
 
 // ---- Dataflow flex-template deploy (workflow-dispatch golden path) ------
 // The dev supplies image name + tag; deploying dispatches the DF repo's
@@ -34,35 +34,14 @@ export async function showDfDeployForm() {
 
     const grid = document.createElement('div');
     grid.className = 'grid grid-cols-2 gap-2 mb-1';
-    const mk = (spec, id, fallbackLabel, placeholder) => {
-        const l = document.createElement('label');
-        l.className = 'text-[11px] text-slate-400 block mb-0.5';
-        l.textContent = spec.label || fallbackLabel;
-        const opts = spec.options || [];
-        const el = document.createElement(opts.length ? 'select' : 'input');
-        el.id = id;
-        el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
-        if (opts.length) {
-            const blank = document.createElement('option');
-            blank.value = ''; blank.textContent = 'select ' + (spec.label || fallbackLabel).toLowerCase() + '…';
-            el.appendChild(blank);
-            opts.forEach(o => {
-                const opt = document.createElement('option');
-                opt.value = o; opt.textContent = o;
-                el.appendChild(opt);
-            });
-            if (spec.default && opts.indexOf(spec.default) !== -1) el.value = spec.default;
-        } else {
-            el.type = 'text';
-            el.placeholder = placeholder;
-            if (spec.default) el.value = spec.default;
-        }
-        if (spec.description) el.title = spec.description;
-        const box = document.createElement('div');
-        box.appendChild(l); box.appendChild(el);
-        grid.appendChild(box);
-        return el;
-    };
+    const mk = (spec, id, fallbackLabel, placeholder) => labeledField(grid, {
+        label: spec.label || fallbackLabel,
+        id: id,
+        options: spec.options || [],
+        default: spec.default,
+        placeholder: placeholder,
+        title: spec.description,
+    });
     const imgEl = mk(fImage, 'df-image', 'Image name', 'e.g. order-enrichment');
     const tagEl = mk(fTag, 'df-tag', 'Tag', 'e.g. 1.4.2');
     wrap.appendChild(grid);
@@ -88,31 +67,25 @@ export async function showDfDeployForm() {
     // the files — no picker to keep in sync with the repo, and a typo is caught
     // by the preview, which reads each file and reports it by name before the
     // CONFIRM token is issued.
-    const dagLabel = document.createElement('label');
-    dagLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
-    dagLabel.textContent = 'Composer DAG file(s) (optional) — one .py per line; ' +
-        'their default template version is bumped to this tag via a PR';
-    const dagEl = document.createElement('textarea');
-    dagEl.id = 'df-dags'; dagEl.rows = 3; dagEl.spellcheck = false;
-    dagEl.placeholder = ctx.composer_dir
-        ? (ctx.composer_dir + '/…  e.g.\nacme-svc-alpha.py\nacme-svc-beta.py')
-        : 'acme-svc-alpha.py';
-    dagEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 ' +
-        'text-xs text-white font-mono focus:outline-none mb-1';
-    wrap.appendChild(dagLabel); wrap.appendChild(dagEl);
+    const dagEl = labeledField(wrap, {
+        label: 'Composer DAG file(s) (optional) — one .py per line; ' +
+               'their default template version is bumped to this tag via a PR',
+        id: 'df-dags', tag: 'textarea', rows: 3, spellcheck: false,
+        placeholder: ctx.composer_dir
+            ? (ctx.composer_dir + '/…  e.g.\nacme-svc-alpha.py\nacme-svc-beta.py')
+            : 'acme-svc-alpha.py',
+        className: 'w-full font-mono mb-1',
+    });
     // Which Composer repo those DAGs live in. Pre-filled from config, editable
     // for teams whose DAGs are not all in one place — same pattern as the
     // deployment-repo override on the release forms.
-    const dagRepoLabel = document.createElement('label');
-    dagRepoLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
-    dagRepoLabel.textContent = 'Composer DAGs repo (owner/repo)';
-    const dagRepoEl = document.createElement('input');
-    dagRepoEl.id = 'df-composer-repo'; dagRepoEl.type = 'text';
-    dagRepoEl.value = ctx.composer_repo || '';
-    dagRepoEl.placeholder = 'e.g. my-org/composer-dags';
-    dagRepoEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 ' +
-        'text-xs text-white focus:outline-none mb-1';
-    wrap.appendChild(dagRepoLabel); wrap.appendChild(dagRepoEl);
+    const dagRepoEl = labeledField(wrap, {
+        label: 'Composer DAGs repo (owner/repo)',
+        id: 'df-composer-repo',
+        value: ctx.composer_repo || '',
+        placeholder: 'e.g. my-org/composer-dags',
+        className: 'w-full mb-1',
+    });
 
     const dagHint = document.createElement('div');
     dagHint.className = 'text-[10px] text-slate-600 mb-2';
@@ -128,10 +101,7 @@ export async function showDfDeployForm() {
     advToggle.innerHTML = '<i class="fa-solid fa-chevron-right"></i> Advanced — repo override';
     const advBody = document.createElement('div');
     advBody.className = 'hidden mt-1';
-    const repoInput = document.createElement('input');
-    repoInput.id = 'df-repo'; repoInput.type = 'text';
-    repoInput.value = ctx.deploy_repo || '';
-    repoInput.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
+    const repoInput = fieldControl({ id: 'df-repo', value: ctx.deploy_repo || '' });
     advBody.appendChild(repoInput);
     advToggle.addEventListener('click', () => advBody.classList.toggle('hidden'));
     adv.appendChild(advToggle); adv.appendChild(advBody);

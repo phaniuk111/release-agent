@@ -1,8 +1,8 @@
-import { escapeHtml as esc } from '../core/format.js';
-import { forRelease, releaseRouteText } from '../core/queue.js';
+import { escapeHtml as esc, shortName } from '../core/format.js';
+import { buildSummary, forRelease, releaseRouteText } from '../core/queue.js';
 import { getContext, QUEUE_PATH, releaseDefaults, releaseDraft, whoami } from '../api.js';
 import { sendMessage } from '../chat.js';
-import { ctxNote, opening, withDismiss } from './common.js';
+import { ctxNote, labeledField, opening, withDismiss } from './common.js';
 
 // ---- CARE / DF release (live model) --------------------------------------
 // One form, two flavors, same backend pipeline (release_details.json → the
@@ -67,38 +67,26 @@ export async function showReleaseForm(kind) {
 
     const grid = document.createElement('div');
     grid.className = 'grid gap-2 mb-2';
-    const mk = (labelText, el, id, type, placeholder) => {
-        if (type) el.type = type;
-        el.id = id;
-        if (placeholder) el.placeholder = placeholder;
-        el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
-        const l = document.createElement('label');
-        l.className = 'text-[11px] text-slate-400 block mb-0.5';
-        l.textContent = labelText;
-        const box = document.createElement('div');
-        box.appendChild(l); box.appendChild(el);
-        grid.appendChild(box);
-        return el;
-    };
-    const nameEl = mk('Release name *', document.createElement('input'), 'rel-name', 'text', 'e.g. July 20th 2026 : Release 31');
-    const startEl = mk('Start *', document.createElement('input'), 'rel-start', 'datetime-local');
-    const endEl = mk('End *', document.createElement('input'), 'rel-end', 'datetime-local');
-    const initEl = mk('Change initiator (email) *', document.createElement('input'), 'rel-initiator', 'text', 'you@company.com');
-    const sumEl = mk('Change summary *', document.createElement('input'), 'rel-summary', 'text');
-    const descEl = mk('Change description', document.createElement('textarea'), 'rel-desc');
-    const reasonEl = mk('Change reason', document.createElement('textarea'), 'rel-reason');
-    const riskEl = mk('Associated risk', document.createElement('textarea'), 'rel-risk');
-    const consEl = mk('Consequence', document.createElement('textarea'), 'rel-consequence');
-    const impactEl = mk('User/service impact', document.createElement('textarea'), 'rel-impact');
-    const repoEl = mk('Deployment repo (owner/repo) *', document.createElement('input'),
-        'rel-repo', 'text', 'e.g. my-org/deployment-repo');
+    const mk = (labelText, spec) => labeledField(grid, Object.assign({ label: labelText }, spec));
+    const nameEl = mk('Release name *', { id: 'rel-name', placeholder: 'e.g. July 20th 2026 : Release 31' });
+    const startEl = mk('Start *', { id: 'rel-start', type: 'datetime-local' });
+    const endEl = mk('End *', { id: 'rel-end', type: 'datetime-local' });
+    const initEl = mk('Change initiator (email) *', { id: 'rel-initiator', placeholder: 'you@company.com' });
+    const sumEl = mk('Change summary *', { id: 'rel-summary' });
+    const descEl = mk('Change description', { id: 'rel-desc', tag: 'textarea' });
+    const reasonEl = mk('Change reason', { id: 'rel-reason', tag: 'textarea' });
+    const riskEl = mk('Associated risk', { id: 'rel-risk', tag: 'textarea' });
+    const consEl = mk('Consequence', { id: 'rel-consequence', tag: 'textarea' });
+    const impactEl = mk('User/service impact', { id: 'rel-impact', tag: 'textarea' });
+    const repoEl = mk('Deployment repo (owner/repo) *',
+        { id: 'rel-repo', placeholder: 'e.g. my-org/deployment-repo' });
     repoEl.value = targetRepo || '';
     const artEl = mk(
         isDf ? 'DF images * — one per line (full URL or name:version); all excluded from helm deploys'
              : 'Artifacts * — one per line (full URL or name:version)',
-        document.createElement('textarea'), 'rel-artifacts', null,
-        isDf ? 'order-enrichment:1.4.2\nhttps://artifactory…/df-position-agg:2.1.0'
-             : 'acme-workflow-service:4.0.66\nhttps://artifactory…/acme-risk-fetcher:4.0.153');
+        { id: 'rel-artifacts', tag: 'textarea',
+          placeholder: isDf ? 'order-enrichment:1.4.2\nhttps://artifactory…/df-position-agg:2.1.0'
+                            : 'acme-workflow-service:4.0.66\nhttps://artifactory…/acme-risk-fetcher:4.0.153' });
     artEl.rows = 5; artEl.spellcheck = false; artEl.classList.add('font-mono');
     wrap.appendChild(grid);
 
@@ -198,8 +186,12 @@ export async function showReleaseForm(kind) {
     (qctx.queue || []).forEach(q => { queuedByName[q.artifact_name] = q; });
     const manualPrl1 = new Set();
 
+    // A typed artifact line is either name:version or a full registry URL. The
+    // trailing slashes come off without a regex (parsing paths are tokenizers
+    // here — the house pattern is state.js's API_BASE).
     const parseNames = () => artEl.value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-        const last = l.replace(/\/+$/, '').split('/').pop();
+        while (l.endsWith('/')) l = l.slice(0, -1);
+        const last = l.split('/').pop();
         const i = last.indexOf(':');
         return i > 0 ? last.slice(0, i) : null;
     }).filter(Boolean);
@@ -262,10 +254,15 @@ export async function showReleaseForm(kind) {
             row.className = 'flex items-center gap-2 text-[11px] text-slate-300 font-mono py-0.5 cursor-pointer';
             const cb = document.createElement('input');
             cb.type = 'checkbox'; cb.checked = true; cb.dataset.q = q.artifact_name;
-            const badge = (q.build_verified === true)
-                ? ' <i class="fa-solid fa-circle-check text-emerald-400" title="build verified at queue time"></i>'
-                : (q.build_verified === false)
-                    ? ' <i class="fa-solid fa-triangle-exclamation text-amber-400" title="no traceable build at queue time"></i>' : '';
+            // Same wording as the queue table's Build column (core/queue.js).
+            // Nothing is shown for 'unknown': a build nobody checked must not
+            // look like a build that failed its check.
+            const bs = buildSummary(q);
+            const badge = bs.state === 'verified'
+                ? ' <i class="fa-solid fa-circle-check text-emerald-400" title="' + esc(bs.title) + '"></i>'
+                : bs.state === 'unverified'
+                    ? ' <i class="fa-solid fa-triangle-exclamation text-amber-400" title="' + esc(bs.title) + '"></i>'
+                    : '';
             const span = document.createElement('span');
             span.className = 'flex-1 truncate';
             span.innerHTML = esc(q.artifact_name) + ':' + esc(q.artifact_version) + badge +
@@ -276,7 +273,7 @@ export async function showReleaseForm(kind) {
             if (tip) span.title = tip + ' — ' + (q.requested_by || '');
             const who = document.createElement('span');
             who.className = 'text-slate-600 truncate';
-            who.textContent = (q.requested_by || '').split('@')[0];
+            who.textContent = shortName(q.requested_by);
             cb.addEventListener('change', () => applyItem(q, cb.checked));
             row.appendChild(cb); row.appendChild(span); row.appendChild(who);
             qBox.appendChild(row);

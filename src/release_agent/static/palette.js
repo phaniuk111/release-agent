@@ -3,7 +3,7 @@
 // in the palette only filters.
 import { sendMessage } from './chat.js';
 import { visibleCapabilities } from './core/capabilities.js';
-import { showDeployForm } from './forms.js';
+import { showDeployForm } from './forms/deploy_form.js';
 
 // This person's view, baked into the page by the server (features.py): preview
 // groups are left out for everyone except the people testing them.

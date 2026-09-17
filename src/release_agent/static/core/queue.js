@@ -130,6 +130,30 @@ function controlNumber(entry) {
 }
 
 /**
+ * Was this version traced back to the run that BUILT it, when it was queued —
+ * the queue table's Build column and the release form's tick-list badge, which
+ * used to say three different things about the same field.
+ * Three states, because "not checked" and "checked, nothing found" are not the
+ * same answer: a screen may show nothing for the first and must not claim the
+ * build failed verification when it was never looked at.
+ * @param {{build_verified?: boolean|null}} q
+ * @returns {{state: 'verified'|'unverified'|'unknown', label: string, title: string}}
+ */
+export function buildSummary(q) {
+    const v = q ? q.build_verified : null;
+    if (v === true) {
+        return { state: 'verified', label: 'verified',
+                 title: 'traced to the GitHub Actions run that built this version, at queue time' };
+    }
+    if (v === false) {
+        return { state: 'unverified', label: 'not verified',
+                 title: 'no build run could be traced to this version at queue time' };
+    }
+    return { state: 'unknown', label: 'not checked',
+             title: 'the build was not checked when this was queued' };
+}
+
+/**
  * The release queue's Controls column — the ONE place an allowed control shows.
  * It failed on the build run but may be a false positive, so it reads "open"
  * (to close by hand), never "failed"; the release itself is not stopped.
