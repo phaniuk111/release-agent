@@ -229,3 +229,69 @@ def test_a_different_operation_after_an_approval_still_asks(monkeypatch):
         args=_confirmation_call("c1").args)
     events = _collect(service, "yes", thread_id="t-diff")
     assert "interrupt" in _types(events), "PRL1 is a different operation — the person decides"
+
+
+class _DeployEvent:
+    """The shape _stream_deploy_preview reads off a workflow event."""
+
+    def __init__(self, output):
+        self.output = output
+        self.content = None
+        self.actions = None
+        self.author = "deploy"
+        self.invocation_id = "i"
+        self.long_running_tool_ids = set()
+
+    def get_function_calls(self):
+        return []
+
+
+def test_a_preview_that_cannot_be_built_says_why_instead_of_nothing():
+    """Found live: a release payload with a malformed date produced an empty
+    turn — the form was submitted and the user was told nothing at all. The
+    gate routes an unbuildable preview to cancel, which carries its reason in
+    the node OUTPUT rather than as text, so the streamer has to render it."""
+    from release_agent import adk_service as S
+
+    svc = S.AdkChatService.__new__(S.AdkChatService)
+    svc._pending_deploy = {}
+    cancelled = _DeployEvent(
+        output={"ok": False, "status": "cancelled", "token": "",
+                "error": "'start_date' must be 'YYYY-MM-DD HH:MM:SS'"})
+
+    class _Runner:
+        async def run_async(self, **kw):
+            # The gate's rejecting Event and the cancel node both carry it.
+            yield cancelled
+            yield cancelled
+
+    svc.deploy_runner = _Runner()
+
+    async def drain():
+        return [e async for e in svc._stream_deploy_preview("{}", "t")]
+
+    events = asyncio.run(drain())
+    said = " ".join(e.get("content", "") for e in events if e.get("type") == "token")
+    assert "start_date" in said, "the reason the preview failed must reach the user"
+    assert said.count("start_date") == 1, "said once, not once per node that carries it"
+    assert events[-1]["type"] == "done"
+
+
+def test_a_silent_deploy_graph_still_answers():
+    """Even with no text and no output, the lane must not answer with silence."""
+    from release_agent import adk_service as S
+
+    svc = S.AdkChatService.__new__(S.AdkChatService)
+    svc._pending_deploy = {}
+
+    class _Runner:
+        async def run_async(self, **kw):
+            yield _DeployEvent(output=None)
+
+    svc.deploy_runner = _Runner()
+
+    async def drain():
+        return [e async for e in svc._stream_deploy_preview("{}", "t")]
+
+    events = asyncio.run(drain())
+    assert any(e.get("type") == "token" and e.get("content") for e in events)

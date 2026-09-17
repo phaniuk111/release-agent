@@ -509,6 +509,8 @@ class AdkChatService:
         self, message: str, thread_id: str
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Run the deploy Workflow's preview turn and surface the confirmation interrupt."""
+        said_something = False
+        reported = ""
         async for event in self.deploy_runner.run_async(
             user_id=_user_id(),
             session_id=_session_id(thread_id, "deploy"),
@@ -518,7 +520,21 @@ class AdkChatService:
                 yield {"type": "progress", "content": label}
             text = _text_from_event(event)
             if text:
+                said_something = True
                 yield {"type": "token", "content": text}
+            # A preview that could NOT be built routes straight to cancel, which
+            # carries its reason in the node's output rather than as text — so
+            # without this the form is submitted and the user is told nothing at
+            # all (found live: a malformed date answered with silence). Both the
+            # gate's rejecting Event and the cancel node carry the same reason,
+            # so it is said ONCE.
+            failure = getattr(event, "output", None)
+            if isinstance(failure, dict) and failure.get("error") and not failure.get("ok"):
+                reason = str(failure["error"])
+                if reason != reported:
+                    reported = reason
+                    said_something = True
+                    yield {"type": "token", "content": reason}
             token = _interrupt_token_from_event(event)
             if token:
                 pending = adk_deploy._PENDING_PREVIEWS.get(token, {})
@@ -537,7 +553,14 @@ class AdkChatService:
                                     else f"Reply with exactly `{token}` to apply this deploy."),
                     },
                 }
+                said_something = True
                 break
+        if not said_something:
+            # Belt and braces: the lane must never answer a submitted form with
+            # an empty turn — silence reads as "it worked" and it did not.
+            yield {"type": "token", "content": (
+                "That could not be previewed and nothing was changed — the deploy "
+                "graph ended without saying why. Check the server log for this thread.")}
         yield {"type": "done"}
 
     async def _stream_deploy_resume(
