@@ -5,6 +5,7 @@ refuses, and a run where everything passed queues exactly as before."""
 import pytest
 
 from adk_release_agent import tools as T
+from release_agent.tools import queue_gate as QG
 from release_agent.tools import chg_defaults as CHG
 from release_agent.tools import controls as C
 from release_agent.tools import release_queue as RQ
@@ -35,7 +36,7 @@ def queue(monkeypatch):
     writes = []
 
     def run(rep):
-        monkeypatch.setattr(T, "_invoke_tool", lambda name, args=None: rep)
+        monkeypatch.setattr(QG, "_invoke_tool", lambda name, args=None: rep)
         monkeypatch.setattr(RQ, "add_intent", lambda **kw: writes.append(kw) or {"ok": True, "intent": kw})
         return T.queue_release_intent(
             artifact="payments-api:1.4.2", requested_by="dev@example.com",
@@ -177,7 +178,7 @@ def test_the_change_request_does_not_mention_it():
 def test_a_dataflow_chart_follows_the_same_rule(queue, monkeypatch):
     monkeypatch.setattr(RQ, "add_intent", lambda **kw: queue.writes.append(kw) or {"ok": True, "intent": kw})
     rep = report([ctl("RCTLDEF0000104"), ctl("RCTLDEF0001691", ok=False)], run_ok=False)
-    monkeypatch.setattr(T, "_invoke_tool", lambda name, args=None: rep)
+    monkeypatch.setattr(QG, "_invoke_tool", lambda name, args=None: rep)
     out = T.queue_release_intent(artifact="df-orders:2.1.0", requested_by="d@x", df_only=True,
                                  build_run_url=RUN["url"], jira_ticket="ABC-1", change_details="d")
     assert out["ok"] and queue.writes[-1]["df_only"] is True

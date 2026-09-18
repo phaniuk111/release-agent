@@ -12,9 +12,12 @@ def test_adk_chat_tools_exclude_release_defining_mutations():
 
 
 def test_adk_tool_result_coercion_preserves_json_objects():
-    assert tools._coerce_tool_result('{"ok": true, "value": 1}') == {"ok": True, "value": 1}
-    assert tools._coerce_tool_result("[1, 2]") == {"result": [1, 2]}
-    assert tools._coerce_tool_result("plain text") == {"result": "plain text"}
+    """Lives in gh_tools now — the ADK wrappers and the queue gate share it."""
+    from release_agent.tools.gh_tools import coerce_result
+
+    assert coerce_result('{"ok": true, "value": 1}') == {"ok": True, "value": 1}
+    assert coerce_result("[1, 2]") == {"result": [1, 2]}
+    assert coerce_result("plain text") == {"result": "plain text"}
 
 
 def test_adk_agent_module_imports_without_google_adk_installed():

@@ -7,6 +7,7 @@ are still open says the opposite of what happened.
 import pytest
 
 from adk_release_agent import tools as T
+from release_agent.tools import queue_gate as QG
 from release_agent.config import settings
 from release_agent.tools import release_queue as RQ
 
@@ -20,7 +21,7 @@ def queue(monkeypatch):
                 return report
             raise AssertionError(f"unexpected tool {tool_name}")
 
-        monkeypatch.setattr(T, "_invoke_tool", fake_invoke)
+        monkeypatch.setattr(QG, "_invoke_tool", fake_invoke)
         # imported inside the function, so patch the source module
         monkeypatch.setattr(RQ, "add_intent",
                             lambda **kw: _run.writes.append(kw) or {"ok": True, "intent": kw})

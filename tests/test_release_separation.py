@@ -160,7 +160,7 @@ def _batch(monkeypatch, outcomes):
         calls.append(kw)
         return outcomes[kw["artifact"]]
 
-    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent", _queue)
+    monkeypatch.setattr("release_agent.tools.queue_gate.queue_release_intent", _queue)
     return calls
 
 
@@ -216,7 +216,7 @@ def test_one_exploding_row_does_not_kill_the_batch(monkeypatch):
             raise RuntimeError("github exploded")
         return {"ok": True}
 
-    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent", _queue)
+    monkeypatch.setattr("release_agent.tools.queue_gate.queue_release_intent", _queue)
     out = _add_batch(APP.QueueBatchRequest(
         rows=[APP.QueueRow(**_row("boom:1")), APP.QueueRow(**_row("fine:1"))],
         requested_by="d@e.com", change_details="d"))

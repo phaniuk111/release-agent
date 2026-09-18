@@ -1,5 +1,6 @@
 """Intake queue: event reduction, routing veto, deployment-repo plumbing."""
 from release_agent.agent.parsing import is_queue_intent
+from release_agent.tools import queue_gate as QG
 from release_agent.tools import release_queue as RQ
 from release_agent.tools import release_fileset as RF
 
@@ -266,7 +267,7 @@ def test_queue_intent_requires_run_url(monkeypatch):
     assert inserted == []
 
     # Uninspectable URL is also a refusal, not a silent queue.
-    monkeypatch.setattr(T, "_invoke_tool", lambda *a, **k: {"found": False, "reason": "404"})
+    monkeypatch.setattr(QG, "_invoke_tool", lambda *a, **k: {"found": False, "reason": "404"})
     out = T.queue_release_intent("svc-a:1.0.0", "dev@example.com", build_run_url="https://x/actions/runs/1", jira_ticket="ABC-1", note="n", change_details="d")
     assert out["ok"] is False and "Nothing was queued" in out["error"]
     assert inserted == []
@@ -292,7 +293,7 @@ def test_queue_intent_blocks_ineligible_build(monkeypatch):
             "failed_steps": [{"job": "build", "name": "Build image", "conclusion": "failure"}],
         }
 
-    monkeypatch.setattr(T, "_invoke_tool", _report)
+    monkeypatch.setattr(QG, "_invoke_tool", _report)
     out = T.queue_release_intent(
         "svc-a:1.0.0", "dev@example.com", build_run_url="https://gh/actions/runs/1", jira_ticket="ABC-1", note="n", change_details="d"
     )
@@ -307,7 +308,7 @@ def test_queue_intent_eligible_build_queues_verified(monkeypatch):
     inserted = {}
     monkeypatch.setattr(RQ, "add_intent", lambda **kw: inserted.update(kw) or {"ok": True})
     monkeypatch.setattr(RQ, "_fetch_events", lambda *a, **k: [])
-    monkeypatch.setattr(T, "_invoke_tool", lambda tool, args: {
+    monkeypatch.setattr(QG, "_invoke_tool", lambda tool, args: {
         "found": True, "run_succeeded": True, "gate": "PASS",
         "run": {"url": args["workflow_url"], "conclusion": "success"},
         "controls": [{"control": "RLFT approval gate", "passed": True, "failed": False}],
@@ -347,6 +348,7 @@ def test_build_repo_routing_for_dataflow(monkeypatch):
 
     monkeypatch.setattr(settings, "df_build_repo", "org/df-build", raising=False)
     captured = {}
+    # get_build_report is an ADK wrapper, not the gate — patch the seam it uses.
     monkeypatch.setattr(T, "_invoke_tool", lambda tool, args: captured.update(args) or {"ok": True})
 
     T.get_build_report(image="df-img", tag="1.0", dataflow=True)

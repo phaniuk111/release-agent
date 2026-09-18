@@ -687,7 +687,7 @@ def release_queue_add_batch(req: QueueBatchRequest, request: Request):
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    from adk_release_agent.tools import queue_release_intent
+    from .tools.queue_gate import queue_release_intent
 
     rows = [r for r in req.rows if (r.artifact or "").strip()]
     if not rows:

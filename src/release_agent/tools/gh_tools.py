@@ -38,3 +38,34 @@ GH_TOOLS = [
     remove_from_release,
     check_release_window,
 ]
+
+
+# --- calling a tool by name -------------------------------------------------
+# The tools in this facade are ToolFunction objects returning JSON STRINGS, not
+# dicts. Both callers — the ADK wrappers and the queue eligibility gate — want a
+# dict, so the dispatch and the coercion live here, next to the tools, rather
+# than being duplicated in each caller.
+import json as _json  # noqa: E402
+from typing import Any as _Any  # noqa: E402
+
+
+def coerce_result(result: _Any) -> dict[str, _Any]:
+    """A tool's return value as a dict, preserving structured JSON results."""
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, str):
+        try:
+            parsed = _json.loads(result)
+        except _json.JSONDecodeError:
+            return {"result": result}
+        return parsed if isinstance(parsed, dict) else {"result": parsed}
+    return {"result": result}
+
+
+def invoke(tool_name: str, args: dict[str, _Any] | None = None) -> dict[str, _Any]:
+    """Call a tool in this facade by name and return its result as a dict."""
+    tool = globals()[tool_name]
+    payload = args or {}
+    if hasattr(tool, "invoke"):
+        return coerce_result(tool.invoke(payload))
+    return coerce_result(tool(**payload))

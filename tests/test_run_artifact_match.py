@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from adk_release_agent import tools as T
+from release_agent.tools import queue_gate as QG
 from release_agent.tools import controls as C
 from release_agent.tools import release_queue as RQ
 
@@ -171,7 +172,7 @@ def queue(monkeypatch):
                   "controls": [{"control": "RLFT-a", "job": "b", "passed": True, "failed": False}],
                   "failed_controls": [], "open_controls": [], "failed_steps": [], "gate": "PASS",
                   **report_over}
-        monkeypatch.setattr(T, "_invoke_tool", lambda name, args=None: report)
+        monkeypatch.setattr(QG, "_invoke_tool", lambda name, args=None: report)
         monkeypatch.setattr(C, "match_run_to_artifact", lambda *a: match)
         monkeypatch.setattr(RQ, "add_intent", lambda **kw: writes.append(kw) or {"ok": True})
         monkeypatch.setattr(RQ, "_fetch_events", lambda: [])

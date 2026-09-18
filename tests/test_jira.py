@@ -7,6 +7,7 @@ outage is a different thing entirely and must never block a release.
 import pytest
 
 from adk_release_agent import tools as T
+from release_agent.tools import queue_gate as QG
 from release_agent.config import settings
 from release_agent.tools import jira as J
 from release_agent.tools import release_queue as RQ
@@ -100,7 +101,7 @@ def queue(monkeypatch):
     inserted = {}
 
     def _run(**kwargs):
-        monkeypatch.setattr(T, "_invoke_tool", lambda name, args=None: {
+        monkeypatch.setattr(QG, "_invoke_tool", lambda name, args=None: {
             "found": True, "run_succeeded": True, "gate": "PASS",
             "tag": "payments-api-1.4.2",
             "run": {"url": "https://gh/actions/runs/1", "conclusion": "success"},

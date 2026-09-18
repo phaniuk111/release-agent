@@ -143,7 +143,7 @@ def _req(token=None):
 
 def test_the_verified_email_beats_the_typed_one(monkeypatch):
     seen = {}
-    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent",
+    monkeypatch.setattr("release_agent.tools.queue_gate.queue_release_intent",
                         lambda **kw: seen.update(kw) or {"ok": True})
     APP.release_queue_add_batch(
         APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="typed@else.com"),
@@ -170,7 +170,7 @@ def test_required_mode_refuses_writes_without_a_verified_caller(monkeypatch):
 
 def test_without_required_mode_the_typed_email_still_works(monkeypatch):
     seen = {}
-    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent",
+    monkeypatch.setattr("release_agent.tools.queue_gate.queue_release_intent",
                         lambda **kw: seen.update(kw) or {"ok": True})
     APP.release_queue_add_batch(
         APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="typed@x.com"), _req())
@@ -259,7 +259,7 @@ def test_required_mode_lets_a_signed_in_user_queue_through_the_forms(monkeypatch
         seen.append((who, refused))
         return {"ok": not refused, "error": refused}
 
-    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent", fake_intent)
+    monkeypatch.setattr("release_agent.tools.queue_gate.queue_release_intent", fake_intent)
     rows = [APP.QueueRow(artifact="a:1", build_run_url="u", jira_ticket="J-1"),
             APP.QueueRow(artifact="b:2", build_run_url="u", jira_ticket="J-2")]
     out = APP.release_queue_add_batch(
