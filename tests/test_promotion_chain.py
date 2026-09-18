@@ -1,141 +1,19 @@
-"""Tests for the PROD change-request feature and the prod-updates-both-files guarantee."""
+"""Tests for the generic SIT->UAT->PRD targeted-PR promotion chain (_promote_targeted
+and its helpers): protected-branch refusals, conflict handling, dedupe, and the
+UAT-deploy-drops-a-chart reporting. None of this is specific to any one caller —
+open_release_pr (uat), remove_from_release and the CARE/DF release promotion all
+share it.
+"""
 import json
 
-from adk_release_agent import deploy
-from adk_release_agent.deploy_workflow import _preview_text
-from release_agent.agent.parsing import _try_parse_json_payload
-from release_agent.tools.promotion import _deployment_path, change_request_doc, plan_deploy
+from release_agent.tools.promotion import _deployment_path, plan_deploy
 from tests.fakes import FakeRepo as _FakeRepo
-
-
-# --- requirement 1: a prod deploy plans BOTH deployment.json files ---------------
-
-def test_prod_deploy_plans_both_deployment_files():
-    entries = [{"helm_chart_name": "svc", "helm_chart_version": "1.0.0"}]
-    plan = plan_deploy("prod", entries)
-    assert set(plan) == {_deployment_path("uat"), _deployment_path("prd")}
-    # UAT copy repoints the values file to the uat one; prd keeps the prod entries.
-    assert plan[_deployment_path("prd")] == entries
 
 
 def test_uat_deploy_plans_only_uat_file():
     plan = plan_deploy("uat", [{"helm_chart_name": "svc", "helm_chart_version": "1.0.0"}])
     assert set(plan) == {_deployment_path("uat")}
 
-
-# --- change_request_doc mapping (pure) ------------------------------------------
-
-def test_change_request_doc_maps_semantic_and_chg_keys():
-    d = change_request_doc(
-        {"summary": "S", "change_description": "D", "start_time": "a", "end_time": "b"}, "NOW"
-    )
-    assert d == {
-        "chg_summary": "S",
-        "description": "D",
-        "start_date": "a",
-        "end_date": "b",
-        "updated_by": "release-copilot",
-        "updated_at": "NOW",
-    }
-    # Canonical CHG keys pass through unchanged.
-    d2 = change_request_doc({"chg_summary": "X", "start_date": "s", "end_date": "e"}, "NOW")
-    assert d2["chg_summary"] == "X" and d2["start_date"] == "s" and d2["description"] == ""
-    # JSON string is accepted.
-    assert change_request_doc('{"summary": "J"}', "NOW")["chg_summary"] == "J"
-
-
-def test_change_request_doc_returns_none_when_empty():
-    assert change_request_doc(None, "NOW") is None
-    assert change_request_doc({}, "NOW") is None
-    assert change_request_doc("not json", "NOW") is None
-    assert change_request_doc({"unrelated": "x"}, "NOW") is None
-
-
-# --- flow: change_request carried through parse -> preview -> apply args ----------
-
-def test_json_payload_carries_change_request():
-    req = _try_parse_json_payload(
-        json.dumps(
-            {
-                "environment": "prod",
-                "include": [{"helm_chart_name": "a", "helm_chart_version": "1"}],
-                "change_request": {"chg_summary": "S"},
-            }
-        )
-    )
-    assert req["change_request"]["chg_summary"] == "S"
-    # No change_request key -> None (uat/CLI paths unaffected).
-    req2 = _try_parse_json_payload(
-        json.dumps({"include": [{"helm_chart_name": "a", "helm_chart_version": "1"}]})
-    )
-    assert req2["change_request"] is None
-
-
-def test_prod_change_request_flows_into_open_release_pr(monkeypatch):
-    deploy._PENDING_PREVIEWS.clear()
-    payload = json.dumps(
-        {
-            "environment": "prod",
-            "include": [
-                {"helm_chart_name": "svc-a", "helm_chart_version": "1.0.0", "gke_namespace": "ns"}
-            ],
-            "change_request": {
-                "chg_summary": "Quarterly release",
-                "description": "Deploy svc-a",
-                "start_date": "2026-07-03T09:00:00Z",
-                "end_date": "2026-07-03T11:00:00Z",
-            },
-        }
-    )
-    preview = deploy.prepare_deploy_preview(deployment_json=payload)
-    assert preview["ok"] is True and preview["environment"] == "prod"
-    assert preview["change_request"]["chg_summary"] == "Quarterly release"
-
-    calls = []
-
-    def fake_invoke(name, args):
-        calls.append((name, args))
-        return {"ok": True, "note": "staged"}
-
-    monkeypatch.setattr(deploy, "_invoke_tool", fake_invoke)
-    deploy.apply_confirmed_deploy(preview["token"])
-
-    assert len(calls) == 1
-    name, args = calls[0]
-    assert name == "open_release_pr" and args["environment"] == "prod"
-    assert args["change_request"]["chg_summary"] == "Quarterly release"
-    assert args["change_request"]["end_date"] == "2026-07-03T11:00:00Z"
-
-
-def test_uat_deploy_carries_no_change_request(monkeypatch):
-    deploy._PENDING_PREVIEWS.clear()
-    preview = deploy.prepare_deploy_preview(image_tags="svc-a:1.0.0", environment="uat")
-    calls = []
-    monkeypatch.setattr(deploy, "_invoke_tool", lambda n, a: calls.append((n, a)) or {"ok": True})
-    deploy.apply_confirmed_deploy(preview["token"])
-    _, args = calls[0]
-    assert "change_request" not in args
-
-
-# --- preview rendering ----------------------------------------------------------
-
-def test_preview_text_includes_change_request_for_prod():
-    text = _preview_text(
-        {"prd/deployment.json": []},
-        "CONFIRM-X",
-        "prod",
-        "svc:1",
-        {"chg_summary": "S", "start_date": "a", "end_date": "b", "description": "D"},
-    )
-    assert "Change request" in text and "S" in text and "a → b" in text
-
-
-def test_preview_text_omits_change_request_when_none():
-    text = _preview_text({"uat/deployment.json": []}, "CONFIRM-Y", "uat", "svc:1", None)
-    assert "Change request" not in text
-
-
-# --- cutoff promotion: change-request.json travels to all live branches ----------
 
 def test_doc_changed_ignores_updated_at():
     from release_agent.tools.promotion import _doc_changed
@@ -183,24 +61,23 @@ def test_promote_targeted_dedupes_stale_duplicate_entries():
         assert versions == ["1.2.0"], f"{br}: expected one deduped entry, got {versions}"
 
 
-def test_promote_targeted_promotes_change_request_to_all_branches():
+def test_promote_targeted_writes_extra_files_verbatim_to_all_branches():
+    """extra_files (e.g. a flat, non-include[] doc) travels alongside the targeted
+    include[] edits, to every branch in the chain."""
     from release_agent.tools import promotion as P
 
-    cr = {
-        "chg_summary": "S", "description": "D", "start_date": "a", "end_date": "b",
-        "updated_by": "release-copilot", "updated_at": "t",
-    }
+    doc = {"summary": "S", "updated_by": "release-copilot", "updated_at": "t"}
     initial = {
         b: {"prd/deployment.json": {"include": []}, "uat/deployment.json": {"include": []}}
         for b in ("SIT", "UAT", "PRD")
     }
     repo = _FakeRepo(initial)
-    res = P._promote_targeted(repo, [], "test release", extra_files={"change-request.json": cr})
+    res = P._promote_targeted(repo, [], "test release", extra_files={"extra.json": doc})
 
     assert res["delivered"] is True
     for br in ("SIT", "UAT", "PRD"):
-        assert "change-request.json" in repo.files[br], f"CHG missing on {br}"
-        assert json.loads(repo.files[br]["change-request.json"]) == cr
+        assert "extra.json" in repo.files[br], f"extra.json missing on {br}"
+        assert json.loads(repo.files[br]["extra.json"]) == doc
 
 
 # --- a protected branch refuses the merge ------------------------------------
@@ -287,16 +164,14 @@ def test_a_last_hop_already_in_state_counts_as_delivered():
 def test_uat_deploy_blocked_by_review_says_so_and_links_the_pr(monkeypatch):
     """The reported bug: 'Deployed … to UAT' and a chart count read from the
     UNCHANGED live file, while the UAT PR sat in review."""
+    from types import SimpleNamespace
+
     from release_agent.tools import promotion as P
 
     initial = {b: {"uat/deployment.json": {"include": [_chart("1.0.0")]}} for b in ("SIT", "UAT")}
     repo = _ProtectedRepo(initial)
 
-    class _Github:
-        def get_repo(self, full):
-            return repo
-
-    monkeypatch.setattr(P, "_get_github_client", lambda: _Github())
+    monkeypatch.setattr(P, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
     monkeypatch.setattr(P, "active_deploy_repo", lambda: "example-org/deploy")
     out = json.loads(P.open_release_pr.invoke({"environment": "uat", "image_tags": "svc-a:2.0.0"}))
 
@@ -329,16 +204,14 @@ def test_pending_deploy_is_not_recorded_as_deployed(monkeypatch):
 def test_uat_deploy_blocked_at_sit_says_to_run_it_again(monkeypatch):
     """When the FIRST hop is blocked the UAT PR is never raised, so "approve
     and merge it" would leave UAT unchanged after they did exactly that."""
+    from types import SimpleNamespace
+
     from release_agent.tools import promotion as P
 
     initial = {b: {"uat/deployment.json": {"include": [_chart("1.0.0")]}} for b in ("SIT", "UAT")}
     repo = _ProtectedRepo(initial, protected=("SIT",))
 
-    class _Github:
-        def get_repo(self, full):
-            return repo
-
-    monkeypatch.setattr(P, "_get_github_client", lambda: _Github())
+    monkeypatch.setattr(P, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
     monkeypatch.setattr(P, "active_deploy_repo", lambda: "example-org/deploy")
     out = json.loads(P.open_release_pr.invoke({"environment": "uat", "image_tags": "svc-a:2.0.0"}))
 
@@ -355,17 +228,15 @@ def _other(version):
 def test_a_uat_override_reports_the_charts_it_takes_off(monkeypatch):
     """Found in E2E: the override REPLACES uat/deployment.json, so a chart left
     out leaves UAT — and was never logged, leaving it 'deployed' forever."""
+    from types import SimpleNamespace
+
     from release_agent.tools import promotion as P
 
     initial = {b: {"uat/deployment.json": {"include": [_chart("1.0.0"), _other("3.0.0")]}}
                for b in ("SIT", "UAT")}
     repo = _FakeRepo(initial)
 
-    class _Github:
-        def get_repo(self, full):
-            return repo
-
-    monkeypatch.setattr(P, "_get_github_client", lambda: _Github())
+    monkeypatch.setattr(P, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
     monkeypatch.setattr(P, "active_deploy_repo", lambda: "example-org/deploy")
     out = json.loads(P.open_release_pr.invoke({"environment": "uat", "image_tags": "svc-a:2.0.0"}))
     assert out["action"] == "deployed"

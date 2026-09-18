@@ -174,7 +174,7 @@ export function addMessage(role, content, isStreaming = false) {
         // content may be the full interrupt object (preferred) or a bare string.
         const intr = (content && typeof content === 'object') ? content : { message: content };
         const isBudget = intr.type === 'budget_confirmation';
-        // A yes/no tool-approval (e.g. merge_prod_release): no CONFIRM token —
+        // A yes/no tool-approval (a terminal promotion, a prod removal): no CONFIRM token —
         // identified by the function name / the 'Reply "yes"' instruction. Render
         // Approve/Reject buttons; a pasted token here would otherwise reject it.
         const isApproval = !intr.token && !isBudget &&
@@ -229,20 +229,23 @@ export function addMessage(role, content, isStreaming = false) {
 
 export async function sendMessage(overrideText) {
     const input = document.getElementById('input');
-    // overrideText lets callers send multi-line messages (the single-line
-    // text input strips newlines, which breaks the PROD change-ticket form).
+    // overrideText lets callers send multi-line messages (the single-line text
+    // input strips newlines, which breaks the release form's change request).
     const message = (typeof overrideText === 'string' ? overrideText : input.value).trim();
     if (!message) return;
 
     // A deploy command typed in the chat box opens the editable JSON instead
     // of going straight to the agent (the JSON payload from the editor, which
-    // starts with '{', is sent normally).
+    // starts with '{', is sent normally). A PROD one has no form to open: it is
+    // answered with the release route (core/deploy_routing.js) — the backend
+    // refuses it too, so this only saves the round trip.
     if (!message.startsWith('{')) {
         const di = parseDeployIntent(message);
         if (di) {
             if (typeof overrideText !== 'string') input.value = '';
             addMessage('user', message);
-            showDeployForm(di.env, di.name, di.version);
+            if (di.releaseOnly) addMessage('bot', escapeHtml(di.message));
+            else showDeployForm(di.form, di.name, di.version);
             return;
         }
     }

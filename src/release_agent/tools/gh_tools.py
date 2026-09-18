@@ -22,7 +22,7 @@ from .manifest import list_allowed_images, get_recent_runs, get_workflow_status 
 from .pull_requests import find_prs, get_pr_details, get_pr_comments  # noqa: F401
 from .controls import get_build_report  # noqa: F401
 from .release_window import check_release_window  # noqa: F401
-from .promotion import open_release_pr, remove_from_release, merge_prod_release  # noqa: F401
+from .promotion import open_release_pr, remove_from_release  # noqa: F401
 from .dataflow import deploy_dataflow  # noqa: F401
 from .release_fileset import promote_release  # noqa: F401
 
@@ -36,6 +36,5 @@ GH_TOOLS = [
     get_build_report,
     open_release_pr,
     remove_from_release,
-    merge_prod_release,
     check_release_window,
 ]

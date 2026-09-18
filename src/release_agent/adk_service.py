@@ -298,7 +298,6 @@ _TOOL_LABELS = {
     "promote_release": "Promoting the release file-set",
     "promote_df_release": "Promoting the DF release file-set",
     "remove_from_release": "Removing from the release",
-    "merge_prod_release": "Releasing the staged PRD batch",
 }
 
 
@@ -319,7 +318,6 @@ def _progress_label(name: str, args: dict[str, Any]) -> str:
 _STATE_CHANGING_TOOLS = frozenset({
     "promote_release",
     "promote_df_release",
-    "merge_prod_release",
     "remove_from_release",
 })
 
@@ -372,14 +370,7 @@ def _confirmation_interrupt_payload(pending: PendingAdkCall) -> dict[str, Any]:
     confirmation = pending.args.get("toolConfirmation") or {}
     original = pending.args.get("originalFunctionCall") or {}
     function = original.get("name") or pending.function_name
-    if function == "merge_prod_release":
-        # Post-click warning: releasing finalizes the day's release.
-        hint = (
-            "Release today's PRD release now? It promotes the staged charts through "
-            "SIT → UAT → PRD. **Once released, no new charts can be added to this "
-            "release** — later prod deploys start a new release."
-        )
-    elif function in ("promote_release", "promote_df_release"):
+    if function in ("promote_release", "promote_df_release"):
         target = str((original.get("args") or {}).get("target", "")).upper() or "the target environment"
         which = "DF release" if function == "promote_df_release" else "release"
         hint = (

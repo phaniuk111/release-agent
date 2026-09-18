@@ -68,12 +68,28 @@ def expect_deploy_preview(turn: dict) -> str | None:
     return None
 
 
-def expect_release_approval(turn: dict) -> str | None:
+def expect_promote_release_approval(turn: dict) -> str | None:
+    """PROD is reached ONLY through a release now: "release prod" means promoting
+    the current release's file-set to PRD — there is no other prod route left to
+    disambiguate, so this must reach a promote_release approval, not a question."""
     intr = turn["interrupt"]
-    if not intr or intr.get("function") != "merge_prod_release":
-        return f"expected a merge_prod_release yes/no approval, got interrupt={intr!r} text={turn['text'][:200]!r}"
-    if "no new charts" not in (intr.get("message") or "").lower():
-        return f"approval prompt lost the finality warning: {intr.get('message')!r}"
+    if not intr or intr.get("function") != "promote_release":
+        return f"expected a promote_release yes/no approval, got interrupt={intr!r} text={turn['text'][:200]!r}"
+    if "prd" not in (intr.get("message") or "").lower():
+        return f"approval prompt did not name PRD: {intr.get('message')!r}"
+    return None
+
+
+def expect_prod_chart_deploy_refused(turn: dict) -> str | None:
+    """A single-chart deploy that names prod is REFUSED before any preview —
+    PROD is reached only through a release (queue -> CARE/DF release -> promote).
+    No CONFIRM token may be minted for it."""
+    intr = turn["interrupt"]
+    if intr is not None and (intr.get("token") or "").startswith("CONFIRM-"):
+        return f"expected the prod chart deploy to be REFUSED (no token), got interrupt={intr!r}"
+    low = turn["text"].lower()
+    if "confirm-" in low or "release" not in low:
+        return f"expected a refusal pointing at the release flow, got: {turn['text'][:300]!r}"
     return None
 
 
@@ -146,13 +162,18 @@ CASES = [
         check=expect_plain_answer("CONFIRM-"),
     ),
     Case(
-        name="'release prod' -> merge_prod_release approval with finality warning",
+        name="'release prod' reaches the release promotion (promote_release to PRD)",
         message="release prod",
-        check=expect_release_approval,
+        check=expect_promote_release_approval,
         followups=[
             # Rejection narration: plain, no token/workflow lecture.
             ("no", expect_plain_answer("CONFIRM-", "token")),
         ],
+    ),
+    Case(
+        name="a typed prod chart deploy is refused, mints no CONFIRM token",
+        message="deploy payments-api:1.2.3 to prod",
+        check=expect_prod_chart_deploy_refused,
     ),
     Case(
         name="underspecified deploy asks for chart:version",

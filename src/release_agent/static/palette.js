@@ -30,13 +30,16 @@ export const CAPABILITIES = [
     {group:'Release', icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
     {group:'Release', icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
     {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
-    {group:'Release', icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (finalizes the release)',  send:true,  text:'release prod'},
+    // The text says CARE/DF explicitly: "promote the release to prd" alone makes
+    // the agent stop and ask which one, and a pill should never need answering.
+    {group:'Release', icon:'fa-shield-heart',      label:'Promote CARE release to PRD', desc:'promote the CARE release file-set to PRD — PROD is only ever reached this way, never by deploying a single chart', send:true,  text:'promote the CARE release to prd'},
+    {group:'Release', icon:'fa-water',             label:'Promote DF release to PRD',   desc:'promote the Dataflow release file-set to its PRD branch — the DF chain has its own repo and guard', send:true,  text:'promote the DF release to prd'},
     {group:'Deploy',  icon:'fa-flask',             label:'Deploy to CARE UAT',   desc:'deploy a Helm chart to CARE UAT',             form:'uat'},
     {group:'Deploy',  icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},
-    // No "Deploy to PROD" pill: PROD is reached through the release ("Release to
-    // PROD"), not by pushing a single chart. The form itself still exists and
-    // still opens for a typed "deploy <chart>:<version> to prod" — this only
-    // removes it from the offered actions.
+    // No PROD deploy pill and no PROD deploy form: PROD is reached by promoting
+    // the release file-set ("Promote CARE release to PRD" / the DF release),
+    // never by pushing one chart. A typed "deploy <chart>:<version> to prod" is
+    // answered with that route (forms/parse.js), not with a form.
     {group:'Check',   icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
     {group:'Check',   icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RCTLD controls for a tag',     send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
     {group:'Check',   icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RCTLD control gates for a tag',     send:false, text:'check build controls for <image>:<tag> before a PRD release'},

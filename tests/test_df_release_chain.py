@@ -225,12 +225,10 @@ def test_the_df_status_watches_the_df_chain(monkeypatch):
     seen = {}
     monkeypatch.setattr(W, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: object()))
     monkeypatch.setattr(W, "_charts", lambda repo, env: {})
-    monkeypatch.setattr(W, "_today_prd_pr", lambda repo: seen.setdefault("staging_checked", True))
     monkeypatch.setattr(W, "_open_prd_pr_blocker",
-                        lambda repo, exclude_head="", branches=None: seen.update(branches=branches))
+                        lambda repo, branches=None: seen.update(branches=branches))
     W.get_release_status("o/df-release", kind="df")
     assert seen["branches"] == ["RELEASE_UAT", "RELEASE_PRD"]
-    assert "staging_checked" not in seen, "the daily PRD staging PR is a CARE concept"
 
 
 # --- the chat's tools ----------------------------------------------------------

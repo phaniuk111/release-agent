@@ -338,12 +338,6 @@ class Settings(BaseSettings):
         default="default",
         validation_alias=AliasChoices("PRD_NAMESPACE", "PROD_NAMESPACE", "RELEASE_PRD_NAMESPACE"),
     )
-    # Change-request template the pasted JSON updates; the CHG is created from it
-    # when the UAT->PRD PR is raised.
-    change_request_path: str = Field(
-        default="change-request.json",
-        validation_alias=AliasChoices("CHANGE_REQUEST_PATH", "RELEASE_CHANGE_REQUEST_PATH"),
-    )
     # Branches that count as "a release in flight": while any OPEN PR targets one
     # of these, add-to-release is blocked (one release at a time). Empty = just
     # the PRD branch. Comma-separated in env, e.g. RELEASE_GUARD_BRANCHES="PRD,PRL1".

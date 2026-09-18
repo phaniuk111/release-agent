@@ -227,6 +227,19 @@ def prepare_deploy_preview(
             "deployment_repo": "",
             "message": f"Reply with exactly {token} to create this release.",
         }
+    if env == "prod" and req.get("deployment_type") != "dataflow":
+        # PROD is reachable only through a release (queue -> CARE/DF release ->
+        # promote) — the daily "accumulate charts, then merge_prod_release" model
+        # is gone. Refused here, before any GitHub work and before a token is
+        # minted, so a typed "deploy X to prod" can never reach open_release_pr.
+        # Dataflow keeps its own (already uat-only) refusal at apply time.
+        return {
+            "ok": False,
+            "error": (
+                "PROD is reached through a release, not a single-chart deploy. Queue the chart "
+                "(Add to next release), then raise the CARE or DF release, then promote it."
+            ),
+        }
     preview = _build_preview(req)
     token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
     pending = {"token": token, "request": req, "preview": preview, "created_at": time.time()}
@@ -359,9 +372,6 @@ def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
             if req.get(key):
                 args[key] = req[key]
 
-    # PROD deploy form: carry change-request details into open_release_pr.
-    if req.get("change_request"):
-        args["change_request"] = req["change_request"]
     # Deploy form: target deployment repo for this deploy (part of the JSON payload).
     if req.get("deployment_repo"):
         args["deployment_repo"] = req["deployment_repo"]

@@ -58,11 +58,14 @@ def test_high_impact_ops_tools_are_confirmation_wrapped():
     toolset = agent_module.build_root_agent().tools[0]
     provided = toolset._provided_tools_by_name
 
-    merge = provided["merge_prod_release"]
     remove = provided["remove_from_release"]
-    assert isinstance(merge, FunctionTool) and merge._require_confirmation is True
-    # remove uses the prod-only predicate
+    promote = provided["promote_release"]
+    promote_df = provided["promote_df_release"]
+    # remove uses the prod-only predicate; the promotions use the terminal-env
+    # (PRD/PRL1) predicate — nothing here confirms unconditionally any more.
     assert isinstance(remove, FunctionTool) and callable(remove._require_confirmation)
+    assert isinstance(promote, FunctionTool) and callable(promote._require_confirmation)
+    assert isinstance(promote_df, FunctionTool) and callable(promote_df._require_confirmation)
 
     # A read tool is not gated.
     check = provided["check_release_window"]
@@ -97,8 +100,8 @@ class _FakeConfirmationEvent:
                 id="call-1",
                 name=adk_service._REQUEST_CONFIRMATION,
                 args={
-                    "toolConfirmation": {"hint": "Confirm merge_prod_release?"},
-                    "originalFunctionCall": {"name": "merge_prod_release", "args": {}},
+                    "toolConfirmation": {"hint": "Confirm promote_release?"},
+                    "originalFunctionCall": {"name": "promote_release", "args": {"target": "prd"}},
                 },
             )
         ]
@@ -113,9 +116,9 @@ def test_pending_call_and_interrupt_payload_from_confirmation_event():
 
     payload = adk_service._confirmation_interrupt_payload(pending)
     assert payload["type"] == "confirmation"
-    # merge_prod_release gets the release-finality warning, overriding the hint.
-    assert "no new charts can be added" in payload["message"]
-    assert payload["function"] == "merge_prod_release"
+    # promote_release gets its own hint naming the target env, overriding ADK's.
+    assert "PRD" in payload["message"]
+    assert payload["function"] == "promote_release"
 
 
 def test_confirmation_reply_maps_yes_and_no_to_function_response():

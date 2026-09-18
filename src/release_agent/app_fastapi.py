@@ -568,9 +568,10 @@ def _compute_release_status() -> dict:
             df_status = df_future.result()
             status["df"] = {
                 "repo": df_repo,
-                # DF has no daily staging PR: a PR open on its own chain IS the
-                # DF release in flight (release PR or a pending promotion).
-                "prd_release_pr": df_status.get("prd_release_pr") or df_status.get("blocking_pr"),
+                # A PR open on the DF chain IS the DF release in flight (the
+                # release PR itself, or a pending promotion). Named release_pr
+                # since the daily PRD staging PR it used to contrast with is gone.
+                "release_pr": df_status.get("blocking_pr"),
                 "prd_charts": df_status.get("prd_charts") or [],
                 "blocking_pr": df_status.get("blocking_pr"),
                 "error": df_status.get("error"),
@@ -1036,18 +1037,24 @@ def df_template_endpoint(env: str = "uat"):
 
 @app.get("/api/deploy-template")
 def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""):
-    """Pre-fill the UI's editable JSON box with the ACTUAL current deployment.json for the
-    env — uat/deployment.json from the UAT branch, prd/deployment.json from PRD — so the dev
-    edits the real deployed set, not a blank template. If a chart name+version is supplied
-    (from a chat/CLI deploy command) it's upserted into that current set. Constants
-    (helm_chart_dir, env values-file, namespace) come from config."""
+    """Pre-fill the UI's editable JSON box with the ACTUAL current uat/deployment.json,
+    so the dev edits the real deployed set, not a blank template. If a chart name+version
+    is supplied (from a chat/CLI deploy command) it's upserted into that current set.
+    Constants (helm_chart_dir, env values-file, namespace) come from config.
+
+    UAT only. PROD is reached by promoting a release, never by deploying one chart, so
+    there is no prod template to serve — and refusing here keeps the route closed to a
+    hand-typed URL, not just to the UI that no longer asks for it."""
     from .tools.gh_tools import assemble_entry
     from .tools._common import _get_github_client, settings, _read_json_file
 
-    e = "prod" if str(env).lower() in ("prod", "prd", "production") else "uat"
-    env_key = "prd" if e == "prod" else "uat"
+    if str(env).lower() in ("prod", "prd", "production"):
+        return {"ok": False, "error": (
+            "PROD is reached through a release, not a single-chart deploy. Queue the chart "
+            "(Add to next release), then raise the CARE or DF release, and promote it.")}
+    env_key = "uat"
     path = settings.deployment_path_pattern.format(env=env_key)
-    branch = settings.prd_branch if e == "prod" else settings.uat_branch
+    branch = settings.uat_branch
 
     include: list = []
     from_repo = False
@@ -1063,7 +1070,7 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
 
     # Upsert the requested chart (from a chat command) into the current set, by chart name.
     if name and version:
-        entry = assemble_entry(name, version, e)
+        entry = assemble_entry(name, version, env_key)
         for i, x in enumerate(include):
             if x.get("helm_chart_name") == name:
                 include[i] = entry
@@ -1073,10 +1080,10 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
 
     # Empty repo / very first deploy: fall back to a single (blank or requested) entry.
     if not include:
-        include = [assemble_entry(name or "", version or "", e)]
+        include = [assemble_entry(name or "", version or "", env_key)]
 
     return {
-        "environment": e,
+        "environment": env_key,
         "deployment": {"include": include},
         "from_repo": from_repo,
         # Default target for the form's "Deployment repo" field (user-overridable;

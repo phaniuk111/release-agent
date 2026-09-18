@@ -513,14 +513,6 @@ def release_stats(pattern: str = "", days: int = 90, event_type: str = "released
     return _rq.history_stats(pattern=pattern, days=days, event_type=event_type)
 
 
-def merge_prod_release(deployment_repo: str = "") -> dict[str, Any]:
-    """Release today's staged PRD release now (any time). Releasing finalizes it —
-    no new charts can be added afterwards; later prod deploys start a new release.
-    deployment_repo (owner/repo) targets a non-default deployment repo — pass it
-    only when the user names one (e.g. the repo their deploy was staged in)."""
-    return _invoke_tool("merge_prod_release", {"deployment_repo": deployment_repo})
-
-
 # Every tool the free-form chat agent can call. The per-domain grouping a skill
 # actually surfaces (status/PR/controls/ops/queue/monitoring) is declared in
 # that skill's own SKILL.md frontmatter (adk_additional_tools) — this flat list
@@ -535,7 +527,6 @@ ADK_CHAT_TOOLS = [
     get_pr_comments,
     get_build_report,
     remove_from_release,
-    merge_prod_release,
     promote_release,
     promote_df_release,
     queue_release_intent,

@@ -1,11 +1,15 @@
-"""Tests for remove_from_release: unstaging from today's PRD release PR vs live removal."""
+"""Tests for remove_from_release: live removal from uat/prod deployment files.
+
+PROD is reachable only through a release (queue -> CARE/DF release -> promote),
+so there is no daily PRD staging PR to unstage from any more — remove_from_release
+only ever touches a LIVE environment.
+"""
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from release_agent.tools import promotion as P
-from release_agent.tools.release_window import _prd_release_branch
 from tests.fakes import FakeRepo as _FakeRepo
 
 UAT_PATH = P._deployment_path("uat")
@@ -22,12 +26,10 @@ def _include(repo, branch, path):
 
 @pytest.fixture
 def make_repo(monkeypatch):
-    """Build a _FakeRepo, wire it in as the GitHub client, and skip run polling."""
+    """Build a _FakeRepo and wire it in as the GitHub client."""
 
-    def _make(initial, staging_prs=()):
+    def _make(initial):
         repo = _FakeRepo(initial)
-        for head, base in staging_prs:
-            repo.create_pull("PRD release", "staging", head, base)
         gh = SimpleNamespace(get_repo=lambda name: repo)
         monkeypatch.setattr(P, "_get_github_client", lambda: gh)
         monkeypatch.setattr(P, "_find_deploy_run", lambda *a, **k: None)
@@ -50,86 +52,6 @@ def _live_branches(with_targeted_on_uat=True):
     }
 
 
-def _staged(*charts):
-    """A release/prd/<date> branch: PRD's live state plus today's staged charts."""
-    return {
-        PRD_PATH: {
-            "include": [_entry("base-svc", "1.0.0", "prd")]
-            + [_entry(n, v, "prd") for n, v in charts]
-        },
-        UAT_PATH: {
-            "include": [_entry("base-svc", "1.0.0", "uat")]
-            + [_entry(n, v, "uat") for n, v in charts]
-        },
-    }
-
-
-# --- unstage from an open staging PR (default environment) -----------------------
-
-def test_unstage_removes_chart_from_staging_pr_only(make_repo):
-    branch = _prd_release_branch()
-    initial = _live_branches()
-    initial[branch] = _staged(("targeted-svc", "1.2.0"), ("other-svc", "2.0.0"))
-    repo = make_repo(initial, staging_prs=[(branch, "PRD")])
-
-    res = json.loads(P.remove_from_release("targeted-svc"))
-
-    assert res["ok"] is True and res["action"] == "unstaged"
-    assert res["environment"] == "staging" and res["removed"] == ["targeted-svc"]
-    # Dropped from BOTH deployment files on the staging branch.
-    assert _include(repo, branch, PRD_PATH) == {"base-svc", "other-svc"}
-    assert _include(repo, branch, UAT_PATH) == {"base-svc", "other-svc"}
-    # other-svc still pending, so the PR stays open.
-    assert res["staging_pr"]["retired"] is False
-    assert repo.prs[0].state == "open"
-    assert res["staging_pr"]["still_pending"] == ["other-svc:2.0.0"]
-    # Live environments untouched — the legitimately-released UAT version survives.
-    assert "targeted-svc" in _include(repo, "UAT", UAT_PATH)
-    assert "targeted-svc" in _include(repo, "SIT", UAT_PATH)
-    assert _include(repo, "PRD", PRD_PATH) == {"base-svc"}
-
-
-def test_unstaging_only_differing_chart_retires_staging_pr(make_repo):
-    branch = _prd_release_branch()
-    initial = _live_branches()
-    initial[branch] = _staged(("targeted-svc", "1.2.0"))
-    repo = make_repo(initial, staging_prs=[(branch, "PRD")])
-
-    res = json.loads(P.remove_from_release("targeted-svc"))
-
-    assert res["action"] == "unstaged" and res["staging_pr"]["retired"] is True
-    assert res["staging_pr"]["still_pending"] == []
-    assert repo.prs[0].state == "closed"
-    # Staging branch reduced back to PRD's live state before retiring.
-    assert _include(repo, branch, PRD_PATH) == {"base-svc"}
-
-
-def test_unstage_with_no_staging_pr_is_a_safe_no_op(make_repo):
-    repo = make_repo(_live_branches())
-
-    res = json.loads(P.remove_from_release("targeted-svc"))
-
-    assert res["ok"] is True and res["action"] == "no_change"
-    assert res["environment"] == "staging"
-    assert "not staged" in res["note"]
-    # Nothing anywhere was touched — in particular not live UAT.
-    assert "targeted-svc" in _include(repo, "UAT", UAT_PATH)
-    assert repo.prs == []
-
-
-def test_unstage_chart_not_in_open_staging_pr_is_no_change(make_repo):
-    branch = _prd_release_branch()
-    initial = _live_branches()
-    initial[branch] = _staged(("other-svc", "2.0.0"))
-    repo = make_repo(initial, staging_prs=[(branch, "PRD")])
-
-    res = json.loads(P.remove_from_release("targeted-svc"))
-
-    assert res["action"] == "no_change"
-    assert repo.prs[0].state == "open"
-    assert _include(repo, branch, PRD_PATH) == {"base-svc", "other-svc"}
-
-
 # --- explicit live removal --------------------------------------------------------
 
 def test_uat_removal_uses_targeted_per_branch_edits(make_repo):
@@ -146,22 +68,24 @@ def test_uat_removal_uses_targeted_per_branch_edits(make_repo):
     assert stages == ["→SIT", "→UAT"]  # per-branch working PRs, no SIT→UAT branch merge
 
 
-def test_prod_removal_also_unstages_from_open_staging_pr(make_repo):
-    branch = _prd_release_branch()
+def test_uat_is_the_default_environment(make_repo):
+    repo = make_repo(_live_branches())
+
+    res = json.loads(P.remove_from_release("targeted-svc"))
+
+    assert res["environment"] == "uat" and res["action"] == "removed"
+    assert "targeted-svc" not in _include(repo, "UAT", UAT_PATH)
+
+
+def test_prod_removal_removes_from_both_live_files(make_repo):
     initial = _live_branches()
-    # targeted-svc is live in PRD too, and a newer version is staged for tonight.
     for b in ("SIT", "UAT", "PRD"):
         initial[b][PRD_PATH]["include"].append(_entry("targeted-svc", "1.1.0", "prd"))
-    initial[branch] = _staged(("targeted-svc", "1.2.0"), ("other-svc", "2.0.0"))
-    repo = make_repo(initial, staging_prs=[(branch, "PRD")])
+    repo = make_repo(initial)
 
     res = json.loads(P.remove_from_release("targeted-svc", environment="prod"))
 
     assert res["action"] == "removed" and res["environment"] == "prod"
-    # Unstaged from the release PR (so it can't ship again at the cutoff) ...
-    assert "targeted-svc" not in _include(repo, branch, PRD_PATH)
-    assert res["staging_pr"]["removed"] == ["targeted-svc"]
-    # ... and removed from both files on all live branches.
     for b in ("SIT", "UAT", "PRD"):
         assert "targeted-svc" not in _include(repo, b, PRD_PATH)
         assert "targeted-svc" not in _include(repo, b, UAT_PATH)
@@ -170,11 +94,20 @@ def test_prod_removal_also_unstages_from_open_staging_pr(make_repo):
 def test_unsupported_environment_is_rejected(make_repo):
     make_repo(_live_branches())
     out = P.remove_from_release("targeted-svc", environment="qa")
-    assert out.startswith("ERROR") and "staging, uat or prod" in out
+    assert out.startswith("ERROR") and "uat or prod" in out
 
 
-def test_input_schema_defaults_to_staging():
-    assert P.RemoveFromReleaseInput(image_names="x").environment == "staging"
+def test_input_schema_defaults_to_uat():
+    assert P.RemoveFromReleaseInput(image_names="x").environment == "uat"
+
+
+def test_removing_a_chart_not_deployed_is_a_no_op(make_repo):
+    repo = make_repo(_live_branches(with_targeted_on_uat=False))
+
+    res = json.loads(P.remove_from_release("targeted-svc", environment="uat"))
+
+    assert res["ok"] is True and res["action"] == "no_change"
+    assert repo.prs == []
 
 
 # --- UAT deploy override via targeted per-branch edits ------------------------
@@ -216,70 +149,18 @@ def test_uat_deploy_overrides_both_branches_via_targeted_edits(monkeypatch):
     assert stages == [("→SIT", True), ("→UAT", True)]
 
 
-# --- add-to-release guard: block while another PR into PRD is in flight ------
+# --- PROD is not a single-chart deploy target any more ------------------------
 
-def _stage_prod(repo, monkeypatch, version="2.0"):
-    monkeypatch.setattr(P, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
-    return json.loads(P.open_release_pr.invoke({
-        "environment": "prod",
-        "deployment_json": json.dumps({"include": [_entry("guarded-svc", version)]}),
-    }))
+def test_open_release_pr_refuses_prod(monkeypatch):
+    """A CHART deploy whose environment resolves to prod is refused BEFORE any
+    GitHub work — the release flow (queue -> CARE/DF release -> promote) is the
+    only way to reach prod now."""
+    calls = []
+    monkeypatch.setattr(P, "_get_github_client",
+                         lambda: (_ for _ in ()).throw(AssertionError("no GitHub call expected")))
 
+    out = P.open_release_pr.invoke({"environment": "prod", "image_tags": "guarded-svc:2.0"})
 
-def test_add_to_release_blocked_while_foreign_prd_pr_open(monkeypatch):
-    initial = {
-        "SIT": {UAT_PATH: {"include": []}},
-        "UAT": {UAT_PATH: {"include": []}},
-        "PRD": {UAT_PATH: {"include": []}, PRD_PATH: {"include": []}},
-    }
-    repo = _FakeRepo(initial)
-    # A release already in flight: someone raised UAT -> PRD manually.
-    foreign = repo.create_pull(title="Promote UAT -> PRD", body="", head="UAT", base="PRD")
-
-    out = _stage_prod(repo, monkeypatch)
-    assert out["ok"] is False and out["action"] == "blocked_prd_pr_open"
-    assert out["blocking_pr"] == foreign.number
-    assert "one release at a time" in out["note"] and "PRD" in out["note"]
-    # Nothing was staged: no release/prd/<date> branch was created.
-    assert _prd_release_branch() not in repo.files
-
-
-def test_add_to_release_allowed_after_blocker_closes_and_own_pr_exempt(monkeypatch):
-    initial = {
-        "SIT": {UAT_PATH: {"include": []}},
-        "UAT": {UAT_PATH: {"include": []}},
-        "PRD": {UAT_PATH: {"include": []}, PRD_PATH: {"include": []}},
-    }
-    repo = _FakeRepo(initial)
-    foreign = repo.create_pull(title="Promote UAT -> PRD", body="", head="UAT", base="PRD")
-    foreign.state = "closed"  # blocker resolved
-
-    out = _stage_prod(repo, monkeypatch)
-    assert out["ok"] is True and out["action"] == "staged_to_prd_pr"
-
-    # Today's OWN staging PR must not block further adds (accumulation).
-    out2 = _stage_prod(repo, monkeypatch, version="2.1")
-    assert out2["ok"] is True and out2["action"] == "staged_to_prd_pr"
-
-
-def test_add_to_release_blocked_by_pr_into_extra_guard_branch(monkeypatch):
-    """RELEASE_GUARD_BRANCHES adds more release targets (e.g. PRL1): an open PR
-    into ANY of them blocks add-to-release, and the message names that branch."""
-    monkeypatch.setattr(P.settings, "release_guard_branches", ["PRD", "PRL1"], raising=False)
-    initial = {
-        "SIT": {UAT_PATH: {"include": []}},
-        "UAT": {UAT_PATH: {"include": []}},
-        "PRD": {UAT_PATH: {"include": []}, PRD_PATH: {"include": []}},
-        "PRL1": {},
-    }
-    repo = _FakeRepo(initial)
-    foreign = repo.create_pull(title="Promote UAT -> PRL1", body="", head="UAT", base="PRL1")
-
-    out = _stage_prod(repo, monkeypatch)
-    assert out["ok"] is False and out["action"] == "blocked_prd_pr_open"
-    assert out["blocking_pr"] == foreign.number
-    assert "PRL1" in out["note"] and "one release at a time" in out["note"]
-
-    foreign.state = "closed"
-    out2 = _stage_prod(repo, monkeypatch)
-    assert out2["ok"] is True and out2["action"] == "staged_to_prd_pr"
+    assert out.startswith("ERROR")
+    assert "release" in out.lower()
+    assert calls == []

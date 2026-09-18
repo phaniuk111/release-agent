@@ -319,7 +319,6 @@ config:
   # ADK_CONTEXT_CACHE_TTL_SECONDS: "1800"
   # ADK_COMPACTION_INTERVAL: "20"
   # ADK_COMPACTION_OVERLAP: "3"
-  # CHANGE_REQUEST_PATH: "change-request.json"
   # DEPLOYMENT_PATH_PATTERN: "{env}/deployment.json"
   # HELM_VALUES_PATTERN: "{env}/values_{env}.yaml"
   # CONFIG_PATH: "image-workflows.json"

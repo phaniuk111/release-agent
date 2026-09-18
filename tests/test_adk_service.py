@@ -81,7 +81,7 @@ def test_adk_service_accepts_ui_deploy_json_payload():
     service = AdkChatService()
     payload = json.dumps(
         {
-            "environment": "prod",
+            "environment": "uat",
             "include": [
                 {
                     "helm_chart_name": "abc-client-api-svc",
@@ -95,8 +95,34 @@ def test_adk_service_accepts_ui_deploy_json_payload():
     events = _collect(service, payload)
 
     interrupt = _interrupt(events)
-    assert interrupt["environment"] == "prod"
-    assert {"uat/deployment.json", "prd/deployment.json"} == set(interrupt["proposed"])
+    assert interrupt["environment"] == "uat"
+    assert {"uat/deployment.json"} == set(interrupt["proposed"])
+
+
+def test_adk_service_refuses_ui_deploy_json_payload_targeting_prod():
+    """PROD is reached only through a release now — a chart-deploy JSON payload
+    that names prod is refused, no CONFIRM interrupt raised."""
+    deploy._PENDING_PREVIEWS.clear()
+    service = AdkChatService()
+    payload = json.dumps(
+        {
+            "environment": "prod",
+            "include": [
+                {
+                    "helm_chart_name": "abc-client-api-svc",
+                    "helm_chart_version": "1.1.1230",
+                    "gke_namespace": "default",
+                }
+            ],
+        }
+    )
+
+    events = _collect(service, payload)
+
+    assert not any(e.get("type") == "interrupt" for e in events)
+    tokens = "".join(e["content"] for e in _token_events(events))
+    assert "release" in tokens.lower()
+    assert deploy._PENDING_PREVIEWS == {}
 
 
 def test_progress_events_describe_tool_calls():
@@ -139,7 +165,7 @@ def test_only_state_changing_tools_mark_a_turn_mutated():
         )
 
     assert S._changes_release_state(ev("promote_release")) is True
-    assert S._changes_release_state(ev("merge_prod_release")) is True
+    assert S._changes_release_state(ev("promote_df_release")) is True
     assert S._changes_release_state(ev("remove_from_release")) is True
     # reads must NOT trigger a refresh
     assert S._changes_release_state(ev("release_stats", "find_prs")) is False

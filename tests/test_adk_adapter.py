@@ -8,7 +8,7 @@ def test_adk_chat_tools_exclude_release_defining_mutations():
     # Stronger than checking a private duplicate set: this is the SAME set the
     # MutationGuardPlugin enforces against at runtime.
     assert not (BLOCKED_FREEFORM_TOOLS & names)
-    assert {"remove_from_release", "merge_prod_release"} <= names
+    assert {"remove_from_release", "promote_release", "promote_df_release"} <= names
 
 
 def test_adk_tool_result_coercion_preserves_json_objects():
@@ -45,16 +45,22 @@ def test_deploy_preview_mints_token_and_exact_uat_plan():
     assert preview["token"] in deploy._PENDING_PREVIEWS
 
 
-def test_deploy_preview_for_prod_plans_both_files():
+def test_deploy_preview_for_prod_is_refused_no_token_minted(monkeypatch):
+    """PROD is reached only through a release now — a chart:version deploy that
+    names prod is refused before any preview is built."""
     deploy._PENDING_PREVIEWS.clear()
+    calls = []
+    monkeypatch.setattr(deploy, "_invoke_tool", lambda name, args: calls.append((name, args)))
 
     preview = deploy.prepare_deploy_preview(
         message="deploy abc-client-api-svc:1.1.1230 to prod",
     )
 
-    assert preview["ok"] is True
-    assert preview["environment"] == "prod"
-    assert {"uat/deployment.json", "prd/deployment.json"} == set(preview["proposed"])
+    assert preview["ok"] is False
+    assert "release" in preview["error"].lower()
+    assert "token" not in preview
+    assert calls == []
+    assert deploy._PENDING_PREVIEWS == {}
 
 
 def test_apply_confirmed_deploy_rejects_missing_or_wrong_token(monkeypatch):

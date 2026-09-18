@@ -58,36 +58,19 @@ def _open_prd_pr_blocker(repo, exclude_head: str = "", branches: list[str] | Non
     return None
 
 
-def _prd_release_branch() -> str:
-    """Deterministic per-day branch name so every prod deploy finds the same release PR."""
-    from datetime import datetime, timezone
-
-    return f"release/prd/{datetime.now(timezone.utc).date().isoformat()}"
-
-
-def _today_prd_pr(repo):
-    """Today's open PRD release PR (head = release/prd/<date>, base = PRD), or None."""
-    branch = _prd_release_branch()
-    try:
-        for pr in itertools.islice(
-            repo.get_pulls(state="open", base=settings.prd_branch, sort="created", direction="desc"), 30
-        ):
-            if pr.head.ref == branch:
-                return pr
-    except Exception:
-        pass
-    return None
-
-
 def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
-    """Current deploy status (UTC): charts live on UAT and PRD, today's accumulating PRD
-    release PR (the charts staged for prod, shipped when someone releases).
-    GitHub is the cross-session source of truth, so every session sees the same answer.
+    """Current deploy status (UTC): charts live on UAT and PRD, and whether a release
+    (CARE or DF) is currently in flight (an open PR into a guard branch). GitHub is
+    the cross-session source of truth, so every session sees the same answer.
+
+    PROD is reached only through a release — queue a chart, raise the CARE or DF
+    release, then promote it — so there is no daily PRD staging PR any more; what
+    ships is whatever the current release's file-set carries when it is promoted.
 
     ``deployment_repo`` selects which release is being reported: CARE and DF are
     raised in different repos, so each has its own PRs, branches and guard.
     Empty = the configured CARE repo. ``kind`` "df" watches the DF chain
-    (DF_RELEASE_BRANCHES) and has no daily PRD staging PR — that is CARE's."""
+    (DF_RELEASE_BRANCHES)."""
     from .release_chain import guard_branches
     from datetime import datetime, timezone
 
@@ -100,42 +83,14 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
         repo = _get_github_client().get_repo(deployment_repo or active_deploy_repo())
         uat = _charts(repo, "uat")
         prd = _charts(repo, "prd")
-        pr = _today_prd_pr(repo) if kind != "df" else None
-        blocker = _open_prd_pr_blocker(repo, exclude_head=_prd_release_branch(),
-                                       branches=guard_branches(kind))
+        blocker = _open_prd_pr_blocker(repo, branches=guard_branches(kind))
     except Exception as e:
         return {
             **base, "error": str(e), "uat_charts": [], "prd_charts": [],
-            "prd_release_pr": None, "pending_to_prod": [], "blocking_pr": None,
-            "reason": f"status unavailable: {e}",
+            "blocking_pr": None, "reason": f"status unavailable: {e}",
         }
 
-    prd_release_pr = None
-    pending_to_prod = []
-    if pr is not None:
-        staged = _charts_on_branch(repo, pr.head.ref, "prd")  # prd/deployment.json on the PR branch
-        pending_to_prod = [
-            {"helm_chart_name": n, "release_version": v, "prd_version": prd.get(n)}
-            for n, v in staged.items()
-            if prd.get(n) != v
-        ]
-        prd_release_pr = {
-            "number": pr.number,
-            "url": pr.html_url,
-            "charts": [{"helm_chart_name": n, "helm_chart_version": v} for n, v in staged.items()],
-            "can_merge_now": True,  # no cutoff gate — a release can ship at any time
-        }
-
-    if prd_release_pr:
-        reason = (
-            f"PRD release PR #{prd_release_pr['number']} is collecting {len(pending_to_prod)} "
-            f"change(s) — say 'release prod' to promote it through "
-            f"{settings.sit_branch}→{settings.uat_branch}→{settings.prd_branch} at any time. "
-            "Once released, no new charts can be added to this release."
-        )
-    else:
-        reason = "No PRD release open today."
-
+    reason = "No release currently in flight."
     blocking_pr = None
     if blocker is not None:
         blocking_pr = {
@@ -144,17 +99,15 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
             "head": blocker.head.ref,
             "base": blocker.base.ref,
         }
-        reason += (
-            f" ⚠ Adds to the release are BLOCKED: PR #{blocker.number} "
-            f"({blocker.head.ref} → {blocker.base.ref}) is already open."
+        reason = (
+            f"A release is in flight: PR #{blocker.number} "
+            f"({blocker.head.ref} → {blocker.base.ref}) is open — one release at a time."
         )
 
     return {
         **base,
         "uat_charts": [{"helm_chart_name": n, "helm_chart_version": v} for n, v in uat.items()],
         "prd_charts": [{"helm_chart_name": n, "helm_chart_version": v} for n, v in prd.items()],
-        "prd_release_pr": prd_release_pr,
-        "pending_to_prod": pending_to_prod,
         "blocking_pr": blocking_pr,
         "reason": reason,
     }
@@ -162,7 +115,7 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
 
 @tool
 def check_release_window() -> str:
-    """Report current deploy status (UTC): charts live on UAT vs PRD and today's PRD release
-    PR (charts staged for prod — releasable at any time). This is the source of truth for
-    'what's deployed' and 'what's pending to prod'."""
+    """Report current deploy status (UTC): charts live on UAT vs PRD, and whether a
+    release (CARE or DF) is currently in flight. This is the source of truth for
+    'what's deployed' and 'is a release in progress'."""
     return json.dumps(get_release_status(), indent=2)
