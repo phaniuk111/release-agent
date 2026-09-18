@@ -315,14 +315,15 @@ def queue_release_intent(
 
     allowed_detail = [c for c in failed_detail if allowed_to_fail(str(c.get("control") or ""))]
     failed_detail = [c for c in failed_detail if c not in allowed_detail]
-    allowed_jobs = {c.get("job") for c in allowed_detail if c.get("job") == c.get("control")}
     failed_controls = [c.get("control") for c in failed_detail]
-    failed_steps = [s for s in (report.get("failed_steps") or [])
-                    if not (isinstance(s, dict) and s.get("job") in allowed_jobs)]
-    # The run failing is explained by the allowed controls only when nothing
-    # else failed; a run that failed with no step or control detail still refuses.
-    run_ok = report.get("run_succeeded") or (bool(allowed_detail) and not failed_steps)
-    if failed_controls or failed_steps or not run_ok:
+    # ELIGIBILITY IS DECIDED BY RELEASE CONTROLS ONLY (CONTROL_PREFIXES, i.e.
+    # RCTLDEF…). A failed step that is NOT a control — "Generate HCC Report", an
+    # image scanner, a notify step — does NOT block the release; it is reported
+    # as a warning so it stays visible. The run's own conclusion is not a gate
+    # either: one such step turns the whole run red, and refusing on that put
+    # the release at the mercy of steps the release process does not govern.
+    other_failures = [s for s in (report.get("failed_steps") or []) if isinstance(s, dict)]
+    if failed_controls:
         return {
             "ok": False,
             "eligible": False,
@@ -331,11 +332,12 @@ def queue_release_intent(
             "run_conclusion": (report.get("run") or {}).get("conclusion"),
             "failed_controls": failed_controls,
             "failed_controls_detail": failed_detail,   # name + job, for "which one, where"
-            "failed_steps": failed_steps,
+            "failed_steps": other_failures,            # context only — these did not refuse it
             "gate": report.get("gate"),
             "reason": (
-                "This build is NOT eligible for the release — fix the failures, "
-                "re-run the build, then queue again with the new run."
+                "This build is NOT eligible for the release — "
+                + ", ".join(str(c) for c in failed_controls)
+                + " failed. Fix it, re-run the build, then queue again with the new run."
             ),
         }
     # PASS = every control passed; with allowed failures, every OTHER one did.
@@ -425,6 +427,25 @@ def queue_release_intent(
                 "and may be a false positive, so it is allowed (QUEUE_ALLOWED_FAILING_CONTROLS) "
                 "and shown as open in the release queue until someone closes it manually. "
                 "The release is not stopped by it."))
+        if other_failures:
+            # Not a refusal — but it must not be invisible either: the build did
+            # have a red step, and whoever approves the release should know.
+            named = ", ".join(
+                f"{f.get('name')}{' in job ' + f['job'] if f.get('job') else ''}"
+                for f in other_failures)
+            result["failed_steps"] = other_failures
+            warnings.append(
+                f"Queued anyway: {named} failed on that run, but it is not a release "
+                "control, so it does not block the release. Worth a look before you ship.")
+        elif not report.get("run_succeeded"):
+            # Red run, no failed control and no failed step to point at — a
+            # workflow/startup-level failure. It does not block (controls decide)
+            # but queueing silently off a red run would hide it.
+            warnings.append(
+                f"Queued anyway: that run's overall conclusion is "
+                f"'{(report.get('run') or {}).get('conclusion') or 'not success'}' even though "
+                "every release control passed — no individual step failure was recorded. "
+                "Worth opening the run before you ship.")
         if warnings:
             result["warnings"] = warnings
         # The UI lists these by name; the sentence in warnings is the chat lane's
