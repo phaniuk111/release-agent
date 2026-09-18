@@ -152,7 +152,10 @@ CASES = [
     ),
     Case(
         name="free-form deploy phrasing -> preview+token (classifier)",
-        message="can you get targeted-svc 9.9.1 into production please",
+        # UAT, not prod: prod is release-only now, and the refusal is its own
+        # case below. This one exists to exercise the CLASSIFIER lane — a
+        # phrasing with no "chart:version" and no "to <env>" pivot.
+        message="can you get targeted-svc 9.9.1 into uat please",
         check=expect_deploy_preview,
         cleanup_reply="CONFIRM-CANCEL",
     ),
