@@ -40,7 +40,11 @@ read.
 | Every principal's jobs, slot usage, reservations | `roles/bigquery.resourceViewer` | the smallest role with `bigquery.jobs.listAll` (16 read-only permissions, no table data) |
 | Table schemas, partitioning, clustering, `INFORMATION_SCHEMA.TABLES/COLUMNS/PARTITIONS` | `roles/bigquery.metadataViewer` | `tables.get/list`, `datasets.get` — metadata, not data |
 | Run `INFORMATION_SCHEMA` queries and **dry runs** | `roles/bigquery.jobUser` | `jobs.create`. This role can run real queries too — the tool's own guard (§9) is what keeps it to dry runs |
-| Google's partition/cluster and MV recommendations | `roles/recommender.bigqueryPartitionClusterViewer`, `roles/recommender.bigqueryMaterializedViewViewer` | recommender permissions live outside the `bigquery.*` roles |
+
+**Not available: the recommender roles.** So `INFORMATION_SCHEMA.RECOMMENDATIONS`
+/ `INSIGHTS` (which need `recommender.*` permissions) are out. Everything
+below is `INFORMATION_SCHEMA` only — table-change advice is *derived* from
+`JOBS` + `PARTITIONS` + `COLUMNS`, never read from Google's recommender.
 
 **Not granted:** `bigquery.dataViewer`. The tool — and therefore the model —
 never reads a row of any table. Dry runs return bytes and result *schema*,
@@ -54,7 +58,6 @@ project: no dataset filter, no cross-team concern.
 | Query cost | `JOBS_BY_PROJECT` (180 days): `total_slot_ms`, `total_bytes_billed`, `cache_hit`, `referenced_tables`, `query_info.query_hashes.normalized_literals`, `query_info.performance_insights`, `job_stages` | the ranking, and the *why* |
 | Slot supply | `RESERVATIONS`, `ASSIGNMENTS`, `JOBS_TIMELINE_BY_PROJECT` | slot-hours need a denominator; contention needs a timeline |
 | Table layout | `TABLES`, `TABLE_OPTIONS`, `COLUMNS`, `PARTITIONS`, `TABLE_STORAGE` | is the filter column the partition column; is the table clustered; how big; expiry |
-| Google's own advice | `RECOMMENDATIONS`, `INSIGHTS` | partition/cluster/MV recommendations computed by Google — read, never inferred |
 | Write side | `WRITE_API_TIMELINE`, `STREAMING_TIMELINE` | unbatched writes, ingestion errors (the portal's own writes are in `STREAMING_TIMELINE`, legacy `insertAll`) |
 | The verifier | `jobs.query` with `dryRun=true` | bytes a query *would* process, and its result schema — without running it |
 
@@ -64,17 +67,16 @@ All per-region: `region-europe-west3` in the enterprise. Ordering is
 ## 4. The loop
 
 ```
-1. SCAN         top N query shapes by cost, 14 days; storage and write findings;
-                Google's open recommendations                                deterministic
+1. SCAN         top N query shapes by cost, 14 days; storage and write findings   deterministic
 2. INVESTIGATE  per top item the agent calls tools as needed:
                   bq_query_detail   stages, insights, referenced tables, p50/p95 bytes
                   bq_table_layout   partition/cluster/size/expiry of each referenced table
-                  bq_recommendations  Google's advice for those tables           ← model chooses what to look at
+                  bq_prune_estimate what partitioning/clustering on a column would have pruned   ← model chooses what to look at
 3. PROPOSE      a structured change: a rewritten SQL, or a table change
                 (partition / cluster / expiry), with one sentence of reasoning  ← model
 4. VERIFY       rewrite   -> dry run: bytes before vs after, result schema before vs after
-                table change -> Google's recommendation exists for it, or the
-                              PARTITIONS/JOBS evidence (bytes that would be pruned)  deterministic
+                table change -> PARTITIONS/JOBS evidence only: bytes per run vs table
+                              size, the filter column, partition stats if any     deterministic, ESTIMATED
 5. RETRY        not cheaper, or schema changed unintentionally -> once more with
                 the numbers; then give up and say so                            ← model, bounded
 6. REPORT       3-5 items, biggest measured saving first, each with the evidence
@@ -103,11 +105,28 @@ the *cost* claim measured and the *equivalence* claim explicit, never
 implied. Bytes are also not slot-time: on reservations the saving is
 reported as bytes with a note, not as slot-hours.
 
-Table changes (partition, cluster, expiry) cannot be dry-run. They are
-proposed only when Google's recommender already recommends them, or when
-`PARTITIONS` + `JOBS` show the filter column and the bytes it would prune;
-either way the evidence is quoted and the proposal says "estimated", not
-"measured".
+Table changes (partition, cluster, expiry) cannot be dry-run, and Google's
+recommender is not available here. They are proposed from `INFORMATION_SCHEMA`
+evidence alone, and always marked **estimated**:
+
+- **partition candidate**: a table read by ≥ N runs whose `JOBS.referenced_tables`
+  bytes ≈ the table's full size each time, unpartitioned (`TABLES` /
+  `TABLE_OPTIONS`), and whose sample SQL filters on a `DATE`/`TIMESTAMP`
+  column (`COLUMNS`) — the estimate is "each run reads the whole table
+  (X GB × runs); partitioned by that column it would read the matching
+  partitions". If the table is *already* partitioned but the query still
+  scans everything, `PARTITIONS` gives real per-partition bytes and the
+  estimate is much tighter: the rewrite (a partition-column filter) can then
+  be **dry-run** and becomes measured.
+- **cluster candidate**: repeated equality/`IN` filters on a low-cardinality
+  column of a large partitioned table — estimated only; no dry run can show
+  clustering's effect.
+- **expiry candidate**: `TABLE_STORAGE` with no `expiration` and no read in
+  the window (`JOBS.referenced_tables`) — this one *is* exact: bytes × price.
+
+The gap this leaves is honest: without the recommender, partition/cluster
+advice is the tool's inference from access patterns, not Google's model of
+them. Rewrites of the *query* remain fully measured by dry run either way.
 
 ## 6. Where the model is — and is not
 
@@ -157,7 +176,7 @@ counted, which is the only metric that says the tool is worth its cost.
 | `bq_cost_scan(days=14, top=10)` | yes | ranked shapes + storage/write findings + open recommendations; cached like `/api/monitoring` |
 | `bq_query_detail(qhash)` | yes | stages, `performance_insights`, referenced tables, runs, byte percentiles, one sample SQL |
 | `bq_table_layout(table)` | yes | partitioning, clustering, size, row count, expiry, last modified |
-| `bq_recommendations(table=None)` | yes | Google's open recommendations, with their `recommendation_details` |
+| `bq_prune_estimate(table, column)` | yes | estimated bytes a partition/cluster on `column` would prune, from `PARTITIONS` + `JOBS` — marked estimated |
 | `bq_dry_run(sql)` | yes | `{ok, bytes, schema, referenced_tables, error}` — never executes |
 | `bq_propose(qhash, evidence)` | **model** | the structured proposal (§4 step 3) |
 | `bq_findings(qhash=None)` | yes | history from `bq_cost_findings` — what was suggested before and what happened |
@@ -202,7 +221,7 @@ PREVIEW_FEATURES: "monitoring,bq-cost"
 
 | Stage | Delivers | Effort |
 |---|---|---|
-| **0 — the check** | the two scan queries run once by hand in the enterprise project: top 10 shapes, running-now, open recommendations, tables with no expiry | 1 hour, no code |
+| **0 — the check** | the two scan queries run once by hand in the enterprise project: top 10 shapes, running-now, unpartitioned large tables read often, tables with no expiry | 1 hour, no code |
 | **1 — scan + report** | §3 reads, §4 step 1, a narrated report; no proposals | 1 day |
 | **2 — investigate + verify** | the per-item tools, `bq_dry_run`, and the model's rewrite with the §5 verifier | +1–2 days |
 | **3 — closed loop** | `bq_cost_findings`, adoption tracking, the weekly CronJob | +1 day |
