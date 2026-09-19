@@ -27,6 +27,37 @@ it; the portal does not read Terraform and does not compare against it.
 Nothing else. No Terraform read, no drift comparison — the console is the
 view, and what it shows is what gets analysed.
 
+### 2a. Scope — one team in a multi-tenant project
+
+The project is shared, so `roles/monitoring.viewer` can see every tenant's
+policies and incidents. The tool must **never** hold, show, label or reason
+about another team's alerts. Scope is applied at the earliest point the API
+allows, and everything outside it is dropped before anything else runs:
+
+| Layer | How it is scoped |
+|---|---|
+| Policies | **server-side**, in the `alertPolicies.list` `filter` — the API supports `user_labels.<key>`, `display_name`, `name`, `enabled`, `notification_channels`. Out-of-scope policies are never returned |
+| Incidents | `alerts.list` has **no filter parameter**, so it is filtered client-side to incidents whose `policy` is one of the in-scope policy names — and the rest are discarded on read, never stored, never logged |
+| Metrics | the policy's own PromQL already carries the team's labels; the replay adds nothing |
+| Labels (§7b) | only in-scope incident groups are ever offered for labelling |
+
+The scope rules, any of which may be set, combined with OR into one API
+filter:
+
+```
+ALERT_SCOPE_LABEL:   "team=payments"     -> user_labels.team='payments'
+ALERT_SCOPE_PREFIX:  "payments-"         -> display_name=starts_with('payments-')
+ALERT_SCOPE_MATCH:   "payments"          -> display_name=has_substring('payments')   (case-insensitive)
+ALERT_SCOPE_POLICIES: "a,b,c"            -> name='…/a' OR name='…/b' …            (explicit allow-list)
+```
+
+A user label is the cleanest, because it does not depend on naming discipline
+and Terraform can set it on every policy in one place (`user_labels`); prefix
+and substring exist for policies made before that discipline. **With no scope
+key set the feature refuses to run** in a multi-tenant project — analysing
+everything is never the default. `ALERT_SCOPE_NAMESPACE` (a namespace named
+in the condition's PromQL) remains as a further client-side narrowing.
+
 ## 3. Access
 
 One read-only role on the project: **`roles/monitoring.viewer`**. Verified with
@@ -184,14 +215,18 @@ ALERT_NOISY_PER_WEEK: "5"
 ALERT_FLAP_MINUTES: "5"
 ALERT_UNACKED_MIN: "20"
 ALERT_REAL_MINUTES: "30"
-ALERT_SCOPE_NAMESPACE: ""        # optional: only policies whose conditions name this namespace
-ALERT_SCOPE_PREFIX: ""           # optional: only policies whose display name starts with this
+# --- scope: REQUIRED (at least one) — the project is multi-tenant ---
+ALERT_SCOPE_LABEL: ""            # "team=payments"  -> user_labels.team='payments'   (preferred)
+ALERT_SCOPE_PREFIX: ""           # display_name=starts_with(...)
+ALERT_SCOPE_MATCH: ""            # display_name=has_substring(...), case-insensitive
+ALERT_SCOPE_POLICIES: ""         # comma list of policy names — explicit allow-list
+ALERT_SCOPE_NAMESPACE: ""        # further narrowing: conditions whose PromQL names this namespace
 ALERT_BQ_DATASET: ""             # labels (and an optional incident snapshot); empty = labels in memory only
 PREVIEW_FEATURES: "monitoring,alert-noise"
 ```
 
-Scope is optional: with both scope keys empty the tool analyses every policy
-the service account can list. `alerts.list` is Preview with quota-set
+At least one scope key is required; with none set the tool refuses to run
+rather than analyse every tenant's alerts. `alerts.list` is Preview with quota-set
 retention; if the first run shows it short, an append-only incident snapshot
 into `ALERT_BQ_DATASET` (same discipline as `release_intents`) is the first
 stage-1 task.
@@ -203,13 +238,17 @@ stage-1 task.
 - The replay gate is not overridable from chat: a rejected suggestion is
   never presented as one.
 - The only thing it stores is labels (and optionally incidents), append-only,
-  in the team's own dataset.
+  in the team's own dataset — and only for in-scope policies.
+- Tenant isolation: policies are filtered in the API call; incidents outside
+  the in-scope policy set are dropped on read and never reach the model, the
+  report, the labels or the logs. No scope configured = the feature refuses
+  to run.
 
 ## 12. Rollout — each stage stands alone
 
 | Stage | Delivers | Effort |
 |---|---|---|
-| **0 — the check** | pull 90 days once as a one-off script: top five noisy policies with count, incidents/week, median duration, hour-of-day | 1 hour, no code in the repo |
+| **0 — the check** | pull 90 days once as a one-off script, **with the same scope filter**: top five noisy policies with count, incidents/week, median duration, hour-of-day | 1 hour, no code in the repo |
 | **1 — findings** | §2 read, §5 findings, §7b labelling; chat + an optional *Alert noise* pill (preview-gated) | 1–2 days |
 | **2 — test** | §7 `what_if` — type a change, see what it would have done | +1 day |
 | **3 — suggestions** | §6 model suggestions, each replay-tested | +1 day |
@@ -221,7 +260,10 @@ stage 0 if the top five surprise nobody.
 ## 13. Open questions — answer before stage 1
 
 1. **`alerts.list` retention** — measured on the first run.
-2. **Scope** — every policy in the project, or only a namespace/prefix?
+2. **Which scope key fits your policies today** — do they carry a `team`
+   user label, or is it a naming prefix? (A label is preferred; if it is
+   missing, adding `user_labels = { team = "…" }` in Terraform is a one-line
+   change per policy and makes scoping exact from then on.)
 
 ## 14. File map (when built)
 
