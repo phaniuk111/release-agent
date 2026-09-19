@@ -17,6 +17,9 @@ export const GROUPS = [
     {name:'Release',  hint:'the weekly cut — queue it, build the file-set, ship it'},
     {name:'Deploy',   hint:'push one chart or DF template to an environment'},
     {name:'Check',    hint:'read-only — status, controls, builds, PRs'},
+    // Read-only like Check, but a different question: not "is this release
+    // safe" but "is production healthy, and what is BigQuery costing us".
+    {name:'Monitoring', hint:'read-only — what is firing, and what BigQuery is costing'},
     // Its own row because the audience is different: everything above is for
     // the team shipping the release, this is for someone CONSUMING our APIs.
     {name:'Onboarding', hint:'consuming our APIs — guided from the onboarding docs'},
@@ -45,8 +48,9 @@ export const CAPABILITIES = [
     {group:'Check',   icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RCTLD control gates for a tag',     send:false, text:'check build controls for <image>:<tag> before a PRD release'},
     {group:'Check',   icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/controls',    send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
     {group:'Check',   icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
-    {group:'Check',   icon:'fa-heart-pulse',       label:'Monitoring',           desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
     {group:'Check',   icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
+    {group:'Monitoring', icon:'fa-heart-pulse',    label:'PromQL checks',        desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
+    {group:'Monitoring', icon:'fa-coins',          label:'BQ cost report',       desc:"the most expensive BigQuery queries this fortnight, why, and what they'd cost after a fix — measured, not guessed", form:'bq-cost'},
     {group:'Onboarding', icon:'fa-plug',           label:'Consumer onboarding',  desc:'how to start using our APIs — access, auth, first call, going live', send:true,  text:'I want to onboard to your APIs — walk me through it step by step'},
 ];
 
@@ -57,6 +61,7 @@ const GROUP_STYLE = {
     Release: {icon:'text-violet-300',  border:'hover:border-violet-400/50',  label:'text-violet-300/70'},
     Deploy:  {icon:'text-sky-300',     border:'hover:border-sky-400/50',     label:'text-sky-300/70'},
     Check:   {icon:'text-emerald-300', border:'hover:border-emerald-400/50', label:'text-emerald-300/70'},
+    Monitoring: {icon:'text-rose-300', border:'hover:border-rose-400/50', label:'text-rose-300/70'},
     Onboarding: {icon:'text-cyan-300', border:'hover:border-cyan-400/50', label:'text-cyan-300/70'},
 };
 

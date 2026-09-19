@@ -1,5 +1,6 @@
 import { deployTemplatePath, getContext } from '../api.js';
 import { sendMessage } from '../chat.js';
+import { showBqCost } from './bq_cost.js';
 import { ctxNote, labeledField, opening, withDismiss } from './common.js';
 import { showDfDeployForm } from './df_deploy_form.js';
 import { showMonitoring } from './monitoring.js';
@@ -26,6 +27,7 @@ export async function showDeployForm(target, name, version) {
     if (target === 'queue') { showQueueForm(); return; }
     if (target === 'queue-table') { showQueueTable(); return; }
     if (target === 'monitoring') { showMonitoring(); return; }
+    if (target === 'bq-cost') { showBqCost(); return; }
     // The only environment this form can write, whatever was asked for — the
     // payload's environment is fixed here rather than taken from the caller.
     const env = 'uat';

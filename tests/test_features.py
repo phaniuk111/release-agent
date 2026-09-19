@@ -1,6 +1,7 @@
 """Preview features: hidden from everyone but the people testing them — in the
 page, the API and the chat alike."""
 import json
+import pathlib
 from types import SimpleNamespace
 
 import pytest
@@ -76,3 +77,25 @@ def test_the_injected_config_cannot_close_the_script_tag(monkeypatch):
     monkeypatch.setattr(APP, "_caller", lambda request: None)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
     assert "</script><b>" not in html and "\\u003c/script>" in html
+
+
+def test_every_server_gated_pill_sits_in_a_preview_group_by_default():
+    """A pill whose feature the server refuses (PREVIEW_FEATURES) must live in a
+    group PREVIEW_GROUPS hides by default — otherwise everyone sees a pill that
+    only ever answers 403."""
+    from release_agent.config import Settings
+
+    default_groups = {g.strip() for g in Settings.model_fields["preview_groups"].default.split(",")}
+    palette = (pathlib.Path(APP.__file__).parent / "static" / "palette.js").read_text()
+    gated = {"form:'monitoring'": None, "form:'bq-cost'": None}
+    for line in palette.splitlines():
+        for key in gated:
+            if key in line and "group:'" in line:
+                gated[key] = line.split("group:'", 1)[1].split("'", 1)[0]
+    assert all(gated.values()), gated
+    assert set(gated.values()) <= default_groups, gated
+
+
+def test_a_refusal_names_the_feature_like_a_person_would():
+    assert features.refusal("monitoring") == "Monitoring is not available yet — it is a preview feature."
+    assert features.refusal("bq-cost") == "The BigQuery cost report is not available yet — it is a preview feature."

@@ -9,7 +9,7 @@ one without the rules drifting between them.
 
 | Layer | Files | What it holds | In a React port |
 |---|---|---|---|
-| **Rules** | `core/*.js` | Wording and decisions both UIs must agree on: queue destination text, the PRD/PRL1/CARE/DF tick rules, submission validation, formatting. **Pure** — no DOM, no fetch, no globals. | Import unchanged (plain JS with JSDoc types; `allowJs` in TypeScript). |
+| **Rules** | `core/*.js` | Wording and decisions both UIs must agree on: queue destination text, the PRD/PRL1/CARE/DF tick rules, submission validation, formatting, the Monitoring and BQ cost report wording (`core/monitoring.js`, `core/bq_cost.js`). **Pure** — no DOM, no fetch, no globals. | Import unchanged (plain JS with JSDoc types; `allowJs` in TypeScript). |
 | **API contract** | `api.js` | Every backend call, named per route. Network failure throws; an HTTP error returns `{ok:false, status, error}`. Screens never call `fetch`. | Reimplement the same functions over the plugin's fetch/`discoveryApi` — or import it and swap `API_BASE`. Request/response models: `app_fastapi.py` (pydantic) and `/openapi.json`. |
 | **Screens** | `forms/*.js`, `chat.js`, `insights.js`, `status.js`, `links.js`, `connect.js`, `palette.js` | DOM rendering and per-card state only. | Rewrite as components; nothing else changes. |
 
