@@ -1,9 +1,34 @@
 # BigQuery cost optimisation — agentic design
 
-Status: **proposed** (2026-09-19). Not built. Read AGENTS.md first; this follows
-the Monitoring pill's pattern (facts from tools, the model narrates and
-proposes, nothing applies itself) and the alert-noise design
-(`ALERT_HYGIENE.md`) for the shape of the loop.
+Status: **built** (2026-09-19) — `tools/bq_guard.py`, `tools/bq_cost.py`, the
+`bq-cost` skill, `/api/bq-cost/*`, the pill in the *Monitoring* group. Read
+AGENTS.md first; this follows the Monitoring pill's pattern (facts from tools,
+the model narrates and proposes, nothing applies itself) and the alert-noise
+design (`ALERT_HYGIENE.md`) for the shape of the loop.
+
+What building it against a real project changed, kept here so nobody re-learns it:
+
+- **Region-wide `INFORMATION_SCHEMA` views are denied in any shared project.**
+  `TABLE_STORAGE`, `TABLES`, `STREAMING_TIMELINE_BY_PROJECT`,
+  `WRITE_API_TIMELINE_BY_PROJECT` need `bigquery.tables.list` on *every*
+  dataset in the region, including BigQuery's hidden anonymous cached-result
+  datasets (`_…`) — each owned solely by the user or service account that ran
+  the query, so even a project Owner is refused. No role fixes it. Storage
+  therefore falls back to one read per visible dataset (`__TABLES__` +
+  `TABLE_OPTIONS` + `COLUMNS`, capped by `BQ_COST_MAX_DATASETS`); the write
+  timelines have no per-dataset form, so that section degrades with an
+  honest hint. `JOBS_BY_PROJECT` is unaffected.
+- **`JOBS` has no per-job partition count.** `total_partitions_processed`
+  exists only in the Jobs REST statistics, not the view — `p50_partitions` is
+  never measured; the card omits it.
+- **A dry run prices an undeclared `@parameter` as 0 bytes** instead of
+  failing, which would make any parameterised rewrite look free. The verifier
+  detects `@` parameters on either side and refuses to price them; the skill
+  substitutes a literal and says so.
+- **The scan must exclude itself**: every statement the guard issues carries
+  the job label `release_copilot=bq_cost` and the ranking filters it out —
+  otherwise the tool's own `INFORMATION_SCHEMA` reads are the top shapes of a
+  quiet week. `report_cost_bytes` still states what the scan read.
 
 ## 1. Goal, and what "agentic" adds
 
@@ -178,12 +203,18 @@ counted, which is the only metric that says the tool is worth its cost.
 | `bq_table_layout(table)` | yes | partitioning, clustering, size, row count, expiry, last modified |
 | `bq_prune_estimate(table, column)` | yes | estimated bytes a partition/cluster on `column` would prune, from `PARTITIONS` + `JOBS` — marked estimated |
 | `bq_dry_run(sql)` | yes | `{ok, bytes, schema, referenced_tables, error}` — never executes |
-| `bq_propose(qhash, evidence)` | **model** | the structured proposal (§4 step 3) |
+| `bq_verify_rewrite(before_sql, after_sql, declared_schema_change=False)` | yes | two dry runs and the §5 verdict — the **model** proposes the rewrite itself (§4 step 3) and must pass it through here before it is shown |
 | `bq_findings(qhash=None)` | yes | history from `bq_cost_findings` — what was suggested before and what happened |
 
-HTTP: `GET /api/bq-cost/report`, `GET /api/bq-cost/{qhash}`. Pill **BQ cost
-report** in the *Check* group (or a fourth group if it stays a distinct
-audience), `PREVIEW_FEATURES`-gated. Weekly: a `CronJob` in the Helm chart
+HTTP: `GET /api/bq-cost/report?fresh=0|1` (JSON) and
+`GET /api/bq-cost/report.xlsx` — the same cached scan as a workbook (Summary,
+Top queries, Storage, Writes, History; `tools/bq_cost_xlsx.py`, no
+spreadsheet library). Pill **BQ cost report** in the *Monitoring* group beside
+the PromQL checks — a different audience from *Check* — hidden by
+`PREVIEW_GROUPS` and refused server-side by `PREVIEW_FEATURES` for everyone
+but the testers. The pill is deliberately one table: a row per query shape
+with *Ask why*, and the Excel download; investigating a row and proving a
+rewrite happen in the chat through the tools above, not in the card. Weekly: a `CronJob` in the Helm chart
 running the same scan, posting the report to a Teams/email channel and
 writing `bq_cost_findings`.
 

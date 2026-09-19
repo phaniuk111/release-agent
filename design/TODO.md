@@ -23,36 +23,24 @@ writes nothing; Terraform is where the team applies a suggestion.
   never a label. Most policies are log-based metrics templated per service —
   the report collapses a template into one row and one suggestion.
 
-### BigQuery cost report pill — `design/BQ_COST.md` (agentic design), memory `bq-cost-pill-parked`
-Top-N expensive queries by slot-hours / TiB billed from `INFORMATION_SCHEMA`,
-BigQuery's own `performance_insights` and `RECOMMENDATIONS`, storage with no
-expiry, unbatched writes; the model narrates 3–5 recommendations; a
-dry-run-verified rewrite on demand.
-- **Needs to restart:** `roles/bigquery.resourceViewer` on the BigQuery
-  project — the smallest role carrying `bigquery.jobs.listAll` (16 read-only
-  permissions; jobs + reservations, no table data). Without it the report
-  shows only the service account's own jobs and looks empty. Verified via
-  `gcloud iam roles describe`: not in `jobUser`, `user`, `dataViewer`,
-  `metadataViewer`, nor the primitive `viewer`.
-- **The BigQuery project is dedicated to the team** (unlike the alerting
-  project) — so no dataset scoping and no cross-team privacy concern:
-  analyse the whole project, ordered by `slot_hours` on reservations or
-  `gb_billed` on-demand.
-- **Starting queries** (ran 2026-09-19 against the sandbox, region-us;
-  enterprise is `region-europe-west3`):
-  - running now: `JOBS_BY_PROJECT WHERE state="RUNNING" AND job_type="QUERY"
-    ORDER BY total_slot_ms DESC` — slot-ms and bytes accrued so far, seconds running.
-  - top shapes, 14 days: group by `query_info.query_hashes.normalized_literals`,
-    `state="DONE" AND error_result IS NULL AND cache_hit=FALSE`, sum
-    `total_slot_ms` and `total_bytes_billed`, `ANY_VALUE(SUBSTR(query,1,80))`.
-  - sandbox finding worth remembering: the portal's own `SELECT * FROM
-    release_intents` was the top shape — 240 runs/fortnight billing the
-    **10 MB minimum** each against an 18 KB table. A cent today; the pattern
-    is the point.
-- **Decided:** no JVM / no ZetaSQL — `sqlglot` if syntax parsing is ever
-  needed; the LLM narrates only, never detects or estimates.
-- **Open question:** does this belong in the release copilot at all? Same
-  shell, different audience. Fourth pill group, or a separate agent.
+## Built — 2026-09-19
+
+### BigQuery cost report — `design/BQ_COST.md`
+Shipped as the **BQ cost report** pill in the new *Monitoring* group (with
+the PromQL checks — the "different audience" question was answered with a
+group of its own, not a separate agent), the `bq-cost` skill and
+`/api/bq-cost/*`, all `PREVIEW_FEATURES`/`PREVIEW_GROUPS`-gated. What the
+build learned that the design did not know is recorded at the top of
+`BQ_COST.md` (anonymous datasets deny region-wide views, no partition count
+in `JOBS`, parameterised dry runs price as 0 bytes, the scan labels and
+excludes its own jobs).
+- **Still true:** no JVM / no ZetaSQL; the model narrates and proposes, the
+  numbers come from `INFORMATION_SCHEMA` and dry runs only; nothing applies
+  itself.
+- **Not built (by choice):** the weekly `CronJob` + Teams/email post from
+  §8 — the on-demand pill and chat are enough until someone asks for a
+  digest. The entry point exists (`python -m release_agent.tools.bq_cost`).
+- **Enterprise switch-on:** see the follow-ups below.
 
 ## Skipped — deliberately
 
@@ -94,6 +82,13 @@ mostly Grafana's default 80) are in the 2026-09-19 session transcript.
   the allowance cannot apply if the key is empty.
 - Confirm the `BUILD_TAG_STEP` / `BUILD_TAG_MARKER` values in the ConfigMap
   match what the pipeline logs (`Create new tag` / `New tag is:`).
+- BQ cost report switch-on: grant the portal's GSA
+  `roles/bigquery.resourceViewer` + `roles/bigquery.metadataViewer` +
+  `roles/bigquery.jobUser` on the team's BigQuery project (no `dataViewer`);
+  set `BQ_COST_REGION: "region-europe-west3"`, `BQ_COST_PROJECT` if it is
+  not the Vertex project, `PREVIEW_FEATURES: "monitoring,bq-cost"`,
+  `PREVIEW_GROUPS: "Check,Monitoring"`. Optional memory: the
+  `bq_cost_findings` table via the terraform variable + `BQ_COST_DATASET`.
 - GCP: `sql-553@…` has a user-managed key — delete it if unused.
 - `backstage_poc` branch: `eod1` in `backstage/app-config.yaml` console URLs
   (internal name on a public repo).
