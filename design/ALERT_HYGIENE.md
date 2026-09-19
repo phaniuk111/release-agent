@@ -173,7 +173,7 @@ Exactly two places:
 2. **The PR text** — one paragraph a reviewer reads: what changes, what it
    keeps, what it drops.
 
-Not the detector (§5 is), not the judge of what was real (`acknowledged` is),
+Not the detector (§5 is), not the judge of what was real (the §7a ladder is),
 not the applier (no code path exists). A proposal the replay rejected is
 never shown as a recommendation — it is shown as "tried, would have hidden
 incident #…", so the reviewer sees what was ruled out and why.
@@ -189,7 +189,8 @@ One PR per policy (or one per batch, `ALERT_PR_BATCH`), against
   discard the edit otherwise (`python-hcl2` does not write HCL back, so the
   parse-diff is what makes the text edit safe);
 - body: the finding and numbers, the replay verdict, links to the
-  acknowledged incidents it keeps, the proposals that were rejected and why;
+  real incidents it keeps (and on which rung of §7a each stands), the
+  proposals that were rejected and why;
 - commits through the Git Data API; the repo's CI runs `terraform plan`; a
   person merges.
 
@@ -277,7 +278,7 @@ src/release_agent/tools/alert_hygiene.py   incidents · findings · replay      
 adk_release_agent/tools.py                 wrappers: alert_report, alert_detail, propose_alert_change, replay_alert_change, draft_alert_pr
 adk_release_agent/skills/alert-noise/SKILL.md
 tests/test_alert_findings.py               the rules on synthetic incident sets
-tests/test_alert_replay.py                 episodes; the acknowledged gate
+tests/test_alert_replay.py                 episodes; the real-incident gate on each §7a rung
 tests/test_tf_alerts.py                    HCL parsing; the parse-diff gate on real resource blocks
 pyproject.toml                             + python-hcl2 (pure Python)
 ```
