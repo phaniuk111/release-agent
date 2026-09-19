@@ -66,6 +66,8 @@ One read-only role on the project: **`roles/monitoring.viewer`**. Verified with
 `roles/monitoring.alertViewer` is a two-permission subset and is **not needed**.
 
 That is the whole ask. No repo access, no `git`, no `terraform` binary.
+(Optional, only if log-match alerting policies should be *replayed* rather
+than just counted: `roles/logging.viewer` — §5a.)
 
 ## 4. The pipeline
 
@@ -120,6 +122,51 @@ records.
 Secondary, reported but not suggestion-driving: **stale** (open > 7 days — a
 broken condition), **undocumented** (no runbook text / no notification
 channel), **disabled** policies still present, **absent-data** conditions.
+
+### 5a. Log-based metrics — where most of the noise usually is
+
+The team alerts largely on log-based metrics (`logging.googleapis.com/user/…`),
+one set per service. Two consequences the tool is built around.
+
+**They produce the classic noise shapes.** A counter over error log lines is
+sparse and spiky, so the same four mistakes appear again and again — and each
+has a specific fix the catalogue (§6) already carries:
+
+| Pattern on a log-based metric | Why it fires | Suggested change |
+|---|---|---|
+| threshold `> 0` on an error-line counter | one log line, one incident | a real threshold (rate or count over a window), plus a `duration` |
+| alignment period 60 s on a sparse metric | a single burst crosses it | longer `alignmentPeriod`, `rate` over 5–15 min |
+| metric-absence condition on a log metric | the service was merely quiet (no traffic at night) | threshold on `up`/request rate instead, or a time window |
+| per-line matching on a message that is retried | every retry is a new line | count distinct correlation ids, or alert on the outcome metric |
+
+**They are templated per service, so noise is repeated N times.** Fourteen
+services with the same `error_count > 0` policy produce fourteen noisy
+policies from one decision. The tool therefore adds a finding:
+
+| Finding | Rule | What it means |
+|---|---|---|
+| **templated** | ≥ 3 policies whose conditions are identical except for a service/label value | one condition shape, copied — fix it once in the template |
+| **co-firing across services** | templated policies opening together (≥ 80% co-occurrence) | a shared dependency, not fourteen incidents — one alert on the dependency replaces them |
+
+The report **collapses a template into one row** ("`error_count > 0` × 14
+services — 312 incidents/90d, 91% self-closed") with one suggestion, tested
+by replaying it across all fourteen. A per-service list would hide the fact
+that it is one problem.
+
+**Replay works for them.** Managed Prometheus exposes Cloud Monitoring
+metrics to PromQL as `logging_googleapis_com:user_<name>`, the same way the
+portal's existing checks already read `composer_googleapis_com:…`. Two rules
+the existing monitoring code already learned apply here: log-based counters
+are DELTA metrics, so the replay must use windowed expressions (`increase`,
+`sum_over_time`) never instant selectors, and a window with no log lines is
+"no data", never zero.
+
+**Log-match alerting policies** (`conditionMatchedLog`, no metric behind
+them) are a different thing: they do not auto-close on the condition
+clearing, and replaying one means re-running its log filter over the
+period. Reported for repetition and volume in v1; replay for them is
+optional and needs `roles/logging.viewer` (`ALERT_LOG_REPLAY`), off by
+default.
 
 ## 6. Suggestion catalogue — pattern → condition change
 
@@ -248,6 +295,7 @@ ALERT_UNACKED_MIN: "20"
 ALERT_REAL_MINUTES: "30"           # duration that counts as real on its own
 ALERT_REAL_MAGNITUDE: "2"          # peak / threshold ratio that counts as real
 ALERT_REAL_COFIRE: "2"             # other in-scope policies opening within ±10 min
+ALERT_LOG_REPLAY: "false"          # replay conditionMatchedLog policies too — needs roles/logging.viewer
 # --- scope: REQUIRED (at least one) — the project is multi-tenant ---
 ALERT_SCOPE_LABEL: ""            # "team=payments"  -> user_labels.team='payments'   (preferred)
 ALERT_SCOPE_PREFIX: ""           # display_name=starts_with(...)
