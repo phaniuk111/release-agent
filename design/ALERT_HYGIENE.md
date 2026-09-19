@@ -21,7 +21,7 @@ writes to GCP; `terraform plan` on the PR is the proof, a person merges.
 | Input | Source | Role |
 |---|---|---|
 | **Alert definitions** | `google_monitoring_alert_policy` resources in the Terraform repo (`ALERT_TF_REPO` / `ALERT_TF_PATH`), parsed with `python-hcl2` | **Authoritative.** Every proposal is a change to one of these |
-| **Incidents** | `alerts.list` (Cloud Monitoring API, Preview), 90 days | The evidence — what actually fired, for how long, and whether anyone acknowledged it |
+| **Incidents** | `alerts.list` (Cloud Monitoring API, Preview), 90 days | The evidence — what actually fired and for how long. **Nobody acknowledges today** (notifications go to email), so `state` is only open/closed — see §7a for what stands in for "real" |
 | **Metrics** | PromQL against Managed Prometheus (the portal already speaks it) | For the replay: what a changed condition *would* have done |
 | Live policies | `alertPolicies.list` | Only to join incidents to Terraform resources (by `display_name`) and to detect drift (§10). Never the thing being edited |
 
@@ -52,7 +52,7 @@ runs `plan`.
 2. FIND      noise patterns per policy (§5)                          deterministic
 3. PROPOSE   a condition change per noisy policy (§6)               ← model
 4. REPLAY    the changed condition over 90 days of metrics (§7):
-             must keep every acknowledged incident, else REJECT      deterministic
+             must keep every incident that counts as real (§7a), else REJECT   deterministic
 5. PR        edit the .tf, parse-diff gate, open the PR (§9)         deterministic
 ```
 
@@ -67,13 +67,13 @@ model. Numbers below are config defaults, not code.
 |---|---|---|
 | **noisy** | > 5 incidents/week (`ALERT_NOISY_PER_WEEK`) | threshold too tight, or no `for` duration |
 | **flapping** | median duration < 5 min (`ALERT_FLAP_MINUTES`), or ≥ 3 reopen-within-60-min pairs | no `for` duration; metric oscillates around the threshold |
-| **never acted on** | ≥ 20 incidents in window, `acknowledged` = 0 (`ALERT_UNACKED_MIN`) | nobody believes it — delete, demote, or it is really a dashboard line |
+| **never reacted to** | ≥ 20 incidents in window and **no reaction signal** (§7a) for any of them (`ALERT_UNACKED_MIN`) | nobody believes it — delete, demote, or it is really a dashboard line |
 | **duplicate** | two policies whose open times co-occur within ±5 min for ≥ 80% of the smaller set | same failure, two pages — merge |
 | **scheduled** | ≥ 70% of opens in the same hour-of-day | a batch job, not an incident — a mute window or a different condition |
 
 Each finding carries its evidence as numbers only (`incidents=47,
-acknowledged=3, median_minutes=2.4, hour_of_day=02`). The model never sees raw
-incident records.
+reacted=3, labelled_real=2, median_minutes=2.4, hour_of_day=02`). The model
+never sees raw incident records.
 
 Secondary, reported but not proposal-driving: **stale** (open > 7 days — a
 broken condition), **undocumented** (no runbook text / no channel),
@@ -91,7 +91,7 @@ can consume it and the PR can be gated. Prose comes after.
 | noisy, threshold just above normal | raise threshold to the p95 of the metric plus margin | `condition_threshold.threshold_value` / the PromQL comparison in `condition_prometheus_query_language.query` |
 | noisy, spiky metric | aggregate over a longer window before comparing | `aggregations[].alignment_period`, or `rate(...[5m])` → `[15m]` in the PromQL |
 | scheduled at a fixed hour | keep the alert, exclude the window; or switch to a symptom the batch does not trigger | a time-based clause in the PromQL (`hour() != 2`), or a separate policy with `enabled=false` + snooze — reported, not automated |
-| never acted on | disable, or downgrade to a non-paging channel | `enabled = false`, or `notification_channels` |
+| never reacted to | disable, or downgrade to a non-paging channel | `enabled = false`, or `notification_channels` |
 | duplicate | keep one, delete the other; or combine conditions | remove the resource, or `combiner = "AND"` |
 | absence-based noise | `condition_absent` → a threshold on `up`/`absent()` with a `for` | `condition_absent` → `condition_prometheus_query_language` |
 | single threshold on an SLO-ish signal | multi-window burn-rate condition | rewrite the PromQL (fast + slow window) |
@@ -103,7 +103,7 @@ numbers, and the metric's p50/p95/max over the window. It returns:
 {"resource": "google_monitoring_alert_policy.payments_api_5xx",
  "changes": [{"path": "conditions[0].condition_prometheus_query_language.duration",
               "from": "0s", "to": "300s"}],
- "reason": "44 of 47 incidents closed within 4 minutes; a 5-minute hold keeps the 3 acknowledged ones."}
+ "reason": "44 of 47 incidents closed within 4 minutes; a 5-minute hold keeps the 3 that were followed by a rollback."}
 ```
 
 A value that is a `var.` in the HCL is proposed as a change to the
@@ -117,11 +117,11 @@ A value that is a `var.` in the HCL is proposed as a change to the
    the policy's evaluation interval (`/api/v1/query_range`, or a subquery for
    short windows).
 2. Reconstruct episodes: runs where the condition holds for ≥ its `duration`.
-3. The gate: **every incident a human acknowledged must overlap a replayed
-   episode.** If any does not, the proposal is rejected and the incident it
-   would have hidden is named.
+3. The gate: **every incident that counts as real (§7a) must overlap a
+   replayed episode.** If any does not, the proposal is rejected and the
+   incident it would have hidden is named.
 4. Report `before` (actual incidents), `after` (replayed episodes),
-   `acknowledged_kept: 3/3`, and the verdict.
+   `real_kept: 3/3`, and the verdict.
 
 What it cannot do, said in its output rather than hidden: replay only
 covers `condition_prometheus_query_language` and `condition_threshold`
@@ -129,9 +129,40 @@ covers `condition_prometheus_query_language` and `condition_threshold`
 are proposed unverified and labelled so. Replay defends against
 over-tightening only — it cannot see incidents that never fired.
 
-If nobody on the team acknowledges incidents, the gate has no ground truth
-and degrades to "no incident longer than N minutes may disappear". That is
-the first thing to check (§14).
+### 7a. What counts as "real" when nobody acknowledges
+
+Confirmed: incidents are emailed and nobody acknowledges them, so the
+`acknowledged` state is always false here. "Real" is therefore a ladder of
+signals the tool already has or can get cheaply, strongest first:
+
+| Signal | Source | Strength |
+|---|---|---|
+| **Labelled real** | a one-off labelling pass (§7b) stored in BQ `alert_labels` | ground truth |
+| **Reacted to** | a deploy, rollback, promotion or hotfix PR for that chart within 24 h of the incident — from the portal's own release event log (`release_intents`) and the deploy repo's PRs | strong: something changed after it fired |
+| **Long-lived** | duration ≥ `ALERT_REAL_MINUTES` (30) — it did not self-resolve in a scrape or two | weak but honest |
+
+An incident with none of these is treated as noise **for the purpose of the
+gate only**; the report still lists it. The gate keeps every labelled-real
+and every reacted-to incident, and every long-lived one unless the reviewer
+overrides that class explicitly in the PR — that override is visible, never
+silent.
+
+This is weaker than acknowledgement and the design says so in every replay
+verdict (`real_kept: 3/3 (2 labelled, 1 reacted)`), so a reviewer knows what
+the guarantee rests on.
+
+### 7b. The labelling pass — twenty minutes, once
+
+Stage 1 ends with the tool presenting the **top 20 incident groups** (by
+policy, with duration, hour-of-day and any reaction) and asking the team to
+mark each *real / noise / unsure*. Answers go to an append-only BQ table
+(`alert_labels`: incident_id, policy, label, who, when). Twenty minutes of a
+person who knows the services turns the gate from heuristic to labelled for
+exactly the policies that matter, which are the noisy ones.
+
+Going forward, the cheapest way to keep labels flowing is a *real / noise*
+link in the notification itself — the email already goes out; the portal can
+host the two-button page. Not required for v1; the labelling pass is enough.
 
 ## 8. Where the model is
 
@@ -191,6 +222,8 @@ ALERT_HISTORY_DAYS: "90"
 ALERT_NOISY_PER_WEEK: "5"
 ALERT_FLAP_MINUTES: "5"
 ALERT_UNACKED_MIN: "20"
+ALERT_REAL_MINUTES: "30"         # an incident this long counts as real for the gate
+ALERT_REACTION_HOURS: "24"       # a deploy/rollback/PR within this window = reacted to
 ALERT_PR_BATCH: "false"          # one PR per policy by default
 ALERT_BQ_DATASET: ""             # optional incident snapshot (append-only); empty = off
 PREVIEW_FEATURES: "monitoring,alert-noise"
@@ -216,8 +249,8 @@ history the API may not. Same append-only discipline as `release_intents`.
 
 | Stage | Delivers | Effort |
 |---|---|---|
-| **0 — the check** | pull 90 days once, by hand; top five noisy policies with acknowledged-vs-ignored counts, and the drift list | 1 hour, no code |
-| **1 — findings** | §2 read, §5 findings, §10 drift; chat + an optional *Alert noise* pill (preview-gated) | 2 days |
+| **0 — the check** | pull 90 days once, by hand; top five noisy policies with count, median duration, hour-of-day and whether anything was deployed after — and the drift list | 1 hour, no code |
+| **1 — findings** | §2 read, §5 findings, §10 drift, the reaction signal from the release log, the §7b labelling pass; chat + an optional *Alert noise* pill (preview-gated) | 2–3 days |
 | **2 — proposals + replay** | §6 + §7 | +1 day |
 | **3 — PRs** | §9 | +1 day |
 
@@ -225,8 +258,10 @@ Stop after stage 0 if the top five surprise nobody.
 
 ## 14. Open questions — answer before stage 1
 
-1. **Do people acknowledge incidents?** The §7 gate's ground truth. Check the
-   last 90 days' `acknowledged` count before anything else.
+1. ~~Do people acknowledge incidents?~~ **Answered: no — email notifications,
+   nobody acknowledges.** The gate uses the §7a ladder and the §7b labelling
+   pass instead. Open follow-up: which mailbox/list receives them, and is a
+   *real / noise* link in that email acceptable?
 2. **How many condition values are `var.`s** rather than literals in the HCL?
    Each one needs the `.tfvars` path to be proposable.
 3. **Is any alert routed through PagerDuty?** Its analytics already give
