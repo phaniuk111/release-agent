@@ -155,28 +155,40 @@ v1; absence and MQL suggestions are unverified and labelled so. Replay
 defends against over-tightening only — it cannot see incidents that never
 fired.
 
-### 7a. What counts as "real" — nobody acknowledges, so:
+### 7a. What counts as "real" — measured, never judged
 
-Incidents are emailed and never acknowledged, so `state` is always
-open/closed. "Real" is a ladder, strongest first, and every verdict says
-which rung it stands on (`real_kept: 3/3 — 2 labelled, 1 long-lived`):
+Nobody acknowledges incidents and nobody is in a position to label them, so
+"real" is defined by **objective signals only** — things the API and the
+metrics can measure. No person, and no model, decides per incident. An
+incident counts as real if **any** of these holds (all thresholds are config):
 
-| Rung | Signal | Source |
+| Signal | Rule (default) | Why it means "probably real" |
 |---|---|---|
-| **labelled** | a person marked it *real* | the labelling pass (§7b), append-only in BigQuery — in the portal, no email involved |
-| **long-lived** | duration ≥ `ALERT_REAL_MINUTES` (30) — it did not self-resolve in a scrape or two | `alerts.list` |
+| **long-lived** | duration ≥ `ALERT_REAL_MINUTES` (30) | it did not self-resolve within a scrape or two |
+| **large** | the metric exceeded the threshold by ≥ `ALERT_REAL_MAGNITUDE` (2×) at its peak during the incident | a blip crosses a line by a hair; a failure blows through it |
+| **co-firing** | ≥ `ALERT_REAL_COFIRE` (2) other in-scope policies opened within ±10 min | real failures trip several symptoms; noise trips one |
+| **not self-healing** | the metric did not return under the threshold on its own within `ALERT_FLAP_MINUTES` — i.e. it stayed bad until something changed | a spike that recovers alone is the classic false positive |
 
-An incident on neither rung is treated as noise for the gate only; the report
-still lists it. Weaker than acknowledgement, and said so — the reviewer
-always sees what a "keep" rests on.
+Everything else is treated as noise **for the gate only** — the report still
+lists it, and every replay verdict says which signals each kept incident
+rests on (`real_kept: 3/3 — 2 long-lived, 1 large+co-firing`).
 
-### 7b. The labelling pass — twenty minutes, once, in the portal
+This is deliberately conservative in the direction that matters: an incident
+only has to satisfy **one** signal to be protected, so a suggestion is
+rejected the moment it would hide anything that lasted, or was big, or came
+with company. The cost is that fewer suggestions survive than a labelled
+gate would allow. That is the right trade when no one can vouch for the
+labels.
 
-Stage 1 ends with the tool listing the **top 20 incident groups** (policy,
-count, median duration, hour-of-day) and asking someone who knows the services
-to mark each *real / noise / unsure*, in chat or the pill. Answers go to an
-append-only BQ table (`alert_labels`: incident_group, policy, label, who,
-when). Nothing else is needed for ground truth.
+The thresholds themselves are the only judgement in the system, and they are
+config — set once, visible in `values.yaml`, the same for every policy.
+
+### 7b. Labelling — optional, later, if someone ever can
+
+If a service owner is ever able to review, the tool can show the top
+incident groups and record *real / noise* into an append-only BQ table
+(`alert_labels`); a label then becomes a fifth, strongest signal. Not
+required, not part of any stage, and nothing waits on it.
 
 ## 8. Where the model is
 
@@ -214,7 +226,9 @@ ALERT_HISTORY_DAYS: "90"
 ALERT_NOISY_PER_WEEK: "5"
 ALERT_FLAP_MINUTES: "5"
 ALERT_UNACKED_MIN: "20"
-ALERT_REAL_MINUTES: "30"
+ALERT_REAL_MINUTES: "30"           # duration that counts as real on its own
+ALERT_REAL_MAGNITUDE: "2"          # peak / threshold ratio that counts as real
+ALERT_REAL_COFIRE: "2"             # other in-scope policies opening within ±10 min
 # --- scope: REQUIRED (at least one) — the project is multi-tenant ---
 ALERT_SCOPE_LABEL: ""            # "team=payments"  -> user_labels.team='payments'   (preferred)
 ALERT_SCOPE_PREFIX: ""           # display_name=starts_with(...)
@@ -237,8 +251,9 @@ stage-1 task.
   path to GCP or to any repo.
 - The replay gate is not overridable from chat: a rejected suggestion is
   never presented as one.
-- The only thing it stores is labels (and optionally incidents), append-only,
-  in the team's own dataset — and only for in-scope policies.
+- No human judgement in the loop: "real" is four measured signals with
+  config thresholds (§7a); the only thing it may store is an optional incident
+  snapshot, append-only, in the team's own dataset, in-scope policies only.
 - Tenant isolation: policies are filtered in the API call; incidents outside
   the in-scope policy set are dropped on read and never reach the model, the
   report, the labels or the logs. No scope configured = the feature refuses
@@ -249,7 +264,7 @@ stage-1 task.
 | Stage | Delivers | Effort |
 |---|---|---|
 | **0 — the check** | pull 90 days once as a one-off script, **with the same scope filter**: top five noisy policies with count, incidents/week, median duration, hour-of-day | 1 hour, no code in the repo |
-| **1 — findings** | §2 read, §5 findings, §7b labelling; chat + an optional *Alert noise* pill (preview-gated) | 1–2 days |
+| **1 — findings** | §2 read, §5 findings, the §7a signals; chat + an optional *Alert noise* pill (preview-gated) | 1–2 days |
 | **2 — test** | §7 `what_if` — type a change, see what it would have done | +1 day |
 | **3 — suggestions** | §6 model suggestions, each replay-tested | +1 day |
 
@@ -269,12 +284,12 @@ stage 0 if the top five surprise nobody.
 
 ```
 src/release_agent/tools/alert_hygiene.py   policies · incidents · findings · replay · what_if   (~300 lines, mirrors monitoring.py)
-adk_release_agent/tools.py                 wrappers: alert_report, alert_detail, what_if_alert, suggest_alert_change, label_incidents
+adk_release_agent/tools.py                 wrappers: alert_report, alert_detail, what_if_alert, suggest_alert_change
 adk_release_agent/skills/alert-noise/SKILL.md
 src/release_agent/static/core/alerts.js    wording for the report rows (shared with the Backstage port)
 tests/test_alert_findings.py               the rules on synthetic incident sets
 tests/test_alert_replay.py                 episodes; the gate on each §7a rung
-bigquery/alert_labels.schema.json          the labelling pass (append-only)
+bigquery/alert_incidents.schema.json       optional incident snapshot (append-only)
 ```
 
 No new dependency.
