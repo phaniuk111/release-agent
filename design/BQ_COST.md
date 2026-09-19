@@ -16,7 +16,7 @@ A report can rank cost. What makes this agentic is three things a report
 cannot do:
 
 1. **Investigation is dynamic.** For each top item the model decides what to
-   look at next — stages, the table's partitioning, Google's recommendation,
+   look at next — stages, the table's partitioning, the partition stats,
    the referenced columns — through tools, instead of a fixed pipeline
    fetching everything for everything.
 2. **Every proposal is verified, and retried once on failure.** A rewrite
@@ -173,7 +173,7 @@ counted, which is the only metric that says the tool is worth its cost.
 
 | Tool | Deterministic? | Returns |
 |---|---|---|
-| `bq_cost_scan(days=14, top=10)` | yes | ranked shapes + storage/write findings + open recommendations; cached like `/api/monitoring` |
+| `bq_cost_scan(days=14, top=10)` | yes | ranked shapes + storage/write findings; cached like `/api/monitoring` |
 | `bq_query_detail(qhash)` | yes | stages, `performance_insights`, referenced tables, runs, byte percentiles, one sample SQL |
 | `bq_table_layout(table)` | yes | partitioning, clustering, size, row count, expiry, last modified |
 | `bq_prune_estimate(table, column)` | yes | estimated bytes a partition/cluster on `column` would prune, from `PARTITIONS` + `JOBS` — marked estimated |
@@ -244,7 +244,7 @@ run on 2026-09-19 found the portal's own `SELECT *` billing the 10 MB minimum
 ## 13. File map (when built)
 
 ```
-src/release_agent/tools/bq_cost.py         scan · detail · layout · recommendations · dry_run · findings   (~350 lines)
+src/release_agent/tools/bq_cost.py         scan · detail · layout · prune_estimate · dry_run · findings   (~350 lines)
 src/release_agent/tools/bq_guard.py        the one function all SQL passes through: dry-run unless INFORMATION_SCHEMA-only
 adk_release_agent/tools.py                 the wrappers in §8
 adk_release_agent/skills/bq-cost/SKILL.md
