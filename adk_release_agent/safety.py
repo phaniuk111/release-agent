@@ -93,7 +93,8 @@ _SCOPE_WORDS = frozenset(
     staging environment env manifest artifact artifactory dataflow df composer
     dag dags rollback pipeline workflow run runs onboard onboarding api apis
     endpoint credentials auth cutoff window monitoring monitor metric metrics promql
-    prometheus alert alerts firing""".split()
+    prometheus alert alerts firing bigquery bq slot slots partition partitioned
+    partitioning clustered clustering""".split()
 )
 # Environments and other bare tokens that carry meaning on their own.
 _SCOPE_PREFIXES = ("confirm-",)
@@ -127,7 +128,9 @@ _CLASSIFY_PROMPT = """You screen ONE chat message for a software RELEASE portal.
 The portal covers: releases, deploys and promotions between environments; the
 next-release intake queue; build verification and release controls; deployment
 pull requests; release history and what is deployed where; monitoring — the
-team's PromQL checks, metrics and alerts; and guiding API CONSUMERS through
+team's PromQL checks, metrics and alerts; BigQuery cost — the team's most
+expensive queries, why they cost what they do, cheaper rewrites, and table
+partitioning, clustering and expiry; and guiding API CONSUMERS through
 onboarding. It also covers BACKGROUND questions about any of
 that ("what is a helm chart?", "how does the queue work?", "what can you do?").
 
@@ -182,8 +185,9 @@ class ScopeGuardPlugin(BasePlugin):
     #: Kept as an attribute so tests can assert on it without matching prose.
     REFUSAL = (
         "That's outside what this portal does. I cover releases and deploys, the "
-        "next-release queue, build controls, deployment PRs, what's deployed where "
-        "— and onboarding consumers to our APIs. Ask me one of those and I'm useful."
+        "next-release queue, build controls, deployment PRs, what's deployed where, "
+        "monitoring and BigQuery cost — and onboarding consumers to our APIs. Ask me "
+        "one of those and I'm useful."
     )
 
     def __init__(self, name: str = "scope_guard", mode: str | None = None) -> None:

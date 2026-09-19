@@ -274,3 +274,16 @@ def test_email_mapped_into_rctoken_attributes_is_found():
     assert "attributes.email" in found["claim_names"]
     assert found["identity"]["attributes.email"] == "c***@example.com"
     assert found["identity"]["sub"] == "0a***"
+
+
+def test_scope_guard_counts_bigquery_cost_as_ours_without_a_model_call():
+    """The BQ cost skill's questions must never be screened out as 'general
+    knowledge': a BigQuery word is a domain signal, and the refusal names the
+    domain so someone refused knows it exists."""
+    from adk_release_agent.safety import ScopeGuardPlugin, _looks_in_scope
+
+    for text in ("what is costing us most in BigQuery?",
+                 "which bq tables should be partitioned or clustered?",
+                 "why does this query burn so many slots?"):
+        assert _looks_in_scope(text), text
+    assert "BigQuery cost" in ScopeGuardPlugin.REFUSAL

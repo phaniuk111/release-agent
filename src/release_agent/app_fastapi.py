@@ -496,6 +496,10 @@ _status_cache: dict = {"at": 0.0, "value": None}
 _MONITOR_TTL_SECONDS = 30.0
 _monitor_cache: dict = {"at": 0.0, "value": None}
 
+# The scan bills real INFORMATION_SCHEMA reads, so a team opening the BQ cost
+# pill together must not each run it — cached longer than the monitor checks.
+_bq_cost_cache: dict = {"at": 0.0, "value": None}
+
 
 @app.get("/api/monitoring")
 def monitoring_endpoint(request: Request, fresh: int = 0):
@@ -525,6 +529,41 @@ def monitoring_alert_policy(request: Request, name: str):
     if check is None:
         return {"ok": False, "error": f"no check named {name!r}"}
     return {"ok": True, "policy": alert_policy(check)}
+
+
+@app.get("/api/bq-cost/report")
+def bq_cost_report(request: Request, fresh: int = 0):
+    """The ranked BigQuery cost report: top query shapes plus storage and
+    write findings, run now (or served from the last 5 minutes)."""
+    from fastapi.responses import JSONResponse
+
+    from .tools import bq_cost
+
+    if not features.allowed("bq-cost", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("bq-cost")})
+
+    return _cached(_bq_cost_cache, 300.0, bq_cost.scan, fresh=bool(fresh))
+
+
+@app.get("/api/bq-cost/report.xlsx")
+def bq_cost_report_xlsx(request: Request, fresh: int = 0):
+    """The same report as a workbook to download — one sheet per section, from
+    the same cache as the JSON, so the file says what the pill shows."""
+    from fastapi.responses import JSONResponse, Response
+
+    from .tools import bq_cost, bq_cost_xlsx
+
+    if not features.allowed("bq-cost", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("bq-cost")})
+    report = _cached(_bq_cost_cache, 300.0, bq_cost.scan, fresh=bool(fresh))
+    if not report.get("ok"):
+        # Nothing to download — the JSON says why (disabled, or the scan failed).
+        return JSONResponse(status_code=503, content=report)
+    return Response(
+        content=bq_cost_xlsx.report_workbook(report),
+        media_type=bq_cost_xlsx.MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{bq_cost_xlsx.report_filename(report)}"'},
+    )
 
 
 def _compute_release_status() -> dict:

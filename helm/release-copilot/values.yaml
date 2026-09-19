@@ -184,6 +184,31 @@ config:
   BQ_TABLE: "release_intents"
   BQ_LOCATION: "US"
   BQ_AUTO_CREATE: "false"   # keep false in cluster; true only for local dev
+  # ==================== [FEATURE] BigQuery cost report ======================
+  # design/BQ_COST.md. Read-only: every statement is either a dry run or an
+  # INFORMATION_SCHEMA read (tools/bq_guard.py forces it) — no table data is
+  # ever read. The service account needs exactly three roles, on the project
+  # named below: roles/bigquery.resourceViewer (every principal's jobs, no
+  # table data), roles/bigquery.metadataViewer (schemas, partitioning,
+  # clustering), roles/bigquery.jobUser (run INFORMATION_SCHEMA queries and dry
+  # runs). NO roles/bigquery.dataViewer is needed or granted.
+  # EMPTY BQ_COST_REGION DISABLES the feature — the wrong region would
+  # otherwise just silently report nothing.
+  BQ_COST_REGION: ""                 # e.g. "region-europe-west3" (INFORMATION_SCHEMA prefix)
+  BQ_COST_PROJECT: ""                # empty = BQ_PROJECT (or GOOGLE_CLOUD_PROJECT)
+  BQ_COST_BILLING: "on-demand"       # "on-demand" ranks by bytes billed; "reservations" by slot-hours
+  BQ_COST_DAYS: "14"
+  BQ_COST_TOP: "10"
+  BQ_COST_MAX_QUERIES: "40"          # INFORMATION_SCHEMA reads per scan (10 MB minimum each)
+  # Region-wide storage/write views need tables.list on EVERY dataset in the
+  # region, so ONE dataset denying this account (e.g. one of BigQuery's own
+  # hidden anonymous cached-result datasets) denies the whole view — the
+  # normal case in any shared project, not an edge case. The storage section
+  # then falls back to one INFORMATION_SCHEMA statement per visible dataset
+  # (10 MB minimum each); this caps how many datasets that costs.
+  BQ_COST_MAX_DATASETS: "50"
+  BQ_COST_USD_PER_TIB: "6.25"        # on-demand list price, for the approximate $ column only
+  BQ_COST_DATASET: ""                # findings memory across runs; empty = off (set: + dataEditor on THAT dataset only)
   # PromQL access — checked by /api/diagnostics (section "promql") and used by
   # the Monitoring pill + chat. Empty PROMETHEUS_URL = Managed Service for Prometheus in
   # PROMETHEUS_PROJECT (empty = GOOGLE_CLOUD_PROJECT); the pod's service account
@@ -222,8 +247,8 @@ config:
   #        --set virtualService.pathPrefix=/dev-portal-preview \
   #        --set-string config.PREVIEW_USERS='*'
   PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
-  PREVIEW_GROUPS: "Check"            # comma list of pill groups (palette.js GROUPS)
-  PREVIEW_FEATURES: "monitoring"     # comma list of gated server features
+  PREVIEW_GROUPS: "Check,Monitoring" # comma list of pill groups (palette.js GROUPS)
+  PREVIEW_FEATURES: "monitoring,bq-cost"  # comma list of gated server features
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's

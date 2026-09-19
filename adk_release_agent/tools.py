@@ -239,6 +239,113 @@ def release_stats(pattern: str = "", days: int = 90, event_type: str = "released
     return _rq.history_stats(pattern=pattern, days=days, event_type=event_type)
 
 
+def bq_cost_scan(days: int = 0, top: int = 0) -> dict[str, Any]:
+    """The ranked BigQuery cost report for the team's dedicated project: top
+    query SHAPES — grouped, so 96 runs of one query are one row — ranked by
+    slot-hours or bytes billed, plus storage findings (no expiry, unread, large
+    unpartitioned tables) and write findings (unbatched writes, ingestion
+    errors). Every number is MEASURED from INFORMATION_SCHEMA, never
+    estimated, and the report states what running the scan itself cost.
+    days/top: 0 uses the configured default (BQ_COST_DAYS / BQ_COST_TOP)."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.scan(days or None, top or None)
+
+
+def bq_query_detail(qhash: str) -> dict[str, Any]:
+    """One query shape in depth, from a bq_cost_scan row's qhash: the full
+    sample SQL, run count, byte and slot-ms percentiles, execution stages,
+    BigQuery's own performance insights, and the layout of every table it
+    references. Call this before proposing a rewrite for a top-ranked shape."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.query_detail(qhash)
+
+
+def bq_table_layout(table: str) -> dict[str, Any]:
+    """A table's layout: partitioning, clustering, size, physical size, row
+    count, expiry and last-modified time. Use to see whether a costly query's
+    filter column is already the partition column, or whether the table is
+    clustered."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.table_layout(table)
+
+
+def bq_prune_estimate(table: str, column: str) -> dict[str, Any]:
+    """ESTIMATED, never measured: what partitioning or clustering ``table`` on
+    ``column`` would have pruned for the runs seen in the scan window. Table
+    changes cannot be dry-run and Google's recommender is not available here,
+    so this is inferred from INFORMATION_SCHEMA access patterns alone —
+    always report it as an estimate, never as a measured saving."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.prune_estimate(table, column)
+
+
+def bq_dry_run(sql: str) -> dict[str, Any]:
+    """Dry-run ``sql`` — this NEVER executes the query. Returns the bytes it
+    would process, the result schema, and the tables it references. Use to
+    price a candidate rewrite, or to inspect any query with no shape yet."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.dry_run(sql)
+
+
+def bq_verify_rewrite(
+    before_sql: str, after_sql: str, declared_schema_change: bool = False
+) -> dict[str, Any]:
+    """The test a proposed rewrite MUST pass before it is shown as advice: two
+    dry runs and a verdict. Accepted only if the rewrite is cheaper, references
+    no table the original did not, and keeps an identical result schema —
+    unless declared_schema_change=True for a deliberate, disclosed change (e.g.
+    SELECT * to named columns). Never proves row-level equivalence: say so
+    whenever reporting an accepted rewrite."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.verify_rewrite(
+        before_sql, after_sql, declared_schema_change=declared_schema_change
+    )
+
+
+def bq_findings(qhash: str = "") -> dict[str, Any]:
+    """What was suggested in earlier cost-scan runs and whether the cost
+    actually fell afterwards: adopted (cost dropped and stayed down), still
+    open (unchanged after repeated reports), or new. Empty qhash returns
+    recent history across every shape."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.findings(qhash or None)
+
+
 # Every tool the free-form chat agent can call. The per-domain grouping a skill
 # actually surfaces (status/PR/controls/ops/queue/monitoring) is declared in
 # that skill's own SKILL.md frontmatter (adk_additional_tools) — this flat list
@@ -261,5 +368,12 @@ ADK_CHAT_TOOLS = [
     release_stats,
     monitoring_checks,
     query_metrics,
+    bq_cost_scan,
+    bq_query_detail,
+    bq_table_layout,
+    bq_prune_estimate,
+    bq_dry_run,
+    bq_verify_rewrite,
+    bq_findings,
 ]
 

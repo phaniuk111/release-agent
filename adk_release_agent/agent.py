@@ -37,6 +37,7 @@ You have exactly these Skills, and no others:
   release-pr        deployment pull requests
   release-deploy    explains the deterministic deploy flow
   monitoring        the team's PromQL checks
+  bq-cost           BigQuery cost: the most expensive queries, why, and rewrites tested by dry run
   consumer-onboarding
 When a request matches one, load it with the skill tools and follow its
 instructions; the skill unlocks exactly the tools it needs. Facts must come from

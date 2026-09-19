@@ -130,6 +130,52 @@ never appears in a log or an error message — including the 401/403 path, which
 is pinned by a test. Leave `JIRA_BASE_URL` empty to disable the lookup entirely;
 the ticket is then stored exactly as typed.
 
+## BigQuery cost report (preview)
+
+`design/BQ_COST.md`. A read-only agentic loop over the team's **dedicated**
+BigQuery project: ranks the most expensive query shapes and flags storage/write
+findings, then — for a top item — investigates, proposes a rewrite and proves
+it with a dry run before it is ever shown. Every statement the tool issues is
+either a dry run or an `INFORMATION_SCHEMA` read; no table data is ever read.
+
+The service account needs exactly three roles, on the project named by
+`BQ_COST_PROJECT` (empty = `BQ_PROJECT` / `GOOGLE_CLOUD_PROJECT`):
+
+- `roles/bigquery.resourceViewer` — every principal's jobs, no table data
+- `roles/bigquery.metadataViewer` — schemas, partitioning, clustering
+- `roles/bigquery.jobUser` — run `INFORMATION_SCHEMA` queries and dry runs
+
+**No `roles/bigquery.dataViewer`** — the tool, and therefore the model, never
+reads a row of any table. The storage/write sections read region-wide
+`INFORMATION_SCHEMA` views that need `tables.list` on every dataset in the
+region; if one dataset denies it (e.g. one of BigQuery's own hidden anonymous
+cached-result datasets — the normal case in any shared project), storage
+falls back to reading each visible dataset one at a time, capped by
+`BQ_COST_MAX_DATASETS`. The optional memory across runs (`BQ_COST_DATASET`)
+is the one exception: the tool appends to, and reads back, its own
+`bq_cost_findings` table there (`bigquery/bq_cost_findings.schema.json`), so
+with it set the service account also needs `roles/bigquery.dataEditor` on
+that ONE dataset — nothing wider.
+
+```yaml
+config:
+  BQ_COST_REGION: "region-europe-west3"   # EMPTY DISABLES the feature
+  BQ_COST_PROJECT: ""                     # empty = BQ_PROJECT
+  BQ_COST_BILLING: "on-demand"            # or "reservations" (ranks by slot-hours)
+  BQ_COST_DAYS: "14"
+  BQ_COST_TOP: "10"
+  BQ_COST_MAX_QUERIES: "40"               # INFORMATION_SCHEMA reads per scan
+  BQ_COST_MAX_DATASETS: "50"              # per-dataset storage fallback cap (see values.yaml)
+  BQ_COST_USD_PER_TIB: "6.25"
+  BQ_COST_DATASET: ""                     # findings memory across runs; empty = off
+  PREVIEW_FEATURES: "monitoring,bq-cost"
+```
+
+Like Monitoring, it is a `PREVIEW_FEATURES` entry: gated server-side (API and
+chat tools both refuse) for everyone but `PREVIEW_USERS`, not just a hidden
+pill. Leave `BQ_COST_REGION` empty to disable it cleanly — the wrong region
+would otherwise silently report nothing.
+
 ## Surviving restarts
 
 Two different mechanisms, often confused:

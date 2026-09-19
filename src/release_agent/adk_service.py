@@ -298,6 +298,13 @@ _TOOL_LABELS = {
     "promote_release": "Promoting the release file-set",
     "promote_df_release": "Promoting the DF release file-set",
     "remove_from_release": "Removing from the release",
+    "bq_cost_scan": "Scanning BigQuery costs",
+    "bq_query_detail": "Reading the query's stages",
+    "bq_table_layout": "Reading the table layout",
+    "bq_prune_estimate": "Estimating partition pruning",
+    "bq_dry_run": "Dry-running the query",
+    "bq_verify_rewrite": "Testing the rewrite",
+    "bq_findings": "Reading earlier findings",
 }
 
 
