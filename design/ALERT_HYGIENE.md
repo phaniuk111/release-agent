@@ -83,19 +83,38 @@ write.
 
 ## 5. Noise findings — what drives a suggestion
 
+**The primary question is: which policies fire repeatedly and auto-close on
+their own?** That combination — frequent *and* self-resolving — is the
+definition of noise here, and the report leads with it. Everything else in
+this section is secondary detail.
+
+Auto-close is read per policy (`alertStrategy.autoClose`, default 7 days) and
+used two ways:
+
+- an incident that closed **well before** the auto-close duration closed
+  because the condition cleared — the metric recovered on its own;
+- an incident that closed **at** the auto-close duration closed because data
+  stopped arriving, not because anything recovered — that is an absent-data
+  or dead-target case, reported separately, never counted as "self-healed".
+
+Ranking: **noise score = incidents per week × share that self-closed within
+`ALERT_FLAP_MINUTES`**. Top of the list is a policy that fires often and
+clears itself almost every time — the one to fix first.
+
 `alert_hygiene.findings(policies, incidents)` — pure, tested, no model.
 Numbers are config defaults.
 
 | Finding | Rule | What it usually means |
 |---|---|---|
-| **noisy** | > 5 incidents/week (`ALERT_NOISY_PER_WEEK`) | threshold too tight, or no `for` duration |
-| **flapping** | median duration < 5 min (`ALERT_FLAP_MINUTES`), or ≥ 3 reopen-within-60-min pairs | no `for` duration; the metric oscillates around the threshold |
+| **repetitive** | > 5 incidents/week (`ALERT_NOISY_PER_WEEK`), or the same policy reopening within 60 min ≥ 3 times | threshold too tight, or no `for` duration |
+| **self-closing** | median duration < 5 min (`ALERT_FLAP_MINUTES`) and closed by the condition clearing (not by auto-close timeout) | the metric oscillates around the threshold — a hold or a wider aggregation window fixes it |
 | **short-lived only** | ≥ 20 incidents in the window and none counted as real (§7a) (`ALERT_UNACKED_MIN`) | the alert never describes anything that lasts — delete, demote, or it is a dashboard line |
 | **duplicate** | two policies whose open times co-occur within ±5 min for ≥ 80% of the smaller set | same failure, two notifications — merge |
 | **scheduled** | ≥ 70% of opens in the same hour-of-day | a batch job, not an incident |
 
-Each finding carries evidence as numbers only (`incidents=47, real=3,
-median_minutes=2.4, hour_of_day=02`). The model never sees raw incident
+Each finding carries evidence as numbers only (`incidents=47,
+per_week=3.8, self_closed_pct=94, median_minutes=2.4, real=3,
+hour_of_day=02`). The model never sees raw incident
 records.
 
 Secondary, reported but not suggestion-driving: **stale** (open > 7 days — a
