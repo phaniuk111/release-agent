@@ -200,7 +200,7 @@ class Settings(BaseSettings):
     # deployment. PREVIEW_GROUPS hides pill groups; PREVIEW_FEATURES gates the
     # server side too (API + chat tools), so a hidden pill is not one question away.
     preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
-    preview_groups: str = Field(default="Check", validation_alias=AliasChoices("PREVIEW_GROUPS"))
+    preview_groups: str = Field(default="Check,Monitoring", validation_alias=AliasChoices("PREVIEW_GROUPS"))
     preview_features: str = Field(default="monitoring", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
@@ -555,6 +555,37 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("BQ_AUTO_CREATE", "RELEASE_BQ_AUTO_CREATE"),
     )
+    # --- BigQuery cost report (design/BQ_COST.md) ------------------------------
+    # Read-only: INFORMATION_SCHEMA reads and dry runs, nothing else (tools/bq_guard.py
+    # forces it). The project is the team's own (BQ_PROJECT / GOOGLE_CLOUD_PROJECT
+    # unless BQ_COST_PROJECT names another). The REGION is the INFORMATION_SCHEMA
+    # prefix ("region-us", "region-europe-west3") — EMPTY DISABLES the feature,
+    # because the wrong region silently reports nothing.
+    bq_cost_project: str = Field(default="", validation_alias=AliasChoices("BQ_COST_PROJECT"))
+    bq_cost_region: str = Field(default="", validation_alias=AliasChoices("BQ_COST_REGION"))
+    # "on-demand" ranks by bytes billed; "reservations" by slot-hours.
+    bq_cost_billing: str = Field(default="on-demand", validation_alias=AliasChoices("BQ_COST_BILLING"))
+    bq_cost_days: int = Field(default=14, validation_alias=AliasChoices("BQ_COST_DAYS"))
+    bq_cost_top: int = Field(default=10, validation_alias=AliasChoices("BQ_COST_TOP"))
+    # INFORMATION_SCHEMA reads bill a 10 MB minimum each; this caps a scan's own cost.
+    bq_cost_max_queries: int = Field(default=40, validation_alias=AliasChoices("BQ_COST_MAX_QUERIES"))
+    # On-demand list price per TiB, for the approximate $ column only.
+    bq_cost_usd_per_tib: float = Field(default=6.25, validation_alias=AliasChoices("BQ_COST_USD_PER_TIB"))
+    # Where findings are remembered across runs (append-only); empty = no memory.
+    bq_cost_dataset: str = Field(default="", validation_alias=AliasChoices("BQ_COST_DATASET"))
+    bq_cost_findings_table: str = Field(default="bq_cost_findings", validation_alias=AliasChoices("BQ_COST_FINDINGS_TABLE"))
+    # The region-wide storage/write INFORMATION_SCHEMA views need tables.list on
+    # EVERY dataset in the region — including BigQuery's own hidden anonymous
+    # cached-result datasets ("_...") that belong to OTHER users, which this
+    # account can never read. That denies the region view for everyone but that
+    # dataset's owner, in any project more than one person has queried — the
+    # normal case, not an edge case. The storage scan then falls back to reading
+    # each visible dataset one at a time (skipping "_"-prefixed ones): one
+    # INFORMATION_SCHEMA statement per dataset, each billing the usual 10 MB
+    # minimum, so this caps how many datasets (and therefore how much of that
+    # per-statement minimum) one scan will spend, independent of
+    # BQ_COST_MAX_QUERIES (which also still applies on top of this).
+    bq_cost_max_datasets: int = Field(default=50, validation_alias=AliasChoices("BQ_COST_MAX_DATASETS"))
 
     # --- Console links (read-only deep links shown in the UI) --------------------
     # Where a human goes to LOOK at what a release produced: the GKE workload view

@@ -50,6 +50,27 @@ config:
 Empty `BQ_DATASET` disables the whole feature (queue endpoints report disabled;
 releases/deploys are unaffected — capture is best-effort by design).
 
+## Optional — the BQ cost report's memory table
+
+The BigQuery cost report (`design/BQ_COST.md`, `helm/release-copilot/README.md`
+§ "BigQuery cost report") can remember what it suggested and whether the cost
+fell afterwards. That is a second append-only table,
+[bq_cost_findings.schema.json](bq_cost_findings.schema.json), created in the
+SAME dataset so the runtime SA's existing `dataEditor` binding covers it:
+
+```hcl
+module "release_events" {
+  # ...as above...
+  bq_cost_findings_table = "bq_cost_findings"   # empty (default) = not created
+}
+```
+
+or `bq mk --table --time_partitioning_field run_ts --time_partitioning_type DAY
+PROJECT:release_agent.bq_cost_findings bigquery/bq_cost_findings.schema.json`,
+then in Helm values `BQ_COST_DATASET: "release_agent"` and
+`BQ_COST_FINDINGS_TABLE: "bq_cost_findings"`. Leave `BQ_COST_DATASET` empty
+and the report still works — it just cannot say "adopted" or "still open".
+
 ## Rules of the road
 
 - **Append-only.** The app only ever INSERTs; queue state and per-environment
