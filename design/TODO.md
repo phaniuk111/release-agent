@@ -28,8 +28,27 @@ Top-N expensive queries by slot-hours / TiB billed from `INFORMATION_SCHEMA`,
 BigQuery's own `performance_insights` and `RECOMMENDATIONS`, storage with no
 expiry, unbatched writes; the model narrates 3–5 recommendations; a
 dry-run-verified rewrite on demand.
-- **Needs to restart:** `bigquery.jobs.listAll` on the project (without it
-  the report shows only the service account's own jobs and looks empty).
+- **Needs to restart:** `roles/bigquery.resourceViewer` on the BigQuery
+  project — the smallest role carrying `bigquery.jobs.listAll` (16 read-only
+  permissions; jobs + reservations, no table data). Without it the report
+  shows only the service account's own jobs and looks empty. Verified via
+  `gcloud iam roles describe`: not in `jobUser`, `user`, `dataViewer`,
+  `metadataViewer`, nor the primitive `viewer`.
+- **The BigQuery project is dedicated to the team** (unlike the alerting
+  project) — so no dataset scoping and no cross-team privacy concern:
+  analyse the whole project, ordered by `slot_hours` on reservations or
+  `gb_billed` on-demand.
+- **Starting queries** (ran 2026-09-19 against the sandbox, region-us;
+  enterprise is `region-europe-west3`):
+  - running now: `JOBS_BY_PROJECT WHERE state="RUNNING" AND job_type="QUERY"
+    ORDER BY total_slot_ms DESC` — slot-ms and bytes accrued so far, seconds running.
+  - top shapes, 14 days: group by `query_info.query_hashes.normalized_literals`,
+    `state="DONE" AND error_result IS NULL AND cache_hit=FALSE`, sum
+    `total_slot_ms` and `total_bytes_billed`, `ANY_VALUE(SUBSTR(query,1,80))`.
+  - sandbox finding worth remembering: the portal's own `SELECT * FROM
+    release_intents` was the top shape — 240 runs/fortnight billing the
+    **10 MB minimum** each against an 18 KB table. A cent today; the pattern
+    is the point.
 - **Decided:** no JVM / no ZetaSQL — `sqlglot` if syntax parsing is ever
   needed; the LLM narrates only, never detects or estimates.
 - **Open question:** does this belong in the release copilot at all? Same
