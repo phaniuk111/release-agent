@@ -23,7 +23,7 @@ writes nothing; Terraform is where the team applies a suggestion.
   never a label. Most policies are log-based metrics templated per service —
   the report collapses a template into one row and one suggestion.
 
-### BigQuery cost report pill — memory `bq-cost-pill-parked`
+### BigQuery cost report pill — `design/BQ_COST.md` (agentic design), memory `bq-cost-pill-parked`
 Top-N expensive queries by slot-hours / TiB billed from `INFORMATION_SCHEMA`,
 BigQuery's own `performance_insights` and `RECOMMENDATIONS`, storage with no
 expiry, unbatched writes; the model narrates 3–5 recommendations; a
