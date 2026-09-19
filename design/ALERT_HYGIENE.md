@@ -6,27 +6,26 @@ proposes, nothing applies itself).
 
 ## 1. Goal
 
-**Terraform is the source of truth. Read the alert conditions from it, read
-the incidents they actually generated from the Cloud Monitoring API, find the
-noise, suggest changes to the conditions, and test each suggestion against
-90 days of real metrics before showing it.**
+**Look at the alerting as it is in the console: the policies that exist and
+the incidents they actually raised over 90 days. Find the noise, suggest
+changes to the alert conditions, and test each suggestion against the real
+metrics before showing it.**
 
-The portal **writes nothing** — not to GCP, not to the Terraform repo. Its
-output is a suggestion: the changed HCL as a diff, the evidence for it, and
-the replay result that shows what the change would have done. A person
-applies it (or not) through the team's normal Terraform workflow.
+The portal **writes nothing** — not to GCP, not to any repo. Its output is a
+suggestion: the condition change, the evidence for it, and the replay result
+showing what the change would have done. Terraform is where the team applies
+it; the portal does not read Terraform and does not compare against it.
 
-## 2. Inputs
+## 2. Inputs — all from the Cloud Monitoring API
 
-| Input | Source | Role |
+| Input | API | Role |
 |---|---|---|
-| **Alert definitions** | `google_monitoring_alert_policy` resources in the Terraform repo (`ALERT_TF_REPO`, `ALERT_TF_PATH`), parsed with `python-hcl2` | **Authoritative.** Every suggestion is a change to one of these |
-| **Incidents raised** | `alerts.list` (Cloud Monitoring API v3, Preview), last 90 days | Every incident the alerting opened: policy, condition, open/close time, labels, summary. **No mailbox, no email access needed** — the API is the complete record |
+| **Alert policies** as they are live | `alertPolicies.list` | The conditions being analysed — exactly what the console shows |
+| **Incidents raised** | `alerts.list` (v3, Preview), last 90 days | Every incident the alerting opened: policy, condition, open/close time, labels, summary. The complete record — no mailbox, no email access |
 | **Metrics** | PromQL against Managed Prometheus (the portal already speaks it) | For the replay: what a changed condition *would* have done |
-| Live policies | `alertPolicies.list` | Only to join incidents to their Terraform resource (by `display_name`) and to detect drift (§9). Never edited |
 
-A policy that exists live but not in Terraform gets one line — "unmanaged —
-import it first" — and no suggestion.
+Nothing else. No Terraform read, no drift comparison — the console is the
+view, and what it shows is what gets analysed.
 
 ## 3. Access
 
@@ -35,21 +34,17 @@ One read-only role on the project: **`roles/monitoring.viewer`**. Verified with
 `monitoring.alerts.list/get` and `monitoring.timeSeries.list`.
 `roles/monitoring.alertViewer` is a two-permission subset and is **not needed**.
 
-Plus **read** on the Terraform repo, through the existing session-PAT / GitHub
-API path. No write access anywhere. No `git` binary, no `terraform` binary —
-the tool reads `.tf` files and never runs `terraform`.
+That is the whole ask. No repo access, no `git`, no `terraform` binary.
 
 ## 4. The pipeline
 
 ```
-1. READ      Terraform resources ─┐
-             90 days of incidents ─┼→ join on display_name             deterministic
-             live policies (drift) ┘
-2. FIND      noise patterns per policy (§5)                            deterministic
-3. SUGGEST   a structured condition change per noisy policy (§6)      ← model
+1. READ      live policies + 90 days of incidents, joined by policy name    deterministic
+2. FIND      noise patterns per policy (§5)                                 deterministic
+3. SUGGEST   a structured condition change per noisy policy (§6)           ← model
 4. TEST      replay the changed condition over 90 days of metrics (§7);
-             a change that hides a real incident is REJECTED           deterministic
-5. SHOW      the HCL diff + evidence + replay verdict; a person applies it
+             a change that hides a real incident is REJECTED                deterministic
+5. SHOW      the change + evidence + replay verdict; a person applies it
 ```
 
 The model is in step 3 only, and step 4 tests it. Step 5 is a report, not a
@@ -73,38 +68,36 @@ median_minutes=2.4, hour_of_day=02`). The model never sees raw incident
 records.
 
 Secondary, reported but not suggestion-driving: **stale** (open > 7 days — a
-broken condition), **undocumented** (no runbook text / no channel),
-**absent-data** conditions, and **drift** (§9).
+broken condition), **undocumented** (no runbook text / no notification
+channel), **disabled** policies still present, **absent-data** conditions.
 
-## 6. Suggestion catalogue — pattern → condition change → Terraform attribute
+## 6. Suggestion catalogue — pattern → condition change
 
-The model's output is **structured** — a resource address plus attribute
-changes — so the replay can test it and the diff can be rendered. Prose comes
-after.
+The model's output is **structured** — the policy, the condition, and the
+field changes — so the replay can test it and the change can be shown
+precisely. Prose comes after. Field names are the alert policy's own (what the
+API and the console use); the Terraform attribute is the same word.
 
-| Noise pattern | Suggested change | `google_monitoring_alert_policy` attribute |
+| Noise pattern | Suggested change | Condition field |
 |---|---|---|
-| flapping, no `for` | add / lengthen the hold | `conditions[].condition_*.duration` |
-| noisy, threshold just above normal | raise threshold to the metric's p95 plus margin | `condition_threshold.threshold_value`, or the comparison in `condition_prometheus_query_language.query` |
-| noisy, spiky metric | aggregate over a longer window before comparing | `aggregations[].alignment_period`, or `rate(...[5m])` → `[15m]` |
-| scheduled at a fixed hour | exclude the window, or alert on a symptom the batch does not trigger | a time clause in the PromQL, or a separate policy — suggested, never automated |
-| short-lived only | disable, or route to a non-paging channel | `enabled = false`, or `notification_channels` |
-| duplicate | keep one; or combine | remove the resource, or `combiner = "AND"` |
-| absence-based noise | `condition_absent` → a threshold with a `for` | `condition_absent` → `condition_prometheus_query_language` |
+| flapping, no `for` | add / lengthen the hold | `duration` |
+| noisy, threshold just above normal | raise the threshold to the metric's p95 plus margin | `thresholdValue`, or the comparison inside the PromQL `query` |
+| noisy, spiky metric | aggregate over a longer window before comparing | `aggregations[].alignmentPeriod`, or `rate(...[5m])` → `[15m]` in the PromQL |
+| scheduled at a fixed hour | exclude the window, or alert on a symptom the batch does not trigger | a time clause in the PromQL — suggested, never automated |
+| short-lived only | disable, or route to a non-paging channel | `enabled`, or `notificationChannels` |
+| duplicate | keep one; or combine the conditions | remove one policy, or `combiner = AND` |
+| absence-based noise | absence condition → a threshold with a `for` | `conditionAbsent` → `conditionPrometheusQueryLanguage` |
 | single threshold on an SLO-ish signal | multi-window burn-rate condition | rewrite the PromQL (fast + slow window) |
 
-The model is given the resource's current HCL block, the finding, its
-numbers, and the metric's p50/p95/max over the window. It returns:
+The model is given the policy's current condition, the finding, its numbers,
+and the metric's p50/p95/max over the window. It returns:
 
 ```json
-{"resource": "google_monitoring_alert_policy.payments_api_5xx",
- "changes": [{"path": "conditions[0].condition_prometheus_query_language.duration",
-              "from": "0s", "to": "300s"}],
+{"policy": "payments-api-5xx",
+ "condition": "5xx rate",
+ "changes": [{"field": "duration", "from": "0s", "to": "300s"}],
  "reason": "44 of 47 incidents closed within 4 minutes; a 5-minute hold keeps all 3 that lasted longer."}
 ```
-
-A value that is a `var.` in the HCL is suggested as a change to the `.tfvars`
-entry; the model never inlines it.
 
 ## 7. The test — replay, deterministic
 
@@ -125,11 +118,11 @@ Also exposed directly, because "test them" should not require a model:
 ("what would a 10-minute hold do to #2?"). The most useful tool in the set,
 and it has no LLM in it.
 
-Stated in every verdict, not hidden: replay covers
-`condition_prometheus_query_language` and `condition_threshold` (via its
-aggregation as a PromQL equivalent) in v1; `condition_absent` and MQL
-suggestions are unverified and labelled so. Replay defends against
-over-tightening only — it cannot see incidents that never fired.
+Stated in every verdict, not hidden: replay covers PromQL conditions and
+metric-threshold conditions (via their aggregation as a PromQL equivalent) in
+v1; absence and MQL suggestions are unverified and labelled so. Replay
+defends against over-tightening only — it cannot see incidents that never
+fired.
 
 ### 7a. What counts as "real" — nobody acknowledges, so:
 
@@ -139,11 +132,10 @@ which rung it stands on (`real_kept: 3/3 — 2 labelled, 1 long-lived`):
 
 | Rung | Signal | Source |
 |---|---|---|
-| **labelled** | a person marked it *real* | the labelling pass (§7b), append-only in BigQuery — done **in the portal**, no email involved |
+| **labelled** | a person marked it *real* | the labelling pass (§7b), append-only in BigQuery — in the portal, no email involved |
 | **long-lived** | duration ≥ `ALERT_REAL_MINUTES` (30) — it did not self-resolve in a scrape or two | `alerts.list` |
-| *(optional)* **reacted to** | a rollback / hotfix for that chart within 24h of the incident | the portal's release log, **only where that log is complete** — off by default |
 
-An incident on no rung is treated as noise for the gate only; the report
+An incident on neither rung is treated as noise for the gate only; the report
 still lists it. Weaker than acknowledgement, and said so — the reviewer
 always sees what a "keep" rests on.
 
@@ -159,8 +151,8 @@ when). Nothing else is needed for ground truth.
 
 Exactly two places:
 
-1. **Step 3, the suggestion** — judgement over the HCL, the noise pattern and
-   the metric's distribution; returns the structured change in §6.
+1. **Step 3, the suggestion** — judgement over the condition, the noise
+   pattern and the metric's distribution; returns the structured change in §6.
 2. **The narrative** — the report's sentences and the reason line on each
    suggestion.
 
@@ -168,94 +160,79 @@ Not the detector (§5 is), not the judge of what was real (§7a is), not the
 applier (there is nothing to apply). A suggestion the replay rejected is shown
 as "tried, would have hidden incident #…" — never as a recommendation.
 
-## 9. Drift — a stop condition
-
-Incidents were generated by the **live** condition. If the live policy differs
-from its Terraform, a suggestion against the Terraform would rest on evidence
-from a different condition:
-
-- live == Terraform → suggestions allowed;
-- live ≠ Terraform → no suggestion for that policy; report the drift
-  ("console threshold 90, Terraform says 80");
-- live, no Terraform → "unmanaged — import it first".
-
-Needs no model and no incidents — Terraform plus `alertPolicies.list`. Ships
-in stage 1.
-
-## 10. Output — what a person sees
+## 9. Output — what a person sees
 
 Per noisy policy, in chat or the pill:
 
 - the finding and its numbers;
-- the suggested change as an **HCL diff** against the actual file and
-  resource (rendered from the structured change; the file is never written);
+- the suggested change, field by field, as the policy has it in the console
+  (`duration: 0s → 300s`), plus the same change written as the Terraform
+  attribute (`duration = "300s"`) as a convenience — a snippet, not a diff
+  against any file;
 - the replay verdict — `47 → 6 incidents; real kept 3/3 (2 labelled,
   1 long-lived)`;
 - the rejected alternatives and why.
 
-Copy the diff into a branch, run `terraform plan`, review, apply — the team's
-existing path, untouched. The portal never opens a PR and never commits.
+The team applies it in Terraform through its own workflow. The portal never
+edits a policy, never opens a PR, never commits.
 
-## 11. Config (helm `values.yaml → config:`)
+## 10. Config (helm `values.yaml → config:`)
 
 ```
-ALERT_TF_REPO: ""                # owner/repo; empty = feature off
-ALERT_TF_PATH: "monitoring/alerts/"
-ALERT_TF_REF: "main"
 ALERT_HISTORY_DAYS: "90"
 ALERT_NOISY_PER_WEEK: "5"
 ALERT_FLAP_MINUTES: "5"
 ALERT_UNACKED_MIN: "20"
 ALERT_REAL_MINUTES: "30"
-ALERT_USE_RELEASE_LOG: "false"   # the optional "reacted to" rung
-ALERT_BQ_DATASET: ""             # labels (and an optional incident snapshot); empty = labels kept in memory only
+ALERT_SCOPE_NAMESPACE: ""        # optional: only policies whose conditions name this namespace
+ALERT_SCOPE_PREFIX: ""           # optional: only policies whose display name starts with this
+ALERT_BQ_DATASET: ""             # labels (and an optional incident snapshot); empty = labels in memory only
 PREVIEW_FEATURES: "monitoring,alert-noise"
 ```
 
-`alerts.list` is Preview with quota-set retention. If the first run shows it
-short, an append-only incident snapshot into `ALERT_BQ_DATASET` (same
-discipline as `release_intents`) is the first stage-1 task.
+Scope is optional: with both scope keys empty the tool analyses every policy
+the service account can list. `alerts.list` is Preview with quota-set
+retention; if the first run shows it short, an append-only incident snapshot
+into `ALERT_BQ_DATASET` (same discipline as `release_intents`) is the first
+stage-1 task.
 
-## 12. Safety invariants
+## 11. Safety invariants
 
-- Read-only everywhere: `roles/monitoring.viewer` on GCP, read on the
-  Terraform repo. No tool has a write path to GCP or to any repo.
+- Read-only: `roles/monitoring.viewer` and nothing else. No tool has a write
+  path to GCP or to any repo.
 - The replay gate is not overridable from chat: a rejected suggestion is
   never presented as one.
-- Drift blocks suggestions for that policy.
-- The tool never runs `terraform`.
 - The only thing it stores is labels (and optionally incidents), append-only,
   in the team's own dataset.
 
-## 13. Rollout — each stage stands alone
+## 12. Rollout — each stage stands alone
 
 | Stage | Delivers | Effort |
 |---|---|---|
-| **0 — the check** | pull 90 days once, by hand: top five noisy policies with count, median duration, hour-of-day; the drift list | 1 hour, no code |
-| **1 — findings** | §2 read, §5 findings, §9 drift, §7b labelling; chat + an optional *Alert noise* pill (preview-gated) | 2 days |
+| **0 — the check** | pull 90 days once as a one-off script: top five noisy policies with count, incidents/week, median duration, hour-of-day | 1 hour, no code in the repo |
+| **1 — findings** | §2 read, §5 findings, §7b labelling; chat + an optional *Alert noise* pill (preview-gated) | 1–2 days |
 | **2 — test** | §7 `what_if` — type a change, see what it would have done | +1 day |
-| **3 — suggestions** | §6 model suggestions, each replay-tested, rendered as HCL diffs | +1 day |
+| **3 — suggestions** | §6 model suggestions, each replay-tested | +1 day |
 
 Stage 2 before 3 on purpose: the deterministic test is worth more than the
-suggestions, and it lets the team try their own ideas first.
+suggestions, and it lets the team try their own ideas first. Stop after
+stage 0 if the top five surprise nobody.
 
-## 14. Open questions — answer before stage 1
+## 13. Open questions — answer before stage 1
 
-1. **How many condition values are `var.`s** rather than literals in the HCL?
-   Each needs its `.tfvars` path to be suggestable.
-2. **`alerts.list` retention** — measured on the first run.
-3. **Which Terraform path holds the alerting** — one directory, or spread?
+1. **`alerts.list` retention** — measured on the first run.
+2. **Scope** — every policy in the project, or only a namespace/prefix?
 
-## 15. File map (when built)
+## 14. File map (when built)
 
 ```
-src/release_agent/tools/tf_alerts.py       read google_monitoring_alert_policy from HCL (python-hcl2); render a diff
-src/release_agent/tools/alert_hygiene.py   incidents · findings · replay · what_if       (~300 lines, mirrors monitoring.py)
+src/release_agent/tools/alert_hygiene.py   policies · incidents · findings · replay · what_if   (~300 lines, mirrors monitoring.py)
 adk_release_agent/tools.py                 wrappers: alert_report, alert_detail, what_if_alert, suggest_alert_change, label_incidents
 adk_release_agent/skills/alert-noise/SKILL.md
+src/release_agent/static/core/alerts.js    wording for the report rows (shared with the Backstage port)
 tests/test_alert_findings.py               the rules on synthetic incident sets
 tests/test_alert_replay.py                 episodes; the gate on each §7a rung
-tests/test_tf_alerts.py                    HCL parsing on real resource blocks; diff rendering
 bigquery/alert_labels.schema.json          the labelling pass (append-only)
-pyproject.toml                             + python-hcl2 (pure Python)
 ```
+
+No new dependency.
