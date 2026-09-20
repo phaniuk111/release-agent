@@ -177,6 +177,29 @@ everyone but `PREVIEW_USERS`) and `Monitoring` to `PREVIEW_GROUPS` (the pill is
 hidden from them too). Leave `BQ_COST_REGION` empty to disable it cleanly — the
 wrong region would otherwise silently report nothing.
 
+## Agent observability — Langfuse (optional)
+
+ADK traces every chat turn as OpenTelemetry spans — the router's decision,
+each Gemini call with its token usage, each tool call, the deploy Workflow's
+nodes. Point them at Langfuse and they show up as traces per turn, grouped by
+session (thread) and user (the verified email). Nothing is written locally;
+with `LANGFUSE_HOST` empty the feature is off and costs nothing.
+
+```yaml
+config:
+  LANGFUSE_HOST: "https://langfuse.internal.example.com"
+  TRACE_CONTENT: "false"      # true only for a Langfuse inside the bank
+langfuse:
+  existingSecret: "release-copilot-langfuse"   # keys public-key / secret-key
+```
+
+Any other OTLP sink works the same way: leave `LANGFUSE_HOST` empty and set the
+standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_HEADERS`
+through `extraEnv`. Export is batched on a background thread and goes through
+the same proxy and CA bundle as everything else; a sink that is down drops
+spans and never delays a turn. `/api/diagnostics` reports the endpoint and
+the content switch under `tracing` — never a key.
+
 ## Surviving restarts
 
 Two different mechanisms, often confused:

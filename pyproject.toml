@@ -33,6 +33,12 @@ dependencies = [
     "google-cloud-aiplatform>=1.71",
     "dulwich>=1.2.15",
     "pyjwt[crypto]>=2.8",
+    # Agent observability (adk_release_agent/telemetry.py): OTLP export of ADK's
+    # own spans — to Langfuse — plus the OpenInference instrumentors Langfuse
+    # documents for ADK and google-genai. Off unless LANGFUSE_HOST is set.
+    "opentelemetry-exporter-otlp-proto-http>=1.42.1",
+    "openinference-instrumentation-google-adk>=0.1.28",
+    "openinference-instrumentation-google-genai>=1.4.7",
 ]
 
 [project.optional-dependencies]

@@ -78,6 +78,12 @@ app.add_middleware(
 
 # Single ADK-backed chat service. For multi-tenant or high scale, back this with
 # persistent ADK session/artifact services instead of in-memory services.
+# Exporters and instrumentors first: the instrumentors wrap ADK's Runner and
+# model calls, so they must be in place before the service builds them.
+from adk_release_agent.telemetry import setup_tracing  # noqa: E402
+from adk_release_agent.telemetry import status as tracing_status  # noqa: E402
+
+setup_tracing()
 adk_chat_service = get_adk_chat_service()
 
 
@@ -1443,6 +1449,7 @@ def diagnostics(request: Request):
         report["promql"] = probe_promql()
     except Exception as e:
         report["promql"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    report["tracing"] = tracing_status()   # endpoint and switches only — never a key
 
     report["ok"] = bool(
         report["vertex"].get("ok")

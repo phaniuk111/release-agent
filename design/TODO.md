@@ -42,6 +42,19 @@ excludes its own jobs).
   digest. The entry point exists (`python -m release_agent.tools.bq_cost`).
 - **Enterprise switch-on:** see the follow-ups below.
 
+## Built — 2026-09-20
+
+### Agent observability: Langfuse over OpenTelemetry
+`adk_release_agent/telemetry.py` replaces the hand-written JSONL tracer
+(`tracing.py`, its test, `evals/route_stats.py` — all deleted). ADK's own
+spans (turn → model calls with token usage → tool calls, Workflow nodes) go to
+Langfuse when `LANGFUSE_HOST` + the two keys (Secret) are set; the standard
+`OTEL_EXPORTER_OTLP_TRACES_*` variables reach any other sink unchanged;
+nothing set = off. `TRACE_CONTENT` (default false) keeps prompts, arguments
+and results out of the spans. The router's decision is the root `turn` span
+carrying session/user ids. Verified against a local OTLP receiver (Langfuse
+itself needs the project's keys — first real run is the owner's).
+
 ## Skipped — deliberately
 
 ### Grafana-dashboard weekly memo

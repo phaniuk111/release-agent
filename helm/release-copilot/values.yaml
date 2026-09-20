@@ -209,6 +209,22 @@ config:
   BQ_COST_MAX_DATASETS: "50"
   BQ_COST_USD_PER_TIB: "6.25"        # on-demand list price, for the approximate $ column only
   BQ_COST_DATASET: ""                # findings memory across runs; empty = off (set: + dataEditor on THAT dataset only)
+  # ==================== [FEATURE] agent observability =====================
+  # Every chat turn — the router's decision, each model call with its token
+  # usage, each tool call, the deploy Workflow's nodes — exported as
+  # OpenTelemetry spans to Langfuse (adk_release_agent/telemetry.py). EMPTY
+  # LANGFUSE_HOST DISABLES it: nothing is exported and nothing is written
+  # locally. The project keys come from a Secret — see `langfuse:` below.
+  # Any other OTLP sink (a collector, Cloud Trace): leave this empty and set
+  # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_HEADERS via
+  # extraEnv instead; both are honoured as-is.
+  LANGFUSE_HOST: ""                  # e.g. "https://langfuse.internal.example.com" — self-hosted is the safe choice
+  OTEL_SERVICE_NAME: "release-copilot"
+  # Prompts, tool arguments and results IN the spans. Keep false unless
+  # Langfuse runs inside the bank: with it on, PR/JIRA text, requester emails
+  # and SQL previews leave the pod with every trace. False still gives model
+  # names, token counts, latency, tool names and errors.
+  TRACE_CONTENT: "false"
   # PromQL access — checked by /api/diagnostics (section "promql") and used by
   # the Monitoring pill + chat. Empty PROMETHEUS_URL = Managed Service for Prometheus in
   # PROMETHEUS_PROJECT (empty = GOOGLE_CLOUD_PROJECT); the pod's service account
@@ -366,6 +382,13 @@ githubToken:
 jiraToken:
   existingSecret: ""          # e.g. "release-copilot-jira" (external-secrets etc.)
   existingSecretKey: "jira-api-token"
+
+# Langfuse project keys for config.LANGFUSE_HOST — referenced from a Secret
+# managed outside the chart, never templated in. Ignored while the host is empty.
+langfuse:
+  existingSecret: ""          # e.g. "release-copilot-langfuse"
+  publicKeyKey: "public-key"
+  secretKeyKey: "secret-key"
 
 serviceAccount:
   create: true

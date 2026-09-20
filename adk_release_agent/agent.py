@@ -236,12 +236,11 @@ def build_root_app():
     from google.adk.apps.app import EventsCompactionConfig
 
     from .safety import MutationGuardPlugin, ScopeGuardPlugin
-    from .tracing import TraceLoggerPlugin
 
     kwargs: dict = {
         "name": ROOT_APP_NAME,
         "root_agent": build_root_agent(),
-        "plugins": [MutationGuardPlugin(), ScopeGuardPlugin(), TraceLoggerPlugin()],
+        "plugins": [MutationGuardPlugin(), ScopeGuardPlugin()],
     }
     if settings.adk_confirm_prod_ops:
         from google.adk.apps import ResumabilityConfig

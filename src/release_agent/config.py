@@ -587,6 +587,20 @@ class Settings(BaseSettings):
     # BQ_COST_MAX_QUERIES (which also still applies on top of this).
     bq_cost_max_datasets: int = Field(default=50, validation_alias=AliasChoices("BQ_COST_MAX_DATASETS"))
 
+    # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
+    # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every
+    # turn, model call and tool call — are exported to Langfuse; EMPTY = OFF, and
+    # nothing is written locally either. Any other OTLP sink: set the standard
+    # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / _HEADERS instead and leave this empty.
+    langfuse_host: str = Field(default="", validation_alias=AliasChoices("LANGFUSE_HOST"))
+    langfuse_public_key: str = Field(default="", validation_alias=AliasChoices("LANGFUSE_PUBLIC_KEY"))
+    langfuse_secret_key: str = Field(default="", validation_alias=AliasChoices("LANGFUSE_SECRET_KEY"))
+    otel_service_name: str = Field(default="release-copilot", validation_alias=AliasChoices("OTEL_SERVICE_NAME"))
+    # Prompts, tool arguments and results in the spans. Keep false unless the
+    # sink runs inside the bank: with it on, PR/JIRA text, requester emails and
+    # SQL previews leave the pod with every trace.
+    trace_content: bool = Field(default=False, validation_alias=AliasChoices("TRACE_CONTENT"))
+
     # --- Console links (read-only deep links shown in the UI) --------------------
     # Where a human goes to LOOK at what a release produced: the GKE workload view
     # and the Grafana dashboards, PER ENVIRONMENT. The portal never calls these —

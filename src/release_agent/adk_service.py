@@ -32,7 +32,7 @@ from google.adk.sessions import InMemorySessionService
 from adk_release_agent import deploy as adk_deploy
 from adk_release_agent import intent as adk_intent
 from release_agent.agent import parsing as adk_parsing
-from adk_release_agent.tracing import log_router_decision
+from adk_release_agent.telemetry import turn_span
 from adk_release_agent.agent import app as chat_app
 from adk_release_agent.deploy_workflow import build_deploy_app
 
@@ -494,9 +494,10 @@ class AdkChatService:
             return
 
         if _looks_like_deploy_request(message):
-            log_router_decision(thread_id, message, "deploy_workflow:deterministic")
-            async for event in self._stream_deploy_preview(message, thread_id):
-                yield event
+            with turn_span("deploy_workflow:deterministic", thread_id=thread_id,
+                           user_id=_user_id(), session_id=_session_id(thread_id, "deploy")):
+                async for event in self._stream_deploy_preview(message, thread_id):
+                    yield event
             return
 
         # Free-form English fallback: the deterministic parser missed, but the
@@ -510,14 +511,16 @@ class AdkChatService:
         if not adk_parsing.is_queue_intent(message):
             payload = await asyncio.to_thread(adk_intent.deploy_payload_from_freeform, message)
         if payload:
-            log_router_decision(thread_id, message, "deploy_workflow:classifier", detail=payload)
-            async for event in self._stream_deploy_preview(payload, thread_id):
-                yield event
+            with turn_span("deploy_workflow:classifier", thread_id=thread_id, detail=payload,
+                           user_id=_user_id(), session_id=_session_id(thread_id, "deploy")):
+                async for event in self._stream_deploy_preview(payload, thread_id):
+                    yield event
             return
 
-        log_router_decision(thread_id, message, "chat")
-        async for event in self._run_chat_agent(_content_from_text(message), thread_id):
-            yield event
+        with turn_span("chat", thread_id=thread_id,
+                       user_id=_user_id(), session_id=_session_id(thread_id, "chat")):
+            async for event in self._run_chat_agent(_content_from_text(message), thread_id):
+                yield event
 
     async def _stream_deploy_preview(
         self, message: str, thread_id: str
