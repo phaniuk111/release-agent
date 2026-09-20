@@ -210,9 +210,10 @@ HTTP: `GET /api/bq-cost/report?fresh=0|1` (JSON) and
 `GET /api/bq-cost/report.xlsx` — the same cached scan as a workbook (Summary,
 Top queries, Storage, Writes, History; `tools/bq_cost_xlsx.py`, no
 spreadsheet library). Pill **BQ cost report** in the *Monitoring* group beside
-the PromQL checks — a different audience from *Check* — hidden by
-`PREVIEW_GROUPS` and refused server-side by `PREVIEW_FEATURES` for everyone
-but the testers. The pill is deliberately one table: a row per query shape
+the release/deploy pills — a different audience from *Check* — released to
+everyone (add `bq-cost` to `PREVIEW_FEATURES` and `Monitoring` to
+`PREVIEW_GROUPS` to restrict it to testers during a rollout). The pill is
+deliberately one table: a row per query shape
 with *Ask why*, and the Excel download; investigating a row and proving a
 rewrite happen in the chat through the tools above, not in the card. Weekly: a `CronJob` in the Helm chart
 running the same scan, posting the report to a Teams/email channel and

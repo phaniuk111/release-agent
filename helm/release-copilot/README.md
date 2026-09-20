@@ -130,7 +130,7 @@ never appears in a log or an error message — including the 401/403 path, which
 is pinned by a test. Leave `JIRA_BASE_URL` empty to disable the lookup entirely;
 the ticket is then stored exactly as typed.
 
-## BigQuery cost report (preview)
+## BigQuery cost report
 
 `design/BQ_COST.md`. A read-only agentic loop over the team's **dedicated**
 BigQuery project: ranks the most expensive query shapes and flags storage/write
@@ -168,13 +168,14 @@ config:
   BQ_COST_MAX_DATASETS: "50"              # per-dataset storage fallback cap (see values.yaml)
   BQ_COST_USD_PER_TIB: "6.25"
   BQ_COST_DATASET: ""                     # findings memory across runs; empty = off
-  PREVIEW_FEATURES: "monitoring,bq-cost"
 ```
 
-Like Monitoring, it is a `PREVIEW_FEATURES` entry: gated server-side (API and
-chat tools both refuse) for everyone but `PREVIEW_USERS`, not just a hidden
-pill. Leave `BQ_COST_REGION` empty to disable it cleanly — the wrong region
-would otherwise silently report nothing.
+Released to everyone by default — its pill sits in the *Monitoring* group and
+nothing gates the routes or the chat tools. To restrict it to testers during a
+rollout, add `bq-cost` to `PREVIEW_FEATURES` (API and chat tools then refuse
+everyone but `PREVIEW_USERS`) and `Monitoring` to `PREVIEW_GROUPS` (the pill is
+hidden from them too). Leave `BQ_COST_REGION` empty to disable it cleanly — the
+wrong region would otherwise silently report nothing.
 
 ## Surviving restarts
 

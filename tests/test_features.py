@@ -80,20 +80,36 @@ def test_the_injected_config_cannot_close_the_script_tag(monkeypatch):
 
 
 def test_every_server_gated_pill_sits_in_a_preview_group_by_default():
-    """A pill whose feature the server refuses (PREVIEW_FEATURES) must live in a
-    group PREVIEW_GROUPS hides by default — otherwise everyone sees a pill that
-    only ever answers 403."""
+    """A pill whose feature the server refuses by default (PREVIEW_FEATURES)
+    must live in a group PREVIEW_GROUPS hides by default — otherwise everyone
+    sees a pill that only ever answers 403. A pill's form key is its feature key."""
     from release_agent.config import Settings
 
-    default_groups = {g.strip() for g in Settings.model_fields["preview_groups"].default.split(",")}
+    fields = Settings.model_fields
+    default_groups = {g.strip() for g in fields["preview_groups"].default.split(",") if g.strip()}
+    gated = {f.strip() for f in fields["preview_features"].default.split(",") if f.strip()}
+    assert gated, "nothing is gated by default — the test would be vacuous"
     palette = (pathlib.Path(APP.__file__).parent / "static" / "palette.js").read_text()
-    gated = {"form:'monitoring'": None, "form:'bq-cost'": None}
-    for line in palette.splitlines():
-        for key in gated:
-            if key in line and "group:'" in line:
-                gated[key] = line.split("group:'", 1)[1].split("'", 1)[0]
-    assert all(gated.values()), gated
-    assert set(gated.values()) <= default_groups, gated
+    for feature in gated:
+        lines = [line for line in palette.splitlines() if f"form:'{feature}'" in line and "group:'" in line]
+        assert lines, f"no pill for the gated feature {feature}"
+        for line in lines:
+            group = line.split("group:'", 1)[1].split("'", 1)[0]
+            assert group in default_groups, (feature, group)
+
+
+def test_the_bq_cost_report_is_released_not_preview():
+    """Asked for explicitly: the BQ cost report is for everyone — nothing gates
+    its routes or tools by default and its Monitoring group is not hidden."""
+    from release_agent.config import Settings
+
+    fields = Settings.model_fields
+    assert "bq-cost" not in fields["preview_features"].default
+    assert "Monitoring" not in fields["preview_groups"].default
+    palette = (pathlib.Path(APP.__file__).parent / "static" / "palette.js").read_text()
+    line = next(line for line in palette.splitlines() if "form:'bq-cost'" in line)
+    assert "group:'Monitoring'" in line
+    assert features.allowed("bq-cost", None), "an anonymous caller is allowed under the default gating"
 
 
 def test_a_refusal_names_the_feature_like_a_person_would():

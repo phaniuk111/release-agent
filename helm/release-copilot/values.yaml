@@ -247,8 +247,8 @@ config:
   #        --set virtualService.pathPrefix=/dev-portal-preview \
   #        --set-string config.PREVIEW_USERS='*'
   PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
-  PREVIEW_GROUPS: "Check,Monitoring" # comma list of pill groups (palette.js GROUPS)
-  PREVIEW_FEATURES: "monitoring,bq-cost"  # comma list of gated server features
+  PREVIEW_GROUPS: "Check"            # comma list of pill groups (palette.js GROUPS); add Monitoring to hide the BQ cost report
+  PREVIEW_FEATURES: "monitoring"     # comma list of gated server features; add bq-cost to restrict the BQ cost report to testers
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's
