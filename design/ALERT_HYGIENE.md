@@ -360,3 +360,54 @@ bigquery/alert_incidents.schema.json       optional incident snapshot (append-on
 ```
 
 No new dependency.
+
+## 15. Research addendum — 2026-09-20
+
+The question: 10–15 alerts a day, mostly log-based — can an agent classify
+them, help tune them, and read the actual logs? Facts verified this session
+(`gcloud iam roles describe`, live API calls, current docs):
+
+- **Roles.** `roles/monitoring.viewer` carries `monitoring.alerts.list/get`,
+  `alertPolicies.list/get`, `timeSeries.list`, `metricDescriptors.list`.
+  Reading the log lines behind an incident needs `roles/logging.viewer`
+  (`logging.logEntries.list`) — read-only, and the only addition to §3.
+- **`projects.alerts.list` (v3)** takes `filter`, `orderBy` (`openTime` /
+  `closeTime`), `pageSize` ≤ 1000 and a page token valid 72 h; reachable with
+  ADC. History retention is still unstated — measure it on the first run (§13).
+- **Two different "log-based" alerts, two different fixes.**
+  - A policy on a **log-based metric** (`logging.googleapis.com/user/<name>`):
+    threshold + `duration` + alignment; the incident closes when the condition
+    clears; replayable in PromQL as `logging_googleapis_com:user_<name>`
+    (DELTA — `increase` / `sum_over_time`, never an instant selector).
+  - A **log-match policy** (`conditionMatchedLog`): one notification per
+    matching entry, throttled only by `notificationRateLimit.period`; it
+    **cannot count**, and its incidents do NOT close when matches stop — only
+    at `autoClose` (minimum 30 min, default 7 days). So its incident history
+    says nothing about duration. Tuning means a longer rate-limit period, a
+    tighter filter, or converting it to a metric + threshold policy (which
+    the model can propose and the replay can then test).
+- **Reading the actual logs.** Logging `entries.list` with the metric's or
+  policy's own filter AND the incident's window, `orderBy timestamp desc`,
+  a capped page size — a sample of the lines that opened the incident, so the
+  suggestion can say "94% of these are `connection reset` from one pod" and
+  propose the filter exclusion. This is the first place raw log text reaches
+  the model: treat entries as data, cap the sample, never let a log line
+  steer a tool call.
+
+Build options:
+
+| Option | Gives | Verdict |
+|---|---|---|
+| Extend the portal — this design plus one `logs_sample` tool | the ranked noise report, replay-tested suggestions, the log sample | **recommended** — same pattern as Monitoring / BQ cost; nothing new to trust |
+| Google's remote **Monitoring MCP server** (`monitoring.googleapis.com/mcp`, OAuth): `list_timeseries`, `query_range`, `list/get_alert_policies`, `list/get_alerts`, `list_metric_descriptors`, `list/get_dashboards` — read-only, no log tool | the same reads without hand-written tools | viable for the read layer (ADK `MCPToolset` over Streamable HTTP) — but needs egress to `*.googleapis.com/mcp` and adds nothing the four reads above don't |
+| Google's remote **Logging MCP server** (`logging.googleapis.com/mcp`, GA) | log queries — and log **writes** | **no**: it demands `roles/logging.admin` + `roles/mcp.toolUser`, a write-capable grant that breaks the read-only invariant (§11) |
+| **Gemini Cloud Assist investigations** (console, per alert; reads logs, metrics, config) | per-incident root-cause hypotheses, no build | since **10 Apr 2026** only with a Premium Support contract or by account-team request; single project; nondeterministic; nothing fleet-level ("which policies are noise") — check the contract before counting on it |
+
+Answers: **classify** — yes; 10–15/day is ~1,300 incidents per 90 days, small
+enough to analyse in full, and the classes that matter are measured (§5, §7a)
+with the model naming the pattern, not judging each incident. **Tune** — yes
+for metric-based policies (suggest + replay); for log-match policies only
+rate-limit / filter / conversion suggestions, with the replay limited to
+re-running the filter (`ALERT_LOG_REPLAY`). **Read logs** — yes, with
+`roles/logging.viewer`, as a capped sample per incident. Volume this size
+needs no BigQuery snapshot unless `alerts.list` retention proves short.
