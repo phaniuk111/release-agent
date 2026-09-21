@@ -206,6 +206,38 @@ the same proxy and CA bundle as everything else; a sink that is down drops
 spans and never delays a turn. `/api/diagnostics` reports the endpoint and
 the content switch under `tracing` — never a key.
 
+## GKE Autopilot + managed Cloud Service Mesh — measured, not assumed
+
+All of this was found by deploying this chart to a real Autopilot cluster with
+managed CSM (`asm-managed`, `implementation: TRAFFIC_DIRECTOR`). None of it is
+visible from `helm template` or a local run.
+
+- **Autopilot bills `max(requests, limits)`, and raises requests to match
+  limits.** The defaults here (`requests 250m/512Mi`, `limits 1/1Gi`) therefore
+  reserve and bill a whole vCPU and 1 GiB per pod on Autopilot — four times the
+  request. On Autopilot, set `resources.limits` equal to `resources.requests`.
+  On Standard the defaults are fine: there, limits are a burst ceiling.
+- **The injected Envoy is a second container** with its own request (a further
+  250m/512Mi at the Autopilot floor). Budget per pod accordingly.
+- **A sidecar that never gets its config breaks OUTBOUND traffic, not just
+  ingress.** If Traffic Director has no configuration for the mesh, the proxy
+  stays `1/2` forever AND still intercepts egress — so the app cannot reach
+  `metadata.google.internal`, Workload Identity cannot mint a token, and every
+  Vertex call fails ~60-90s later with a generic application error. Debugging
+  that from the app logs leads nowhere: check `kubectl get pods` for `1/2` and
+  the proxy's log for "Traffic Director configuration was not found" first.
+  `kubectl rollout restart` sometimes clears it; see design/TODO.md.
+- **Deploy order**: label the namespace `istio.io/rev=asm-managed` BEFORE
+  installing, or the first pod comes up with no sidecar at all.
+- **Managed CSM does not give you an ingress gateway** — deploy your own
+  (an injected Deployment with `inject.istio.io/templates: gateway` and
+  `image: auto`; `istioctl install` is not supported on Autopilot).
+- **The image must be pullable without a secret**, or set `imagePullSecrets`.
+  A private ghcr package fails with 401; Artifact Registry in the same project
+  is pulled by the node with no secret at all. Also set `image.tag`
+  explicitly — it defaults to `.Chart.AppVersion`, which may not be a tag that
+  exists.
+
 ## Surviving restarts
 
 Two different mechanisms, often confused:

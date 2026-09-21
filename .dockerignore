@@ -1,0 +1,22 @@
+# The image is built from the source tree; everything below is either rebuilt
+# inside the image, irrelevant to it, or must never reach it. Without this file
+# the build context is ~2.6 GB (the local .venv alone is most of it) — slow for
+# a local `docker build`, and slow AND billable for a remote builder.
+.venv/
+.git/
+node_modules/
+backstage/
+traces/
+.claude/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+.env
+.DS_Store
+# Tests and design notes are not part of the runtime image.
+tests/
+evals/
+design/
+practice/

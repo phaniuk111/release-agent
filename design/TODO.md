@@ -84,6 +84,34 @@ an oversight. Recorded so nobody re-investigates them.
   identifier, so they cannot be subtracted the way the ranking subtracts its own
   jobs by label. A few rows per scan: small and unattributable, not wrong.
 
+## Open — needs a working mesh to finish (2026-09-21)
+
+### Managed CSM: sidecars never receive Traffic Director config
+Deployed this chart twice to a fresh GKE Autopilot cluster with managed CSM.
+Both times the injected Envoy reported `Traffic Director configuration was not
+found for mesh "gsmrsvd-..."` and stayed `1/2`; the ingress gateway did the
+same and served 502. Ruled out: deploy ordering (the second run waited for the
+fleet to report ACTIVE and for the TD Mesh resource to exist — it failed
+identically), and the documented remedy for the fleet's own
+`MISSING_CONTROL_PLANE_CONFIG` warning (a `ControlPlaneRevision` named
+`asm-managed` already existed, reconciled). A `kubectl rollout restart` cleared
+it once and not the second time. Suspect the sandbox fleet's pre-existing
+features (configmanagement, policycontroller, metering — all ACTIVE from an
+older PoC) or a TD serving-side delay; a support case is the next step.
+- **Consequence if it happens in the enterprise:** every deploy hangs at 1/2,
+  `helm upgrade --wait` times out, and the app loses egress to the metadata
+  server, so Vertex fails with a generic error. See the helm README.
+- **Still unproven because of it:** whether the VirtualService's 120s route
+  timeout cuts a long chat turn, and what the client sees when it does. A
+  96s SSE stream DID pass through the app's own sidecar intact (no truncation),
+  which is the only evidence gathered. The harness to finish this is written:
+  scratchpad `gke/sse/sse_probe.py` (N concurrent streams, detects truncation
+  and cross-talk, exit 1 on either) plus a 10s-timeout values fragment to force
+  the timeout deliberately rather than waiting for a slow turn.
+- **Worth knowing for that test:** the app calls Gemini with `stream: False`,
+  so a turn's whole reply arrives as ONE token event — the wire is silent for
+  the length of the call, which is what an idle timeout would act on.
+
 ## Skipped — deliberately
 
 ### Grafana-dashboard weekly memo

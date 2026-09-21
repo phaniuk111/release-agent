@@ -428,6 +428,21 @@ resources:
     memory: "1Gi"
 
 # Probes hit the FastAPI /health endpoint.
+#
+# The app imports ADK, google-genai and the Vertex SDK before it listens:
+# MEASURED at 33s to first 200 on a GKE Autopilot node. Liveness alone would
+# give it 30 + 15x2 = 60s before a restart, and every restart pays that cost
+# again — a slower node or a colder image pull turns that into a loop it never
+# escapes. The startupProbe holds liveness off until the app answers (up to
+# 30 x 5s = 150s), then normal liveness takes over. Raise failureThreshold,
+# not the liveness delay, if the image ever gets slower to boot.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  failureThreshold: 30
+  timeoutSeconds: 3
 livenessProbe:
   httpGet:
     path: /health
