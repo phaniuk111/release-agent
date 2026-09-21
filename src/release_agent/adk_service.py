@@ -438,12 +438,16 @@ class AdkChatService:
         # thread_id -> pending CONFIRM token awaiting resume of the deploy Workflow.
         self._pending_deploy: dict[str, str] = {}
         # thread_id -> paused chat-agent tool confirmation awaiting a yes/no reply.
-        self._pending_adk_calls: dict[str, PendingAdkCall] = {}
+        # Keyed by (owner, thread) like the PAT store and the CONFIRM preview: a
+        # thread id is not a secret (it is printed in the header), so keying on
+        # it alone would let one person's "yes" answer another's paused prod-ops
+        # approval. Identity off = one shared owner = the behaviour as before.
+        self._pending_adk_calls: dict[tuple[str, str], PendingAdkCall] = {}
 
     async def stream_chat(self, message: str, thread_id: str) -> AsyncGenerator[dict[str, Any], None]:
         """Yield UI-compatible SSE event payloads."""
         # A paused prod-ops confirmation takes precedence: this reply approves/rejects it.
-        pending_call = self._pending_adk_calls.pop(thread_id, None)
+        pending_call = self._pending_adk_calls.pop((_user_id(), thread_id), None)
         if pending_call is None:
             # Same reasoning as the deploy token below: the pause may have been
             # served by another replica, or by this one before a restart.
@@ -616,7 +620,9 @@ class AdkChatService:
             if output is not None:
                 result = output
         yield {"type": "token", "content": self._format_deploy_apply_result(result or {})}
-        yield {"type": "done", "mutated": True}
+        # A cancelled resume applied nothing: saying otherwise makes every
+        # wrong-token reply re-read the release banner for no reason.
+        yield {"type": "done", "mutated": bool(confirmed)}
 
     async def _run_chat_agent(
         self,
@@ -661,7 +667,7 @@ class AdkChatService:
                 repeat = pending
                 break
             if pending is not None:
-                self._pending_adk_calls[thread_id] = pending
+                self._pending_adk_calls[(_user_id(), thread_id)] = pending
                 await self._persist_pending_call(thread_id, pending)
                 yield {"type": "interrupt", "data": _confirmation_interrupt_payload(pending)}
                 interrupted = True

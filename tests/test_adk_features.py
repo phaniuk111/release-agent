@@ -32,8 +32,13 @@ def test_context_cache_can_be_disabled(monkeypatch):
 # --- memory tool ----------------------------------------------------------------
 
 def test_memory_tool_present_when_enabled_and_absent_when_disabled(monkeypatch):
+    """Recall also needs identity on — see
+    test_memory_recall_is_refused_when_identity_is_off for why."""
     from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 
+    from release_agent import identity
+
+    monkeypatch.setattr(identity.settings, "identity_header", "x-asm-rctoken", raising=False)
     enabled = agent_module.build_root_agent()
     assert any(isinstance(t, PreloadMemoryTool) for t in enabled.tools)
 

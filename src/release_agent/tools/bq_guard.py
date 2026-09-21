@@ -357,21 +357,22 @@ def run(client: Any, sql: str, *, budget: Budget | None = None, job_config: Any 
         raise GuardRefused(f"not a read, or more than one statement: {sql[:160]!r}")
     from google.cloud import bigquery
 
-    cfg = job_config
+    # A COPY: the caller's config object is theirs, and this function sets
+    # dry_run, maximum_bytes_billed and labels on it. Editing it in place would
+    # make a reused config carry this gate's decisions into the next statement.
+    cfg = bigquery.QueryJobConfig.from_api_repr(job_config.to_api_repr()) if job_config is not None \
+        else bigquery.QueryJobConfig()
     if kind == "select":
-        cfg = cfg if cfg is not None else bigquery.QueryJobConfig()
         cfg.dry_run = True
     is_dry = bool(getattr(cfg, "dry_run", False))
     if not is_dry:
         # Belt-and-braces: even a correctly-classified real run should never
         # be able to bill more than a scan read ever legitimately would.
-        cfg = cfg if cfg is not None else bigquery.QueryJobConfig()
         cfg.maximum_bytes_billed = _MAX_BYTES_BILLED
     # Every statement this gate issues — real or dry — carries this label, so
     # the scan's own cost-ranking queries can exclude their OWN jobs from the
     # ranking (see bq_cost.py's _shapes_sql/_totals_sql/_table_reads_sql) and
     # so the tool's own footprint is identifiable in JOBS like anyone else's.
-    cfg = cfg if cfg is not None else bigquery.QueryJobConfig()
     cfg.labels = {**(cfg.labels or {}), "release_copilot": "bq_cost"}
     if budget is not None:
         budget.reserve()

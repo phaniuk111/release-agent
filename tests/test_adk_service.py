@@ -2,7 +2,7 @@ import json
 import asyncio
 
 from adk_release_agent import deploy
-from release_agent.adk_service import AdkChatService, _looks_like_deploy_request
+from release_agent.adk_service import AdkChatService, _looks_like_deploy_request, _user_id
 
 
 def _collect(service: AdkChatService, message: str, thread_id: str = "t-adk"):
@@ -223,7 +223,7 @@ def test_a_repeat_of_the_just_approved_operation_is_declined_not_asked_again(mon
                 yield _Ev(text="Okay, I have cancelled the promotion.")
 
     service.chat_runner = _Runner()
-    service._pending_adk_calls["t-rep"] = PendingAdkCall(
+    service._pending_adk_calls[(_user_id(), "t-rep")] = PendingAdkCall(
         invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
         args=_confirmation_call("c1").args)
     events = _collect(service, "yes", thread_id="t-rep")
@@ -250,7 +250,7 @@ def test_a_different_operation_after_an_approval_still_asks(monkeypatch):
             yield _Ev(calls=[_confirmation_call("c2", target="prl1")], long_running=["c2"])
 
     service.chat_runner = _Runner()
-    service._pending_adk_calls["t-diff"] = PendingAdkCall(
+    service._pending_adk_calls[(_user_id(), "t-diff")] = PendingAdkCall(
         invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
         args=_confirmation_call("c1").args)
     events = _collect(service, "yes", thread_id="t-diff")
@@ -401,3 +401,52 @@ def test_every_lane_of_a_turn_is_traced_under_a_named_route(monkeypatch):
     assert [s["thread_id"] for s in seen] == ["t1", "t2", "t3"]
     assert seen[0]["session_id"].endswith(":deploy") or "deploy" in seen[0]["session_id"]
     assert "chat" in seen[1]["session_id"]
+
+
+def test_one_persons_yes_cannot_answer_another_persons_paused_approval(monkeypatch):
+    """A thread id is not a secret — the portal prints it in its header. The
+    paused prod-ops approval is therefore keyed by (owner, thread), like the
+    PAT store and the CONFIRM preview: bob typing "yes" against alice's thread
+    id must not approve the operation she is being asked about."""
+    import release_agent.adk_service as S
+    from release_agent import identity
+    from release_agent.adk_service import PendingAdkCall
+
+    alice, bob = identity.Caller(email="alice@example.com"), identity.Caller(email="bob@example.com")
+    service = AdkChatService.__new__(AdkChatService)
+    service._pending_adk_calls = {}
+    service._pending_deploy = {}
+
+    async def no_pending(*a, **k):
+        return None
+
+    monkeypatch.setattr(service, "_pending_call_from_session", no_pending, raising=False)
+    monkeypatch.setattr(service, "_pending_token_from_session", no_pending, raising=False)
+    monkeypatch.setattr(S, "_looks_like_deploy_request", lambda m: False)
+    monkeypatch.setattr(S.adk_parsing, "is_queue_intent", lambda m: False)
+    monkeypatch.setattr(S.adk_intent, "deploy_payload_from_freeform", lambda m: None)
+
+    answered = []
+
+    async def fake_chat(content, thread_id, **kw):
+        answered.append(kw.get("approved"))
+        yield {"type": "done"}
+
+    monkeypatch.setattr(service, "_run_chat_agent", fake_chat, raising=False)
+
+    with identity.activate(alice):
+        service._pending_adk_calls[(S._user_id(), "t-shared")] = PendingAdkCall(
+            invocation_id="inv-1", function_call_id="fc-1", function_name="adk_request_confirmation",
+            args={"originalFunctionCall": {"name": "merge_prod_release", "args": {"env": "prd"}}},
+        )
+
+    with identity.activate(bob):
+        _collect(service, "yes", "t-shared")
+    assert answered == [None], "bob's turn must not carry an approval"
+    assert (("alice@example.com", "t-shared") in service._pending_adk_calls), \
+        "alice's pending approval must still be waiting for HER"
+
+    with identity.activate(alice):
+        _collect(service, "yes", "t-shared")
+    assert answered[-1] == ("merge_prod_release", '{"env": "prd"}'), "the owner's yes still approves"
+    assert not service._pending_adk_calls, "and consumes it"

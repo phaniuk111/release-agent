@@ -15,6 +15,7 @@ with proper auth, TLS, and observability.
 
 import asyncio
 import contextvars
+from contextlib import aclosing
 import json
 import logging
 import os
@@ -401,10 +402,15 @@ async def chat_endpoint(req: ChatRequest, request: Request):
         # the session isn't connected. contextvars propagate across await/threads.
         try:
             with identity.activate(caller), _session_store.activate(thread_id, owner=_owner(caller)):
-                async for event in adk_chat_service.stream_chat(req.message, thread_id):
-                    if event.get("type") == "interrupt":
-                        logger.info(f"Interrupt emitted | thread={thread_id}")
-                    yield f"data: {json.dumps(event)}\n\n"
+                # aclosing: an exception in THIS loop (a payload json.dumps
+                # refuses) would otherwise walk away from the turn's stream and
+                # leave it to the garbage collector, which ends its trace span
+                # whenever it gets round to it rather than here.
+                async with aclosing(adk_chat_service.stream_chat(req.message, thread_id)) as events:
+                    async for event in events:
+                        if event.get("type") == "interrupt":
+                            logger.info(f"Interrupt emitted | thread={thread_id}")
+                        yield f"data: {json.dumps(event)}\n\n"
 
         except Exception as exc:
             logger.exception(f"Error in chat stream | thread={thread_id}")

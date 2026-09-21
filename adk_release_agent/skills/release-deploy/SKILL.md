@@ -31,3 +31,8 @@ Your job here:
   first and require the exact `CONFIRM-xxxxxx` token before anything is applied.
 - If no `chart:version` can be parsed, ask the user for explicit `chart:version` input.
 - UAT deploys update `uat/deployment.json`. Nothing here writes a PRD file.
+- The branch chain, if you are asked how a change reaches production: a CARE
+  release is cut on `release/<slug>` and promoted SIT -> UAT -> PRD/PRL1; a DF
+  release follows its own repo's chain (RELEASE_UAT -> RELEASE_PRD, no SIT).
+  Every promotion is a person's decision. NOTHING promotes itself, and there
+  is no path from `main` to an environment — do not describe one.

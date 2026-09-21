@@ -199,6 +199,21 @@ def _skill_toolset():
     )
 
 
+def memory_recall_enabled() -> bool:
+    """Whether the agent may recall EARLIER THREADS into this turn.
+
+    Memory is keyed by the ADK user id, which is the verified email only while
+    identity is on; with it off every visitor shares one fixed id, so recall
+    would hand one person another person's conversation — measured: a brand-new
+    thread, no tool calls, answering with a chart version only ever typed on a
+    different thread. Recall is therefore refused unless identity is on, and
+    ADK_MEMORY_ENABLED alone is not enough to turn it on.
+    """
+    from release_agent import identity
+
+    return bool(settings.adk_memory_enabled and identity.enabled())
+
+
 def build_root_agent():
     """Build the single skills-routed ADK chat agent.
 
@@ -208,12 +223,12 @@ def build_root_agent():
     from this toolset — it runs through the deterministic deploy Workflow
     (:mod:`adk_release_agent.deploy_workflow`). When memory is enabled, the
     ``preload_memory`` tool injects relevant recalled context at the start of each
-    turn.
+    turn — see :func:`memory_recall_enabled` for when that is allowed.
     """
     from google.adk import Agent
 
     tools = [_skill_toolset()]
-    if settings.adk_memory_enabled:
+    if memory_recall_enabled():
         from google.adk.tools import preload_memory
 
         tools.append(preload_memory)

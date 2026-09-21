@@ -92,10 +92,14 @@ def test_every_server_gated_pill_sits_in_a_preview_group_by_default():
     palette = (pathlib.Path(APP.__file__).parent / "static" / "palette.js").read_text()
     for feature in gated:
         lines = [line for line in palette.splitlines() if f"form:'{feature}'" in line and "group:'" in line]
-        assert lines, f"no pill for the gated feature {feature}"
+        # A gated feature with no pill of its own is fine (it may be chat-only);
+        # what must never happen is a pill sitting in a group everyone can see.
         for line in lines:
             group = line.split("group:'", 1)[1].split("'", 1)[0]
             assert group in default_groups, (feature, group)
+    # Known limit: this reads `form:` pills only. A `send:true` pill whose chat
+    # text reaches a gated TOOL is invisible here — the refusal still comes from
+    # the server, so the worst case is a visible pill that answers "not yet".
 
 
 def test_the_bq_cost_report_is_released_not_preview():

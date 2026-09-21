@@ -601,7 +601,7 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
      "report_cost_bytes", "queries_run",
      "totals": {"queries", "slot_hours", "gb_billed", "cache_hit_pct"},
      "shapes": [{"qhash", "runs", "who", "users": [...] (capped 8), "users_count",
-                 "slot_hours", "gb_billed", "approx_usd", "p50_gb", "p50_partitions",
+                 "slot_hours", "gb_billed", "approx_usd", "p50_bytes", "p50_gb", "p50_partitions",
                  "sql_preview", "sample_job", "referenced_tables": [...], "insights": [...],
                  "last_run"}],            # ordered by billing model, top N
      "storage": [{"table", "gb", "physical_gb", "expiration", "last_modified",
@@ -1193,7 +1193,15 @@ def verify_rewrite(before_sql: str, after_sql: str, *, declared_schema_change: b
 
 def record_findings(report: dict[str, Any], proposals: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Append this run's shapes (+ any proposals) to bq_cost_findings. No-op
-    when bq_cost_dataset is empty; a missing table degrades to a warning."""
+    when bq_cost_dataset is empty; a missing table degrades to a warning.
+
+    These are STREAMING inserts, so with BQ_COST_DATASET set they show up in
+    STREAMING_TIMELINE_BY_PROJECT — the same view the writes section reads.
+    That view carries no table identifier, so the tool cannot subtract its own
+    rows the way the ranking subtracts its own jobs by label: a few rows per
+    scan are counted with everyone else's. Small and unattributable rather than
+    wrong, and worth knowing before reading a tiny "unbatched writes" finding.
+    """
     if not settings.bq_cost_dataset:
         return {"ok": True, "note": "no memory across runs — BQ_COST_DATASET is empty."}
     if not report or not report.get("ok"):

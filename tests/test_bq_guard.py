@@ -302,7 +302,25 @@ def test_run_preserves_a_caller_supplied_label_alongside_its_own():
     client = _FakeClient()
     cfg = bigquery.QueryJobConfig(labels={"team": "release-copilot"})
     G.run(client, _IS_SQL, job_config=cfg)
-    assert cfg.labels == {"team": "release-copilot", "release_copilot": "bq_cost"}
+    _, sent = client.queries[-1]
+    assert sent.labels == {"team": "release-copilot", "release_copilot": "bq_cost"}
+
+
+def test_run_leaves_the_callers_own_job_config_untouched():
+    """run() sets dry_run, a bytes cap and its label — on a COPY. Editing the
+    caller's object would carry this statement's decisions into the next one
+    if they reused the config (e.g. a real read after a dry run)."""
+    from google.cloud import bigquery
+
+    client = _FakeClient()
+    cfg = bigquery.QueryJobConfig(labels={"team": "release-copilot"})
+    G.run(client, "SELECT * FROM proj.ds.real_table", job_config=cfg)   # forced to a dry run
+
+    assert cfg.dry_run is None, "the caller's config must not have been switched to dry-run"
+    assert cfg.labels == {"team": "release-copilot"}, "our label must not be on the caller's config"
+    assert cfg.maximum_bytes_billed is None
+    _, sent = client.queries[-1]
+    assert sent.dry_run is True and sent.labels["release_copilot"] == "bq_cost"
 
 
 def test_run_does_not_need_a_bytes_cap_on_a_dry_run():

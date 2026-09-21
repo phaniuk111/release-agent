@@ -287,3 +287,24 @@ def test_scope_guard_counts_bigquery_cost_as_ours_without_a_model_call():
                  "why does this query burn so many slots?"):
         assert _looks_in_scope(text), text
     assert "BigQuery cost" in ScopeGuardPlugin.REFUSAL
+
+
+def test_memory_recall_is_refused_when_identity_is_off(monkeypatch):
+    """Memory is keyed by the ADK user id, which is the verified email only
+    while identity is on. With it off every visitor shares one fixed id, so
+    recall hands one person another person's conversation — proven live: a
+    brand-new thread, no tool calls, answered with a chart version only ever
+    typed on a different thread. ADK_MEMORY_ENABLED alone must not switch it on."""
+    from adk_release_agent.agent import memory_recall_enabled, settings
+    from release_agent import identity
+
+    monkeypatch.setattr(settings, "adk_memory_enabled", True, raising=False)
+    monkeypatch.setattr(identity.settings, "identity_header", "", raising=False)
+    assert identity.enabled() is False
+    assert memory_recall_enabled() is False, "one shared user id means recall crosses people"
+
+    monkeypatch.setattr(identity.settings, "identity_header", "x-asm-rctoken", raising=False)
+    assert memory_recall_enabled() is True, "with a verified caller, recall is per person"
+
+    monkeypatch.setattr(settings, "adk_memory_enabled", False, raising=False)
+    assert memory_recall_enabled() is False, "the feature switch still wins"
