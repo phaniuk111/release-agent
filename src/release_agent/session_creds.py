@@ -129,8 +129,22 @@ class SessionCredentialStore:
     def __init__(self) -> None:
         self._by_thread: dict[str, SessionCredentials] = {}
 
-    def set(self, thread_id: str, creds: SessionCredentials) -> None:
+    def set(self, thread_id: str, creds: SessionCredentials) -> bool:
+        """Store this thread's creds. False (and nothing stored) when the thread
+        already holds SOMEONE ELSE's token.
+
+        ``get`` already withholds another person's token, but a write had no
+        such check: knowing a thread id (it is not a secret — see ``get``) was
+        enough to REPLACE the owner's stored PAT with your own. They were never
+        shown your token, but theirs was gone, and their next GitHub action
+        silently fell back to the server-wide one instead of running as them.
+        """
+        existing = self._by_thread.get(thread_id)
+        if existing is not None and existing.owner is not None \
+                and creds.owner is not None and existing.owner != creds.owner:
+            return False
         self._by_thread[thread_id] = creds
+        return True
 
     def get(self, thread_id: str, owner: str | None = None) -> SessionCredentials | None:
         """The thread's creds — withheld from anyone but their owner.

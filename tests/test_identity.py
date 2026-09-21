@@ -213,6 +213,40 @@ def test_a_threads_github_token_is_withheld_from_anyone_but_its_owner():
     assert store.get("t1").pat_token == "ghp_x", "identity off: no check, as before"
 
 
+def test_nobody_can_replace_the_token_on_someone_elses_thread():
+    """Found in multi-user testing: ``get`` withheld another person's token but
+    ``set`` did not check at all, so knowing a thread id (not a secret) was
+    enough to EVICT the owner's PAT — their next GitHub action then ran as the
+    server token instead of as them."""
+    store = SessionCredentialStore()
+    assert store.set("t1", SessionCredentials(pat_token="ghp_one", owner="dev.one@example.com"))
+    assert not store.set("t1", SessionCredentials(pat_token="ghp_two", owner="dev.two@example.com"))
+    assert store.get("t1", owner="dev.one@example.com").pat_token == "ghp_one"
+    # the owner may still reconnect, and identity-off behaviour is unchanged
+    assert store.set("t1", SessionCredentials(pat_token="ghp_new", owner="dev.one@example.com"))
+    assert store.set("t2", SessionCredentials(pat_token="ghp_a"))
+    assert store.set("t2", SessionCredentials(pat_token="ghp_b"))
+
+
+def test_a_confirm_token_is_bound_to_the_caller_it_was_minted_for(monkeypatch):
+    """Found in multi-user testing: ``_PENDING_PREVIEWS`` is process-wide and
+    keyed by token alone, and the token is printed in the chat — so the
+    stateless fallback in adk_service let anyone who saw someone else's token
+    APPLY their pending deploy from their own thread."""
+    from adk_release_agent import deploy as D
+
+    monkeypatch.setattr(D, "_invoke_tool", lambda name, args=None: {"ok": True})
+    D._PENDING_PREVIEWS.clear()
+    with identity.activate(identity.Caller(email="dev.one@example.com")):
+        prep = D.prepare_deploy_preview(image_tags="payments-api:1.4.2", environment="uat")
+    assert D._PENDING_PREVIEWS[prep["token"]]["owner"] == "dev.one@example.com"
+    with identity.activate(identity.Caller(email="dev.two@example.com")):
+        from release_agent import adk_service as S
+
+        assert S._user_id() != D._PENDING_PREVIEWS[prep["token"]]["owner"]
+    D._PENDING_PREVIEWS.clear()
+
+
 def test_diagnostics_say_whether_the_token_verified():
     ok = APP._verified_identity({"x-asm-rctoken": rctoken()})
     assert ok["signed_in"] and ok["email"] != "dev.one@example.com", "masked"

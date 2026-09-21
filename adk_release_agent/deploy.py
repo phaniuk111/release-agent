@@ -32,6 +32,19 @@ _PENDING_PREVIEWS: dict[str, dict[str, Any]] = {}
 _PREVIEW_TTL_SECONDS = 30 * 60
 
 
+def preview_owner() -> str:
+    """Who a preview is minted FOR — the verified caller, or the one shared id
+    everyone has when identity is off (``adk_service._user_id``).
+
+    The token itself is not a secret: it is printed in the chat and gets pasted
+    into tickets. This dict is process-wide, so the owner is what stops one
+    person's token from applying their deploy on somebody else's thread.
+    """
+    from release_agent import identity
+
+    return identity.current_email() or "fastapi-user"
+
+
 def _cleanup_expired_previews(now: float | None = None) -> None:
     now = time.time() if now is None else now
     expired = [
@@ -206,7 +219,7 @@ def prepare_deploy_preview(
         req["release_prep"] = prep
         token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
         pending = {"token": token, "request": req, "preview": prep["preview"],
-                   "created_at": time.time()}
+                   "created_at": time.time(), "owner": preview_owner()}
         _PENDING_PREVIEWS[token] = pending
         return {
             "ok": True,
@@ -242,7 +255,8 @@ def prepare_deploy_preview(
         }
     preview = _build_preview(req)
     token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
-    pending = {"token": token, "request": req, "preview": preview, "created_at": time.time()}
+    pending = {"token": token, "request": req, "preview": preview,
+               "created_at": time.time(), "owner": preview_owner()}
     _PENDING_PREVIEWS[token] = pending
     return {
         "ok": True,
