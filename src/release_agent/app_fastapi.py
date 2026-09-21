@@ -18,6 +18,7 @@ import contextvars
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from typing import AsyncGenerator
@@ -443,7 +444,13 @@ async def session_connect_endpoint(req: SessionConnectRequest, request: Request)
     if not ok:
         return {"ok": False, "connected": False, "error": detail}
 
-    _session_store.set(thread_id, creds)
+    if not _session_store.set(thread_id, creds):
+        # Someone else's thread: reporting "Connected" would be a lie twice over
+        # — nothing was stored for this caller, and the owner's token would have
+        # been dropped. Start a new thread instead.
+        return {"ok": False, "connected": False, "error": (
+            "That thread belongs to another signed-in user — start a New Thread "
+            "and connect there. Nothing was changed.")}
     logger.info("Session connected | thread=%s", thread_id)  # never log the token
     return {"ok": True, "thread_id": thread_id, **creds.public_status()}
 
@@ -482,13 +489,35 @@ async def session_disconnect_endpoint(req: SessionThreadRequest, request: Reques
 # fresh=1 (a manual refresh, or right after a chat turn changed something)
 # always bypasses the cache.
 def _cached(cache: dict, ttl: float, fn, *, fresh: bool = False):
-    """fn() unless ``cache`` still holds a value computed within ``ttl`` seconds."""
-    if not fresh and cache["value"] is not None and time.time() - cache["at"] < ttl:
+    """fn() unless ``cache`` still holds a value computed within ``ttl`` seconds.
+
+    SINGLE-FLIGHT. These endpoints are sync `def`, so FastAPI runs each on its
+    own threadpool worker: without the lock a cold cache is no protection at
+    all — everyone who arrives before the first fn() returns starts their own
+    (measured: 10 concurrent cold-cache /api/bq-cost/report requests ran the
+    BigQuery scan 10 times, ~42 MB of INFORMATION_SCHEMA billed EACH, which is
+    exactly what the 5-minute cache exists to prevent). One caller computes;
+    the rest wait on the lock and take what it stored. A value produced WHILE a
+    fresh=1 caller queued counts as fresh for it too — it asked for "not from
+    before I asked", and it isn't.
+    """
+    def _fresh_enough() -> bool:
+        return cache["value"] is not None and time.time() - cache["at"] < ttl
+
+    if not fresh and _fresh_enough():
         return cache["value"]
-    value = fn()
-    cache["at"] = time.time()
-    cache["value"] = value
-    return value
+    waiting_since = time.time()
+    # setdefault, not an __init__: every cache is a plain module-level dict a
+    # test can swap out wholesale, and that must keep working.
+    with cache.setdefault("lock", threading.Lock()):
+        if cache["value"] is not None and cache["at"] >= waiting_since:
+            return cache["value"]      # computed while we queued
+        if not fresh and _fresh_enough():
+            return cache["value"]
+        value = fn()
+        cache["at"] = time.time()
+        cache["value"] = value
+        return value
 
 
 # The banner is SHARED state (same answer for everyone) but costs 5 GitHub API

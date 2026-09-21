@@ -107,3 +107,81 @@ def test_the_workbook_round_trips_the_report_text():
 def test_the_filename_names_the_project_and_the_day():
     assert X.report_filename(REPORT) == "bq-cost-report-team-bq-2026-09-19.xlsx"
     assert X.report_filename({"project": "we ird/id", "scanned_at": ""}) == "bq-cost-report-weirdid-today.xlsx"
+
+
+def test_forbidden_xml_characters_are_dropped_so_the_sheet_still_parses():
+    """XML 1.0 forbids U+FFFE, U+FFFF and lone surrogates even though Excel
+    stores such code points happily elsewhere; one such character used to
+    produce a worksheet part expat calls 'not well-formed (invalid token)' —
+    and a lone surrogate used to blow up zipfile's UTF-8 encode outright, so
+    just reaching ET.fromstring here is already part of the regression."""
+    rows = [["ok\ufffebad", "ok\uffffbad", "ok\ud800bad", "ok\udfffbad", "tab\tkept\rcarriage\nnewline"]]
+    sheet = _parts(X.workbook_bytes([("S", ["a", "b", "c", "d", "e"], rows)]))["xl/worksheets/sheet1.xml"]
+    root = ET.fromstring(sheet)  # ExpatError / UnicodeEncodeError before the fix
+    cells = {c.get("r"): c for c in root.iter(f"{MAIN}c")}
+    assert cells["A2"].find(f"{MAIN}is/{MAIN}t").text == "okbad"
+    assert cells["B2"].find(f"{MAIN}is/{MAIN}t").text == "okbad"
+    assert cells["C2"].find(f"{MAIN}is/{MAIN}t").text == "okbad"
+    assert cells["D2"].find(f"{MAIN}is/{MAIN}t").text == "okbad"
+    # a lone CR is normalized to LF by any XML 1.0 parser (sec 2.11) -- not
+    # this writer's doing, but the tab and both line breaks must all survive
+    assert cells["E2"].find(f"{MAIN}is/{MAIN}t").text == "tab\tkept\ncarriage\nnewline"
+
+
+def test_a_very_long_joined_cell_is_capped_to_excels_limit_with_an_ellipsis():
+    """referenced_tables is unbounded upstream — a wildcard query over
+    daily-partitioned tables can reference thousands of them. Excel's
+    32,767-character-per-cell limit is a content rule, not an XML one: the
+    part stays well-formed but Excel itself refuses the file, so the cap has
+    to happen here, in the same spirit as the 'first 180 chars' header."""
+    many_tables = [f"proj.dataset.table_{i:05d}" for i in range(2000)]
+    shape = {**REPORT["shapes"][0], "referenced_tables": many_tables}
+    sheet = _parts(X.report_workbook({**REPORT, "shapes": [shape]}))["xl/worksheets/sheet2.xml"]
+    root = ET.fromstring(sheet)
+    text = next(c for c in root.iter(f"{MAIN}c") if c.get("r") == "L2").find(f"{MAIN}is/{MAIN}t").text
+    assert len(text) <= 32_767, "Excel refuses to open a workbook with a cell over its 32,767-char limit"
+    assert text.endswith("…"), "truncation must be visible, not silent"
+
+
+def test_formula_looking_values_are_written_as_inline_strings_not_formulas():
+    sheet = _parts(X.workbook_bytes([("S", ["a"], [["=cmd|'/c calc'!A1"]])]))["xl/worksheets/sheet1.xml"]
+    cell = next(c for c in ET.fromstring(sheet).iter(f"{MAIN}c") if c.get("r") == "A2")
+    assert cell.get("t") == "inlineStr"
+    assert cell.find(f"{MAIN}f") is None, "a formula tag would let Excel execute this on open"
+    assert cell.find(f"{MAIN}is/{MAIN}t").text == "=cmd|'/c calc'!A1"
+
+
+def test_non_finite_floats_fall_through_to_the_text_branch():
+    rows = [[float("nan"), float("inf"), float("-inf")]]
+    sheet = _parts(X.workbook_bytes([("S", ["a", "b", "c"], rows)]))["xl/worksheets/sheet1.xml"]
+    root = ET.fromstring(sheet)  # a numeric <v>nan</v> cell is not well-formed to Excel
+    cells = {c.get("r"): c for c in root.iter(f"{MAIN}c")}
+    assert [cells[r].get("t") for r in ("A2", "B2", "C2")] == ["inlineStr"] * 3
+    assert [cells[r].find(f"{MAIN}is/{MAIN}t").text for r in ("A2", "B2", "C2")] == ["nan", "inf", "-inf"]
+
+
+def test_more_than_26_columns_use_aa_style_column_refs():
+    header = [f"c{i}" for i in range(1, 31)]
+    sheet = _parts(X.workbook_bytes([("S", header, [list(range(1, 31))])]))["xl/worksheets/sheet1.xml"]
+    refs = [c.get("r") for c in ET.fromstring(sheet).iter(f"{MAIN}c")]
+    assert refs[24:29] == ["Y1", "Z1", "AA1", "AB1", "AC1"]
+    assert refs[-4:] == ["AA2", "AB2", "AC2", "AD2"]
+
+
+def test_non_ascii_sheet_names_and_values_round_trip_as_utf8():
+    parts = _parts(X.workbook_bytes([("Отчёт 日本語", ["名前"], [["héllo wörld 🎉"]])]))
+    names = [s.get("name") for s in ET.fromstring(parts["xl/workbook.xml"]).iter(f"{MAIN}sheet")]
+    assert names == ["Отчёт 日本語"]
+    texts = [t.text for t in ET.fromstring(parts["xl/worksheets/sheet1.xml"]).iter(f"{MAIN}t")]
+    assert texts == ["名前", "héllo wörld 🎉"]
+
+
+def test_report_filename_strips_header_injection_characters_from_the_date_too():
+    """report_filename is embedded straight into a Content-Disposition header
+    with no other escaping (app_fastapi.py) — CR/LF or a stray quote
+    surviving from scanned_at, not just from project, would be a header
+    injection / response-splitting vector."""
+    hostile = {"project": "team-bq", "scanned_at": "\r\nSet-Cookie: x=1\r\n2026-09-19"}
+    name = X.report_filename(hostile)
+    assert all(ch not in "\r\n\"" for ch in name)
+    assert name == "bq-cost-report-team-bq-Set-Cook.xlsx"

@@ -45,11 +45,30 @@ def column_letter(index: int) -> str:
     return out
 
 
+_MAX_CELL_CHARS = 32767  # Excel's hard per-cell text limit (SpreadsheetML)
+
+
+def _forbidden_xml_char(ch: str) -> bool:
+    """XML 1.0's Char production excludes control characters other than
+    tab/newline/CR, the two BMP noncharacters U+FFFE/U+FFFF, and the whole
+    surrogate range D800-DFFF (lone surrogates — a valid pair never reaches
+    Python's str as separate code points). Expat rejects all of them even
+    escaped, which breaks the whole worksheet part, not just the cell."""
+    if ch in "\t\n\r":
+        return False
+    code = ord(ch)
+    return code < 0x20 or 0xD800 <= code <= 0xDFFF or code in (0xFFFE, 0xFFFF)
+
+
 def _text(value: Any) -> str:
-    """Cell text safe for XML: control characters (which Excel rejects even
-    escaped) dropped, tab/newline kept, markup escaped."""
+    """Cell text safe for XML and Excel: characters XML 1.0 forbids dropped
+    (control characters, lone surrogates, U+FFFE/U+FFFF) with tab/newline/CR
+    kept, length capped to Excel's 32,767-characters-per-cell limit with a
+    visible ellipsis rather than a silent cut, markup escaped."""
     raw = str(value)
-    cleaned = "".join(ch for ch in raw if ch in "\t\n\r" or ord(ch) >= 32)
+    cleaned = "".join(ch for ch in raw if not _forbidden_xml_char(ch))
+    if len(cleaned) > _MAX_CELL_CHARS:
+        cleaned = cleaned[: _MAX_CELL_CHARS - 1] + "…"
     return escape(cleaned)
 
 
@@ -251,8 +270,16 @@ def report_workbook(report: dict[str, Any]) -> bytes:
     return workbook_bytes(sheets_for(report))
 
 
+def _filename_safe(text: str) -> str:
+    """Characters a Content-Disposition header (and every browser) keeps
+    verbatim — alnum plus -_. — applied to every piece of report_filename,
+    since app_fastapi embeds the result straight into the header value with
+    no other escaping."""
+    return "".join(ch for ch in text if ch.isalnum() or ch in "-_.")
+
+
 def report_filename(report: dict[str, Any]) -> str:
     """bq-cost-report-<project>-<date>.xlsx — only characters a browser keeps."""
-    project = "".join(ch for ch in str(report.get("project") or "project") if ch.isalnum() or ch in "-_.")
-    day = str(report.get("scanned_at") or "")[:10] or "today"
+    project = _filename_safe(str(report.get("project") or "project"))
+    day = _filename_safe(str(report.get("scanned_at") or "")[:10]) or "today"
     return f"bq-cost-report-{project}-{day}.xlsx"

@@ -4,6 +4,7 @@ mirrors test_features.py / test_monitoring.py for the Monitoring pill. Every
 test mocks release_agent.tools.bq_cost at the function level: no BigQuery."""
 import io
 import pathlib
+import time
 import zipfile
 
 import pytest
@@ -180,3 +181,74 @@ def test_the_seven_wrappers_are_registered_and_unlocked_by_the_skill():
     skill = load_skill_from_dir(skill_dir)
     declared = set(skill.frontmatter.metadata.get("adk_additional_tools") or [])
     assert declared == set(BQ_TOOL_NAMES)
+
+
+# --- the cache is single-flight: a cold-cache crowd must not each scan --------
+
+def test_a_cold_cache_crowd_runs_the_scan_once(monkeypatch):
+    """Ten people opening the pill together used to run ten BigQuery scans —
+    ~42 MB of INFORMATION_SCHEMA billed each, which is precisely what the
+    5-minute cache exists to prevent. _cached is single-flight: one caller
+    computes, the rest take what it stored."""
+    import threading
+
+    cache: dict = {"at": 0.0, "value": None}
+    runs, started = [], threading.Barrier(10)
+
+    def slow():
+        runs.append(1)
+        time.sleep(0.2)          # long enough for the others to pile up
+        return {"ok": True, "n": len(runs)}
+
+    def call():
+        started.wait(timeout=5)  # everyone arrives while the cache is cold
+        return APP._cached(cache, 300.0, slow)
+
+    threads = [threading.Thread(target=call) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(runs) == 1, f"the scan ran {len(runs)} times for 10 callers"
+    assert cache["value"] == {"ok": True, "n": 1}
+
+
+def test_a_fresh_crowd_coalesces_too_but_never_serves_a_stale_value(monkeypatch):
+    """fresh=1 means 'not from before I asked' — a value computed WHILE the
+    caller queued counts, so a refresh storm is one scan, not N. A value from
+    BEFORE it asked does not count."""
+    import threading
+
+    cache: dict = {"at": time.time(), "value": {"ok": True, "old": True}}
+    runs = []
+
+    def slow():
+        runs.append(1)
+        time.sleep(0.2)
+        return {"ok": True, "old": False}
+
+    results: list = []
+    threads = [threading.Thread(target=lambda: results.append(APP._cached(cache, 300.0, slow, fresh=True)))
+               for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(runs) == 1, f"a 5-way refresh ran the scan {len(runs)} times"
+    assert all(r == {"ok": True, "old": False} for r in results), "nobody may be served the pre-refresh value"
+
+
+def test_a_failing_scan_does_not_poison_the_cache(monkeypatch):
+    """fn() raising must release the lock and leave the cache untouched, so the
+    next caller retries instead of inheriting a wedged cache."""
+    cache: dict = {"at": 0.0, "value": None}
+
+    def boom():
+        raise RuntimeError("BigQuery said no")
+
+    with pytest.raises(RuntimeError):
+        APP._cached(cache, 300.0, boom)
+    assert cache["value"] is None
+    assert APP._cached(cache, 300.0, lambda: {"ok": True}) == {"ok": True}
