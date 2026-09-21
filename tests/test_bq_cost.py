@@ -679,3 +679,274 @@ def test_scan_never_raises_even_when_a_section_has_an_unexpected_bug(monkeypatch
     assert out["storage"] == [] and out["storage_source"] is None
     assert "boom" in out["storage_error"]
     assert out["writes"] == [] and "boom" in out["writes_error"]
+
+
+# --- C2: an unknown read count must never be reported as a verified zero -------------
+
+def test_scan_never_reports_unread_when_the_table_reads_query_itself_fails(monkeypatch):
+    """C2: scan() used to swallow a failure of the table-reads query
+    (`except Exception: read_rows = []`), so _storage_entries saw reads == 0
+    for every table and called EVERY one of them "unread" — turning a
+    permissions gap (exactly the partial grant hint_for() itself describes)
+    into "delete me" advice on every large table. Two tables here, to prove
+    it is not just the one this test happens to look at."""
+    reads_denied = RuntimeError(
+        "User does not have the required permissions ('bigquery.jobs.listAll' "
+        "permission(s) at the project level) to query system entity."
+    )
+    answers = _happy_answers(**{
+        "rt.project_id, rt.dataset_id, rt.table_id": reads_denied,
+        "s.total_logical_bytes >= @min_bytes": [
+            {"table_schema": "d", "table_name": "orders", "total_logical_bytes": 20 * C._GIB,
+             "active_logical_bytes": 20 * C._GIB, "total_physical_bytes": 15 * C._GIB,
+             "storage_last_modified_time": None, "expiration_ts": None,
+             "ddl": "CREATE TABLE d.orders (x INT64)\n"},
+            {"table_schema": "d", "table_name": "events", "total_logical_bytes": 50 * C._GIB,
+             "active_logical_bytes": 50 * C._GIB, "total_physical_bytes": 40 * C._GIB,
+             "storage_last_modified_time": None, "expiration_ts": None,
+             "ddl": "CREATE TABLE d.events (x INT64)\n"},
+        ],
+    })
+    client = _FakeClient(answers=answers)
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    out = C.scan()
+
+    assert out["ok"] is True
+    assert len(out["storage"]) == 2
+    assert {e["kind"] for e in out["storage"]} == {"no_expiration"}  # never "unread"
+    assert all(e["reads"] is None for e in out["storage"])           # unknown, not a fabricated 0
+    assert out["storage_reads_error"] == str(reads_denied)
+    assert out["storage_reads_hint"] == C._HINT_PROJECT_LEVEL
+
+
+def test_storage_fallback_never_reports_unread_when_the_reads_query_itself_fails(monkeypatch):
+    """C2, the per-dataset fallback path: the same bug, in the other code
+    path that assembles storage findings."""
+    storage_denied = RuntimeError(
+        "User does not have the required permissions ('bigquery.routines.list', "
+        "'bigquery.tables.list' permission(s) at the dataset level) to query system entity."
+    )
+    reads_denied = RuntimeError("Resources exceeded during query execution.")
+    answers = _happy_answers(**{
+        "s.total_logical_bytes >= @min_bytes": storage_denied,
+        "rt.project_id, rt.dataset_id, rt.table_id": reads_denied,
+    })
+    answers["__TABLES__"] = [{
+        "table_id": "orders", "size_bytes": 20 * C._GIB, "row_count": 100,
+        "last_modified_time": None, "expiration_ts": None, "partition_col": None,
+    }]
+    client = _FakeClient(answers=answers, datasets=["d"])
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    out = C.scan()
+
+    assert out["storage_source"] == "per_dataset"
+    assert [e["kind"] for e in out["storage"]] == ["no_expiration"]
+    assert out["storage"][0]["reads"] is None
+    assert out["storage_reads_error"] == str(reads_denied)
+
+
+def test_reads_info_is_unknown_when_reads_are_not_known_even_for_a_table_seen_before():
+    """PURE unit check on the helper itself: a table that DOES appear in
+    reads_by_table must still come back unknown once reads_known is False —
+    reads_known governs the whole answer, not a per-table lookup."""
+    by_table = {"p.d.t": {"reads": 7, "last_read": "2026-09-01T00:00:00+00:00"}}
+    assert C._reads_info("p.d.t", by_table, True) == by_table["p.d.t"]
+    assert C._reads_info("p.d.t", by_table, False) == {"reads": None, "last_read": None}
+
+
+# --- C3: the findings read must be labelled, bounded, windowed, and budgeted ---------
+
+class _ConfigCapturingClient(_FakeClient):
+    """Records the job_config each .query() call received — _FakeClient
+    itself only looks at .dry_run, so a test needing to check labels or
+    maximum_bytes_billed needs this instead."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.job_configs = []
+
+    def query(self, sql, job_config=None):
+        self.job_configs.append(job_config)
+        return super().query(sql, job_config=job_config)
+
+
+def test_read_own_findings_table_labels_bounds_and_windows_its_own_query(monkeypatch):
+    """C3: _read_own_findings_table deliberately bypasses bq_guard.run (a
+    plain SELECT on an ordinary table would otherwise be forced to a dry
+    run, per its own docstring — kept as is) — so bq_guard.run's protections
+    must be reapplied by hand: the release_copilot label (so this read
+    excludes ITSELF from next run's own "top query shapes", exactly like
+    every statement bq_guard.run issues), a maximum_bytes_billed backstop,
+    and a run_ts predicate (the table is day-partitioned; LIMIT reduces rows
+    returned, never bytes scanned)."""
+    monkeypatch.setattr(C.settings, "bq_cost_dataset", "costs", raising=False)
+    client = _ConfigCapturingClient(answers={
+        "bq_cost_findings": [
+            {"qhash": "abc123", "run_ts": "2026-08-01T00:00:00+00:00", "cost_before_bytes": 1 * C._GIB},
+        ],
+    })
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    rows = C._read_own_findings_table(None, runs=5)
+
+    assert rows and rows[0]["qhash"] == "abc123"
+    sql = client.queries[0]
+    assert "run_ts > TIMESTAMP_SUB" in sql
+    cfg = client.job_configs[0]
+    assert cfg.labels == {"release_copilot": "bq_cost"}
+    assert cfg.maximum_bytes_billed == C._FINDINGS_MAX_BYTES_BILLED
+
+
+def test_read_own_findings_table_keeps_the_run_ts_window_when_a_qhash_is_given(monkeypatch):
+    monkeypatch.setattr(C.settings, "bq_cost_dataset", "costs", raising=False)
+    client = _FakeClient(answers={"bq_cost_findings": []})
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    C._read_own_findings_table("abc123", runs=3)
+
+    sql = client.queries[0]
+    assert "run_ts > TIMESTAMP_SUB" in sql and "qhash = @qhash" in sql
+
+
+def test_scan_accounts_the_findings_read_in_its_own_query_budget(monkeypatch):
+    """C3: the findings read sat entirely outside the scan's Budget
+    (reserve()/record()) accounting, so report_cost_bytes/queries_run
+    understated what the scan actually read whenever memory-across-runs
+    (BQ_COST_DATASET) is on."""
+    monkeypatch.setattr(C.settings, "bq_cost_dataset", "costs", raising=False)
+    answers = _happy_answers(**{
+        "bq_cost_findings": {"rows": [
+            {"qhash": "abc123", "run_ts": "2026-08-01T00:00:00+00:00", "cost_before_bytes": 1 * C._GIB},
+        ], "total_bytes_processed": 12_345},
+    })
+    client = _FakeClient(answers=answers)
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    out = C.scan()
+
+    assert out["ok"] is True
+    assert out["queries_run"] == 8  # the usual 7 scan statements + this findings read
+    assert out["report_cost_bytes"] == 7 * 1000 + 12_345
+
+
+# --- C4: _split_table must not mangle a backtick-quoted table reference --------------
+
+def test_split_table_handles_a_console_style_single_backtick_wrapped_reference():
+    assert C._split_table("`myproj.analytics.events`") == ("myproj", "analytics", "events")
+
+
+def test_split_table_handles_each_part_individually_backtick_quoted():
+    """C4: '`proj`.`ds`.`tbl`' used to become ('proj`', '`ds`', '`tbl') —
+    .strip('`') only strips the two ends of the WHOLE string, leaving the
+    backtick right after 'proj' (and the one right before the final 'tbl')
+    in place — and that mangled tuple went straight into an f-string
+    building a real-run statement."""
+    assert C._split_table("`proj`.`ds`.`tbl`") == ("proj", "ds", "tbl")
+
+
+def test_split_table_still_handles_the_plain_unquoted_forms():
+    assert C._split_table("dataset.table") == (C._project(), "dataset", "table")
+    assert C._split_table("project.dataset.table") == ("project", "dataset", "table")
+
+
+def test_table_layout_accepts_a_per_part_backtick_quoted_reference(monkeypatch):
+    client = _FakeClient(answers={
+        "o_exp.option_value": [{
+            "table_name": "tbl", "ddl": "CREATE TABLE proj.ds.tbl (a INT64)\n",
+            "creation_time": None, "expiration_ts": None, "partition_expiration_days": None,
+            "partition_field": None, "clustering_columns": [], "columns": [{"name": "a", "type": "INT64"}],
+        }],
+        "total_rows, total_logical_bytes": [],
+        "partition_count": [],
+    })
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    result = C.table_layout("`proj`.`ds`.`tbl`")
+
+    assert result["ok"] is True and result["table"] == "proj.ds.tbl"
+
+
+# --- C5: project/dataset must be validated before reaching a REAL-run f-string -------
+
+def test_valid_bq_identifier_allows_bigquerys_own_characters():
+    assert C._valid_bq_identifier("my-project_1") is True
+    assert C._valid_bq_identifier("") is False
+
+
+def test_valid_bq_identifier_allows_at_most_one_colon_and_only_for_a_project():
+    assert C._valid_bq_identifier("myorg:my-project", allow_colon=True) is True
+    assert C._valid_bq_identifier("myorg:my-project", allow_colon=False) is False
+    assert C._valid_bq_identifier("a:b:c", allow_colon=True) is False
+
+
+def test_valid_bq_identifier_refuses_punctuation_a_backtick_above_all():
+    assert C._valid_bq_identifier("d`ataset") is False
+    assert C._valid_bq_identifier("d ataset") is False
+    assert C._valid_bq_identifier("d;DROP TABLE x") is False
+
+
+def test_split_table_refuses_a_backtick_in_the_dataset_before_it_reaches_sql():
+    """C5: _dataset_ref/_tables_legacy_ref f-string project/dataset UNESCAPED
+    into a statement that then executes for real — the table NAME is
+    parameterised, they are not. Refusing here on character set is the
+    designed defence; _split_table merely requiring 2-3 dot-separated parts
+    is not (a backtick contains no dot, so it survives that check today)."""
+    with pytest.raises(ValueError, match="invalid dataset"):
+        C._split_table("proj.d`ataset.tbl")
+
+
+def test_split_table_refuses_bad_characters_in_the_project():
+    with pytest.raises(ValueError, match="invalid project"):
+        C._split_table("pr`oj.ds.tbl")
+
+
+def test_table_layout_reports_an_invalid_identifier_as_a_clear_error_dict():
+    result = C.table_layout("proj.d`ataset.tbl")
+    assert result["ok"] is False and "invalid dataset" in result["error"]
+
+
+def test_prune_estimate_reports_an_invalid_identifier_as_a_clear_error_dict():
+    result = C.prune_estimate("pr`oj.ds.tbl", "col")
+    assert result["ok"] is False and "invalid project" in result["error"]
+
+
+# --- C1 (nit): scan()'s days/top coercion must never raise (model-driven input) ------
+
+def test_coerce_int_falls_back_to_the_default_on_bad_input():
+    assert C._coerce_int("not-a-number", 14) == 14
+    assert C._coerce_int(None, 14) == 14
+    assert C._coerce_int(0, 14) == 14
+    assert C._coerce_int("7", 14) == 7
+    assert C._coerce_int(7.9, 14) == 7
+
+
+def test_scan_coerces_non_integer_days_and_top_instead_of_raising(monkeypatch):
+    """C1: bq_cost_scan(days, top) is model-driven — a non-coercible value
+    from Gemini must degrade to the configured default, never raise out of a
+    function (scan()) the whole design relies on never raising."""
+    client = _FakeClient(answers=_happy_answers())
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    out = C.scan(days="not-a-number", top="also-not-a-number")
+
+    assert out["ok"] is True
+    assert out["days"] == C.settings.bq_cost_days
+    assert len(out["shapes"]) == 1
+
+
+# --- C6 (nit): _run_rows must fail loudly if a statement stops classifying as metadata
+
+def test_run_rows_refuses_a_non_metadata_statement_before_ever_issuing_it():
+    """C6: bq_guard.run would silently force a non-INFORMATION_SCHEMA
+    statement to a dry run, and .result() on a dry-run job returns an EMPTY
+    row iterator on the real client (not an error) — so a future bug in one
+    of this module's SQL builders would just make a section report "no
+    findings", with nothing to say why. _run_rows must catch that itself,
+    before ever reaching the client."""
+    client = _FakeClient(answers={"FROM orders": {"rows": [{"a": 1}]}})
+
+    with pytest.raises(AssertionError, match="INFORMATION_SCHEMA"):
+        C._run_rows(client, "SELECT * FROM orders", None)
+    assert client.queries == []  # refused up front — never even reached BigQuery

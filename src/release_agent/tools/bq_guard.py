@@ -23,9 +23,10 @@ literals are skipped so a quoted 'FROM' cannot fool it.
                    Every REAL run also gets maximum_bytes_billed capped at
                    _MAX_BYTES_BILLED (1 GiB) as a backstop, whatever the caller
                    passed in.
-    Budget(max_queries) -> refuses the (max+1)th statement in one scan; counts
-                           bytes processed so a report can state its own cost.
-                           A failed attempt still counts against max_queries (at
+    Budget(max_queries) -> refuses the (max+1)th statement in one scan BEFORE
+                           it ever reaches the client; counts bytes processed
+                           afterwards so a report can state its own cost. A
+                           failed attempt still counts against max_queries (at
                            0 bytes) — a denied read must not be retryable past
                            the cap.
 """
@@ -45,20 +46,36 @@ _MAX_BYTES_BILLED = 2**30
 
 
 class Budget:
-    """Per-scan cap: INFORMATION_SCHEMA reads bill a 10 MB minimum each."""
+    """Per-scan cap on issued statements (INFORMATION_SCHEMA reads bill a
+    10 MB minimum each), plus a running total of bytes processed.
+
+    Accounting is split across a statement's own attempt (see run()):
+    reserve() claims one of ``max_queries`` slots and refuses the (max+1)th
+    BEFORE the statement is issued — BigQuery is never even asked for a
+    query the budget was always going to refuse. record() adds the bytes of
+    a statement that then actually completed. A slot claimed by reserve() is
+    never given back: even when the statement then FAILS (e.g. a permission
+    error), it stays spent at 0 bytes — record() is simply never reached —
+    so a denied read cannot be retried past the cap.
+    """
 
     def __init__(self, max_queries: int) -> None:
         self.max_queries = int(max_queries)
         self.queries = 0
         self.bytes = 0
 
-    def spend(self, bytes_processed: int) -> None:
+    def reserve(self) -> None:
+        """Claim a slot BEFORE the statement reaches the client."""
         if self.queries >= self.max_queries:
             raise GuardRefused(
                 f"BQ cost scan budget exhausted ({self.max_queries} statements) — "
                 "refusing to issue another query this run."
             )
         self.queries += 1
+
+    def record(self, bytes_processed: int) -> None:
+        """Add a completed statement's bytes — only ever called after the
+        reserve() that claimed its slot."""
         self.bytes += int(bytes_processed or 0)
 
 
@@ -72,14 +89,49 @@ def _is_word(ch: str) -> bool:
     return ch in _WORD_CHARS
 
 
+def _literal_open(sql: str, i: int) -> tuple[int, str, bool, bool] | None:
+    """Whether ``sql[i:]`` opens a string literal — None when it does not.
+
+    Otherwise ``(prefix_len, quote, is_raw, tripled)``: prefix_len is 0-2, for
+    an optional r/R and/or b/B immediately before the quote (BigQuery's raw
+    and/or bytes literal prefixes, in either order) — counted only with NO
+    space before the quote, exactly BigQuery's own rule, so e.g. a column
+    named ``r`` followed by its own separate string literal is never mistaken
+    for a raw-string prefix. is_raw is True when that prefix contains r/R —
+    inside a raw literal a backslash is ordinary content, not an escape, so
+    it can never hide the literal's true end (or, worse, run past it into
+    the rest of the statement). tripled is True for ``'''``/``\"\"\"``,
+    which only a run of three consecutive matching quote characters closes.
+    """
+    n = len(sql)
+    prefix_len = 0
+    if i < n and sql[i] in "rRbB":
+        prefix_len = 1
+        if i + 1 < n and sql[i + 1] in "rRbB" and sql[i + 1].lower() != sql[i].lower():
+            prefix_len = 2
+    q = i + prefix_len
+    if q >= n or sql[q] not in ("'", '"'):
+        return None
+    is_raw = "r" in sql[i:q].lower()
+    quote = sql[q]
+    tripled = sql[q:q + 3] == quote * 3
+    return prefix_len, quote, is_raw, tripled
+
+
 def tokens(sql: str) -> list[str]:
     """Words and punctuation of ``sql`` with string literals removed. Pure.
 
     Single/double-quoted spans are string literals and are dropped entirely —
     contributing NO token — so a quoted 'FROM' or 'SELECT' cannot masquerade as
-    SQL. Backtick-quoted spans are BigQuery IDENTIFIERS, not literals, and are
-    kept — chained together with any surrounding ``.name`` parts (plain or
-    backtick-quoted) into a single token, so both
+    SQL. An r/R (optionally with b/B) prefix makes one a RAW literal, where a
+    backslash is ordinary content, not an escape (see ``_literal_open``) — a
+    backslash right before the closing quote must still end the literal
+    there, never read past it into whatever follows. A triple-quoted span
+    (``'''`` / ``\"\"\"``) ends only at three consecutive matching quote
+    characters, so a lone or doubled one inside it is just content, not a
+    premature close. Backtick-quoted spans are BigQuery IDENTIFIERS, not
+    literals, and are kept — chained together with any surrounding ``.name``
+    parts (plain or backtick-quoted) into a single token, so both
     `` `region-us`.INFORMATION_SCHEMA.JOBS `` and a fully backtick-quoted
     `` `project.dataset.INFORMATION_SCHEMA.JOBS` `` read as ONE identifier token
     that ``classify`` can test whole for "contains INFORMATION_SCHEMA". Line
@@ -100,15 +152,29 @@ def tokens(sql: str) -> list[str]:
             j = sql.find("*/", i + 2)
             i = n if j == -1 else j + 2
             continue
-        if ch in ("'", '"'):
-            quote = ch
-            i += 1
+        lit = _literal_open(sql, i)
+        if lit is not None:
+            prefix_len, quote, is_raw, tripled = lit
+            i += prefix_len
+            width = 3 if tripled else 1
+            closer = quote * width
+            i += width
             while i < n:
-                if sql[i] == "\\" and i + 1 < n:
+                if width == 3:
+                    # Only three consecutive matching quotes close a tripled
+                    # literal — a lone or doubled one inside is just content,
+                    # never the premature close that fooled the doubled-quote
+                    # rule below (that rule is for a NON-tripled literal only).
+                    if sql[i:i + width] == closer:
+                        i += width
+                        break
+                    i += 1
+                    continue
+                if not is_raw and sql[i] == "\\" and i + 1 < n:
                     i += 2
                     continue
                 if sql[i] == quote:
-                    if i + 1 < n and sql[i + 1] == quote:  # doubled-quote escape
+                    if not is_raw and i + 1 < n and sql[i + 1] == quote:  # doubled-quote escape
                         i += 2
                         continue
                     i += 1
@@ -162,6 +228,37 @@ def _is_metadata_ref(token: str) -> bool:
     return any(seg.upper() == "INFORMATION_SCHEMA" for seg in segments) or segments[-1].upper() == "__TABLES__"
 
 
+def _skip_parens(toks: list[str], open_idx: int) -> int:
+    """``toks[open_idx]`` is the ``(`` of a subquery or an UNNEST argument
+    list — returns the index just past its matching ``)``, so the
+    comma-list walk in classify() never mistakes a comma INSIDE it (a
+    subquery's own SELECT list, or a multi-argument UNNEST) for one
+    separating this FROM/JOIN's own targets. Counted on ``(``/``)`` TOKENS
+    only, which is exact: tokens() has already dropped every string literal,
+    so no stray paren from inside one can throw the count off.
+    """
+    depth = 0
+    i, n = open_idx, len(toks)
+    while i < n:
+        if toks[i] == "(":
+            depth += 1
+        elif toks[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return i  # unbalanced input (should not happen for real SQL) — stop at the end
+
+
+def _could_be_alias(token: str) -> bool:
+    """A bare alias (``t`` in ``FROM x t``) reads as one identifier token —
+    the same shape as a table name — so this only gates a look-ahead-by-one
+    in classify() before deciding whether a FROM/JOIN's comma list
+    continues; it is never used to decide metadata-ness itself.
+    """
+    return bool(token) and (token[0] == "`" or _is_word(token[0]))
+
+
 def classify(sql: str) -> str:
     """'information_schema' when every FROM/JOIN target is an INFORMATION_SCHEMA
     view (or ``__TABLES__``), 'select' for any other single SELECT/WITH, 'refused'
@@ -191,20 +288,48 @@ def classify(sql: str) -> str:
         return "refused"  # a second statement follows the first's terminator
     saw_from_or_join = False
     all_metadata = True
+    n = len(toks)
     for i, t in enumerate(toks):
-        if t.upper() in ("FROM", "JOIN"):
-            saw_from_or_join = True
-            nxt = toks[i + 1] if i + 1 < len(toks) else ""
-            if nxt == "(" or nxt.upper() == "UNNEST":
-                # A subquery, or UNNEST of an in-scope array expression (e.g.
-                # ``FROM UNNEST(labels) AS l`` over a column already read from
-                # a real FROM elsewhere in the statement) — UNNEST's argument
-                # is an expression, never an external table name, so this can
-                # never smuggle in a real-table read. Its own FROM/JOIN (if
-                # the expression were itself a subquery) is checked in turn.
+        if t.upper() not in ("FROM", "JOIN"):
+            continue
+        saw_from_or_join = True
+        # An implicit cross join is a COMMA-separated list of targets on one
+        # FROM/JOIN (bq_cost.py itself relies on exactly this shape —
+        # ``FROM <IS view> AS j, UNNEST(j.referenced_tables) AS rt`` — so the
+        # comma form must classify the same as a lone target). Every entry
+        # after the first used to be invisible to this check; walk the whole
+        # list here, the same test applied to each.
+        j = i + 1
+        while True:
+            target = toks[j] if j < n else ""
+            if target == "(":
+                j = _skip_parens(toks, j)
+            elif target.upper() == "UNNEST":
+                # UNNEST's argument is an in-scope array expression (e.g.
+                # ``FROM UNNEST(labels) AS l`` over a column already read
+                # from a real FROM elsewhere in the statement), never an
+                # external table name — skip its own parenthesised argument
+                # without a metadata test; its own FROM/JOIN (if the
+                # expression were itself a subquery) is checked in turn.
+                paren = j + 1
+                j = _skip_parens(toks, paren) if paren < n and toks[paren] == "(" else j + 1
+            else:
+                if not _is_metadata_ref(target):
+                    all_metadata = False
+                j += 1
+            # An alias (``AS x`` or a bare ``x``) may sit between a target
+            # and the comma that continues this list — skip AT MOST one such
+            # alias before checking for that comma, so a real alias is never
+            # mistaken for another table and a real next table is never
+            # skipped over as if it merely were one.
+            if j < n and toks[j].upper() == "AS":
+                j += 2
+            elif j < n and _could_be_alias(toks[j]):
+                j += 1
+            if j < n and toks[j] == ",":
+                j += 1
                 continue
-            if not _is_metadata_ref(nxt):
-                all_metadata = False
+            break
     return "information_schema" if saw_from_or_join and all_metadata else "select"
 
 
@@ -218,10 +343,14 @@ def run(client: Any, sql: str, *, budget: Budget | None = None, job_config: Any 
     pass its own ``dry_run=True`` config for a statement that classifies as
     'information_schema' — that must still never call ``.result()`` on it.
 
-    A failed attempt (BigQuery itself raised — e.g. a permission error) still
-    counts against ``budget`` at 0 bytes: it was a statement issued, not one
-    refused up front, and a caller retrying a denied read must not be able to
-    run past the scan's own cap.
+    ``budget`` (if given) reserves its slot BEFORE the statement reaches the
+    client and records bytes only after it actually completes — see Budget.
+    There is deliberately no try/except around the client call: whatever
+    BigQuery itself raises (e.g. a permission error) must propagate as
+    itself, since a caller (bq_cost.hint_for) reads that text to explain the
+    failure. The reserved slot already stands at 0 bytes for a failed
+    attempt with no further action needed here, so a caller retrying a
+    denied read still cannot run past the scan's own cap.
     """
     kind = classify(sql)
     if kind == "refused":
@@ -244,16 +373,11 @@ def run(client: Any, sql: str, *, budget: Budget | None = None, job_config: Any 
     # so the tool's own footprint is identifiable in JOBS like anyone else's.
     cfg = cfg if cfg is not None else bigquery.QueryJobConfig()
     cfg.labels = {**(cfg.labels or {}), "release_copilot": "bq_cost"}
-    try:
-        job = client.query(sql, job_config=cfg)
-        if not is_dry:  # dry-run jobs have no rows to wait for
-            job.result()
-    except GuardRefused:
-        raise
-    except Exception:
-        if budget is not None:
-            budget.spend(0)
-        raise
     if budget is not None:
-        budget.spend(getattr(job, "total_bytes_processed", None) or 0)
+        budget.reserve()
+    job = client.query(sql, job_config=cfg)
+    if not is_dry:  # dry-run jobs have no rows to wait for
+        job.result()
+    if budget is not None:
+        budget.record(getattr(job, "total_bytes_processed", None) or 0)
     return job

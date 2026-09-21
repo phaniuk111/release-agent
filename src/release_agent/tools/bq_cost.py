@@ -127,9 +127,21 @@ def _run_rows(client: Any, sql: str, budget: "bq_guard.Budget | None",
               *, params: list | None = None) -> list[dict[str, Any]]:
     """bq_guard.run + normalise the result into plain dicts. Every caller here
     wants real INFORMATION_SCHEMA/``__TABLES__`` rows back — a caller that wants
-    a dry run uses ``dry_run()`` instead, never this."""
+    a dry run uses ``dry_run()`` instead, never this.
+
+    Asserted, not just assumed: if a future change to one of this module's SQL
+    builders ever stopped its statement classifying as a metadata read,
+    bq_guard.run would silently force it to a DRY run rather than refuse
+    outright — and on the real client, ``.result()`` on a dry-run job returns
+    an EMPTY row iterator, not an error, so the section would just report "no
+    findings" with nothing to say why. Checked here, before issuing anything,
+    so that failure mode is loud instead.
+    """
     from google.cloud import bigquery
 
+    assert bq_guard.classify(sql) == "information_schema", (
+        f"_run_rows expects a real INFORMATION_SCHEMA/__TABLES__ read; got: {sql[:200]!r}"
+    )
     cfg = bigquery.QueryJobConfig(query_parameters=params) if params else None
     job = bq_guard.run(client, sql, budget=budget, job_config=cfg)
     return [dict(r) for r in job.result()]
@@ -154,17 +166,68 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
 
+# Project/dataset characters BigQuery itself allows — letters, digits,
+# underscore, dash; a project id may also carry one colon (the legacy
+# "domain:project" form). This is what stands between a chat-supplied
+# project/dataset and the f-strings in _dataset_ref/_tables_legacy_ref
+# (their callers' docstrings explain why those two are unparameterised) —
+# anything else, a backtick above all, is refused in _split_table before it
+# ever reaches one of those f-strings.
+_IDENT_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+)
+
+
+def _valid_bq_identifier(value: str, *, allow_colon: bool = False) -> bool:
+    """PURE: True for a project/dataset id made only of BigQuery's own
+    allowed characters. ``allow_colon`` permits exactly one colon splitting
+    two otherwise-valid segments (a project's legacy "domain:project" form);
+    a dataset id never gets one."""
+    if not value:
+        return False
+    if not allow_colon:
+        return all(c in _IDENT_CHARS for c in value)
+    segments = value.split(":")
+    if len(segments) > 2:
+        return False
+    return all(seg and all(c in _IDENT_CHARS for c in seg) for seg in segments)
+
+
 def _split_table(table: str) -> tuple[str, str, str]:
-    """'project.dataset.table' or 'dataset.table' (project defaults)."""
-    parts = [p for p in str(table or "").strip().strip("`").split(".") if p]
+    """'project.dataset.table' or 'dataset.table' (project defaults). Each
+    part may be backtick-quoted on its own — BigQuery's console shows both
+    ``\\`project\\`.\\`dataset\\`.\\`table\\`` and a single
+    ``\\`project.dataset.table\\`` — so backticks are stripped PER PART, never
+    just off the two ends of the whole string (that left an interior
+    backtick, e.g. from ``\\`proj\\`.\\`ds\\`.\\`tbl\\``, sitting inside the
+    'project' part unstripped). project/dataset are then validated against
+    BigQuery's own identifier characters — the table NAME is safe because
+    every query below binds it as a parameter, but project/dataset are
+    f-string-interpolated straight into real-run SQL (_dataset_ref /
+    _tables_legacy_ref), so a caller-supplied value with, say, a backtick in
+    it must be refused HERE rather than merely happening to fail later
+    because this function also requires exactly 2-3 dot-separated parts —
+    that requirement is incidental, not a designed defence.
+    """
+    text = str(table or "").strip()
+    if text.startswith("`") and text.endswith("`") and text.count("`") == 2:
+        text = text[1:-1]  # one pair of backticks around the WHOLE reference
+    parts = [p.strip("`").strip() for p in text.split(".") if p.strip("`").strip()]
     if len(parts) == 3:
-        return parts[0], parts[1], parts[2]
-    if len(parts) == 2:
+        project, dataset, table_name = parts[0], parts[1], parts[2]
+    elif len(parts) == 2:
         project = _project()
         if not project:
             raise ValueError("no default project configured — pass 'project.dataset.table'.")
-        return project, parts[0], parts[1]
-    raise ValueError(f"table must be 'dataset.table' or 'project.dataset.table', got {table!r}")
+        dataset, table_name = parts[0], parts[1]
+    else:
+        raise ValueError(f"table must be 'dataset.table' or 'project.dataset.table', got {table!r}")
+    if not _valid_bq_identifier(project, allow_colon=True):
+        raise ValueError(f"invalid project id {project!r} — letters, digits, underscore, dash "
+                          "(and one colon) only.")
+    if not _valid_bq_identifier(dataset):
+        raise ValueError(f"invalid dataset id {dataset!r} — letters, digits, underscore, dash only.")
+    return project, dataset, table_name
 
 
 def _referenced_table_strings(structs: list[dict[str, Any]] | None) -> list[str]:
@@ -354,9 +417,21 @@ GROUP BY error_code
 
 # ----- scan: assembly ----------------------------------------------------------
 
+def _reads_info(table_str: str, reads_by_table: dict[str, dict[str, Any]],
+                 reads_known: bool) -> dict[str, Any]:
+    """{"reads", "last_read"} for one table. When the table-reads probe
+    itself failed (``reads_known`` False), the answer is UNKNOWN — never a
+    fabricated zero: a table simply absent from ``reads_by_table`` because
+    the query never ran must not look identical to one the query genuinely
+    found zero reads for."""
+    if not reads_known:
+        return {"reads": None, "last_read": None}
+    return reads_by_table.get(table_str, {"reads": 0, "last_read": None})
+
+
 def _storage_entries(table_str: str, gb: float, physical_gb: float, active_gb: float | None,
                       expiration_ts: Any, last_modified: Any, partitioned: bool,
-                      reads: int, last_read: Any) -> list[dict[str, Any]]:
+                      reads: int | None, last_read: Any, reads_known: bool) -> list[dict[str, Any]]:
     approx_usd_month = round((active_gb if active_gb is not None else gb) * _STORAGE_USD_PER_GIB_MONTH, 2)
     common = {"table": table_str, "gb": gb, "physical_gb": physical_gb,
               "expiration": _fmt_ts(expiration_ts), "last_modified": _fmt_ts(last_modified),
@@ -364,15 +439,22 @@ def _storage_entries(table_str: str, gb: float, physical_gb: float, active_gb: f
     entries = []
     if gb >= 1 and not expiration_ts:
         entries.append({**common, "kind": "no_expiration"})
-    if gb >= 1 and reads == 0:
+    # Both kinds below make a claim ABOUT the read count (never read; read
+    # often) — a claim this module cannot make when the read count itself is
+    # unknown (the table-reads query failed, typically the exact partial
+    # grant — jobUser + metadataViewer but no resourceViewer — hint_for()
+    # exists to describe). Reporting "unread" from an unknown count is
+    # exactly the bug this guards: a permissions gap must never come out the
+    # other end as "delete me" advice on every large table.
+    if reads_known and gb >= 1 and reads == 0:
         entries.append({**common, "kind": "unread"})
-    if gb >= 10 and not partitioned and reads >= 5:
+    if reads_known and gb >= 10 and not partitioned and reads >= 5:
         entries.append({**common, "kind": "large_unpartitioned"})
     return entries
 
 
-def _storage_findings_from_fast(rows: list[dict[str, Any]],
-                                 reads_by_table: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _storage_findings_from_fast(rows: list[dict[str, Any]], reads_by_table: dict[str, dict[str, Any]],
+                                 reads_known: bool) -> list[dict[str, Any]]:
     out = []
     for r in rows:
         table_str = f'{_project()}.{r.get("table_schema")}.{r.get("table_name")}'
@@ -383,15 +465,15 @@ def _storage_findings_from_fast(rows: list[dict[str, Any]],
         active_gb = (round((r.get("active_logical_bytes") or 0) / _GIB, 2)
                      if r.get("active_logical_bytes") is not None else None)
         partitioned = "PARTITION BY" in (r.get("ddl") or "").upper()
-        info = reads_by_table.get(table_str, {"reads": 0, "last_read": None})
+        info = _reads_info(table_str, reads_by_table, reads_known)
         out.extend(_storage_entries(table_str, gb, physical_gb, active_gb, r.get("expiration_ts"),
                                      r.get("storage_last_modified_time"), partitioned,
-                                     info["reads"], info["last_read"]))
+                                     info["reads"], info["last_read"], reads_known))
     return out
 
 
-def _storage_findings_from_fallback(rows: list[dict[str, Any]],
-                                     reads_by_table: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _storage_findings_from_fallback(rows: list[dict[str, Any]], reads_by_table: dict[str, dict[str, Any]],
+                                     reads_known: bool) -> list[dict[str, Any]]:
     out = []
     for r in rows:
         gb = round((r.get("size_bytes") or 0) / _GIB, 2)
@@ -399,24 +481,27 @@ def _storage_findings_from_fallback(rows: list[dict[str, Any]],
             continue
         table_str = f'{_project()}.{r.get("_dataset")}.{r.get("table_id")}'
         partitioned = bool(r.get("partition_col"))
-        info = reads_by_table.get(table_str, {"reads": 0, "last_read": None})
+        info = _reads_info(table_str, reads_by_table, reads_known)
         # __TABLES__ has no separate physical-bytes figure; logical size stands
         # in for both — noted, not measured, hence no distinct "physical_gb".
         out.extend(_storage_entries(table_str, gb, gb, gb, r.get("expiration_ts"),
                                      r.get("last_modified_time"), partitioned,
-                                     info["reads"], info["last_read"]))
+                                     info["reads"], info["last_read"], reads_known))
     return out
 
 
 def _scan_storage(client: Any, budget: "bq_guard.Budget", project: str,
-                   reads_by_table: dict[str, dict[str, Any]]):
+                   reads_by_table: dict[str, dict[str, Any]], reads_known: bool):
     """-> (storage_list, source, error, hint). Tries the fast region-wide read
     once; on ANY failure (expected — see module docstring) falls back to one
     statement per visible, non-hidden dataset, capped at bq_cost_max_datasets
-    and by the shared scan budget."""
+    and by the shared scan budget. ``reads_known`` is False when the
+    table-reads probe itself failed — every entry then carries ``reads: None``
+    and neither "unread" nor "large_unpartitioned" is emitted (see
+    _storage_entries)."""
     try:
         rows = _run_rows(client, _storage_fast_sql(), budget, params=[_int_param("min_bytes", _GIB)])
-        return _storage_findings_from_fast(rows, reads_by_table), "table_storage", None, None
+        return _storage_findings_from_fast(rows, reads_by_table, reads_known), "table_storage", None, None
     except bq_guard.GuardRefused:
         raise
     except Exception:  # noqa: BLE001 — expected in any shared project, fall back
@@ -442,7 +527,7 @@ def _scan_storage(client: Any, budget: "bq_guard.Budget", project: str,
             row = dict(r)
             row["_dataset"] = ds
             rows.append(row)
-    storage = _storage_findings_from_fallback(rows, reads_by_table)
+    storage = _storage_findings_from_fallback(rows, reads_by_table, reads_known)
     if partial:
         return (storage, "per_dataset",
                 "the query budget ran out partway through the per-dataset storage fallback "
@@ -493,6 +578,22 @@ def _scan_writes(client: Any, budget: "bq_guard.Budget", days: int):
     return writes, None, None
 
 
+def _coerce_int(value: Any, default: int) -> int:
+    """int(value), or ``default`` when value is falsy or cannot be coerced.
+
+    scan()'s days/top are model-driven (an ADK tool call) — a non-integer
+    argument from Gemini (a word, a decimal-looking string, the wrong type
+    entirely) must degrade to the configured default, never raise out of a
+    function the whole design relies on never raising.
+    """
+    if not value:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
     """The ranked report. Never raises.
 
@@ -504,21 +605,27 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
                  "sql_preview", "sample_job", "referenced_tables": [...], "insights": [...],
                  "last_run"}],            # ordered by billing model, top N
      "storage": [{"table", "gb", "physical_gb", "expiration", "last_modified",
-                  "last_read", "reads", "kind": "no_expiration|unread|large_unpartitioned",
-                  "approx_usd_month"}],
+                  "last_read", "reads": int | None, "kind": "no_expiration|unread|large_unpartitioned",
+                  "approx_usd_month"}],     # "reads" is None, and "unread"/"large_unpartitioned"
+                                            # never emitted, on any table when the read count
+                                            # itself is unknown — see "storage_reads_error" below
      "storage_source": "table_storage" | "per_dataset" | None,
      "writes":  [{"table", "source": "write_api|streaming", "requests", "rows",
                   "rows_per_request", "input_gb", "errors", "kind": "unbatched|errors"}],
      "history": {"adoption": [...], "adopted", "still_open", "new", "gone"} | None,
      "hint": str | None,                  # e.g. only your own jobs are visible
      "storage_error"/"storage_hint", "writes_error"/"writes_hint": present only
-     when that section could not be completed}
+     when that section could not be completed,
+     "storage_reads_error"/"storage_reads_hint": present only when the table
+     read-COUNTS probe itself failed — the storage section otherwise still
+     completed, but every entry's "reads" is None (an unknown count must
+     never be reported as a verified zero — see _storage_entries)}
     or {"ok": False, "disabled": True, "error"} / {"ok": False, "error", "hint"}.
     """
     if not enabled():
         return _disabled()
-    days = int(days) if days else int(settings.bq_cost_days)
-    top = int(top) if top else int(settings.bq_cost_top)
+    days = _coerce_int(days, settings.bq_cost_days)
+    top = _coerce_int(top, settings.bq_cost_top)
     region = settings.bq_cost_region
     project = _project()
     budget = bq_guard.Budget(settings.bq_cost_max_queries)
@@ -532,7 +639,11 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         error = str(e)
         return {"ok": False, "error": error, "hint": hint_for(error)}
-    shapes = rank_shapes(shape_rows, settings.bq_cost_billing, top)
+    try:
+        shapes = rank_shapes(shape_rows, settings.bq_cost_billing, top)
+    except Exception as e:  # noqa: BLE001 — ranking must not be able to raise out of scan() either
+        error = str(e)
+        return {"ok": False, "error": error, "hint": hint_for(error)}
 
     try:
         totals_rows = _run_rows(client, _totals_sql(), budget, params=[_int_param("days", days)])
@@ -563,8 +674,12 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
 
     try:
         read_rows = _run_rows(client, _table_reads_sql(), budget, params=[_int_param("days", days)])
-    except Exception:  # noqa: BLE001
-        read_rows = []
+        reads_known, reads_error = True, None
+    except Exception as e:  # noqa: BLE001 — e.g. exactly the jobUser+metadataViewer-but-not-
+        # resourceViewer partial grant hint_for() describes: an unknown read count must never
+        # be reported as a verified zero (see _storage_entries) — that turned a permissions gap
+        # into "delete me" advice on every large table.
+        read_rows, reads_known, reads_error = [], False, str(e)
     reads_by_table: dict[str, dict[str, Any]] = {}
     for r in read_rows:
         key = f'{r.get("project_id")}.{r.get("dataset_id")}.{r.get("table_id")}'
@@ -572,7 +687,7 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
 
     try:
         storage, storage_source, storage_error, storage_hint = _scan_storage(
-            client, budget, project, reads_by_table)
+            client, budget, project, reads_by_table, reads_known)
     except bq_guard.GuardRefused as e:
         storage, storage_source, storage_error = [], None, str(e)
         storage_hint = "the scan's own query budget (BQ_COST_MAX_QUERIES) ran out before storage could be checked."
@@ -592,7 +707,7 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
     history = None
     if settings.bq_cost_dataset:
         try:
-            prior_rows = _read_own_findings_table(None, runs=20)
+            prior_rows = _read_own_findings_table(None, runs=20, budget=budget)
             adoption_list = adoption(prior_rows, shapes)
             counts = {s: sum(1 for a in adoption_list if a["status"] == s)
                       for s in ("adopted", "still_open", "new", "gone")}
@@ -619,6 +734,9 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
     }
     if storage_error:
         out["storage_error"], out["storage_hint"] = storage_error, storage_hint
+    if not reads_known:
+        out["storage_reads_error"] = reads_error
+        out["storage_reads_hint"] = hint_for(reads_error)
     if writes_error:
         out["writes_error"], out["writes_hint"] = writes_error, writes_hint
     return out
@@ -1122,22 +1240,50 @@ def record_findings(report: dict[str, Any], proposals: list[dict[str, Any]] | No
         return {"ok": False, "warning": f"bq_cost_findings unavailable: {e}"}
 
 
-def _read_own_findings_table(qhash: str | None, runs: int) -> list[dict[str, Any]]:
+# Neither caller (scan()'s own history lookup, or a person asking
+# bq_findings for a handful of past runs) ever needs more than a few dozen
+# rows back — this is a generous, FIXED backstop, not a cadence-aware one,
+# whose only job is to stop this being a full-history scan of a
+# day-partitioned table on every call (LIMIT alone does not prune
+# partitions). It comfortably covers even a daily cron for well over a year.
+_FINDINGS_LOOKBACK_DAYS = 400
+
+# The same real-run backstop bq_guard.run applies to every other statement
+# in this module — duplicated as a literal (not imported from bq_guard)
+# because this one query deliberately bypasses bq_guard.run itself (see the
+# function's own docstring below), and bq_guard's own constant is private.
+_FINDINGS_MAX_BYTES_BILLED = 2**30
+
+
+def _read_own_findings_table(qhash: str | None, runs: int,
+                              budget: "bq_guard.Budget | None" = None) -> list[dict[str, Any]]:
     """Read bq_cost_findings — and ONLY bq_cost_findings — directly, bypassing
     bq_guard: a plain SELECT on the tool's own append-only table is not an
     INFORMATION_SCHEMA/``__TABLES__`` read, so the guard would (correctly, for
     any OTHER table) force it to a dry run, which returns no rows at all. This
     is the one place in the module that queries an ordinary table, and it is
     hardcoded to this one table name — never anything caller-supplied.
+
+    Bypassing bq_guard.run means its protections are applied BY HAND here
+    instead, so this read is held to the same standard as everything else in
+    the module: the ``release_copilot=bq_cost`` label (so this read excludes
+    itself from its own "top query shapes" next run, exactly like every
+    statement bq_guard.run issues — see _shapes_sql/_totals_sql/_table_reads_sql),
+    a maximum_bytes_billed backstop, a run_ts lookback so LIMIT is not the
+    only thing bounding the scan of a day-partitioned table (LIMIT reduces
+    rows RETURNED, never bytes SCANNED), and — when the caller is itself
+    inside a scan() — that scan's own query budget, so this read's cost is
+    part of the ``report_cost_bytes`` scan() states about itself.
     """
     from google.cloud import bigquery
 
     client = _get_client()
     table_id = f"{_project()}.{settings.bq_cost_dataset}.{settings.bq_cost_findings_table}"
-    sql = f"SELECT * FROM `{table_id}` "
-    params = []
+    sql = (f"SELECT * FROM `{table_id}` "
+           "WHERE run_ts > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY) ")
+    params = [bigquery.ScalarQueryParameter("lookback_days", "INT64", _FINDINGS_LOOKBACK_DAYS)]
     if qhash:
-        sql += "WHERE qhash = @qhash "
+        sql += "AND qhash = @qhash "
         params.append(bigquery.ScalarQueryParameter("qhash", "STRING", qhash))
     sql += "ORDER BY run_ts DESC LIMIT @row_limit"
     # qhash given: "the last N runs for A hash" -> N rows. qhash absent: "all
@@ -1145,9 +1291,20 @@ def _read_own_findings_table(qhash: str | None, runs: int) -> list[dict[str, Any
     # a few hundred shapes/storage/write findings combined).
     row_limit = int(runs) if qhash else int(runs) * 200
     params.append(bigquery.ScalarQueryParameter("row_limit", "INT64", row_limit))
-    job = client.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params))
+    cfg = bigquery.QueryJobConfig(query_parameters=params,
+                                   maximum_bytes_billed=_FINDINGS_MAX_BYTES_BILLED,
+                                   labels={"release_copilot": "bq_cost"})
+    # Same reserve-before-issue, record-after-complete discipline bq_guard.run
+    # itself uses (see Budget) — applied by hand because this one query
+    # deliberately bypasses bq_guard.run.
+    if budget is not None:
+        budget.reserve()
+    job = client.query(sql, job_config=cfg)
+    rows = list(job.result())
+    if budget is not None:
+        budget.record(getattr(job, "total_bytes_processed", None) or 0)
     out = []
-    for r in job.result():
+    for r in rows:
         row = dict(r)
         ts = row.get("run_ts")
         if hasattr(ts, "isoformat"):

@@ -28,6 +28,28 @@ def test_tokens_drop_comments_like_whitespace():
     assert G.tokens("SELECT /* FROM x */ 1") == ["SELECT", "1"]
 
 
+def test_tokens_a_raw_string_ends_at_the_first_quote_whatever_precedes_it():
+    """B2: a backslash inside r'...'/rb'...'/br'...' etc. is ordinary content,
+    not an escape — the old scanner treated it as one unconditionally and
+    read straight past the closing quote into the rest of the statement."""
+    assert G.tokens("SELECT r'\\' AS x") == ["SELECT", "AS", "x"]
+    assert G.tokens('SELECT R"\\" AS x') == ["SELECT", "AS", "x"]
+    assert G.tokens("SELECT rb'\\' AS x") == ["SELECT", "AS", "x"]
+    assert G.tokens("SELECT Br'\\' AS x") == ["SELECT", "AS", "x"]
+    # a bare identifier that merely starts with r/b is untouched
+    assert G.tokens("SELECT region, budget FROM t") == ["SELECT", "region", ",", "budget", "FROM", "t"]
+
+
+def test_tokens_handle_triple_quoted_strings_explicitly():
+    """B2: only three consecutive matching quote characters close a triple-
+    quoted literal — a lone or doubled one inside is just content. The old
+    scanner had no explicit triple-quote handling and fell through to the
+    doubled-quote-escape rule, which mistakes a LONE embedded quote for the
+    literal's end and leaks whatever follows as fake tokens."""
+    assert G.tokens("SELECT '''it's a test''' AS x") == ["SELECT", "AS", "x"]
+    assert G.tokens('SELECT """she said "hi""" AS x') == ["SELECT", "AS", "x"]
+
+
 # --- classify() -----------------------------------------------------------------
 
 def test_classify_true_for_region_qualified_information_schema():
@@ -65,6 +87,56 @@ def test_classify_from_unnest_is_fine_like_a_subquery():
     # let a genuine FROM elsewhere in the statement off the hook.
     mixed = "SELECT * FROM mydataset.mytable, UNNEST(tags) AS t"
     assert G.classify(mixed) == "select"
+
+
+def test_classify_checks_every_table_in_a_comma_separated_from_not_just_the_first():
+    """B1: an implicit cross join lists more than one table after a single
+    FROM/JOIN — the old loop only ever inspected the token right after
+    FROM/JOIN, so every table after the first was invisible to it and this
+    wrongly classified as information_schema (safe to run for real)."""
+    assert G.classify(
+        "SELECT * FROM `region-us`.INFORMATION_SCHEMA.JOBS, proj.ds.secret_table"
+    ) == "select"
+    assert G.classify(
+        "SELECT * FROM `region-us`.INFORMATION_SCHEMA.JOBS a, "
+        "`region-us`.INFORMATION_SCHEMA.TABLES b, p.d.secret c"
+    ) == "select"
+
+
+def test_classify_an_alias_between_a_table_and_a_comma_is_not_mistaken_for_another_table():
+    """The comma form is legitimate — bq_cost.py's own
+    ``FROM ... AS j, UNNEST(j.referenced_tables) AS rt`` — so a real alias
+    right before the comma must not itself be tested as a table, and the
+    genuine next table must still be found and tested."""
+    assert G.classify(
+        "SELECT * FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT AS j, "
+        "UNNEST(j.referenced_tables) AS rt"
+    ) == "information_schema"
+    assert G.classify(
+        "SELECT * FROM `region-us`.INFORMATION_SCHEMA.JOBS a, "
+        "`region-us`.INFORMATION_SCHEMA.TABLES b"
+    ) == "information_schema"  # bare (no AS) aliases on both sides of the comma
+
+
+def test_classify_a_raw_string_does_not_hide_a_trailing_real_table():
+    """B2: BigQuery raw strings (r'...') do not treat backslash as an escape.
+    The old scanner did, so it read past the literal's true end, hid the
+    trailing UNION ALL over a real table, and wrongly classified this as
+    information_schema (safe to run for real)."""
+    sql = ("SELECT * FROM `region-us`.INFORMATION_SCHEMA.JOBS WHERE a = r'\\' AND b = 'x' "
+           "UNION ALL SELECT * FROM proj.ds.secret_table")
+    assert G.classify(sql) != "information_schema"
+
+
+def test_classify_a_triple_quoted_string_does_not_hide_a_trailing_real_table():
+    """B2: a lone quote embedded in a triple-quoted string is just content —
+    only three consecutive matching quotes close it. The old scanner relied
+    on the doubled-quote-escape rule alone, which mistook this lone quote for
+    the literal's end and, past it, hid the trailing UNION ALL over a real
+    table."""
+    sql = ("SELECT * FROM `region-us`.INFORMATION_SCHEMA.JOBS WHERE a = '''it's fine''' "
+           "UNION ALL SELECT * FROM proj.ds.secret_table")
+    assert G.classify(sql) != "information_schema"
 
 
 def test_classify_a_subquery_after_from_is_fine():
@@ -241,7 +313,7 @@ def test_run_does_not_need_a_bytes_cap_on_a_dry_run():
     assert cfg.maximum_bytes_billed is None
 
 
-def test_run_calls_budget_spend_with_bytes_processed():
+def test_run_reserves_and_records_bytes_processed():
     client = _FakeClient()
     budget = G.Budget(10)
     G.run(client, _IS_SQL, budget=budget)
@@ -252,11 +324,28 @@ def test_run_calls_budget_spend_with_bytes_processed():
 def test_budget_refuses_the_41st_statement():
     budget = G.Budget(40)
     for _ in range(40):
-        budget.spend(1000)
+        budget.reserve()
+        budget.record(1000)
     assert budget.queries == 40 and budget.bytes == 40000
     with pytest.raises(G.GuardRefused):
-        budget.spend(1000)
-    assert budget.queries == 40  # the refused attempt is not counted again
+        budget.reserve()
+    assert budget.queries == 40  # the refused reservation is not counted again
+
+
+def test_budget_refuses_the_third_statement_before_it_ever_reaches_the_client():
+    """B5: the old code only checked the cap INSIDE spend(), called AFTER
+    client.query()/job.result() — so Budget(2) let a 3rd statement reach (and
+    complete against) the client, and never counted its bytes at all. Proven
+    directly against the fake client: only 2 of 3 attempts may ever reach it."""
+    client = _FakeClient()
+    budget = G.Budget(2)
+    G.run(client, _IS_SQL, budget=budget)
+    G.run(client, _IS_SQL, budget=budget)
+    with pytest.raises(G.GuardRefused):
+        G.run(client, _IS_SQL, budget=budget)
+    assert len(client.queries) == 2  # the 3rd statement never reached the client
+    assert budget.queries == 2
+    assert budget.bytes == 2468  # 2 * 1234 — not silently missing the 3rd attempt's bytes
 
 
 def test_run_refuses_past_a_tiny_budget_mid_scan():
@@ -275,6 +364,31 @@ def test_a_failed_attempt_still_counts_against_budget_at_zero_bytes():
         G.run(client, _IS_SQL, budget=budget)
     assert budget.queries == 1
     assert budget.bytes == 0
+
+
+def test_run_propagates_the_clients_own_error_rather_than_guardrefused():
+    """B6: run()'s except-block used to call budget.spend(0) on a failed
+    attempt, and spend() itself raises GuardRefused once the budget is at
+    its cap — replacing whatever BigQuery actually raised (e.g. a 403 on
+    TABLE_STORAGE) with a misleading 'budget exhausted', denying
+    bq_cost.hint_for() the text it needs to explain the real problem."""
+    client = _FailingClient(RuntimeError("Access Denied: 403 on TABLE_STORAGE"))
+    budget = G.Budget(5)
+    with pytest.raises(RuntimeError, match="403 on TABLE_STORAGE"):
+        G.run(client, _IS_SQL, budget=budget)
+
+
+def test_run_never_lets_an_over_budget_statement_reach_a_failing_client():
+    """B5+B6 together: an over-cap statement must be refused BEFORE it ever
+    reaches the client, so there is never a real BigQuery error left for a
+    budget check to mask. The old code had no upfront check, so it called
+    client.query() regardless of the budget and only then, in its
+    except-block, replaced the client's own error with GuardRefused."""
+    client = _FailingClient(RuntimeError("Access Denied: 403 on TABLE_STORAGE"))
+    budget = G.Budget(0)
+    with pytest.raises(G.GuardRefused):
+        G.run(client, _IS_SQL, budget=budget)
+    assert client.queries == []  # never issued — nothing left for a budget check to mask
 
 
 def test_a_refused_statement_never_touches_the_budget():
