@@ -23,19 +23,22 @@ groups by.
 Content (prompts, tool arguments, results) enters the spans only with
 TRACE_CONTENT=true; the default sends model names, token counts, latency,
 tool names and errors — never the text — so a sink outside the bank sees
-nothing it should not. Export is batched on a background thread: a sink that
+nothing it should not. The person is named by a stable digest rather than
+their email under that default too (``user_ref``), so per-user grouping still
+works without the address itself leaving. Export is batched on a background thread: a sink that
 is down drops spans and never delays a chat turn.
 """
 from __future__ import annotations
 
 import base64
-import contextlib
+import hashlib
 import logging
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from release_agent.config import settings
 
@@ -77,7 +80,12 @@ def exporter_env(
 def content_env(trace_content: bool) -> dict[str, str]:
     """PURE: the switches that keep prompts, arguments and results out of the
     spans (or let them in) — ADK's for its own spans, OpenInference's for the
-    instrumented ones. Both must agree or one path leaks what the other hides."""
+    instrumented ones.
+
+    Unlike ``exporter_env``, which leaves an operator's own OTEL_* settings
+    alone, these are set unconditionally: the two families must agree, and a
+    half-set pair would let one path export what the other hides. TRACE_CONTENT
+    is the single switch that decides it."""
     flag = "true" if trace_content else "false"
     hide = "false" if trace_content else "true"
     return {
@@ -138,24 +146,75 @@ def _tracer():
     return (_provider or trace.get_tracer_provider()).get_tracer(_TRACER_NAME)
 
 
-@contextlib.contextmanager
-def turn_span(route: str, *, thread_id: str, user_id: str, session_id: str, detail: str = "") -> Iterator[None]:
-    """The router's decision for one chat turn — deterministic deploy parse,
-    classifier rescue, or chat — as the parent of everything ADK records for
-    it. Without a configured exporter this is a non-recording span, so callers
-    never check whether tracing is on. ``detail`` (the classifier's payload)
-    is content and only kept with TRACE_CONTENT."""
-    with _tracer().start_as_current_span("turn") as span:
-        try:
-            span.set_attribute("release_copilot.route", route)
-            span.set_attribute("release_copilot.thread_id", thread_id)
-            # Both spellings: OpenInference's, and Langfuse's own trace-level keys.
-            span.set_attribute("session.id", session_id)
-            span.set_attribute("user.id", user_id)
-            span.set_attribute("langfuse.session.id", session_id)
-            span.set_attribute("langfuse.user.id", user_id)
-            if detail and settings.trace_content:
-                span.set_attribute("release_copilot.route_detail", detail[:500])
-        except Exception:  # noqa: BLE001 — an attribute must never break a turn
-            logger.debug("turn span attributes failed", exc_info=True)
-        yield
+def user_ref(user_id: str, trace_content: bool) -> str:
+    """PURE: how a person is named in a span. Langfuse groups by this, so it
+    must be STABLE — but a verified corporate email is exactly the kind of
+    thing that should not leave the bank for a sink that may sit outside it.
+    With content off it is a short digest: the same person is still one user in
+    Langfuse, without the address being readable there. With content on (a
+    self-hosted Langfuse, where the prompts are already going) it is the email,
+    because then a name is more useful than a pseudonym."""
+    text = (user_id or "").strip()
+    if not text or trace_content:
+        return text
+    return "u:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _turn_attributes(span, route, thread_id, user_id, session_id, detail):
+    who = user_ref(user_id, settings.trace_content)
+    try:
+        span.set_attribute("release_copilot.route", route)
+        span.set_attribute("release_copilot.thread_id", thread_id)
+        # Both spellings: OpenInference's, and Langfuse's own trace-level keys.
+        span.set_attribute("session.id", session_id)
+        span.set_attribute("user.id", who)
+        span.set_attribute("langfuse.session.id", session_id)
+        span.set_attribute("langfuse.user.id", who)
+        if detail and settings.trace_content:
+            span.set_attribute("release_copilot.route_detail", detail[:500])
+    except Exception:  # noqa: BLE001 — an attribute must never break a turn
+        logger.debug("turn span attributes failed", exc_info=True)
+
+
+async def traced_stream(source, route, *, thread_id, user_id, session_id, detail=""):
+    """Re-yield ``source``'s events under a ``turn`` span — the router's
+    decision for one chat turn, and the parent of everything ADK records for it.
+
+    The span is made CURRENT only while ``source`` is producing, never across a
+    ``yield``. That is the whole point of this function rather than a plain
+    ``with`` block around the loop: an async generator runs in its CALLER's
+    context, so a context attached before a yield is detached from a different
+    context when the generator resumes — OpenTelemetry refuses that token
+    ("was created in a different Context"), logs it with a traceback on every
+    turn, and leaves the context attached. The leak then reparents whatever the
+    caller does next onto the finished turn, and two turns handled in one task
+    collapse into one trace.
+
+    Without a configured exporter the span is non-recording, so callers never
+    check whether tracing is on. ``detail`` (the classifier's payload) is
+    content and only kept with TRACE_CONTENT.
+    """
+    from opentelemetry import context as otel_context
+
+    span = _tracer().start_span("turn")
+    _turn_attributes(span, route, thread_id, user_id, session_id, detail)
+    ctx = trace.set_span_in_context(span)
+    try:
+        while True:
+            token = otel_context.attach(ctx)
+            try:
+                event = await source.__anext__()
+            except StopAsyncIteration:
+                break
+            finally:
+                otel_context.detach(token)   # same context that attached it
+            yield event                       # nothing attached while suspended
+    except BaseException as e:
+        # GeneratorExit (the client disconnected) is an ending, not a failure.
+        if not isinstance(e, GeneratorExit):
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)[:200]))
+        raise
+    finally:
+        span.end()
+        await source.aclose()   # the inner stream must not outlive the turn

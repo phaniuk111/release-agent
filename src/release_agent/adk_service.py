@@ -18,6 +18,7 @@ with a ``confirmation`` interrupt carrying the ``CONFIRM-`` token.
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import json
 import logging
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ from google.adk.sessions import InMemorySessionService
 from adk_release_agent import deploy as adk_deploy
 from adk_release_agent import intent as adk_intent
 from release_agent.agent import parsing as adk_parsing
-from adk_release_agent.telemetry import turn_span
+from adk_release_agent.telemetry import traced_stream
 from adk_release_agent.agent import app as chat_app
 from adk_release_agent.deploy_workflow import build_deploy_app
 
@@ -452,13 +453,17 @@ class AdkChatService:
             # read as answering an approval that has already been decided.
             await self._persist_pending_call(thread_id, None)
             approved = _original_call(pending_call) if _is_positive_response(message) else None
-            async for event in self._run_chat_agent(
-                _content_from_pending_reply(message, pending_call),
-                thread_id,
-                invocation_id=pending_call.invocation_id,
-                approved=approved,
-            ):
-                yield event
+            async with aclosing(traced_stream(
+                    self._run_chat_agent(
+                        _content_from_pending_reply(message, pending_call),
+                        thread_id,
+                        invocation_id=pending_call.invocation_id,
+                        approved=approved,
+                    ),
+                    "chat:approval", thread_id=thread_id,
+                    user_id=_user_id(), session_id=_session_id(thread_id, "chat"))) as events:
+                async for event in events:
+                    yield event
             return
 
         token = adk_deploy._extract_confirmation_token(message)
@@ -471,13 +476,23 @@ class AdkChatService:
                 pending_token = await self._pending_token_from_session(thread_id)
             if pending_token:
                 # Resume the paused deploy Workflow: exact match confirms, else cancels.
-                async for event in self._stream_deploy_resume(
-                    thread_id, pending_token, confirmed=(token == pending_token)
-                ):
-                    yield event
+                async with aclosing(traced_stream(
+                        self._stream_deploy_resume(
+                            thread_id, pending_token, confirmed=(token == pending_token)
+                        ),
+                        "deploy_workflow:resume", thread_id=thread_id,
+                        user_id=_user_id(), session_id=_session_id(thread_id, "deploy"))) as events:
+                    async for event in events:
+                        yield event
                 return
-            if token in adk_deploy._PENDING_PREVIEWS:
-                # Stateless fallback (e.g. reconnect with no tracked invocation).
+            preview = adk_deploy._PENDING_PREVIEWS.get(token)
+            if preview is not None and preview.get("owner") == _user_id():
+                # Stateless fallback (e.g. reconnect with no tracked invocation)
+                # — but only for the person the preview was minted for.
+                # _PENDING_PREVIEWS is process-wide and keyed by token alone,
+                # and the token is printed in the chat, so without this check
+                # anyone who saw someone else's token could apply THEIR pending
+                # deploy from their own thread (and spend the token doing it).
                 result = await asyncio.to_thread(adk_deploy.apply_confirmed_deploy, message)
                 yield {"type": "token", "content": self._format_deploy_apply_result(result)}
                 yield {"type": "done", "mutated": True}
@@ -494,9 +509,11 @@ class AdkChatService:
             return
 
         if _looks_like_deploy_request(message):
-            with turn_span("deploy_workflow:deterministic", thread_id=thread_id,
-                           user_id=_user_id(), session_id=_session_id(thread_id, "deploy")):
-                async for event in self._stream_deploy_preview(message, thread_id):
+            async with aclosing(traced_stream(
+                    self._stream_deploy_preview(message, thread_id),
+                    "deploy_workflow:deterministic", thread_id=thread_id,
+                    user_id=_user_id(), session_id=_session_id(thread_id, "deploy"))) as events:
+                async for event in events:
                     yield event
             return
 
@@ -511,15 +528,19 @@ class AdkChatService:
         if not adk_parsing.is_queue_intent(message):
             payload = await asyncio.to_thread(adk_intent.deploy_payload_from_freeform, message)
         if payload:
-            with turn_span("deploy_workflow:classifier", thread_id=thread_id, detail=payload,
-                           user_id=_user_id(), session_id=_session_id(thread_id, "deploy")):
-                async for event in self._stream_deploy_preview(payload, thread_id):
+            async with aclosing(traced_stream(
+                    self._stream_deploy_preview(payload, thread_id),
+                    "deploy_workflow:classifier", thread_id=thread_id, detail=payload,
+                    user_id=_user_id(), session_id=_session_id(thread_id, "deploy"))) as events:
+                async for event in events:
                     yield event
             return
 
-        with turn_span("chat", thread_id=thread_id,
-                       user_id=_user_id(), session_id=_session_id(thread_id, "chat")):
-            async for event in self._run_chat_agent(_content_from_text(message), thread_id):
+        async with aclosing(traced_stream(
+                self._run_chat_agent(_content_from_text(message), thread_id),
+                "chat", thread_id=thread_id,
+                user_id=_user_id(), session_id=_session_id(thread_id, "chat"))) as events:
+            async for event in events:
                 yield event
 
     async def _stream_deploy_preview(

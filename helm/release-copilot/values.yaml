@@ -223,7 +223,9 @@ config:
   # Prompts, tool arguments and results IN the spans. Keep false unless
   # Langfuse runs inside the bank: with it on, PR/JIRA text, requester emails
   # and SQL previews leave the pod with every trace. False still gives model
-  # names, token counts, latency, tool names and errors.
+  # names, token counts, latency, tool names and errors — and names each
+  # person by a stable digest instead of their email, so Langfuse still groups
+  # per user and per session without the address leaving.
   TRACE_CONTENT: "false"
   # PromQL access — checked by /api/diagnostics (section "promql") and used by
   # the Monitoring pill + chat. Empty PROMETHEUS_URL = Managed Service for Prometheus in

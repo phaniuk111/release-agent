@@ -54,3 +54,11 @@ release-manifest.json.bak
 # the Backstage PoC checkout (~2GB); the real work lives on branch backstage_poc
 backstage/
 practice/
+
+# terraform: provider cache and state from a local `terraform init/plan`.
+# The module here is consumed by the caller's own root config, which owns the
+# lock file and the state.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*

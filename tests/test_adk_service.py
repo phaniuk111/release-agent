@@ -352,3 +352,52 @@ def test_adk_protocol_boilerplate_is_never_shown_as_the_question():
     p = _confirmation_interrupt_payload(_confirmation_pending("some_other_tool", {}))
     assert "FunctionResponse" not in p["message"]
     assert p["message"] == "Confirm some_other_tool?"
+
+
+def test_every_lane_of_a_turn_is_traced_under_a_named_route(monkeypatch):
+    """Each branch of stream_chat must run under a `turn` span carrying the
+    route and the ids Langfuse groups by. The two RESUME branches — the
+    approval and the CONFIRM token — are the ones worth auditing most, and
+    they were the ones that had no span at all."""
+    import release_agent.adk_service as S
+
+    seen = []
+
+    def fake_traced_stream(source, route, *, thread_id, user_id, session_id, detail=""):
+        seen.append({"route": route, "thread_id": thread_id, "session_id": session_id})
+        return source
+
+    monkeypatch.setattr(S, "traced_stream", fake_traced_stream)
+    service = AdkChatService.__new__(AdkChatService)      # no runners needed
+    service._pending_adk_calls = {}
+    service._pending_deploy = {}
+
+    async def fake_stream(*a, **k):
+        yield {"type": "done"}
+
+    monkeypatch.setattr(service, "_stream_deploy_preview", fake_stream, raising=False)
+    monkeypatch.setattr(service, "_run_chat_agent", fake_stream, raising=False)
+    monkeypatch.setattr(service, "_stream_deploy_resume", fake_stream, raising=False)
+    monkeypatch.setattr(S, "_looks_like_deploy_request", lambda m: m.startswith("deploy "))
+    monkeypatch.setattr(S.adk_parsing, "is_queue_intent", lambda m: False)
+    monkeypatch.setattr(S.adk_intent, "deploy_payload_from_freeform", lambda m: None)
+
+    async def no_pending(*a, **k):
+        return None
+
+    monkeypatch.setattr(service, "_pending_call_from_session", no_pending, raising=False)
+    monkeypatch.setattr(service, "_pending_token_from_session", no_pending, raising=False)
+
+    _collect(service, "deploy payments-api:1.2.3 to uat", "t1")
+    _collect(service, "what is deployed in uat?", "t2")
+
+    # the CONFIRM-token resume branch
+    service._pending_deploy["t3"] = "CONFIRM-ABC123"
+    _collect(service, "CONFIRM-ABC123", "t3")
+
+    assert [s["route"] for s in seen] == [
+        "deploy_workflow:deterministic", "chat", "deploy_workflow:resume",
+    ]
+    assert [s["thread_id"] for s in seen] == ["t1", "t2", "t3"]
+    assert seen[0]["session_id"].endswith(":deploy") or "deploy" in seen[0]["session_id"]
+    assert "chat" in seen[1]["session_id"]

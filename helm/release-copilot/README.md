@@ -182,8 +182,14 @@ wrong region would otherwise silently report nothing.
 ADK traces every chat turn as OpenTelemetry spans — the router's decision,
 each Gemini call with its token usage, each tool call, the deploy Workflow's
 nodes. Point them at Langfuse and they show up as traces per turn, grouped by
-session (thread) and user (the verified email). Nothing is written locally;
-with `LANGFUSE_HOST` empty the feature is off and costs nothing.
+session (thread) and user. Nothing is written locally; with `LANGFUSE_HOST`
+empty the feature is off and costs nothing.
+
+With `TRACE_CONTENT: "false"` (the default) that user is a stable digest
+(`u:<12 hex>`), not the email: grouping and per-user cost still work, but the
+address never leaves the pod. Set it to `"true"` — for a Langfuse inside the
+bank, where the prompts are already going — and the spans carry the email and
+the message content instead.
 
 ```yaml
 config:
