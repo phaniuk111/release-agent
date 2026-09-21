@@ -55,6 +55,35 @@ and results out of the spans. The router's decision is the root `turn` span
 carrying session/user ids. Verified against a local OTLP receiver (Langfuse
 itself needs the project's keys — first real run is the owner's).
 
+## Known and left alone — 2026-09-21 (after the parallel-testing sweep)
+
+Everything the sweep found is fixed except these, each a decision rather than
+an oversight. Recorded so nobody re-investigates them.
+
+- **`?fresh=1` has no rate limit.** The refresh button can re-scan repeatedly.
+  Left because a scan is ~42 MB of INFORMATION_SCHEMA (≈$0.00025), the cache is
+  single-flight so concurrent refreshes coalesce, and a scan takes 16–50 s so
+  sequential clicks queue behind it. A minimum-interval floor would make
+  "refresh now" quietly not refresh, which is the worse trade.
+- **A failed scan is cached for the full 5 minutes**, so a transient BigQuery
+  failure sticks until someone refreshes. Deliberate: it stops a denied or
+  broken BigQuery being hammered once per pill-open.
+- **`ERROR opentelemetry.context: Failed to detach context`** appears in the
+  log on deploy previews when tracing is on. NOT ours: an A/B against the
+  previous commit with identical workload gave identical counts, and every
+  frame belongs to `openinference.instrumentation.google_adk` or ADK's own
+  runner utils. Upstream bug; suppress or report it if it ever matters.
+- **The Langfuse key lives in `os.environ`** (as `OTEL_EXPORTER_OTLP_TRACES_HEADERS`)
+  because that is the OTLP exporter's contract. `/api/diagnostics` never shows
+  it, but an env dump in a child process would.
+- **The preview-pill invariant test reads `form:` pills only**, so a `send:true`
+  pill whose chat text reaches a gated tool is invisible to it. The server still
+  refuses, so the worst case is a visible pill that answers "not yet".
+- **The writes section counts the tool's own streaming inserts** when
+  `BQ_COST_DATASET` is set. `STREAMING_TIMELINE_BY_PROJECT` carries no table
+  identifier, so they cannot be subtracted the way the ranking subtracts its own
+  jobs by label. A few rows per scan: small and unattributable, not wrong.
+
 ## Skipped — deliberately
 
 ### Grafana-dashboard weekly memo
