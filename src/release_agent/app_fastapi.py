@@ -1325,8 +1325,19 @@ def _verified_identity(headers: dict) -> dict:
             "jwks_url": app_settings.identity_jwks_url,
             "audience_checked": bool(app_settings.identity_audience),
         })
+        # The one value an operator cannot see from here otherwise: what the
+        # gateway actually put in the token. Shown when there is something to
+        # configure — the token did not verify, or aud is not being checked —
+        # so "set IDENTITY_AUDIENCE" comes with the value to set it to.
+        if caller is None or not app_settings.identity_audience:
+            seen = identity.presented_from_headers(headers)
+            if seen is not None:
+                out["presented_token"] = seen
         if not app_settings.identity_audience:
-            out["hint"] = "set IDENTITY_AUDIENCE to the token's aud — without it any RCToken from this issuer is accepted"
+            aud = (out.get("presented_token") or {}).get("aud")
+            out["hint"] = (f"set IDENTITY_AUDIENCE to {aud!r} — the aud the gateway sends; without it any "
+                           "RCToken from this issuer is accepted") if aud else (
+                "set IDENTITY_AUDIENCE to the token's aud — without it any RCToken from this issuer is accepted")
     if caller:
         out["email"] = _mask_identity(caller.email)
     else:

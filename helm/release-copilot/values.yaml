@@ -279,6 +279,8 @@ config:
   IDENTITY_ISSUER: "authservice.asm-user-auth.svc.cluster.local"
   # Must equal UserAuthConfig.spec.outputJWTAudience. Empty = aud NOT checked;
   # the sample value "test_audience" means every app in the mesh shares one.
+  # No kubectl? Deploy with it empty, open /api/diagnostics: identity.
+  # presented_token.aud is the value the gateway actually sends — copy it here.
   IDENTITY_AUDIENCE: ""
   # The RCToken carries NO email unless the mesh maps one in:
   #   UserAuthConfig.spec.attributeMapping: { email: assertion.email }

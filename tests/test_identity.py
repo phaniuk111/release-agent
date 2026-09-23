@@ -250,8 +250,30 @@ def test_a_confirm_token_is_bound_to_the_caller_it_was_minted_for(monkeypatch):
 def test_diagnostics_say_whether_the_token_verified():
     ok = APP._verified_identity({"x-asm-rctoken": rctoken()})
     assert ok["signed_in"] and ok["email"] != "dev.one@example.com", "masked"
+    assert "presented_token" not in ok, "nothing to configure: the token verified and aud is checked"
     bad = APP._verified_identity({"x-asm-rctoken": rctoken(aud="other")})
     assert not bad["signed_in"] and "audience" in bad["reason"].lower()
+
+
+def test_diagnostics_show_the_aud_the_gateway_actually_sent(monkeypatch):
+    """Asked for: the operator has no kubectl. When the token does not verify,
+    or aud is not being checked, diagnostics show what the token SAYS (iss,
+    aud, kid, alg — unverified, labelled so) and the hint names the value to
+    set. The peek is never who the caller is."""
+    bad = APP._verified_identity({"x-asm-rctoken": rctoken(aud="other")})
+    seen = bad["presented_token"]
+    assert seen["aud"] == "other" and seen["iss"] == identity.settings.identity_issuer
+    assert seen["kid"] == "k1" and seen["alg"] == "RS256" and "WITHOUT verification" in seen["note"]
+    assert not bad["signed_in"], "the peek did not sign anyone in"
+
+    monkeypatch.setattr(identity.settings, "identity_audience", "", raising=False)
+    unchecked = APP._verified_identity({"x-asm-rctoken": rctoken(aud="dev-portal-prod")})
+    assert unchecked["presented_token"]["aud"] == "dev-portal-prod"
+    assert "'dev-portal-prod'" in unchecked["hint"], "the hint carries the value to copy"
+
+    garbage = APP._verified_identity({"x-asm-rctoken": "not.a.jwt"})
+    assert "error" in garbage["presented_token"] and not garbage["signed_in"]
+    assert "presented_token" not in APP._verified_identity({}), "no token sent: nothing to show"
 
 
 def test_deploys_and_releases_record_who_confirmed(monkeypatch):
