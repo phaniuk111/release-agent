@@ -26,6 +26,7 @@ export async function showDeployForm(target, name, version) {
     if (target === 'df-release') { showReleaseForm('df'); return; }
     if (target === 'queue') { showQueueForm(); return; }
     if (target === 'queue-table') { showQueueTable(); return; }
+    if (target === 'queue-remove') { showQueueTable({ remove: true }); return; }
     if (target === 'monitoring') { showMonitoring(); return; }
     if (target === 'bq-cost') { showBqCost(); return; }
     // The only environment this form can write, whatever was asked for — the

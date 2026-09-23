@@ -32,7 +32,7 @@ export const CAPABILITIES = [
     {group:'Release', icon:'fa-list-ul',           label:'Check release queue', desc:"what's queued for the next release, as a table — who added it, routing, JIRA, build; remove a row", form:'queue-table'},
     {group:'Release', icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
     {group:'Release', icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
-    {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
+    {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'take a queued chart out of the next release — pick its row in the queue', form:'queue-remove'},
     // The text says CARE/DF explicitly: "promote the release to prd" alone makes
     // the agent stop and ask which one, and a pill should never need answering.
     {group:'Release', icon:'fa-shield-heart',      label:'Promote CARE release to PRD', desc:'promote the CARE release file-set to PRD — PROD is only ever reached this way, never by deploying a single chart', send:true,  text:'promote the CARE release to prd'},

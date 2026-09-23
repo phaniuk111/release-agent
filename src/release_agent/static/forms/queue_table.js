@@ -12,24 +12,30 @@ import { showQueueForm } from './queue_form.js';
 // (append-only: the history keeps it) and records who removed it; the version
 // shown travels with the request, so a chart someone re-queued at a new
 // version in the meantime is refused rather than silently taken out.
-export async function showQueueTable() {
-    const _ph = opening('the release queue');
+// "Remove from release" opens the SAME table in remove mode: the heading says
+// what you came to do, and the rows are the only things you can remove — no
+// chart name to type, so nothing to mistype.
+export async function showQueueTable(opts) {
+    const remove = !!(opts && opts.remove);
+    const _ph = opening(remove ? 'Remove from the next release' : 'the release queue');
     const chat = document.getElementById('chat');
     const wrap = document.createElement('div');
     wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm queue-table-card';
     _ph.replaceWith(wrap);
     wrap.innerHTML = '<div class="text-[11px] text-slate-500"><span class="dots"><span></span><span></span>' +
         '<span></span></span> Loading the release queue…</div>';
-    await _renderQueueTable(wrap, null);
+    await _renderQueueTable(wrap, null, remove);
     chat.scrollTop = chat.scrollHeight;
 }
 
-async function _renderQueueTable(wrap, flash) {
+async function _renderQueueTable(wrap, flash, remove) {
     const ctx = await getContext(QUEUE_PATH, { queue: [] });
     const items = ctx.queue || [];
     wrap.innerHTML =
         '<div class="mb-2 flex items-center gap-2 pr-6">' +
-        '<span class="font-semibold text-emerald-300"><i class="fa-solid fa-list-ul mr-1"></i>Release queue</span>' +
+        (remove
+            ? '<span class="font-semibold text-red-300"><i class="fa-solid fa-eraser mr-1"></i>Remove from the next release</span>'
+            : '<span class="font-semibold text-emerald-300"><i class="fa-solid fa-list-ul mr-1"></i>Release queue</span>') +
         '<span class="text-[11px] text-slate-500">' + (ctx.ok === false ? '' : items.length + ' queued') + '</span>' +
         '<span class="flex-1"></span>' +
         '<button type="button" data-q="refresh" title="Refresh" class="text-slate-400 hover:text-white text-xs">' +
@@ -37,6 +43,12 @@ async function _renderQueueTable(wrap, flash) {
         '<button type="button" data-q="add" class="text-[11px] text-emerald-400 hover:text-emerald-300">' +
         '<i class="fa-solid fa-plus mr-1"></i>Add to next release</button></div>';
 
+    if (remove && ctx.ok !== false && items.length) {
+        const h = document.createElement('div');
+        h.className = 'text-[11px] text-slate-400 mb-2';
+        h.textContent = 'Pick the row to remove. It comes out of the next release and stays in the history.';
+        wrap.appendChild(h);
+    }
     if (flash) {
         const f = document.createElement('div');
         f.className = 'text-[11px] mb-2 ' + (flash.ok ? 'text-emerald-400' : 'text-amber-400');
@@ -104,17 +116,17 @@ async function _renderQueueTable(wrap, flash) {
         wrap.appendChild(scroller);
 
         scroller.querySelectorAll('button[data-remove]').forEach(btn => {
-            btn.addEventListener('click', () => _confirmRemove(wrap, scroller, items[+btn.dataset.remove], +btn.dataset.remove));
+            btn.addEventListener('click', () => _confirmRemove(wrap, scroller, items[+btn.dataset.remove], +btn.dataset.remove, remove));
         });
     }
 
-    wrap.querySelector('[data-q="refresh"]').addEventListener('click', () => _renderQueueTable(wrap, null));
+    wrap.querySelector('[data-q="refresh"]').addEventListener('click', () => _renderQueueTable(wrap, null, remove));
     wrap.querySelector('[data-q="add"]').addEventListener('click', () => showQueueForm());
     withDismiss(wrap);
 }
 
 // Removing is a real change to the release — ask once, inline, under the row.
-function _confirmRemove(wrap, scroller, q, index) {
+function _confirmRemove(wrap, scroller, q, index, remove) {
     scroller.querySelectorAll('tr.queue-confirm').forEach(r => r.remove());
     const anchor = scroller.querySelector('tr[data-row="' + index + '"]');
     const label = q.artifact_name + ':' + (q.artifact_version || '');
@@ -157,9 +169,9 @@ function _confirmRemove(wrap, scroller, q, index) {
         if (res && res.ok) {
             if (!email.dataset.signedIn) { try { localStorage.setItem('queue_email', who); } catch (e) {} }
             loadReleaseStatus(true);
-            _renderQueueTable(wrap, { ok: true, text: 'Removed ' + label + ' from the next release.' });
+            _renderQueueTable(wrap, { ok: true, text: 'Removed ' + label + ' from the next release.' }, remove);
         } else if (res && res.stale) {
-            _renderQueueTable(wrap, { ok: false, text: res.error });   // the queue moved on — show it as it is now
+            _renderQueueTable(wrap, { ok: false, text: res.error }, remove);   // the queue moved on — show it as it is now
         } else {
             go.disabled = false; go.textContent = 'Remove';
             err.textContent = (res && res.error) || 'Could not remove it.';
