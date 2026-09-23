@@ -240,6 +240,48 @@ def _is_positive_response(text: str) -> bool:
     return text.strip().lower() in {"y", "yes", "true", "confirm", "confirmed", "ok", "proceed"}
 
 
+_NEGATIVE_REPLIES = {"n", "no", "nope", "reject", "rejected", "cancel", "cancelled", "canceled",
+                     "abort", "stop", "decline", "declined"}
+
+
+def _is_negative_response(text: str) -> bool:
+    return text.strip().rstrip(".!").strip().lower() in _NEGATIVE_REPLIES
+
+
+def _reply_kind(message: str) -> str:
+    """What a message means to something already waiting on the thread:
+    "yes", "no", a new deploy/release "request" (which replaces it), or "other"
+    (which is answered with a reminder and leaves it waiting). Only the
+    deterministic detector counts as a request — a free-form sentence that
+    merely sounds deploy-ish is not enough to throw a pending preview away."""
+    if _is_positive_response(message):
+        return "yes"
+    if _is_negative_response(message):
+        return "no"
+    if _looks_like_deploy_request(message):
+        return "request"
+    return "other"
+
+
+def _operation_label(pending: PendingAdkCall) -> str:
+    original = (pending.args or {}).get("originalFunctionCall") or {}
+    name = original.get("name") or pending.function_name or "the paused operation"
+    return str(name).replace("_", " ")
+
+
+def _approval_reminder(pending: PendingAdkCall) -> str:
+    return (f"**{_operation_label(pending)}** is still waiting for your answer — nothing has "
+            "happened yet. Reply `yes` to approve it or `no` to reject it. To do something "
+            "else first, send the new deploy or release request and this one is dropped.")
+
+
+def _token_reminder(pending_token: str, given: str = "") -> str:
+    head = f"`{given}` is not the token waiting on this thread. " if given else ""
+    return (head + f"`{pending_token}` is still waiting — nothing has been applied. Paste it "
+            "exactly to apply, reply `no` to cancel, or send a new deploy or release "
+            "request to replace it.")
+
+
 def _original_call(pending: PendingAdkCall) -> tuple[str, str] | None:
     """(tool name, canonical args) of the operation a confirmation is FOR."""
     original = (pending.args or {}).get("originalFunctionCall") or {}
@@ -436,7 +478,11 @@ class AdkChatService:
             auto_create_session=True,
         )
         # thread_id -> pending CONFIRM token awaiting resume of the deploy Workflow.
-        self._pending_deploy: dict[str, str] = {}
+        # Keyed by (owner, thread) like the paused approvals and the PAT store:
+        # a thread id is printed in the page header, so on its own it is not a
+        # secret, and a reminder that quotes the token must never be shown to
+        # someone else who sends a message against that thread id.
+        self._pending_deploy: dict[tuple[str, str], str] = {}
         # thread_id -> paused chat-agent tool confirmation awaiting a yes/no reply.
         # Keyed by (owner, thread) like the PAT store and the CONFIRM preview: a
         # thread id is not a secret (it is printed in the header), so keying on
@@ -446,51 +492,92 @@ class AdkChatService:
 
     async def stream_chat(self, message: str, thread_id: str) -> AsyncGenerator[dict[str, Any], None]:
         """Yield UI-compatible SSE event payloads."""
-        # A paused prod-ops confirmation takes precedence: this reply approves/rejects it.
-        pending_call = self._pending_adk_calls.pop((_user_id(), thread_id), None)
+        # Something already waiting on this thread — a paused yes/no approval
+        # (prod ops) or a pending CONFIRM token — is consumed ONLY by an explicit
+        # answer: yes/no for an approval, the exact token or "no" for a preview.
+        # A NEW deploy/release request replaces it: the old one is cancelled
+        # (never applied) and the new one gets its own preview and token.
+        # Anything else gets a reminder and the pending item stays put.
+        # Found live: a release form submitted while an approval was paused was
+        # read as the reply to it — the person was told "you rejected it" and
+        # never saw a preview of what they had actually asked for.
+        owner = _user_id()
+        pending_call = self._pending_adk_calls.get((owner, thread_id))
         if pending_call is None:
-            # Same reasoning as the deploy token below: the pause may have been
-            # served by another replica, or by this one before a restart.
+            # The pause may have been served by another replica, or by this one
+            # before a restart.
             pending_call = await self._pending_call_from_session(thread_id)
         if pending_call is not None:
-            # Consumed — clear it in both places, or a later message would be
-            # read as answering an approval that has already been decided.
-            await self._persist_pending_call(thread_id, None)
-            approved = _original_call(pending_call) if _is_positive_response(message) else None
-            async with aclosing(traced_stream(
-                    self._run_chat_agent(
-                        _content_from_pending_reply(message, pending_call),
-                        thread_id,
-                        invocation_id=pending_call.invocation_id,
-                        approved=approved,
-                    ),
-                    "chat:approval", thread_id=thread_id,
-                    user_id=_user_id(), session_id=_session_id(thread_id, "chat"))) as events:
-                async for event in events:
-                    yield event
-            return
-
-        token = adk_deploy._extract_confirmation_token(message)
-        if token:
-            pending_token = self._pending_deploy.get(thread_id)
-            if pending_token is None:
-                # Not in THIS process — the preview may have been served by
-                # another replica, or by this one before a restart. The Workflow
-                # persisted the token in session state; ask the session service.
-                pending_token = await self._pending_token_from_session(thread_id)
-            if pending_token:
-                # Resume the paused deploy Workflow: exact match confirms, else cancels.
+            kind = _reply_kind(message)
+            if kind in ("yes", "no"):
+                # Consumed — clear it in both places, or a later message would be
+                # read as answering an approval that has already been decided.
+                self._pending_adk_calls.pop((owner, thread_id), None)
+                await self._persist_pending_call(thread_id, None)
+                approved = _original_call(pending_call) if kind == "yes" else None
                 async with aclosing(traced_stream(
-                        self._stream_deploy_resume(
-                            thread_id, pending_token, confirmed=(token == pending_token)
+                        self._run_chat_agent(
+                            _content_from_pending_reply(message, pending_call),
+                            thread_id,
+                            invocation_id=pending_call.invocation_id,
+                            approved=approved,
                         ),
-                        "deploy_workflow:resume", thread_id=thread_id,
-                        user_id=_user_id(), session_id=_session_id(thread_id, "deploy"))) as events:
+                        "chat:approval", thread_id=thread_id,
+                        user_id=owner, session_id=_session_id(thread_id, "chat"))) as events:
                     async for event in events:
                         yield event
                 return
+            if kind != "request":
+                yield {"type": "token", "content": _approval_reminder(pending_call)}
+                yield {"type": "done"}
+                return
+            self._pending_adk_calls.pop((owner, thread_id), None)
+            await self._persist_pending_call(thread_id, None)
+            await self._dismiss_pending_call(thread_id, pending_call)
+            yield {"type": "token", "content": (
+                f"Dropped the pending approval for **{_operation_label(pending_call)}** — "
+                "nothing was applied. Previewing the new request instead.")}
+            # ...and fall through: the new request is previewed below.
+
+        token = adk_deploy._extract_confirmation_token(message)
+        pending_token = self._pending_deploy.get((owner, thread_id))
+        if pending_token is None:
+            # Not in THIS process — the preview may have been served by another
+            # replica, or by this one before a restart. The Workflow persisted
+            # the token in session state; ask the session service.
+            pending_token = await self._pending_token_from_session(thread_id)
+        if pending_token:
+            if token == pending_token:
+                async with aclosing(traced_stream(
+                        self._stream_deploy_resume(thread_id, pending_token, confirmed=True),
+                        "deploy_workflow:resume", thread_id=thread_id,
+                        user_id=owner, session_id=_session_id(thread_id, "deploy"))) as events:
+                    async for event in events:
+                        yield event
+                return
+            # A different token is a typo or an old one pasted from higher up
+            # the thread — neither may throw the current preview away.
+            kind = "other" if token else _reply_kind(message)
+            if kind == "no":
+                async with aclosing(traced_stream(
+                        self._stream_deploy_resume(thread_id, pending_token, confirmed=False),
+                        "deploy_workflow:resume", thread_id=thread_id,
+                        user_id=owner, session_id=_session_id(thread_id, "deploy"))) as events:
+                    async for event in events:
+                        yield event
+                return
+            if kind != "request":
+                yield {"type": "token", "content": _token_reminder(pending_token, token)}
+                yield {"type": "done"}
+                return
+            await self._resume_deploy(thread_id, pending_token, confirmed=False)
+            yield {"type": "token", "content": (
+                f"Replaced the pending `{pending_token}` — nothing was applied. "
+                "Here is the new preview:")}
+            # ...and fall through: the new request is previewed below.
+        elif token:
             preview = adk_deploy._PENDING_PREVIEWS.get(token)
-            if preview is not None and preview.get("owner") == _user_id():
+            if preview is not None and preview.get("owner") == owner:
                 # Stateless fallback (e.g. reconnect with no tracked invocation)
                 # — but only for the person the preview was minted for.
                 # _PENDING_PREVIEWS is process-wide and keyed by token alone,
@@ -582,7 +669,7 @@ class AdkChatService:
                 pending = adk_deploy._PENDING_PREVIEWS.get(token, {})
                 request = pending.get("request", {})
                 environment = request.get("environment", "uat")
-                self._pending_deploy[thread_id] = token
+                self._pending_deploy[(_user_id(), thread_id)] = token
                 yield {
                     "type": "interrupt",
                     "data": {
@@ -605,11 +692,9 @@ class AdkChatService:
                 "graph ended without saying why. Check the server log for this thread.")}
         yield {"type": "done"}
 
-    async def _stream_deploy_resume(
-        self, thread_id: str, token: str, confirmed: bool
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """Resume the paused deploy Workflow with the user's confirmation."""
-        self._pending_deploy.pop(thread_id, None)
+    async def _resume_deploy(self, thread_id: str, token: str, confirmed: bool) -> dict[str, Any]:
+        """Resume the paused deploy Workflow and return the terminal node's output."""
+        self._pending_deploy.pop((_user_id(), thread_id), None)
         result: dict[str, Any] | None = None
         async for event in self.deploy_runner.run_async(
             user_id=_user_id(),
@@ -619,7 +704,20 @@ class AdkChatService:
             output = getattr(event, "output", None)
             if output is not None:
                 result = output
-        yield {"type": "token", "content": self._format_deploy_apply_result(result or {})}
+        return result or {}
+
+    async def _stream_deploy_resume(
+        self, thread_id: str, token: str, confirmed: bool
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Resume the paused deploy Workflow with the user's confirmation."""
+        result = await self._resume_deploy(thread_id, token, confirmed)
+        if confirmed:
+            yield {"type": "token", "content": self._format_deploy_apply_result(result)}
+        else:
+            # An explicit "no": say what it did in the person's own terms, not
+            # the node's ("Not applied: cancelled").
+            yield {"type": "token", "content": (
+                f"Cancelled `{token}` — nothing was applied. Ask again when you're ready.")}
         # A cancelled resume applied nothing: saying otherwise makes every
         # wrong-token reply re-read the release banner for no reason.
         yield {"type": "done", "mutated": bool(confirmed)}
@@ -703,6 +801,23 @@ class AdkChatService:
             user_id=_user_id(),
             session_id=_session_id(thread_id, "chat"),
         )
+
+    async def _dismiss_pending_call(self, thread_id: str, pending: PendingAdkCall) -> None:
+        """Answer a paused approval with "no" without showing the model's reply.
+
+        The person did not reject anything — they asked for something else — so
+        the model's "you rejected it" would describe a decision never made. The
+        pause still has to be answered, or the chat session keeps an open
+        approval that the next plain message would be read against.
+        """
+        try:
+            async with aclosing(self._run_chat_agent(
+                    _content_from_pending_reply("no", pending), thread_id,
+                    invocation_id=pending.invocation_id, approved=None)) as events:
+                async for _ in events:
+                    pass
+        except Exception:  # noqa: BLE001 — already cleared from both stores; the new request must go on
+            logger.warning("could not dismiss the paused approval on %s", thread_id, exc_info=True)
 
     async def _persist_pending_call(
         self, thread_id: str, pending: PendingAdkCall | None

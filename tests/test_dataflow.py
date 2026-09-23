@@ -130,3 +130,33 @@ def test_deploy_dataflow_blocked_in_freeform_chat():
     from adk_release_agent.safety import BLOCKED_FREEFORM_TOOLS
 
     assert "deploy_dataflow" in BLOCKED_FREEFORM_TOOLS
+
+
+def test_a_template_that_names_the_input_as_the_placeholder_is_refused(monkeypatch):
+    """The easy mistake: {"module": "{module}"} — the workflow's own input name
+    used as the placeholder. Nothing substitutes, the literal text is
+    dispatched, and GitHub answers "Provided value '{module}' for input
+    'module' not in the list", which sounds like a choice-list problem. Fail
+    here instead, naming the fix."""
+    import pytest
+
+    from release_agent.tools import dataflow as D
+
+    monkeypatch.setattr(D.settings, "df_dispatch_inputs",
+                        '{"module": "{module}", "binary_version": "{binary_version}"}', raising=False)
+    with pytest.raises(ValueError) as e:
+        D._dispatch_inputs("payments-api", "0.0.513", "uat")
+    msg = str(e.value)
+    assert "'module'" in msg and "{module}" in msg
+    assert "{image}" in msg and "{tag}" in msg, "the message must name the valid placeholders"
+    assert "Nothing was dispatched" in msg
+
+
+def test_the_correct_template_maps_our_values_onto_their_input_names(monkeypatch):
+    from release_agent.tools import dataflow as D
+
+    monkeypatch.setattr(D.settings, "df_dispatch_inputs",
+                        '{"module": "{image}", "binary_version": "{tag}"}', raising=False)
+    assert D._dispatch_inputs("payments-api", "0.0.513", "uat") == {
+        "module": "payments-api", "binary_version": "0.0.513",
+    }, "a workflow with no environment input is sent none"

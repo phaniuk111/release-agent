@@ -205,6 +205,14 @@ export function addMessage(role, content, isStreaming = false) {
                         class="bg-amber-600 hover:bg-amber-500 px-4 rounded-lg text-sm font-medium">
                     Confirm
                 </button>
+                <button onclick="sendApproval('no')"
+                        class="bg-slate-700 hover:bg-slate-600 px-4 rounded-lg text-sm font-medium">
+                    <i class="fa-solid fa-xmark mr-1"></i>Reject
+                </button>
+            </div>
+            <div class="mt-2 text-xs text-slate-400">
+                Paste the token to apply, or Reject to cancel. Submitting a new deploy or
+                release replaces this one; anything else just reminds you it is waiting.
             </div>
         `;
         div.className = 'message mx-auto interrupt-box rounded-2xl p-4 text-sm';

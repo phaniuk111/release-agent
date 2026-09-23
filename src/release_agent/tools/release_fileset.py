@@ -223,7 +223,25 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
 
         script = os.path.join(repo_dir, settings.release_updater_script)
         if not os.path.isfile(script):
-            raise RuntimeError(f"updater script not found at {settings.release_updater_script}")
+            # Three settings decide this — the repo, the branch it landed on, and
+            # the path — so naming only the path sends people to the wrong one.
+            # Say which repo and branch were actually searched, and show what IS
+            # in the directory (or that the directory is missing), because the
+            # usual causes are a DF repo that keeps the script elsewhere and a
+            # landing branch that simply does not carry it.
+            where = os.path.dirname(script) or repo_dir
+            if os.path.isdir(where):
+                names = sorted(os.listdir(where))[:12]
+                found = ("directory holds: " + ", ".join(names)) if names else "that directory is empty"
+            else:
+                rel = os.path.relpath(where, repo_dir)
+                found = f"there is no {rel}/ directory on this branch"
+            raise RuntimeError(
+                f"updater script not found at {settings.release_updater_script} "
+                f"in {repo_full} on branch {landing} — {found}. "
+                f"Point RELEASE_UPDATER_SCRIPT at the real path, or land the release "
+                f"on a branch that carries the script (DF_RELEASE_BRANCHES)."
+            )
         rc, script_output = _run(
             [sys.executable, script, "--release-details-file", details_path],
             cwd=repo_dir, timeout=180,

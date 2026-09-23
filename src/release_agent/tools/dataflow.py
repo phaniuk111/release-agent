@@ -170,8 +170,37 @@ def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
         text = str(raw)
         for name, value in values.items():
             text = text.replace("{" + name + "}", value)
+        leftover = _unsubstituted(text)
+        if leftover:
+            # The easy mistake is writing the workflow's own input NAME as the
+            # placeholder ({"module": "{module}"}), which substitutes nothing and
+            # dispatches the literal text. GitHub then rejects it with "Provided
+            # value '{module}' for input 'module' not in the list", which reads
+            # like a choice-list problem and sends you looking in the wrong place.
+            raise ValueError(
+                f"DF_DISPATCH_INPUTS: input {str(key)!r} still contains {leftover} "
+                f"after substitution. The KEY is your workflow's input name; the "
+                f"VALUE must use one of {{image}}, {{tag}}, {{environment}} — e.g. "
+                f'{{"{key}": "{{image}}"}}. Nothing was dispatched.'
+            )
         out[str(key)] = text
     return out
+
+
+def _unsubstituted(text: str) -> str:
+    """The first ``{placeholder}`` left in ``text``, or "" — so a template that
+    names something we do not substitute fails HERE, with a message naming it,
+    instead of at GitHub. No regex (house rule): a brace scan is enough."""
+    start = text.find("{")
+    while start != -1:
+        end = text.find("}", start + 1)
+        if end == -1:
+            return ""
+        inner = text[start + 1:end]
+        if inner and "{" not in inner:
+            return "{" + inner + "}"
+        start = text.find("{", start + 1)
+    return ""
 
 
 def _dispatch_mapping() -> dict:

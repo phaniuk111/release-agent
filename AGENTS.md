@@ -27,7 +27,12 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    deterministic preview → exact `CONFIRM-XXXXXX` token. High-impact ops tools
    (merge_prod_release, prod removals, terminal promotions) pause on a yes/no approval.
    Free-form chat can NEVER mutate deployments (MutationGuardPlugin enforces).
-   Tokens are SINGLE-USE: spent before anything mutates. Deploy-graph nodes never
+   Tokens are SINGLE-USE: spent before anything mutates. A pending approval or
+   token is consumed ONLY by an explicit answer (yes/no; the exact token, or
+   `no`); a NEW deploy/release request replaces it — the old one is cancelled,
+   never applied, and the new one gets its own token — and anything else is a
+   reminder, not a rejection (`_reply_kind` in adk_service.py). Both pending
+   stores are keyed by (owner, thread). Deploy-graph nodes never
    raise (ADK 2.9 re-runs a failed node on resume, repeating side effects) — a
    failure is returned as an outcome — and do blocking GitHub/git work on a
    thread (`FunctionNode` runs sync code on the event loop). A DF deploy raises
