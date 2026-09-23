@@ -139,8 +139,10 @@ def _merge_pr(pr, method: str = "squash"):
         if pr.mergeable_state == "dirty":
             return False, MERGE_CONFLICT
         return False, f"awaiting review/checks ({pr.mergeable_state})"
+    from . import attribution
+
     try:
-        pr.merge(merge_method=method)
+        pr.merge(merge_method=method, **attribution.merge_kwargs())
         return True, "merged"
     except Exception as e:
         reason = _merge_refusal_reason(e)
@@ -238,7 +240,10 @@ def _raise_hop_pr(repo, branch: str, file_mutations: list, extra_files: dict | N
         except Exception:
             pass
         return None, None
-    return repo.create_pull(title=f"{summary} (→ {branch})", body=summary, head=work, base=branch), work
+    from . import attribution
+
+    return repo.create_pull(title=f"{summary} (→ {branch})", body=attribution.with_trailer(summary),
+                            head=work, base=branch), work
 
 
 def _supersede(repo, pr, work: str, branch: str) -> None:

@@ -166,12 +166,15 @@ def _upsert_json_file(repo, branch: str, path: str, new_doc: dict) -> None:
         sha = c.sha
     except Exception:
         sha = None
+    from . import attribution
+
     content = json.dumps(new_doc, indent=2)
-    msg = f"chore(release): update {path}"
+    msg = attribution.with_trailer(f"chore(release): update {path}")
+    who = attribution.author_kwargs()
     if sha:
-        repo.update_file(path, msg, content, sha, branch=branch)
+        repo.update_file(path, msg, content, sha, branch=branch, **who)
     else:
-        repo.create_file(path, msg, content, branch=branch)
+        repo.create_file(path, msg, content, branch=branch, **who)
 
 
 def _read_json_file(repo, branch: str, path: str) -> dict:

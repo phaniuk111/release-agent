@@ -70,7 +70,10 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    person by a stable digest, until `TRACE_CONTENT=true` deliberately admits
    prompts, tool arguments and emails for a sink inside the bank.
    Identity comes only from a VERIFIED token (identity.py) —
-   a header value is never trusted just because it is present. `.env` and
+   a header value is never trusted just because it is present. Every commit
+   and PR the portal makes names that verified caller (`tools/attribution.py`:
+   a `Requested-by:` trailer + the git author; `{requested_by}` for DF run
+   names) — never a typed email, which is a claim, not an identity. `.env` and
    `.claude/launch.json` stay untracked.
 6. **LLM boundaries**: facts come from tools; charts/tables are model-emitted specs
    rendered by deterministic code (vendored Chart.js, no CDN — Tailwind, Font Awesome and Inter are vendored too, `static/vendor/`); the classifier routes

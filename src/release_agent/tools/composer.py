@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import attribution
 from ._common import settings, _get_github_client
 
 # The expression that identifies OUR version fallback. Both quote styles occur
@@ -198,10 +199,11 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
             try:
                 gh_repo.update_file(
                     path,
-                    f"Bump {name} DF template version to {version}",
+                    attribution.with_trailer(f"Bump {name} DF template version to {version}"),
                     desired,
                     branch_blob.sha,
                     branch=branch,
+                    **attribution.author_kwargs(),
                 )
             except Exception as e:
                 problems.append({"file": path, "error": str(e)})
@@ -248,7 +250,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
     try:
         pr = gh_repo.create_pull(
             title=f"Bump {environment.upper()} DAG DF template version to {version}",
-            body=body, head=branch, base=settings.composer_branch,
+            body=attribution.with_trailer(body), head=branch, base=settings.composer_branch,
         )
     except Exception as e:
         # Lost a race with another attempt opening the same PR: that is success.

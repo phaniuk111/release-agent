@@ -69,7 +69,8 @@ class FakePR:
         if state:
             self.state = state
 
-    def merge(self, merge_method="squash"):
+    def merge(self, merge_method="squash", commit_message=None):
+        self.merge_message = commit_message
         self.repo.files.setdefault(self.base.ref, {}).update(
             self.repo.files.get(self.head.ref, {})
         )
@@ -92,6 +93,7 @@ class FakeRepo:
             for b, fs in initial.items()
         }
         self.prs = []
+        self.writes = []          # every create_file/update_file: path, msg, branch, author
         self._pr = 0
 
     def get_git_ref(self, name):
@@ -107,10 +109,12 @@ class FakeRepo:
             raise Exception("404")
         return FakeContent(fs[path])
 
-    def create_file(self, path, msg, content, branch=None):
+    def create_file(self, path, msg, content, branch=None, author=None):
+        self.writes.append({"path": path, "msg": msg, "branch": branch, "author": author})
         self.files.setdefault(branch, {})[path] = content
 
-    def update_file(self, path, msg, content, sha, branch=None):
+    def update_file(self, path, msg, content, sha, branch=None, author=None):
+        self.writes.append({"path": path, "msg": msg, "branch": branch, "author": author})
         self.files.setdefault(branch, {})[path] = content
 
     def create_pull(self, title, body, head, base):

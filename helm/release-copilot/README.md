@@ -349,7 +349,7 @@ that has not seen that thread.
 | `jiraToken.existingSecret` / `.existingSecretKey` | `""` / `jira-api-token` | Secret holding the technical-account API token |
 | `config.DF_DEPLOY_REPO` / `.DF_DEPLOY_WORKFLOW` | `""` / `df-deploy.yml` | Dataflow workflow-dispatch deploys |
 | `config.DF_DEPLOY_REF` | `""` | Branch to dispatch on; empty = repo default branch |
-| `config.DF_DISPATCH_INPUTS` | `{"image","tag","environment"}` | Maps our values onto the DF workflow's declared input names |
+| `config.DF_DISPATCH_INPUTS` | `{"image","tag","environment"}` | Maps our values onto the DF workflow's declared input names; `{requested_by}` = the verified caller, for the run name |
 | `config.COMPOSER_REPO` | `""` | Composer DAGs repo; empty = no DAG version bump offered |
 | `config.COMPOSER_BRANCH` / `.COMPOSER_DAG_DIR_PATTERN` | `main` / `{env}` | branch the bump PR targets, and the per-env DAG folder |
 
@@ -377,6 +377,45 @@ config:
   DF_DEPLOY_REF: "main"              # branch holding that file
   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
 ```
+
+### Who asked: the person in GitHub's history and in the run name
+
+Every commit and PR the portal makes carries the **verified** caller
+(`IDENTITY_HEADER` on): a `Requested-by: <email>` trailer on the commit message
+and the PR body, and the commit *author* set to the person (the committer stays
+the token's owner, so GitHub shows "alice authored, bot committed"). The prod
+merge commit carries the trailer too. With identity off nothing is invented —
+a typed email is a claim, not an identity. Find them with
+`git log --format='%(trailers:key=Requested-by)'`.
+
+A DF deploy is a `workflow_dispatch`, which has no commit — so the person goes
+into the **run name** instead. Map the `{requested_by}` placeholder onto an
+input your workflow declares, and use it in `run-name:`:
+
+```yaml
+config:
+  DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}", "requested_by": "{requested_by}"}'
+```
+
+```yaml
+# in the DF repo's workflow
+run-name: "Deploy ${{ inputs.module }}:${{ inputs.binary_version }} — requested by ${{ inputs.requested_by || github.actor }}"
+on:
+  workflow_dispatch:
+    inputs:
+      module: { type: choice, options: [...] }
+      binary_version: { type: string, required: true }
+      requested_by:
+        type: string
+        required: false
+        description: Verified email of the person who asked the portal to deploy
+```
+
+Order of rollout does not matter: GitHub refuses a dispatch carrying an input
+the workflow does not declare, so if the ConfigMap maps `requested_by` before
+the workflow declares it, the portal drops **that one input** and dispatches
+the rest (logged as a warning). A mismapped `module`/`binary_version` still
+fails loudly, as it should.
 
 The **Deploy to DF UAT** form then labels itself from the workflow: the fields
 read *Module* and *Binary version*, and a `choice` input renders as a dropdown of

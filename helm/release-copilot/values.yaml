@@ -127,9 +127,13 @@ config:
   # Names of the workflow_dispatch inputs to send. GitHub REJECTS the dispatch
   # (HTTP 422 "Unexpected inputs provided") if the payload carries an input the
   # workflow does not declare, so this must match the target workflow's `inputs:`
-  # block. {image}, {tag} and {environment} are substituted; omit a key to not
-  # send it. For a workflow declaring module + binary_version:
+  # block. {image}, {tag}, {environment} and {requested_by} are substituted;
+  # omit a key to not send it. For a workflow declaring module + binary_version:
   #   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
+  # {requested_by} is the VERIFIED caller's email ("" with identity off). Map it
+  # onto an input the workflow declares and use it in `run-name:` so the
+  # Actions list shows who asked, not the bot token (see the README). If the
+  # workflow does not declare it yet, that one input is dropped — never a 422.
   DF_DISPATCH_INPUTS: '{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}'
   # CARE/DF release forms fill every change-request field except start and end.
   # The release name is "<prefix><Month Dayth YYYY> : Release <N>", N read from

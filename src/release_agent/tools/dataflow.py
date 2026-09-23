@@ -14,6 +14,7 @@ differently (``module``/``binary_version`` rather than ``image``/``tag``). See
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import itertools
 import json
 import time
@@ -21,6 +22,8 @@ import time
 from pydantic import BaseModel, Field
 
 from ._common import settings, tool, _get_github_client
+
+logger = logging.getLogger("release_copilot")
 
 
 class DeployDataflowInput(BaseModel):
@@ -164,7 +167,13 @@ def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
             # silently reach the wrong workflow input.
             raise ValueError(error)
         return {"image": image, "tag": tag, "environment": env}
-    values = {"image": image, "tag": tag, "environment": env}
+    from . import attribution
+
+    # {requested_by} is the VERIFIED caller ("" with identity off — never a
+    # typed name): a team maps it onto an input its workflow declares and uses
+    # in `run-name:`, so the Actions list shows who asked, not the bot token.
+    values = {"image": image, "tag": tag, "environment": env,
+              "requested_by": attribution.requester_email()}
     out = {}
     for key, raw in mapping.items():
         text = str(raw)
@@ -180,11 +189,29 @@ def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
             raise ValueError(
                 f"DF_DISPATCH_INPUTS: input {str(key)!r} still contains {leftover} "
                 f"after substitution. The KEY is your workflow's input name; the "
-                f"VALUE must use one of {{image}}, {{tag}}, {{environment}} — e.g. "
+                f"VALUE must use one of {{image}}, {{tag}}, {{environment}}, {{requested_by}} — e.g. "
                 f'{{"{key}": "{{image}}"}}. Nothing was dispatched.'
             )
         out[str(key)] = text
     return out
+
+
+def _without_undeclared_requester(inputs: dict, declared: dict) -> tuple[dict, list[str]]:
+    """Drop the requested_by input(s) the workflow at this ref does not declare.
+
+    GitHub refuses a dispatch carrying any input the workflow lacks, so a
+    ConfigMap that maps {requested_by} before the pipeline declares the input
+    would turn every DF deploy into a 422 until the pipeline caught up.
+    Attribution is optional; the deploy is not. ONLY that placeholder is
+    dropped — a mismapped image/tag input must still fail loudly at GitHub.
+    ``declared`` empty means the workflow could not be read: drop nothing.
+    """
+    if not declared:
+        return inputs, []
+    requester_keys = {str(k) for k, raw in _dispatch_mapping().items()
+                      if str(raw).strip() == "{requested_by}"}
+    dropped = sorted(k for k in inputs if k in requester_keys and k not in declared)
+    return {k: v for k, v in inputs.items() if k not in dropped}, dropped
 
 
 def _unsubstituted(text: str) -> str:
@@ -291,6 +318,10 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
         ref = (settings.df_deploy_ref or "").strip() or repo.default_branch
     except Exception as e:
         return f"ERROR deploying dataflow: {e}"
+    inputs, dropped = _without_undeclared_requester(inputs, workflow_dispatch_inputs(repo, workflow, ref))
+    if dropped:
+        logger.warning("DF dispatch: %s not declared by %s@%s — sent without it",
+                       ", ".join(dropped), settings.df_deploy_workflow, ref)
 
     since = _dt.datetime.now(_dt.timezone.utc)
     try:

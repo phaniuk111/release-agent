@@ -44,6 +44,7 @@ from ._common import (
     active_deploy_repo,
 )
 from . import git_snapshot, release_chain
+from . import attribution
 from .promotion import _merge_pr
 from .release_window import _open_prd_pr_blocker
 
@@ -373,11 +374,16 @@ def apply_release_fileset(prep: dict) -> dict:
         repo_full = prep.get("deployment_repo") or active_deploy_repo()
         gh_repo = _get_github_client().get_repo(repo_full)
         initiator = (prep.get("details") or {}).get("change_initiator") or ""
+        # The verified caller authors the commit; the typed initiator is the
+        # fallback when identity is off (a claim, so never over a verified name).
+        author_name, author_email = attribution.author() or (
+            initiator.split("@")[0] or "release-copilot", initiator or "release-copilot@localhost")
         try:
             sha = git_snapshot.commit_via_api(
                 gh_repo, repo_dir, git_snapshot.stage_all(repo_dir),
-                git_snapshot.base_commit(repo_dir), prep.get("release_name") or branch,
-                initiator.split("@")[0] or "release-copilot", initiator or "release-copilot@localhost",
+                git_snapshot.base_commit(repo_dir),
+                attribution.with_trailer(prep.get("release_name") or branch),
+                author_name, author_email,
             )
             gh_repo.create_git_ref(f"refs/heads/{branch}", sha)
         except Exception as e:  # noqa: BLE001 — nothing was pushed; say why
@@ -395,7 +401,7 @@ def apply_release_fileset(prep: dict) -> dict:
         kind = prep.get("kind") or "care"
         landing = prep.get("landing_branch") or release_chain.landing(kind)
         pr = gh_repo.create_pull(
-            title=prep.get("release_name"), body=body,
+            title=prep.get("release_name"), body=attribution.with_trailer(body),
             head=branch, base=landing,
         )
         merged, detail = _merge_pr(pr, "merge")
@@ -605,12 +611,13 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             current = _read_raw(gh_repo, path, work)
             if current == content:
                 continue
-            message = f"Promote release file {path} -> {target_branch}"
+            message = attribution.with_trailer(f"Promote release file {path} -> {target_branch}")
+            who = attribution.author_kwargs()
             try:
                 existing = gh_repo.get_contents(path, ref=work)
-                gh_repo.update_file(path, message, content, existing.sha, branch=work)
+                gh_repo.update_file(path, message, content, existing.sha, branch=work, **who)
             except Exception:
-                gh_repo.create_file(path, message, content, branch=work)
+                gh_repo.create_file(path, message, content, branch=work, **who)
             changed.append(path)
         if not changed:
             try:
@@ -624,7 +631,7 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
         release_name = (pr.title if pr else release_branch)
         promo_pr = gh_repo.create_pull(
             title=f"{release_name} (→ {target_branch})",
-            body=f"Promotes the release file-set from {release_branch}.",
+            body=attribution.with_trailer(f"Promotes the release file-set from {release_branch}."),
             head=work, base=target_branch,
         )
         merged, detail = _merge_pr(promo_pr, "squash")
