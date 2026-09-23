@@ -277,7 +277,14 @@ config:
   IDENTITY_HEADER: ""                      # x-asm-rctoken for CSM user auth
   IDENTITY_JWKS_URL: "http://authservice.asm-user-auth.svc.cluster.local:10004/_gcp_user_auth/jwks"
   IDENTITY_ISSUER: "authservice.asm-user-auth.svc.cluster.local"
-  IDENTITY_AUDIENCE: ""                    # the RCToken's aud (UserAuthConfig) — set it
+  # Must equal UserAuthConfig.spec.outputJWTAudience. Empty = aud NOT checked;
+  # the sample value "test_audience" means every app in the mesh shares one.
+  IDENTITY_AUDIENCE: ""
+  # The RCToken carries NO email unless the mesh maps one in:
+  #   UserAuthConfig.spec.attributeMapping: { email: assertion.email }
+  # Without it the token verifies and nobody is signed in — everything looks
+  # normal and every per-person protection (tokens, approvals, PATs, memory)
+  # quietly collapses to one anonymous user. /api/whoami must show YOUR email.
   IDENTITY_EMAIL_CLAIM: "attributes.email,email"
   IDENTITY_REQUIRED: "false"               # true = refuse queue writes with no verified user
   # CARE/DF release forms: lets devs type bare name:version (they can always
@@ -317,7 +324,11 @@ config:
   # sign-off actually depends on (e.g. a scanner gate) — not every check that
   # happens to run in the pipeline.
   CONTROL_PREFIXES: "RCTLD,RLFT,RFTL"
-  # Path (inside DEPLOY_REPO) of the team's release file-set generator.
+  # Path of the team's release file-set generator, INSIDE whichever repo the
+  # release lands in — DEPLOY_REPO for CARE, DF_RELEASE_REPO for DF — on that
+  # kind's landing branch (CARE: SIT; DF: the first of DF_RELEASE_BRANCHES).
+  # ONE value for both, so the two repos must keep it at the same path. It is
+  # invoked as: python <script> --release-details-file <transient json>.
   RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
   # ADK runtime (leave true).
   ADK_CONTEXT_CACHE: "true"
