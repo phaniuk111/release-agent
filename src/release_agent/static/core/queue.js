@@ -196,8 +196,11 @@ export function requeueRows(items) {
             skipped.push({ artifact, reason: 'no JIRA ticket on record — the gate needs one; add it in the JIRA column, then tick' });
             continue;
         }
+        // The details it was first queued with come back with it — they feed
+        // the CHG draft — so nothing is retyped and nothing is silently lost.
         rows.push({ artifact, build_run_url: it.build_run_url, jira_ticket: it.jira_ticket || '',
-                    prl1_only: !!it.prl1_only, df_only: !!it.df_only, target_envs: it.target_envs || '' });
+                    prl1_only: !!it.prl1_only, df_only: !!it.df_only, target_envs: it.target_envs || '',
+                    change_details: it.change_details || '', note: it.note || '' });
     }
     return { rows, skipped };
 }

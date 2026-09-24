@@ -127,7 +127,11 @@ test('history ticks become batch rows with the ORIGINAL run and routing; the unq
         { artifact_name: 'c', artifact_version: '3.0.0', build_run_url: 'https://x/run/3', in_queue: true },
     ]);
     assert.deepEqual(rows, [{ artifact: 'a:1.0.0', build_run_url: 'https://x/run/1', jira_ticket: 'ABC-1',
-                              prl1_only: true, df_only: false, target_envs: 'prl1' }]);
+                              prl1_only: true, df_only: false, target_envs: 'prl1', change_details: '', note: '' }]);
+    const withDetails = requeueRows([{ artifact_name: 'a', artifact_version: '1.0.0', build_run_url: 'https://x/run/1',
+                                       jira_ticket: 'ABC-1', change_details: 'New HA measure type', note: 'partial impl' }]);
+    assert.equal(withDetails.rows[0].change_details, 'New HA measure type');
+    assert.equal(withDetails.rows[0].note, 'partial impl');
     assert.deepEqual(skipped.map(s => s.artifact), ['b:2.0.0', 'c:3.0.0']);
     assert.match(skipped[0].reason, /no build run/);
     assert.match(skipped[1].reason, /already queued/);

@@ -81,6 +81,7 @@ async function _render(wrap, flash) {
                 ' · ' + rel.items.length + ' chart' + (rel.items.length === 1 ? '' : 's') + '</span></td></tr>';
             rel.items.forEach((it, ii) => {
                 const label = esc(it.artifact_name) + ':' + esc(it.artifact_version || '');
+                const detail = [it.change_details, it.note].filter(Boolean).join(' · ');
                 // A chart that never went through the queue (typed straight into a
                 // release form) has no run on record — the gate still needs one, so
                 // the row takes it here and the tick enables once it is given.
@@ -91,7 +92,9 @@ async function _render(wrap, flash) {
                     '<td class="px-2 py-1.5"><input type="checkbox" data-pick="' + ri + ':' + ii + '"' +
                     (it.requeueable && it.jira_ticket ? '' : ' disabled') + (why ? ' title="' + esc(why) + '"' : '') + '></td>' +
                     '<td class="px-2 py-1.5 font-mono text-slate-200 whitespace-nowrap">' + label +
-                    (it.in_queue ? ' <span class="font-sans text-emerald-400">queued again</span>' : '') + '</td>' +
+                    (it.in_queue ? ' <span class="font-sans text-emerald-400">queued again</span>' : '') +
+                    (detail ? '<div class="font-sans text-slate-500 max-w-[16rem] truncate" title="' + esc(detail) + '">' +
+                        esc(detail) + '</div>' : '') + '</td>' +
                     '<td class="px-2 py-1.5 text-slate-300 whitespace-nowrap">' + esc(queueDestination(it)) + '</td>' +
                     '<td class="px-2 py-1.5 text-amber-300/80 whitespace-nowrap">' + (it.jira_ticket ? esc(it.jira_ticket)
                         : (it.in_queue ? '—'
@@ -169,6 +172,7 @@ async function _render(wrap, flash) {
             err.textContent = '';
             const from = [...new Set(chosen.map(c => c.rel.release_name))].join(', ');
             let res = null;
+            // Rows carry their own details; the shared line is only for one that had none.
             try { res = await queueBatch({ requested_by: who, change_details: 'Re-queued from ' + from, rows }); }
             catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
             const queued = (res && res.queued) || [], refused = (res && res.refused) || [];

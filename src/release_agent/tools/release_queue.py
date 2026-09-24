@@ -680,6 +680,7 @@ def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[
             "df_only": bool(origin.get("df_only")),
             "target_envs": origin.get("target_envs") or "",
             "change_details": origin.get("change_details") or "",
+            "note": _allowed_and_note(origin)[1] if origin else "",
             "queued_by": origin.get("requested_by") or "",
             "in_queue": already,
             "requeueable": bool(origin.get("build_run_url")) and not already,

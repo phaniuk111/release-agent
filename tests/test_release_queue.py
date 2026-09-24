@@ -512,3 +512,36 @@ def test_a_queue_write_invalidates_the_history_cache(monkeypatch):
     RQ._insert([{"event_id": "x", "event_type": "queued", "event_ts": "2026-07-13T10:00:00", "artifact_name": "svc-a"}])
     assert RQ._history_cache["at"] == 0.0, "stale after a write"
     RQ._history_cache.update(at=0.0, days=0, value=None)
+
+
+def test_history_items_carry_the_details_they_were_queued_with():
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00", build_run_url="https://x/run/1", jira_ticket="ABC-1",
+            change_details="New HA measure type", note="partial implementation"),
+        _ev("released", "svc-a", "2026-07-14T09:00:00", release_name="R1", pr_number=1),
+    ]
+    item = RQ.release_history(events)[0]["items"][0]
+    assert item["change_details"] == "New HA measure type" and item["note"] == "partial implementation"
+
+
+def test_a_batch_row_s_own_details_win_over_the_shared_ones(monkeypatch):
+    """Putting a chart back from the history: its original change details and
+    note reach the queue event, not the batch's "Re-queued from …" line —
+    that line only covers a row that had none."""
+    from release_agent import app_fastapi as APP
+    from release_agent.tools import queue_gate as QG
+
+    seen = []
+    monkeypatch.setattr(QG, "queue_release_intent", lambda **kw: seen.append(kw) or {"ok": True, "artifact": kw["artifact"]})
+    monkeypatch.setattr(APP, "_caller", lambda request: None)
+    req = APP.QueueBatchRequest(
+        requested_by="dev@example.com", change_details="Re-queued from R1", note="",
+        rows=[APP.QueueRow(artifact="svc-a:1.0.0", build_run_url="https://x/run/1", jira_ticket="ABC-1",
+                           change_details="New HA measure type", note="partial implementation"),
+              APP.QueueRow(artifact="svc-b:2.0.0", build_run_url="https://x/run/2", jira_ticket="ABC-2")],
+    )
+    from types import SimpleNamespace
+    APP.release_queue_add_batch(req, SimpleNamespace(headers={}))
+    by = {kw["artifact"]: kw for kw in seen}
+    assert by["svc-a:1.0.0"]["change_details"] == "New HA measure type" and by["svc-a:1.0.0"]["note"] == "partial implementation"
+    assert by["svc-b:2.0.0"]["change_details"] == "Re-queued from R1", "a row with no details of its own gets the shared line"

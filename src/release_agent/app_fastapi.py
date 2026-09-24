@@ -688,6 +688,11 @@ class QueueRow(BaseModel):
     jira_ticket: str = ""
     prl1_only: bool = False
     df_only: bool = False
+    # A row's own change description / note, when it has one — the release
+    # history puts a chart back with the details it was first queued with,
+    # so the CHG draft reads as it did. Empty = the submission's shared ones.
+    change_details: str = ""
+    note: str = ""
     # Which environments the developer ticked. prl1_only stays the boolean the
     # CARE release routing reads; this records the full selection, which the
     # boolean cannot: a DF entry may name BOTH pipelines, and which one is
@@ -787,9 +792,9 @@ def release_queue_add_batch(req: QueueBatchRequest, request: Request):
                 prl1_only=row.prl1_only,
                 target_envs=row.target_envs,
                 df_only=row.df_only,
-                note=req.note,
+                note=row.note or req.note,
                 jira_ticket=row.jira_ticket,
-                change_details=req.change_details,
+                change_details=row.change_details or req.change_details,
                 build_run_url=row.build_run_url,
             )
         except Exception as e:                       # one bad row never kills the batch
