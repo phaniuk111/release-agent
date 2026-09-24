@@ -495,6 +495,9 @@ def test_release_history_endpoint_clamps_its_window_and_caches(monkeypatch):
     APP.release_history_get(days=9999, limit=500)
     assert calls == [365], "the second read within the TTL is served from the cache"
     RQ._history_cache.update(at=0.0, days=0, value=None)
+    RQ._history_cache.update(at=0.0, days=0, value=None)
+    assert APP.release_history_get()["days"] == 21, "three weeks unless asked otherwise"
+    RQ._history_cache.update(at=0.0, days=0, value=None)
 
 
 def test_a_queue_write_invalidates_the_history_cache(monkeypatch):

@@ -13,6 +13,8 @@ import { showQueueTable } from './queue_table.js';
 // release's queue THROUGH THE SAME GATE as the first time, with the run that
 // built them — so eligibility is checked afresh, and a refusal reads like any
 // other. Nothing here deploys, releases or edits history.
+const HISTORY_DAYS = 21;
+
 export async function showReleaseHistory() {
     const _ph = opening('the release history');
     const chat = document.getElementById('chat');
@@ -26,13 +28,15 @@ export async function showReleaseHistory() {
 async function _render(wrap, flash) {
     wrap.innerHTML = '<div class="text-[11px] text-slate-500"><span class="dots"><span></span><span></span>' +
         '<span></span></span> Loading the release history…</div>';
-    const ctx = await getContext(HISTORY_PATH, { releases: [] });
+    // Three weeks: a release that has to be redone is days old, not months —
+    // and a shorter window is a smaller BigQuery scan on every open.
+    const ctx = await getContext(HISTORY_PATH + '?days=' + HISTORY_DAYS, { releases: [] });
     const releases = ctx.releases || [];
     wrap.innerHTML =
         '<div class="mb-2 flex items-center gap-2 pr-6">' +
         '<span class="font-semibold text-sky-300"><i class="fa-solid fa-clock-rotate-left mr-1"></i>Release history</span>' +
         '<span class="text-[11px] text-slate-500">' + (ctx.ok === false ? '' :
-            releases.length + ' release' + (releases.length === 1 ? '' : 's') + ' in ' + (ctx.days || 90) + ' days') + '</span>' +
+            releases.length + ' release' + (releases.length === 1 ? '' : 's') + ' in the last 3 weeks') + '</span>' +
         '<span class="flex-1"></span>' +
         '<button type="button" data-h="refresh" title="Refresh" class="text-slate-400 hover:text-white text-xs">' +
         '<i class="fa-solid fa-rotate-right"></i></button>' +
@@ -55,7 +59,7 @@ async function _render(wrap, flash) {
     } else if (!releases.length) {
         const d = document.createElement('div');
         d.className = 'text-[11px] text-slate-500';
-        d.textContent = 'No release has shipped from the queue in this window.';
+        d.textContent = 'No release has shipped from the queue in the last 3 weeks.';
         wrap.appendChild(d);
     } else {
         const hint = document.createElement('div');

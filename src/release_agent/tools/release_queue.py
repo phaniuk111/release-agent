@@ -688,7 +688,7 @@ def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[
     return releases[:limit]
 
 
-def history(days: int = 90, limit: int = 25, use_cache: bool = True) -> dict[str, Any]:
+def history(days: int = 21, limit: int = 25, use_cache: bool = True) -> dict[str, Any]:
     """Past releases for the history table — cached like the queue, and
     cleared by every write, so a chart just queued again shows as such."""
     import time

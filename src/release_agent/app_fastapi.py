@@ -918,7 +918,7 @@ def release_queue_withdraw(req: QueueWithdrawRequest, request: Request):
 
 
 @app.get("/api/release-history")
-def release_history_get(days: int = 90, limit: int = 25):
+def release_history_get(days: int = 21, limit: int = 25):
     """Past releases and what each shipped, each chart joined to the queue
     event that carried it — enough to put a chart back into the next release
     after a release that had to be redone. Read-only: queueing again goes
