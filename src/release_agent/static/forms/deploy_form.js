@@ -27,7 +27,6 @@ export async function showDeployForm(target, name, version) {
     if (target === 'df-release') { showReleaseForm('df'); return; }
     if (target === 'queue') { showQueueForm(); return; }
     if (target === 'queue-table') { showQueueTable(); return; }
-    if (target === 'queue-remove') { showQueueTable({ remove: true }); return; }
     if (target === 'release-history') { showReleaseHistory(); return; }
     if (target === 'monitoring') { showMonitoring(); return; }
     if (target === 'bq-cost') { showBqCost(); return; }
