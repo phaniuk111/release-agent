@@ -77,8 +77,11 @@ async function _render(wrap, flash) {
                 ' · ' + rel.items.length + ' chart' + (rel.items.length === 1 ? '' : 's') + '</span></td></tr>';
             rel.items.forEach((it, ii) => {
                 const label = esc(it.artifact_name) + ':' + esc(it.artifact_version || '');
+                // A chart that never went through the queue (typed straight into a
+                // release form) has no run on record — the gate still needs one, so
+                // the row takes it here and the tick enables once it is given.
                 const why = it.in_queue ? 'Already queued for the next release'
-                    : (!it.build_run_url ? 'No build run was recorded when it was queued — queue it by hand with its run' : '');
+                    : (!it.build_run_url ? 'No build run on record — paste the run that built it, then tick' : '');
                 html += '<tr class="border-b border-slate-800 align-top" data-item="' + ri + ':' + ii + '">' +
                     '<td class="px-2 py-1.5"><input type="checkbox" data-pick="' + ri + ':' + ii + '"' +
                     (it.requeueable ? '' : ' disabled') + (why ? ' title="' + esc(why) + '"' : '') + '></td>' +
@@ -88,7 +91,10 @@ async function _render(wrap, flash) {
                     '<td class="px-2 py-1.5 text-amber-300/80 whitespace-nowrap">' + esc(it.jira_ticket || '—') + '</td>' +
                     '<td class="px-2 py-1.5 whitespace-nowrap">' + (it.build_run_url
                         ? '<a href="' + esc(it.build_run_url) + '" target="_blank" rel="noopener" class="text-sky-400 hover:underline">run</a>'
-                        : '<span class="text-slate-500" title="' + esc(why) + '">no run recorded</span>') + '</td>' +
+                        : (it.in_queue ? '<span class="text-slate-500">—</span>'
+                           : '<input type="url" data-run="' + ri + ':' + ii + '" placeholder="paste the run that built it" ' +
+                             'title="' + esc(why) + '" class="bg-slate-900 border border-amber-700/60 rounded px-2 py-0.5 ' +
+                             'text-[11px] text-white w-56 focus:outline-none">')) + '</td>' +
                     '<td class="px-2 py-1.5 text-slate-400 whitespace-nowrap">' + esc(shortName(it.queued_by) || '—') + '</td></tr>';
             });
         });
@@ -109,8 +115,23 @@ async function _render(wrap, flash) {
         const email = act.querySelector('.h-email'), go = act.querySelector('.h-go'), err = act.querySelector('.h-err');
         try { email.value = localStorage.getItem('queue_email') || ''; } catch (e) {}
         lockToSignedIn(email);
-        const picked = () => [...scroller.querySelectorAll('input[data-pick]:checked')]
-            .map(cb => { const [ri, ii] = cb.dataset.pick.split(':').map(Number); return { rel: releases[ri], it: releases[ri].items[ii] }; });
+        // The typed run travels with the item — the gate checks it like any other.
+        const picked = () => [...scroller.querySelectorAll('input[data-pick]:checked')].map(cb => {
+            const [ri, ii] = cb.dataset.pick.split(':').map(Number);
+            const typed = scroller.querySelector('input[data-run="' + cb.dataset.pick + '"]');
+            const it = releases[ri].items[ii];
+            return { rel: releases[ri], it: typed && typed.value.trim() ? { ...it, build_run_url: typed.value.trim() } : it };
+        });
+        scroller.addEventListener('input', (e) => {
+            const run = e.target && e.target.dataset && e.target.dataset.run;
+            if (!run) return;
+            const cb = scroller.querySelector('input[data-pick="' + run + '"]');
+            const ok = /^https?:\/\/\S+\/actions\/runs\/\d+/.test(e.target.value.trim());
+            cb.disabled = !ok;
+            if (!ok) cb.checked = false;
+            cb.title = ok ? '' : 'No build run on record — paste the run that built it, then tick';
+            scroller.dispatchEvent(new Event('change'));
+        });
         scroller.addEventListener('change', () => {
             const n = picked().length;
             go.disabled = !n;

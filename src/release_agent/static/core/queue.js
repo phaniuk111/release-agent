@@ -189,7 +189,7 @@ export function requeueRows(items) {
         const artifact = it.artifact_name + ':' + (it.artifact_version || '');
         if (it.in_queue) { skipped.push({ artifact, reason: 'already queued for the next release' }); continue; }
         if (!it.build_run_url) {
-            skipped.push({ artifact, reason: 'no build run was recorded when it was queued — queue it by hand with the run that built it' });
+            skipped.push({ artifact, reason: 'no build run on record — paste the run that built it in the Build column, then tick' });
             continue;
         }
         rows.push({ artifact, build_run_url: it.build_run_url, jira_ticket: it.jira_ticket || '',
