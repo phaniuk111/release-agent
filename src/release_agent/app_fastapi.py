@@ -917,6 +917,17 @@ def release_queue_withdraw(req: QueueWithdrawRequest, request: Request):
         return release_queue.withdraw_intent(req.artifact_name, who, req.artifact_version)
 
 
+@app.get("/api/release-history")
+def release_history_get(days: int = 90, limit: int = 25):
+    """Past releases and what each shipped, each chart joined to the queue
+    event that carried it — enough to put a chart back into the next release
+    after a release that had to be redone. Read-only: queueing again goes
+    through /api/release-queue/batch, so eligibility is checked afresh."""
+    from .tools import release_queue
+
+    return release_queue.history(days=max(1, min(int(days), 365)), limit=max(1, min(int(limit), 100)))
+
+
 @app.get("/api/release-insights")
 def release_insights(pattern: str = "", days: int = 90, event_type: str = "released"):
     """Stats over the release/deploy history event log — powers the Insights

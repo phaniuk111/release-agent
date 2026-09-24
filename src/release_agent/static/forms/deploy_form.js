@@ -7,6 +7,7 @@ import { showMonitoring } from './monitoring.js';
 import { parseDeployInclude } from './parse.js';
 import { showQueueForm } from './queue_form.js';
 import { showQueueTable } from './queue_table.js';
+import { showReleaseHistory } from './release_history.js';
 import { showReleaseForm } from './release_form.js';
 
 // Deploy editor — shows the ACTUAL current deployment.json as editable JSON
@@ -27,6 +28,7 @@ export async function showDeployForm(target, name, version) {
     if (target === 'queue') { showQueueForm(); return; }
     if (target === 'queue-table') { showQueueTable(); return; }
     if (target === 'queue-remove') { showQueueTable({ remove: true }); return; }
+    if (target === 'release-history') { showReleaseHistory(); return; }
     if (target === 'monitoring') { showMonitoring(); return; }
     if (target === 'bq-cost') { showBqCost(); return; }
     // The only environment this form can write, whatever was asked for — the

@@ -447,3 +447,65 @@ def test_a_withdrawal_must_name_who_asked_for_it(monkeypatch):
 
     ok = RQ.withdraw_intent("svc", "dev@example.com", expected_version="1.0")
     assert ok["ok"] is True and wrote[0]["requested_by"] == "dev@example.com"
+
+
+def test_release_history_groups_what_shipped_and_carries_the_run_to_queue_again():
+    """A release that had to be redone: the history joins each shipped chart to
+    the queue event that carried it, so it can go back through the gate with
+    the run that built it. No run recorded = shown, not tickable."""
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00", artifact_version="1.0.0", build_run_url="https://x/run/1",
+            jira_ticket="ABC-1", prl1_only=True, target_envs="prl1"),
+        _ev("queued", "svc-b", "2026-07-13T11:00:00", artifact_version="2.0.0"),            # no run recorded
+        _ev("released", "svc-a", "2026-07-14T09:00:00", artifact_version="1.0.0",
+            release_name="July 14th 2026 : Release 1", pr_number=7, requested_by="devops@example.com"),
+        _ev("released", "svc-b", "2026-07-14T09:00:00", artifact_version="2.0.0",
+            release_name="July 14th 2026 : Release 1", pr_number=7, requested_by="devops@example.com"),
+        _ev("queued", "svc-a", "2026-07-20T10:00:00", artifact_version="1.1.0", build_run_url="https://x/run/2"),
+        _ev("released", "svc-a", "2026-07-21T09:00:00", artifact_version="1.1.0",
+            release_name="July 21st 2026 : Release 1", pr_number=9),
+        _ev("queued", "svc-a", "2026-07-22T10:00:00", artifact_version="1.1.0", build_run_url="https://x/run/2"),
+    ]
+    hist = RQ.release_history(events)
+    assert [h["release_name"] for h in hist] == ["July 21st 2026 : Release 1", "July 14th 2026 : Release 1"], "newest first"
+    older = hist[1]
+    assert older["pr_number"] == 7 and older["released_by"] == "devops@example.com"
+    a, b = older["items"]
+    assert (a["artifact_name"], a["build_run_url"], a["jira_ticket"], a["prl1_only"], a["target_envs"]) == \
+        ("svc-a", "https://x/run/1", "ABC-1", True, "prl1")
+    assert a["requeueable"] and a["queued_by"] == "dev@example.com"
+    assert b["artifact_name"] == "svc-b" and not b["requeueable"] and not b["in_queue"]
+    latest = hist[0]["items"][0]
+    assert latest["in_queue"] and not latest["requeueable"], "queued again already: a tick must not duplicate it"
+    assert RQ.release_history(events, limit=1) == hist[:1]
+
+
+def test_release_history_endpoint_clamps_its_window_and_caches(monkeypatch):
+    from release_agent import app_fastapi as APP
+
+    calls = []
+    monkeypatch.setattr(RQ, "queue_enabled", lambda: True)
+    monkeypatch.setattr(RQ, "_fetch_events", lambda days=120: calls.append(days) or [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00", build_run_url="https://x/run/1"),
+        _ev("released", "svc-a", "2026-07-14T09:00:00", release_name="R1", pr_number=1),
+    ])
+    RQ._history_cache.update(at=0.0, days=0, value=None)
+    out = APP.release_history_get(days=9999, limit=500)
+    assert out["ok"] and out["days"] == 365 and [r["release_name"] for r in out["releases"]] == ["R1"]
+    APP.release_history_get(days=9999, limit=500)
+    assert calls == [365], "the second read within the TTL is served from the cache"
+    RQ._history_cache.update(at=0.0, days=0, value=None)
+
+
+def test_a_queue_write_invalidates_the_history_cache(monkeypatch):
+    """Tick a chart in the history, and the next history read must show it as
+    queued again — not a 30s-old copy that still offers the tick."""
+    class _Client:
+        def insert_rows_json(self, table, rows, row_ids=None):
+            return []
+    monkeypatch.setattr(RQ, "_get_client", lambda: _Client())
+    monkeypatch.setattr(RQ, "queue_enabled", lambda: True)
+    RQ._history_cache.update(at=10**12, days=90, value={"ok": True, "releases": []})
+    RQ._insert([{"event_id": "x", "event_type": "queued", "event_ts": "2026-07-13T10:00:00", "artifact_name": "svc-a"}])
+    assert RQ._history_cache["at"] == 0.0, "stale after a write"
+    RQ._history_cache.update(at=0.0, days=0, value=None)

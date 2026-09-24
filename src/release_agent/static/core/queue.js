@@ -172,3 +172,28 @@ export function controlsSummary(q) {
     }
     return { state: 'unknown', label: 'not checked', title: 'no verified build run at queue time' };
 }
+
+/**
+ * The /api/release-queue/batch rows for charts ticked in the release history:
+ * the ORIGINAL build run, ticket and routing travel with each one, so the gate
+ * checks eligibility against the run that actually built that version. A chart
+ * with no run recorded, or one queued again already, cannot go back this way —
+ * it is returned in `skipped` with the reason, never dropped in silence.
+ * @param {{artifact_name: string, artifact_version?: string, build_run_url?: string, jira_ticket?: string,
+ *          prl1_only?: boolean, df_only?: boolean, target_envs?: string, in_queue?: boolean}[]} items
+ * @returns {{rows: object[], skipped: {artifact: string, reason: string}[]}}
+ */
+export function requeueRows(items) {
+    const rows = [], skipped = [];
+    for (const it of items || []) {
+        const artifact = it.artifact_name + ':' + (it.artifact_version || '');
+        if (it.in_queue) { skipped.push({ artifact, reason: 'already queued for the next release' }); continue; }
+        if (!it.build_run_url) {
+            skipped.push({ artifact, reason: 'no build run was recorded when it was queued — queue it by hand with the run that built it' });
+            continue;
+        }
+        rows.push({ artifact, build_run_url: it.build_run_url, jira_ticket: it.jira_ticket || '',
+                    prl1_only: !!it.prl1_only, df_only: !!it.df_only, target_envs: it.target_envs || '' });
+    }
+    return { rows, skipped };
+}

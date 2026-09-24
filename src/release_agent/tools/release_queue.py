@@ -169,6 +169,7 @@ def _insert(rows: list[dict[str, Any]]) -> dict[str, Any]:
             return {"ok": False, "error": f"BigQuery insert failed: {errors}"}
         # state changed — drop the derived cache
         _queue_cache["at"] = 0.0
+        _history_cache["at"] = 0.0     # a chart queued again must show as such at once
         return {"ok": True}
     except Exception as e:  # never let queue telemetry break a release path
         return {"ok": False, "error": f"BigQuery unavailable: {e}"}
@@ -622,6 +623,89 @@ def current_queue(use_cache: bool = True) -> dict[str, Any]:
         result = {"ok": False, "error": f"BigQuery unavailable: {e}"}
     _queue_cache["at"] = time.time()
     _queue_cache["value"] = result
+    return result
+
+
+_history_cache: dict[str, Any] = {"at": 0.0, "days": 0, "value": None}
+
+
+def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[str, Any]]:
+    """PURE: past releases, newest first, each with the charts it shipped and —
+    joined from the chart's own 'queued' event — what is needed to queue it
+    again: the build run that built it, the ticket, the routing. A release is
+    the group of 'released' events the drain wrote together (release name + PR).
+
+    Why the join: a 'released' event records only what shipped. Queueing again
+    goes through the same gate as the first time, and the gate needs the run
+    that built that version — so a chart whose queue event carried no run is
+    shown but cannot be ticked (``requeueable`` false, and the table says why).
+    ``in_queue`` marks a chart:version already queued again, so a second tick
+    cannot write a duplicate intent.
+    """
+    queued_now = {(q["artifact_name"], q.get("artifact_version")) for q in reduce_queue(events)}
+    groups: dict[tuple, dict[str, Any]] = {}
+    for i, ev in enumerate(events):
+        if ev.get("event_type") != "released" or not ev.get("artifact_name"):
+            continue
+        name, version = ev["artifact_name"], ev.get("artifact_version")
+        # The chart's most recent 'queued' event before it shipped — the one at
+        # this version when there is one, else the last one queued.
+        origin: dict[str, Any] = {}
+        for j in range(i - 1, -1, -1):
+            prev = events[j]
+            if prev.get("event_type") != "queued" or prev.get("artifact_name") != name:
+                continue
+            if not origin:
+                origin = prev
+            if prev.get("artifact_version") == version:
+                origin = prev
+                break
+        key = (ev.get("release_name") or "", ev.get("pr_number"), ev.get("deployment_repo") or "")
+        group = groups.setdefault(key, {
+            "release_name": ev.get("release_name") or "(unnamed release)",
+            "pr_number": ev.get("pr_number"),
+            "deployment_repo": ev.get("deployment_repo") or "",
+            "released_at": ev.get("event_ts") or "",
+            "released_by": ev.get("requested_by") or "",
+            "items": [],
+        })
+        group["released_at"] = max(group["released_at"], ev.get("event_ts") or "")
+        already = (name, version) in queued_now
+        group["items"].append({
+            "artifact_name": name,
+            "artifact_version": version,
+            "jira_ticket": origin.get("jira_ticket") or "",
+            "build_run_url": origin.get("build_run_url") or "",
+            "prl1_only": bool(origin.get("prl1_only")),
+            "df_only": bool(origin.get("df_only")),
+            "target_envs": origin.get("target_envs") or "",
+            "change_details": origin.get("change_details") or "",
+            "queued_by": origin.get("requested_by") or "",
+            "in_queue": already,
+            "requeueable": bool(origin.get("build_run_url")) and not already,
+        })
+    releases = sorted(groups.values(), key=lambda g: g["released_at"], reverse=True)
+    return releases[:limit]
+
+
+def history(days: int = 90, limit: int = 25, use_cache: bool = True) -> dict[str, Any]:
+    """Past releases for the history table — cached like the queue, and
+    cleared by every write, so a chart just queued again shows as such."""
+    import time
+
+    if not queue_enabled():
+        return _disabled()
+    cached = _history_cache
+    if use_cache and cached["value"] is not None and cached["days"] == days \
+            and time.time() - cached["at"] < _QUEUE_TTL_SECONDS:
+        return cached["value"]
+    try:
+        events = _fetch_events(days)
+        result = {"ok": True, "days": days, "events_considered": len(events),
+                  "releases": release_history(events, limit)}
+    except Exception as e:
+        result = {"ok": False, "error": f"BigQuery unavailable: {e}"}
+    cached.update(at=time.time(), days=days, value=result)
     return result
 
 
