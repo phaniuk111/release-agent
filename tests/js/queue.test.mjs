@@ -131,5 +131,8 @@ test('history ticks become batch rows with the ORIGINAL run and routing; the unq
     assert.deepEqual(skipped.map(s => s.artifact), ['b:2.0.0', 'c:3.0.0']);
     assert.match(skipped[0].reason, /no build run/);
     assert.match(skipped[1].reason, /already queued/);
+    const noTicket = requeueRows([{ artifact_name: 'd', artifact_version: '1.0.0', build_run_url: 'https://x/run/4' }]);
+    assert.deepEqual(noTicket.rows, []);
+    assert.match(noTicket.skipped[0].reason, /JIRA ticket/);
     assert.deepEqual(requeueRows([]), { rows: [], skipped: [] });
 });

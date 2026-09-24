@@ -192,6 +192,10 @@ export function requeueRows(items) {
             skipped.push({ artifact, reason: 'no build run on record — paste the run that built it in the Build column, then tick' });
             continue;
         }
+        if (!it.jira_ticket) {
+            skipped.push({ artifact, reason: 'no JIRA ticket on record — the gate needs one; add it in the JIRA column, then tick' });
+            continue;
+        }
         rows.push({ artifact, build_run_url: it.build_run_url, jira_ticket: it.jira_ticket || '',
                     prl1_only: !!it.prl1_only, df_only: !!it.df_only, target_envs: it.target_envs || '' });
     }
