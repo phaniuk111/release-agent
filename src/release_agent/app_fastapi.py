@@ -922,6 +922,39 @@ def release_queue_withdraw(req: QueueWithdrawRequest, request: Request):
         return release_queue.withdraw_intent(req.artifact_name, who, req.artifact_version)
 
 
+class RequeueItem(BaseModel):
+    artifact_name: str
+    artifact_version: str
+
+
+class RequeueRequest(BaseModel):
+    items: list[RequeueItem] = []
+    requested_by: str = ""
+
+
+@app.post("/api/release-queue/requeue")
+def release_queue_requeue(req: RequeueRequest, request: Request):
+    """Put charts from the release history back into the next release without
+    the build/controls gate: each already qualified once, at that version, and
+    the run it was verified against has not changed. Partial success like the
+    batch: each item is answered by name."""
+    from .tools import release_queue
+
+    if not req.items:
+        return {"ok": False, "error": "Nothing to put back — tick at least one chart."}
+    caller = _caller(request)
+    who, refusal = _actor_or_refusal(req.requested_by, caller)
+    if refusal:
+        return refusal
+    queued, refused = [], []
+    with identity.activate(caller):
+        for item in req.items:
+            res = release_queue.requeue_from_history(item.artifact_name, item.artifact_version, who)
+            artifact = f"{item.artifact_name}:{item.artifact_version}"
+            (queued if res.get("ok") else refused).append({**res, "artifact": artifact})
+    return {"ok": not refused, "queued": queued, "refused": refused}
+
+
 @app.get("/api/release-history")
 def release_history_get(days: int = 21, limit: int = 25):
     """Past releases and what each shipped, each chart joined to the queue

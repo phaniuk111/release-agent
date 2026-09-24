@@ -85,6 +85,8 @@ export const queueBatch = (body) => post('/api/release-queue/batch', body);
 /** @param {{artifact_name: string, artifact_version?: string, requested_by: string}} body */
 export const withdrawFromQueue = (body) => post('/api/release-queue/withdraw', body);
 export const HISTORY_PATH = '/api/release-history';
+/** @param {{items: {artifact_name: string, artifact_version: string}[], requested_by: string}} body */
+export const requeueFromHistory = (body) => post('/api/release-queue/requeue', body);
 export const releaseHistory = (params) => get(HISTORY_PATH + (params ? '?' + query(params) : ''));
 
 // ---- releases -----------------------------------------------------------------

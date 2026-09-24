@@ -174,33 +174,37 @@ export function controlsSummary(q) {
 }
 
 /**
- * The /api/release-queue/batch rows for charts ticked in the release history:
- * the ORIGINAL build run, ticket and routing travel with each one, so the gate
- * checks eligibility against the run that actually built that version. A chart
- * with no run recorded, or one queued again already, cannot go back this way —
- * it is returned in `skipped` with the reason, never dropped in silence.
- * @param {{artifact_name: string, artifact_version?: string, build_run_url?: string, jira_ticket?: string,
- *          prl1_only?: boolean, df_only?: boolean, target_envs?: string, in_queue?: boolean}[]} items
- * @returns {{rows: object[], skipped: {artifact: string, reason: string}[]}}
+ * What to do with the charts ticked in the release history. A chart that went
+ * through the gate once (at that version) goes back DIRECTLY — the run it was
+ * verified against has not changed, so `direct` names it for
+ * /api/release-queue/requeue. A chart that never went through the queue never
+ * qualified: it must take the gate like a first submission, so `gated` is its
+ * /api/release-queue/batch row — and only once it has a run and a ticket.
+ * Whatever cannot go either way is in `skipped` with the reason, never dropped
+ * in silence.
+ * @param {{artifact_name: string, artifact_version?: string, from_queue?: boolean, in_queue?: boolean,
+ *          build_run_url?: string, jira_ticket?: string, prl1_only?: boolean, df_only?: boolean,
+ *          target_envs?: string, change_details?: string, note?: string}[]} items
+ * @returns {{direct: {artifact_name: string, artifact_version: string}[], gated: object[],
+ *            skipped: {artifact: string, reason: string}[]}}
  */
-export function requeueRows(items) {
-    const rows = [], skipped = [];
+export function requeuePlan(items) {
+    const direct = [], gated = [], skipped = [];
     for (const it of items || []) {
         const artifact = it.artifact_name + ':' + (it.artifact_version || '');
         if (it.in_queue) { skipped.push({ artifact, reason: 'already queued for the next release' }); continue; }
+        if (it.from_queue) { direct.push({ artifact_name: it.artifact_name, artifact_version: it.artifact_version || '' }); continue; }
         if (!it.build_run_url) {
-            skipped.push({ artifact, reason: 'no build run on record — paste the run that built it in the Build column, then tick' });
+            skipped.push({ artifact, reason: 'never went through the queue — paste the run that built it in the Build column, then tick' });
             continue;
         }
         if (!it.jira_ticket) {
-            skipped.push({ artifact, reason: 'no JIRA ticket on record — the gate needs one; add it in the JIRA column, then tick' });
+            skipped.push({ artifact, reason: 'never went through the queue — the gate needs a JIRA ticket; add it in the JIRA column, then tick' });
             continue;
         }
-        // The details it was first queued with come back with it — they feed
-        // the CHG draft — so nothing is retyped and nothing is silently lost.
-        rows.push({ artifact, build_run_url: it.build_run_url, jira_ticket: it.jira_ticket || '',
-                    prl1_only: !!it.prl1_only, df_only: !!it.df_only, target_envs: it.target_envs || '',
-                    change_details: it.change_details || '', note: it.note || '' });
+        gated.push({ artifact, build_run_url: it.build_run_url, jira_ticket: it.jira_ticket || '',
+                     prl1_only: !!it.prl1_only, df_only: !!it.df_only, target_envs: it.target_envs || '',
+                     change_details: it.change_details || '', note: it.note || '' });
     }
-    return { rows, skipped };
+    return { direct, gated, skipped };
 }

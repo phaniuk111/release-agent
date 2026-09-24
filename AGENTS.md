@@ -64,6 +64,11 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    case-insensitive, steps or jobs) → refused with the failures listed.
    Exception: QUEUE_ALLOWED_FAILING_CONTROLS (e.g. 1691, a possible false positive)
    queues anyway and shows as OPEN in the release queue only — nothing downstream stops.
+   A chart put back from the release history is NOT re-gated (`requeue_from_history`,
+   `/api/release-queue/requeue`): it qualified once at that version and the run it
+   was verified against has not changed, so the new `queued` event copies the
+   original's run, ticket, routing, verification result and details. A chart with
+   no `queued` event never qualified and takes the gate like a first submission.
 5. **Secrets**: PATs are memory-only per thread and masked everywhere; nothing
    sensitive in git or BQ. Spans (`adk_release_agent/telemetry.py`) carry
    metadata only — model, tokens, latency, tool names, errors — and name a

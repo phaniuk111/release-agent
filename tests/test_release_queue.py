@@ -545,3 +545,52 @@ def test_a_batch_row_s_own_details_win_over_the_shared_ones(monkeypatch):
     by = {kw["artifact"]: kw for kw in seen}
     assert by["svc-a:1.0.0"]["change_details"] == "New HA measure type" and by["svc-a:1.0.0"]["note"] == "partial implementation"
     assert by["svc-b:2.0.0"]["change_details"] == "Re-queued from R1", "a row with no details of its own gets the shared line"
+
+
+def test_requeue_from_history_copies_the_original_verdict_and_refuses_the_never_queued(monkeypatch):
+    """The gate ran when the chart first qualified; putting it back copies that
+    event — run, ticket, routing, verification, details — under the person who
+    asked now. A chart with no 'queued' event never qualified: refused."""
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00", artifact_version="1.0.0", build_run_url="https://x/run/1",
+            jira_ticket="ABC-1", prl1_only=True, target_envs="prl1", build_verified=True,
+            change_details="New HA measure type", note="partial", requested_by="dev@example.com"),
+        _ev("released", "svc-a", "2026-07-14T09:00:00", artifact_version="1.0.0", release_name="R1", pr_number=1),
+        _ev("released", "df-x", "2026-07-14T09:00:00", artifact_version="2.0.0", release_name="R1", pr_number=1),
+        _ev("queued", "svc-b", "2026-07-15T10:00:00", artifact_version="3.0.0", build_run_url="https://x/run/3"),
+    ]
+    written = []
+    monkeypatch.setattr(RQ, "queue_enabled", lambda: True)
+    monkeypatch.setattr(RQ, "_fetch_events", lambda days=120: events)
+    monkeypatch.setattr(RQ, "add_intent", lambda artifact, requested_by, **kw: written.append((artifact, requested_by, kw)) or {"ok": True})
+
+    out = RQ.requeue_from_history("svc-a", "1.0.0", "devops@example.com")
+    assert out["ok"] and out["artifact"] == "svc-a:1.0.0"
+    artifact, who, kw = written[0]
+    assert (artifact, who) == ("svc-a:1.0.0", "devops@example.com")
+    assert kw["build_run_url"] == "https://x/run/1" and kw["build_verified"] is True and kw["jira_ticket"] == "ABC-1"
+    assert kw["prl1_only"] and kw["target_envs"] == "prl1" and kw["change_details"] == "New HA measure type" and kw["note"] == "partial"
+
+    never = RQ.requeue_from_history("df-x", "2.0.0", "devops@example.com")
+    assert not never["ok"] and "never went through the release queue" in never["error"]
+    queued_now = RQ.requeue_from_history("svc-b", "3.0.0", "devops@example.com")
+    assert not queued_now["ok"] and "already queued" in queued_now["error"]
+    assert len(written) == 1, "only the qualified chart was written"
+    assert RQ.release_history(events)[0]["items"][0]["from_queue"] is True
+    assert RQ.release_history(events)[0]["items"][1]["from_queue"] is False
+
+
+def test_requeue_endpoint_answers_each_item_by_name(monkeypatch):
+    from types import SimpleNamespace
+
+    from release_agent import app_fastapi as APP
+
+    monkeypatch.setattr(APP, "_caller", lambda request: None)
+    monkeypatch.setattr(RQ, "requeue_from_history",
+                        lambda n, v, who: {"ok": True} if n == "svc-a" else {"ok": False, "error": "never went through the release queue"})
+    req = APP.RequeueRequest(requested_by="devops@example.com",
+                             items=[APP.RequeueItem(artifact_name="svc-a", artifact_version="1.0.0"),
+                                    APP.RequeueItem(artifact_name="df-x", artifact_version="2.0.0")])
+    out = APP.release_queue_requeue(req, SimpleNamespace(headers={}))
+    assert [q["artifact"] for q in out["queued"]] == ["svc-a:1.0.0"]
+    assert [r["artifact"] for r in out["refused"]] == ["df-x:2.0.0"] and not out["ok"]

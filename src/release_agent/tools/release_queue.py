@@ -629,6 +629,73 @@ def current_queue(use_cache: bool = True) -> dict[str, Any]:
 _history_cache: dict[str, Any] = {"at": 0.0, "days": 0, "value": None}
 
 
+def _origin_event(events: list[dict[str, Any]], name: str, version: str | None,
+                  before: int | None = None) -> dict[str, Any]:
+    """The chart's most recent 'queued' event (before index ``before``) — the
+    one at this version when there is one, else the last one queued. {} when
+    the chart never went through the queue."""
+    origin: dict[str, Any] = {}
+    stop = len(events) if before is None else before
+    for j in range(stop - 1, -1, -1):
+        prev = events[j]
+        if prev.get("event_type") != "queued" or prev.get("artifact_name") != name:
+            continue
+        if not origin:
+            origin = prev
+        if prev.get("artifact_version") == version:
+            origin = prev
+            break
+    return origin
+
+
+def requeue_from_history(artifact_name: str, artifact_version: str, actor: str) -> dict[str, Any]:
+    """Put a chart back into the next release WITHOUT the build/controls gate.
+
+    The gate ran when the chart first qualified — a 'queued' event exists only
+    for a chart that passed it — and the run it verified has not changed since,
+    so re-verifying adds nothing and can fail for reasons that are not the
+    chart's (a tag deleted after the run). The new 'queued' event copies what
+    the original recorded: the run, the ticket, the routing, the verification
+    result, the change details. Refused for a chart that never went through
+    the gate (no 'queued' event — it never qualified) or is queued already.
+    """
+    name, version = str(artifact_name or "").strip(), str(artifact_version or "").strip()
+    if not name or not version:
+        return {"ok": False, "error": "chart and version are required"}
+    if not str(actor or "").strip():
+        return {"ok": False, "error": "requested_by (your email) is required."}
+    if not queue_enabled():
+        return _disabled()
+    try:
+        events = _fetch_events(_HISTORY_LOOKBACK_DAYS)
+    except Exception as e:
+        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
+    if any(q["artifact_name"] == name and q.get("artifact_version") == version for q in reduce_queue(events)):
+        return {"ok": False, "error": f"{name}:{version} is already queued for the next release."}
+    origin = _origin_event(events, name, version)
+    if not origin or origin.get("artifact_version") != version:
+        return {"ok": False, "error": (
+            f"{name}:{version} never went through the release queue, so it never qualified — "
+            "queue it with the run that built it and its ticket.")}
+    allowed, note = _allowed_and_note(origin)
+    allowed_list = [a.strip() for a in str(allowed or "").split(",") if a.strip()] if not isinstance(allowed, list) else list(allowed)
+    result = add_intent(
+        f"{name}:{version}", actor.strip(),
+        prl1_only=bool(origin.get("prl1_only")), df_only=bool(origin.get("df_only")),
+        note=note, deployment_repo=origin.get("deployment_repo") or "",
+        build_verified=origin.get("build_verified"), jira_ticket=origin.get("jira_ticket") or "",
+        change_details=origin.get("change_details") or "", build_run_url=origin.get("build_run_url") or "",
+        target_envs=origin.get("target_envs") or "", allowed_failures=allowed_list or None,
+    )
+    if result.get("ok"):
+        result["artifact"] = f"{name}:{version}"
+        result["note"] = "back in the next release with the run, ticket and details it first qualified with"
+    return result
+
+
+_HISTORY_LOOKBACK_DAYS = 365
+
+
 def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[str, Any]]:
     """PURE: past releases, newest first, each with the charts it shipped and —
     joined from the chart's own 'queued' event — what is needed to queue it
@@ -648,18 +715,7 @@ def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[
         if ev.get("event_type") != "released" or not ev.get("artifact_name"):
             continue
         name, version = ev["artifact_name"], ev.get("artifact_version")
-        # The chart's most recent 'queued' event before it shipped — the one at
-        # this version when there is one, else the last one queued.
-        origin: dict[str, Any] = {}
-        for j in range(i - 1, -1, -1):
-            prev = events[j]
-            if prev.get("event_type") != "queued" or prev.get("artifact_name") != name:
-                continue
-            if not origin:
-                origin = prev
-            if prev.get("artifact_version") == version:
-                origin = prev
-                break
+        origin = _origin_event(events, name, version, before=i)
         key = (ev.get("release_name") or "", ev.get("pr_number"), ev.get("deployment_repo") or "")
         group = groups.setdefault(key, {
             "release_name": ev.get("release_name") or "(unnamed release)",
@@ -683,6 +739,9 @@ def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[
             "note": _allowed_and_note(origin)[1] if origin else "",
             "queued_by": origin.get("requested_by") or "",
             "in_queue": already,
+            # It went through the gate once (at this version): it can go back
+            # directly. Otherwise the gate must run, with a run and a ticket.
+            "from_queue": bool(origin) and origin.get("artifact_version") == version,
             "requeueable": bool(origin.get("build_run_url")) and not already,
         })
     releases = sorted(groups.values(), key=lambda g: g["released_at"], reverse=True)

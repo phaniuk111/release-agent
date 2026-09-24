@@ -1,6 +1,6 @@
 import { escapeHtml as esc, shortName, timeAgo } from '../core/format.js';
-import { queueDestination, requeueRows } from '../core/queue.js';
-import { getContext, HISTORY_PATH, queueBatch } from '../api.js';
+import { queueDestination, requeuePlan } from '../core/queue.js';
+import { getContext, HISTORY_PATH, queueBatch, requeueFromHistory } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
 import { ctxNote, lockToSignedIn, opening, withDismiss } from './common.js';
 import { showQueueTable } from './queue_table.js';
@@ -9,10 +9,12 @@ import { showQueueTable } from './queue_table.js';
 // Past releases, newest first, each with the charts it shipped — read from the
 // event log's 'released' events, joined to the 'queued' event that carried each
 // chart. The point of the table is the tick box: when a release had to be
-// redone, tick the charts that must ship again and they go back into the next
-// release's queue THROUGH THE SAME GATE as the first time, with the run that
-// built them — so eligibility is checked afresh, and a refusal reads like any
-// other. Nothing here deploys, releases or edits history.
+// redone, tick the charts that must ship again and they go straight back into
+// the next release's queue: each qualified once, at that version, and the run
+// it was verified against has not changed, so the build/controls gate is not
+// run again. Only a chart that never went through the queue — typed straight
+// into a release form — takes the gate, with a run and a ticket given here.
+// Nothing here deploys, releases or edits history.
 const HISTORY_DAYS = 21;
 
 export async function showReleaseHistory() {
@@ -64,8 +66,8 @@ async function _render(wrap, flash) {
     } else {
         const hint = document.createElement('div');
         hint.className = 'text-[11px] text-slate-400 mb-2';
-        hint.textContent = 'Tick the charts to put back into the next release. Each goes through the eligibility ' +
-            'check again with the run that built it.';
+        hint.textContent = 'Tick the charts to put back into the next release. A chart that came through the ' +
+            'queue goes straight back — it already qualified; one that never did needs its run and ticket.';
         wrap.appendChild(hint);
         const scroller = document.createElement('div');
         scroller.className = 'overflow-x-auto';
@@ -86,24 +88,27 @@ async function _render(wrap, flash) {
                 // release form) has no run on record — the gate still needs one, so
                 // the row takes it here and the tick enables once it is given.
                 const why = it.in_queue ? 'Already queued for the next release'
-                    : (!it.build_run_url ? 'No build run on record — paste the run that built it, then tick'
-                       : (!it.jira_ticket ? 'No JIRA ticket on record — add it, then tick' : ''));
+                    : (it.from_queue ? ''
+                       : (!it.build_run_url ? 'Never went through the queue — paste the run that built it, then tick'
+                          : (!it.jira_ticket ? 'Never went through the queue — add its JIRA ticket, then tick' : '')));
                 html += '<tr class="border-b border-slate-800 align-top" data-item="' + ri + ':' + ii + '">' +
                     '<td class="px-2 py-1.5"><input type="checkbox" data-pick="' + ri + ':' + ii + '"' +
-                    (it.requeueable && it.jira_ticket ? '' : ' disabled') + (why ? ' title="' + esc(why) + '"' : '') + '></td>' +
+                    (!it.in_queue && (it.from_queue || (it.build_run_url && it.jira_ticket)) ? '' : ' disabled') +
+                    (why ? ' title="' + esc(why) + '"' : '') + '></td>' +
                     '<td class="px-2 py-1.5 font-mono text-slate-200 whitespace-nowrap">' + label +
-                    (it.in_queue ? ' <span class="font-sans text-emerald-400">queued again</span>' : '') +
+                    (it.in_queue ? ' <span class="font-sans text-emerald-400">queued again</span>'
+                        : (it.from_queue ? '' : ' <span class="font-sans text-amber-400" title="Typed straight into a release form: the gate never ran for it">never queued</span>')) +
                     (detail ? '<div class="font-sans text-slate-500 max-w-[16rem] truncate" title="' + esc(detail) + '">' +
                         esc(detail) + '</div>' : '') + '</td>' +
                     '<td class="px-2 py-1.5 text-slate-300 whitespace-nowrap">' + esc(queueDestination(it)) + '</td>' +
                     '<td class="px-2 py-1.5 text-amber-300/80 whitespace-nowrap">' + (it.jira_ticket ? esc(it.jira_ticket)
-                        : (it.in_queue ? '—'
+                        : (it.in_queue || it.from_queue ? '—'
                            : '<input type="text" data-jira="' + ri + ':' + ii + '" placeholder="ticket" ' +
                              'title="No JIRA ticket on record — the gate needs one" class="bg-slate-900 border border-amber-700/60 ' +
                              'rounded px-2 py-0.5 text-[11px] text-white w-24 uppercase focus:outline-none">')) + '</td>' +
                     '<td class="px-2 py-1.5 whitespace-nowrap">' + (it.build_run_url
                         ? '<a href="' + esc(it.build_run_url) + '" target="_blank" rel="noopener" class="text-sky-400 hover:underline">run</a>'
-                        : (it.in_queue ? '<span class="text-slate-500">—</span>'
+                        : (it.in_queue || it.from_queue ? '<span class="text-slate-500">—</span>'
                            : '<input type="url" data-run="' + ri + ':' + ii + '" placeholder="paste the run that built it" ' +
                              'title="' + esc(why) + '" class="bg-slate-900 border border-amber-700/60 rounded px-2 py-0.5 ' +
                              'text-[11px] text-white w-56 focus:outline-none">')) + '</td>' +
@@ -165,20 +170,26 @@ async function _render(wrap, flash) {
             const who = email.value.trim();
             if (!who.includes('@')) { err.textContent = 'Your email is needed — the queue records who asked.'; email.focus(); return; }
             const chosen = picked();
-            const { rows, skipped } = requeueRows(chosen.map(c => c.it));
-            if (!rows.length) { err.textContent = skipped.map(s => s.artifact + ': ' + s.reason).join('; '); return; }
+            const { direct, gated, skipped } = requeuePlan(chosen.map(c => c.it));
+            if (!direct.length && !gated.length) { err.textContent = skipped.map(s => s.artifact + ': ' + s.reason).join('; '); return; }
             if (!email.dataset.signedIn) { try { localStorage.setItem('queue_email', who); } catch (e) {} }
-            go.disabled = true; go.textContent = rows.length > 1 ? 'Checking ' + rows.length + ' builds…' : 'Checking the build…';
+            go.disabled = true;
+            go.textContent = gated.length ? (gated.length > 1 ? 'Checking ' + gated.length + ' builds…' : 'Checking the build…') : 'Putting back…';
             err.textContent = '';
             const from = [...new Set(chosen.map(c => c.rel.release_name))].join(', ');
-            let res = null;
-            // Rows carry their own details; the shared line is only for one that had none.
-            try { res = await queueBatch({ requested_by: who, change_details: 'Re-queued from ' + from, rows }); }
-            catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
-            const queued = (res && res.queued) || [], refused = (res && res.refused) || [];
-            if (!res || (!queued.length && !refused.length)) {
+            // Charts that qualified once go straight back; never-queued ones take the
+            // gate, carrying their own details (the shared line is only for one with none).
+            const fail = (e) => ({ ok: false, error: String((e && e.message) || e) });
+            const [back, checked] = await Promise.all([
+                direct.length ? requeueFromHistory({ requested_by: who, items: direct }).catch(fail) : null,
+                gated.length ? queueBatch({ requested_by: who, change_details: 'Re-queued from ' + from, rows: gated }).catch(fail) : null,
+            ]);
+            const queued = [...((back && back.queued) || []), ...((checked && checked.queued) || [])];
+            const refused = [...((back && back.refused) || []), ...((checked && checked.refused) || [])];
+            if (!queued.length && !refused.length) {
+                const failed = [back, checked].find(r => r && r.error);
                 go.disabled = false; go.innerHTML = '<i class="fa-solid fa-cart-plus mr-1"></i>Add selected to the next release';
-                err.textContent = (res && res.error) || 'Could not queue — try again.';
+                err.textContent = (failed && failed.error) || 'Could not queue — try again.';
                 return;
             }
             loadReleaseStatus(true);
