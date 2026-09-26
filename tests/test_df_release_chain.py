@@ -289,3 +289,28 @@ def test_a_care_promotion_only_trusts_a_workflow_the_release_wrote(monkeypatch):
         monkeypatch.setattr(RF, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
         assert json.loads(RF.promote_release.invoke({"target": "uat", "kind": "care"}))["ok"]
         assert (written[0]["artifacts"] if written else None) == expected
+
+
+def test_a_df_release_held_for_review_still_moves_its_charts_to_release_history(wired, monkeypatch):
+    """Asked for: DF behaves like CARE mono mode — raising the release PR moves
+    its charts from the queue to Release history, merged by the portal or held
+    for review; a release that does not go through is put back from there."""
+    from release_agent.tools import release_queue as RQ
+
+    released = []
+    monkeypatch.setattr(RQ, "mark_released",
+                        lambda name, pr, artifacts, deployment_repo="":
+                        released.append((name, pr, deployment_repo)) or {"ok": True})
+    monkeypatch.setattr(RF, "_merge_pr", lambda pr, method: (False, "awaiting review/checks (blocked)"))
+    out = RF.apply_release_fileset(RF.prepare_release_fileset(dict(DF_PAYLOAD)))
+    assert out["ok"] and "opened against RELEASE_UAT" in out["note"]
+    assert released == [("DF Release 7", 5, "o/df-release")], "released on raise, not on merge"
+    assert "moved from the release queue to Release history" in out["note"]
+
+
+def test_a_queue_outage_never_fails_a_df_release_and_says_so(wired, monkeypatch):
+    from release_agent.tools import release_queue as RQ
+
+    monkeypatch.setattr(RQ, "mark_released", lambda *a, **k: {"ok": False, "error": "BigQuery down"})
+    out = RF.apply_release_fileset(RF.prepare_release_fileset(dict(DF_PAYLOAD)))
+    assert out["ok"] and "remove them by hand" in out["note"]

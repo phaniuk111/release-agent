@@ -50,7 +50,10 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    `release/<slug>` → SIT → UAT → PRD/PRL1 for CARE; a DF release follows its own
    repo's chain (`DF_RELEASE_BRANCHES`, landing on the first — no SIT), with its own guard; promotion copies marker-listed files
    verbatim (`RELEASE-FILES-JSON:` in the release PR body). prl1_only charts never
-   reach PRD; df_images never enter helm deploy workflows.
+   reach PRD; df_images never enter helm deploy workflows. Every release — CARE in
+   either mode, and DF — moves its charts from the queue to Release history as
+   soon as its PR is raised, merged or held for review (`mark_released`); one
+   that does not go through is put back from Release history.
    CARE in mono mode (`CARE_RELEASE_MODE=mono`, `care_release.py`) is the one
    exception: the release is ONE committed file, `CARE_RELEASE_FILE` in
    `CARE_RELEASE_REPO`, changed by a minimal splice (`json_splice.py` — only the

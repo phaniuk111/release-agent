@@ -421,18 +421,26 @@ def apply_release_fileset(prep: dict) -> dict:
             f"Release PR #{pr.number} ({pr.html_url}) {'merged into' if merged else 'opened against'} "
             f"{landing}{'' if merged else f' — {detail}'}. {release_chain.next_steps(kind)}"
         )
-        if merged:
-            # Drain the intake queue: shipped charts get 'released' events so next
-            # week starts clean. Best-effort — never fails the release.
-            try:
-                from . import release_queue as _rq
+        # Raising the release PR is the release as far as the queue is concerned,
+        # merged by us or held for review: its charts leave the queue for Release
+        # history now, and are put back from there if the release does not go
+        # through — the same rule as CARE mono mode. Best-effort — never fails
+        # the release.
+        try:
+            from . import release_queue as _rq
 
-                _rq.mark_released(
-                    prep.get("release_name") or "", pr.number, prep.get("artifacts") or [],
-                    deployment_repo=repo_full,
-                )
-            except Exception:
-                pass
+            out = _rq.mark_released(
+                prep.get("release_name") or "", pr.number, prep.get("artifacts") or [],
+                deployment_repo=repo_full,
+            )
+        except Exception as e:  # noqa: BLE001 — never fails the release
+            out = {"ok": False, "error": str(e)}
+        if out.get("ok"):
+            note += (" Its charts have moved from the release queue to Release history; if this "
+                     "release does not go through, put them back from there.")
+        elif not out.get("disabled"):     # no queue configured: nothing to say
+            note += (" (The release queue could not be updated just now — its charts still show "
+                     "there; remove them by hand.)")
         return {
             "ok": True,
             "action": "release_created",
