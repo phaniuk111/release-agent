@@ -39,18 +39,33 @@ def _release_guard_branches() -> list[str]:
     return guard_branches("care")
 
 
-def _open_prd_pr_blocker(repo, exclude_head: str = "", branches: list[str] | None = None):
+def _open_prd_pr_blocker(repo, exclude_head: str = "", branches: list[str] | None = None,
+                         head_prefix: str = "", skip=None):
     """First OPEN PR into any release-guard branch that is NOT today's staging PR.
 
     A PR already targeting PRD/PRL1/... (e.g. a manually raised UAT -> PRD promotion)
     means a release is in flight — staging MORE charts on top would create two
     competing releases, so adds are blocked until it's merged or closed.
-    ``exclude_head`` skips today's own release/prd/<date> staging PR."""
+    ``exclude_head`` skips today's own release/prd/<date> staging PR.
+
+    ``head_prefix`` counts only PRs whose branch starts with it: in a mono repo
+    the base branch always has other teams' PRs open, and those are not
+    releases. GitHub cannot filter by a branch prefix, and a release PR can sit
+    behind days of other PRs, so a filtered scan reads further back.
+
+    ``skip(pr)`` passes over a PR the caller recognises as its own release —
+    mono mode's apply, finding the PR an earlier attempt of the same approval
+    raised. It must not raise: an error here reads as "no release in flight"."""
+    limit = 300 if head_prefix else 30
     for base in (branches or _release_guard_branches()):
         try:
             prs = repo.get_pulls(state="open", base=base, sort="created", direction="desc")
-            for pr in itertools.islice(prs, 30):
+            for pr in itertools.islice(prs, limit):
                 if exclude_head and pr.head.ref == exclude_head:
+                    continue
+                if head_prefix and not pr.head.ref.startswith(head_prefix):
+                    continue
+                if skip is not None and skip(pr):
                     continue
                 return pr
         except Exception:

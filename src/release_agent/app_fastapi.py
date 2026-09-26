@@ -752,6 +752,11 @@ def release_queue_get():
     # keeps single-repo setups working — but where DF_RELEASE_REPO is set, the DF
     # form must never default to the CARE one.
     result["df_default_repo"] = app_settings.df_release_repo or result["default_repo"]
+    # In mono mode a CARE release is one committed file in its own repo, and
+    # the form shows that repo and file instead of the deployment repo.
+    result["care_release_mode"] = app_settings.care_release_mode
+    result["care_release_repo"] = app_settings.care_release_repo
+    result["care_release_file"] = app_settings.care_release_file
     result["known_charts"] = _known_charts()
     return result
 
@@ -828,7 +833,7 @@ def release_queue_add_batch(req: QueueBatchRequest, request: Request):
 
 
 class ReleaseDraftRequest(BaseModel):
-    artifacts: list[str] = []   # "name:version" of the TICKED items
+    artifacts: list[str] = []   # the artifact lines as they stand in the form (full URL or name:version)
     kind: str = "care"          # care | df
 
 
@@ -880,7 +885,10 @@ def release_defaults(req: ReleaseDefaultsRequest):
         })
     repo = (req.repo or "").strip() or (
         app_settings.df_release_repo if req.kind == "df" else "") or app_settings.deploy_repo
-    number = req.number if (req.number or 0) > 0 else chg_defaults.next_release_number_for_repo(repo)
+    if chg_defaults.uses_name_format(req.kind):
+        number = None           # the name carries no number, so none is looked up
+    else:
+        number = req.number if (req.number or 0) > 0 else chg_defaults.next_release_number_for_repo(repo)
     return {"ok": True, "fields": chg_defaults.build_defaults(items, req.kind, day, number),
             "number": number, "numbered_from": repo if number else ""}
 
@@ -890,21 +898,42 @@ def release_draft(req: ReleaseDraftRequest):
     """Draft the change-request prose from the queued items' own details.
 
     Drafting only — the fields land in an editable form and the release still
-    runs the deterministic preview → CONFIRM path. Deliberately a separate,
-    button-triggered endpoint rather than part of the form context: it costs a
-    model call, and a field that fills itself silently stops being read.
+    runs the deterministic preview → CONFIRM path. A separate endpoint from the
+    defaults because it costs a model call: the DF form and the fileset-mode
+    CARE form ask from their draft button, as they always have; a CARE form in
+    mono mode asks once as it opens and again only on Regenerate, and gets each
+    field marked as the model's, the team's or the fallback wording
+    (``sources``). A sync def: FastAPI runs it on its threadpool, so the queue
+    read and the model call never block the loop.
+
+    Lines are resolved like /api/release-defaults (a full registry URL is its
+    name:version). A line that is not queued is still a chart in the release,
+    so it is named, with nothing beyond its name and version to describe.
     """
     from adk_release_agent.chg_draft import draft_change_request
     from .tools import release_queue
 
-    wanted = {a.strip() for a in req.artifacts if a.strip()}
-    queue = (release_queue.current_queue().get("queue") or [])
-    items = [
-        q for q in queue
-        if f"{q.get('artifact_name')}:{q.get('artifact_version')}" in wanted
-    ] if wanted else []
-    if wanted and not items:
-        return {"ok": False, "error": "Those items are no longer in the queue — reopen the form."}
+    try:
+        current = release_queue.current_queue()
+    except Exception as e:
+        current = {"ok": False, "error": str(e)}
+    if not current.get("ok"):
+        return {"ok": False, "error": f"The queue is unavailable ({current.get('error') or 'unknown error'})"
+                                      " — the standard wording stays."}
+    queue = {(q.get("artifact_name"), q.get("artifact_version")): q for q in current.get("queue") or []}
+
+    items, seen, queued = [], set(), 0
+    for line in req.artifacts:
+        name, version = release_queue._split_artifact(line)
+        if not name or not version or (name, version) in seen:
+            continue
+        seen.add((name, version))
+        q = queue.get((name, version))
+        queued += bool(q)
+        items.append(q or {"artifact_name": name, "artifact_version": version})
+    if items and not queued:
+        return {"ok": False, "error": "None of these items is queued, so there is nothing to "
+                                      "summarise — the standard wording stays."}
     return draft_change_request(items, kind=req.kind)
 
 

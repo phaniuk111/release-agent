@@ -9,15 +9,19 @@ So the raising path writes a 'pending' event naming the PR, and this module
 checks those PRs later against GitHub:
 
     merged               -> the event the merge stands for ('deployed' /
-                            'removed'), stamped with the MERGE time
+                            'removed' / 'released'), stamped with the MERGE time
     closed, not merged   -> 'abandoned', so it stops being checked
     still open           -> left alone; checked again next time
 
-It runs lazily from the read paths (chat stats, the Insights panel) rather
-than on a timer: no background thread per pod, no inbound webhook through the
-mesh's external auth, no new credentials — just the GitHub token the portal
-already holds. The cost is that an outside merge shows up the next time
-someone looks, which is the only time the answer matters.
+'released' is the CARE release PR raised in mono mode (care_release.py): a
+person merges it, never the portal, so this is the only place its charts
+leave the queue. Closed unmerged, they stay queued.
+
+It runs lazily from the read paths (the queue, chat stats, the Insights panel)
+rather than on a timer: no background thread per pod, no inbound webhook
+through the mesh's external auth, no new credentials — just the GitHub token
+the portal already holds. The cost is that an outside merge shows up the next
+time someone looks, which is the only time the answer matters.
 
 Only PRs the portal raised are covered. A change made in the deploy repo by
 hand never produced a 'pending' event, so nothing here can find it.
@@ -36,12 +40,13 @@ logger = logging.getLogger("release_copilot")
 _PREFIX = "awaiting_merge"
 # Events that settle a pending PR. Any one of them for the same (repo, PR) means
 # there is nothing left to check.
-_TERMINAL = frozenset({"deployed", "removed", "abandoned"})
-_ON_MERGE = frozenset({"deployed", "removed"})
+_TERMINAL = frozenset({"deployed", "removed", "released", "abandoned"})
+_ON_MERGE = frozenset({"deployed", "removed", "released"})
 
 # Throttle: GitHub is asked at most this often per process, and never twice at
-# once — the Insights panel and a chat turn can easily land together.
-_INTERVAL_SECONDS = 120.0
+# once — the Insights panel, a queue read and a chat turn can easily land
+# together. Every form open reads the queue, so this is what keeps it cheap.
+_INTERVAL_SECONDS = 60.0
 _MAX_PRS_PER_RUN = 20
 _state: dict[str, float] = {"at": float("-inf")}   # first read always checks
 _lock = threading.Lock()
@@ -130,11 +135,15 @@ def resolution_rows(
     a merge noticed late with the time it was noticed would let a stale version
     overwrite a newer deploy made in between.
 
-    event_id is derived from the PR and artifact rather than random, so two
-    pods resolving the same PR at once collapse onto BigQuery's insertId dedup
-    instead of double-counting the deploy.
+    event_id is derived from the PR, artifact and version rather than random,
+    so two pods resolving the same PR at once collapse onto BigQuery's insertId
+    dedup instead of double-counting the deploy — and a PR recorded as pending
+    twice (a re-applied release) settles once.
+
+    A merged 'released' PR names its release (the pending event's tag), so the
+    release history groups its charts under that release and PR.
     """
-    rows = []
+    rows, seen = [], set()
     for ev in pending:
         parsed = parse_pending_note(ev.get("note"))
         if not parsed:
@@ -148,8 +157,12 @@ def resolution_rows(
             note = (tag + " — " if tag else "") + "abandoned, PR closed without merging"
         identity = "|".join(str(x) for x in (
             ev.get("deployment_repo"), ev.get("pr_number"), ev.get("environment"),
-            ev.get("artifact_name"), event_type,
+            ev.get("artifact_name"), ev.get("artifact_version"), event_type,
         ))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        released = event_type == "released"
         rows.append({
             "event_id": uuid.uuid5(uuid.NAMESPACE_URL, identity).hex,
             "event_type": event_type,
@@ -162,10 +175,10 @@ def resolution_rows(
             "df_only": None,
             "note": note,
             "deployment_repo": ev.get("deployment_repo"),
-            "release_name": None,
+            "release_name": (tag or None) if released else None,
             "pr_number": ev.get("pr_number"),
             "build_verified": None,
-            "environment": ev.get("environment"),
+            "environment": None if released else ev.get("environment"),
         })
     return rows
 

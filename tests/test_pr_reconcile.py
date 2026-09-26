@@ -187,3 +187,68 @@ def test_pending_uat_deploy_is_recorded_against_the_final_pr(monkeypatch):
     D._record_deploy_event(req, "uat", {"ok": True, "action": "pending_review", "pending_prs": [
         {"number": 6, "stage": "→SIT", "final": False}]})
     assert calls == []
+
+
+# --- a CARE release PR a person merges (mono mode) ----------------------------
+
+MONO = "example-org/mono-repo"
+RELEASE = "<TEAM> CARE Release - 2026.10.01"
+
+
+def _release_events(pr=21):
+    queued = [{"event_type": "queued", "event_ts": "2026-09-28T09:00:00+00:00",
+               "artifact_name": name, "artifact_version": version, "requested_by": "dev@example.com",
+               "deployment_repo": ""}
+              for name, version in (("svc-a", "5.0.470"), ("svc-c", "1.2.3"))]
+    raised = [{**_pending(pr, name=q["artifact_name"], version=q["artifact_version"], env=None,
+                          on_merge="released", tag=RELEASE, ts="2026-10-01T09:00:00+00:00"),
+               "deployment_repo": MONO, "requested_by": "alice@example.com"} for q in queued]
+    return queued + raised
+
+
+def test_a_merged_release_pr_drains_the_queue_under_its_release(written):
+    from release_agent.tools import release_queue as RQ
+
+    events = _release_events()
+    assert [q["artifact_name"] for q in RQ.reduce_queue(events)] == ["svc-a", "svc-c"], \
+        "raised is not released: the charts stay queued while the PR is in review"
+    merged_at = dt.datetime(2026, 10, 2, 8, 0, tzinfo=dt.timezone.utc)
+    gh = _GitHub({21: _PR(merged=True, state="closed", when=merged_at, by="reviewer")})
+    assert R.reconcile_pending(events, github=gh) == 2
+
+    assert {(r["event_type"], r["release_name"], r["pr_number"], r["deployment_repo"])
+            for r in written} == {("released", RELEASE, 21, MONO)}
+    assert all(r["event_ts"] == "2026-10-02T08:00:00+00:00" and r["environment"] is None
+               and r["requested_by"] == "alice@example.com" for r in written)
+    after = events + written
+    assert RQ.reduce_queue(after) == []
+    [release] = RQ.release_history(after)
+    assert (release["release_name"], release["pr_number"]) == (RELEASE, 21)
+    assert [i["artifact_name"] for i in release["items"]] == ["svc-a", "svc-c"]
+    assert R.unresolved_pending(after) == {}, "settled: never checked again"
+
+
+def test_a_closed_release_pr_leaves_its_charts_queued(written):
+    from release_agent.tools import release_queue as RQ
+
+    events = _release_events()
+    gh = _GitHub({21: _PR(state="closed", when=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc))})
+    assert R.reconcile_pending(events, github=gh) == 2
+    assert {r["event_type"] for r in written} == {"abandoned"}
+    assert [q["artifact_name"] for q in RQ.reduce_queue(events + written)] == ["svc-a", "svc-c"]
+
+
+def test_released_is_a_pending_settlement():
+    assert R.parse_pending_note(R.pending_note("released", RELEASE)) == ("released", RELEASE)
+    assert R.parse_pending_note(R.pending_note("released", "May 1st : Release 3")) == (
+        "released", "May 1st : Release 3"), "a colon in the release name survives"
+
+
+def test_resolution_ids_carry_the_version_and_a_repeat_settles_once():
+    when = dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)
+    v1 = _pending(21, version="1.0.0", on_merge="released", tag=RELEASE)
+    v2 = _pending(21, version="2.0.0", on_merge="released", tag=RELEASE)
+    rows = R.resolution_rows([v1, v2, dict(v2)], "merged", when)
+    assert [r["artifact_version"] for r in rows] == ["1.0.0", "2.0.0"], \
+        "two versions are two events; the same one recorded twice is one"
+    assert rows[0]["event_id"] != rows[1]["event_id"]

@@ -2,7 +2,7 @@
 
 import os
 import subprocess
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -303,6 +303,32 @@ class Settings(BaseSettings):
     release_updater_script: str = Field(
         default="scripts/release/update_release_files.py",
         validation_alias=AliasChoices("RELEASE_UPDATER_SCRIPT"),
+    )
+    # --- CARE release as ONE committed file in a mono repo -----------------------
+    # "mono": a CARE release edits CARE_RELEASE_FILE in CARE_RELEASE_REPO and
+    # raises a PR against CARE_RELEASE_BASE_BRANCH for a person to review and
+    # merge — the portal never merges it; the repo's own Action takes it from
+    # there. "fileset" (default) keeps the clone + updater-script model above.
+    # DF releases always use the file-set model.
+    care_release_mode: Literal["fileset", "mono"] = Field(
+        default="fileset", validation_alias=AliasChoices("CARE_RELEASE_MODE"),
+    )
+    care_release_repo: str = Field(default="", validation_alias=AliasChoices("CARE_RELEASE_REPO"))
+    care_release_base_branch: str = Field(
+        default="main", validation_alias=AliasChoices("CARE_RELEASE_BASE_BRANCH"),
+    )
+    care_release_file: str = Field(
+        default=".github/release/release_details.json", validation_alias=AliasChoices("CARE_RELEASE_FILE"),
+    )
+    # Names the PR's branch, and is what the one-release-at-a-time guard looks
+    # for — other PRs into the base branch of a busy mono repo are not releases.
+    care_release_branch_prefix: str = Field(
+        default="release/", validation_alias=AliasChoices("CARE_RELEASE_BRANCH_PREFIX"),
+    )
+    # strftime pattern for a mono-mode release name, e.g. "Team CARE Release - %Y.%m.%d"
+    # (dated by the release's start). Empty keeps the file-set naming.
+    care_release_name_format: str = Field(
+        default="", validation_alias=AliasChoices("CARE_RELEASE_NAME_FORMAT"),
     )
     # Base path prepended when a developer supplies bare name:version instead of a
     # full artifactory URL (e.g. https://artifactory.../com/db/acme-ds/).

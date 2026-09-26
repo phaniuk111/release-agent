@@ -336,6 +336,24 @@ config:
   # ONE value for both, so the two repos must keep it at the same path. It is
   # invoked as: python <script> --release-details-file <transient json>.
   RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
+  # CARE release as ONE committed file (CARE_RELEASE_MODE: "mono"): the portal
+  # edits CARE_RELEASE_FILE in CARE_RELEASE_REPO on a CARE_RELEASE_BRANCH_PREFIX
+  # branch and raises a PR against CARE_RELEASE_BASE_BRANCH. A person reviews and
+  # merges it — the portal never does — and the repo's own workflow updates the
+  # deployment repo; the queue drains once the merge is seen. The token needs
+  # contents + pull-request write on that repo. "fileset" (default) keeps the
+  # updater-script model above for CARE; DF releases always use it.
+  CARE_RELEASE_MODE: "fileset"
+  CARE_RELEASE_REPO: ""                    # owner/<mono-repo>; required in mono mode
+  CARE_RELEASE_BASE_BRANCH: "main"
+  CARE_RELEASE_FILE: ".github/release/release_details.json"
+  # Names the PR's branch — and only open PRs into the base branch whose branch
+  # starts with it count as "a release in flight" (a mono repo's base always has
+  # other PRs open).
+  CARE_RELEASE_BRANCH_PREFIX: "release/"
+  # strftime pattern for the release name in mono mode, dated by the release's
+  # start, e.g. "<TEAM> CARE Release - %Y.%m.%d". Empty keeps today's naming.
+  CARE_RELEASE_NAME_FORMAT: ""
   # ADK runtime (leave true).
   ADK_CONTEXT_CACHE: "true"
   ADK_EVENT_COMPACTION: "true"

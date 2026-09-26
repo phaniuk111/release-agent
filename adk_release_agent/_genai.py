@@ -31,3 +31,18 @@ def classifier_client():
     from google.genai import types
 
     return genai.Client(http_options=types.HttpOptions(retry_options=retry_options(2)))
+
+
+def drafting_client(timeout_seconds: float):
+    """A classifier client whose every attempt is also bounded in time.
+
+    A caller that waits on the answer from a request thread needs this: without
+    a timeout, a Vertex call that never answers holds that thread indefinitely.
+    """
+    from google import genai
+    from google.genai import types
+
+    return genai.Client(http_options=types.HttpOptions(
+        retry_options=retry_options(2),
+        timeout=max(1000, int(float(timeout_seconds) * 1000)),   # the SDK counts milliseconds
+    ))

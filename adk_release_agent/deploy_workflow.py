@@ -99,15 +99,36 @@ def _change_request_preview(change_request: Any) -> str:
     )
 
 
+def _diff_block(diff: str) -> str:
+    """``diff`` as a fenced diff block. The fence is longer than any run of
+    backticks inside, so prose in the file can never close it early and have
+    the rest of the preview read as the portal's own words."""
+    longest = run = 0
+    for ch in diff:
+        run = run + 1 if ch == "`" else 0
+        longest = max(longest, run)
+    fence = "`" * max(3, longest + 1)
+    body = diff.rstrip("\n")
+    return f"\n\n{fence}diff\n{body}\n{fence}"
+
+
 def _preview_text(
     preview: dict[str, Any], token: str, env: str, image_tags: str, change_request: Any = None,
     deployment_repo: str = "", heading: str = "",
 ) -> str:
     """Human-readable preview shown to the user before confirmation."""
     repo_line = f"\n\n**Deployment repo:** `{deployment_repo}`" if deployment_repo else ""
+    # A release that edits a committed file previews the file's diff — shown
+    # as a diff, not as one escaped JSON string. A copy: the dict itself is the
+    # pending preview, persisted in session state and in-process.
+    diff = ""
+    if isinstance(preview, dict) and "file_diff" in preview:
+        diff = str(preview.get("file_diff") or "")
+        preview = {k: v for k, v in preview.items() if k != "file_diff"}
     return (
         f"**{heading or f'Deploy {image_tags} to {str(env).upper()}'}**\n\n"
         "```json\n" + json.dumps(preview, indent=2) + "\n```"
+        + (_diff_block(diff) if diff else "")
         + repo_line
         + _change_request_preview(change_request)
         + f"\n\nReply `{token}` to confirm."

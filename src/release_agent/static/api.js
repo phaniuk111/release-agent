@@ -91,6 +91,14 @@ export const releaseHistory = (params) => get(HISTORY_PATH + (params ? '?' + que
 
 // ---- releases -----------------------------------------------------------------
 export const releaseDefaults = (body) => post('/api/release-defaults', body);
+/**
+ * The change-request prose drafted from the queued items' own details.
+ * @param {{artifacts: string[], kind: 'care'|'df'}} body  artifact lines as the form holds them (full URL or name:version)
+ * @returns answer — CARE in mono mode: {ok, draft: {change_description, change_reason, associated_risk,
+ *          consequence, user_service_impact}, sources: {<field>: 'ai'|'team'|'fallback'}, grounded_on};
+ *          DF and fileset CARE, as always: {ok, draft: {change_summary, change_description, change_reason,
+ *          associated_risk, consequence, user_impact}, grounded_on}; either may be {ok: false, error}
+ */
 export const releaseDraft = (body) => post('/api/release-draft', body);
 export const releaseStatus = (fresh) => get('/api/release-status' + (fresh ? '?fresh=1' : ''));
 export const releaseInsights = (params) => get('/api/release-insights?' + query(params));

@@ -22,6 +22,10 @@ The agent orchestrates the script rather than reimplementing it:
             promotion, but raw file contents (workflow YAMLs are not JSON).
 
 release_details.json is never committed anywhere, matching the live process.
+
+The exception is CARE with CARE_RELEASE_MODE=mono: the release is then ONE
+committed file edited through a PR a person merges — care_release.py. DF
+releases always take the file-set path here.
 """
 from __future__ import annotations
 
@@ -189,6 +193,10 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         return {"ok": False, "errors": errors}
 
     kind = release_chain.kind_of(details, str(payload.get("release_kind") or "").strip().lower())
+    if kind == "care" and settings.care_release_mode == "mono":
+        from . import care_release
+
+        return care_release.prepare(payload, details)
     # Form-supplied target repo wins; empty falls back to this kind's repo.
     repo_full = str(payload.get("deployment_repo") or "").strip() or (
         (settings.df_release_repo if kind == "df" else "") or active_deploy_repo())
@@ -338,6 +346,10 @@ def apply_release_fileset(prep: dict) -> dict:
     fingerprint taken at preview time — what gets pushed is then exactly what
     was approved, or nothing is pushed at all.
     """
+    if prep.get("mode") == "mono":
+        from . import care_release
+
+        return care_release.apply(prep)
     workdir = prep.get("workdir")
     branch = prep.get("branch")
     if not workdir or not os.path.isdir(os.path.join(workdir, "repo")):

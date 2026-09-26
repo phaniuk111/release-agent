@@ -221,6 +221,16 @@ def prepare_deploy_preview(
         pending = {"token": token, "request": req, "preview": prep["preview"],
                    "created_at": time.time(), "owner": preview_owner()}
         _PENDING_PREVIEWS[token] = pending
+        if prep.get("mode") == "mono":
+            # Nothing lands anywhere on CONFIRM: it raises a PR someone else
+            # merges, and the heading has to say that, not "create".
+            heading = (f"Raise CARE release PR {prep['release_name']} → "
+                       f"{prep.get('deployment_repo')}@{prep.get('landing_branch')}")
+        else:
+            # A release is created INTO SIT and promoted from there — the deploy
+            # heading ("Deploy … to PROD") described something else entirely.
+            heading = (f"Create {'DF ' if prep.get('kind') == 'df' else ''}release "
+                       f"{prep['release_name']} → {prep.get('landing_branch') or _settings.sit_branch}")
         return {
             "ok": True,
             # Returned so the Workflow can persist it in ADK session state. The
@@ -231,10 +241,7 @@ def prepare_deploy_preview(
             "status": "awaiting_confirmation",
             "environment": env,
             "image_tags": prep["release_name"],
-            # A release is created INTO SIT and promoted from there — the deploy
-            # heading ("Deploy … to PROD") described something else entirely.
-            "heading": f"Create {'DF ' if prep.get('kind') == 'df' else ''}release "
-                       f"{prep['release_name']} → {prep.get('landing_branch') or _settings.sit_branch}",
+            "heading": heading,
             "token": token,
             "proposed": prep["preview"],
             "deployment_repo": "",

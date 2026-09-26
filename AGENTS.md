@@ -11,7 +11,7 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
 | `src/release_agent/app_fastapi.py` | FastAPI app: chat SSE endpoint, session-PAT endpoints, queue/insights/deploy-template APIs, inline HTML shell |
 | `src/release_agent/adk_service.py` | Router: deterministic deploy parser → classifier fallback → chat agent; CONFIRM-token + yes/no approval resume paths |
 | `src/release_agent/agent/parsing.py` | Pure text parsing: image:tag extraction, env detection, JSON payload parser, queue-intent veto. No LLM, no regex |
-| `src/release_agent/tools/` | GitHub/BQ tool layer (source of truth for all facts): `promotion.py` (deploy PR chains SIT→UAT→PRD), `release_fileset.py` (CARE/DF release model), `release_chain.py` (each kind's branch chain: CARE SIT→UAT→PRD/PRL1, DF `DF_RELEASE_BRANCHES` e.g. RELEASE_UAT→RELEASE_PRD), `git_snapshot.py` (Dulwich checkout + API commit — no git binary), `clone_probe.py` (diagnostics: which fetch paths the proxy allows), `monitoring.py` (MONITOR_CHECKS PromQL checks + read-only queries for the Monitoring pill/skill), `bq_cost.py` (BigQuery cost report — design/BQ_COST.md: INFORMATION_SCHEMA scan, findings memory), `bq_guard.py` (the ONE gate every cost statement passes: real only for INFORMATION_SCHEMA / `__TABLES__` reads, everything else dry-run, DDL/DML refused — token-based, no regex), `bq_cost_xlsx.py` (that same report dict as .xlsx; no spreadsheet library), `release_queue.py` (BQ event log), `pr_reconcile.py` (settles PRs merged/closed outside the chat), `chg_defaults.py` (change-request fields from facts: release name/number, standard wording), `controls.py` (build verification, RCTLD control parsing), `release_window.py` (release guard), `manifest.py`, `_common.py` (GitHub client, session PAT resolution) |
+| `src/release_agent/tools/` | GitHub/BQ tool layer (source of truth for all facts): `promotion.py` (deploy PR chains SIT→UAT→PRD), `release_fileset.py` (CARE/DF release model), `care_release.py` (CARE mono mode: one committed release file → a PR a person merges; the portal never merges it), `json_splice.py` (edits a committed JSON file's top-level values in place — every other byte kept, unknown keys refused; no regex), `release_chain.py` (each kind's branch chain: CARE SIT→UAT→PRD/PRL1, DF `DF_RELEASE_BRANCHES` e.g. RELEASE_UAT→RELEASE_PRD), `git_snapshot.py` (Dulwich checkout + API commit — no git binary), `clone_probe.py` (diagnostics: which fetch paths the proxy allows), `monitoring.py` (MONITOR_CHECKS PromQL checks + read-only queries for the Monitoring pill/skill), `bq_cost.py` (BigQuery cost report — design/BQ_COST.md: INFORMATION_SCHEMA scan, findings memory), `bq_guard.py` (the ONE gate every cost statement passes: real only for INFORMATION_SCHEMA / `__TABLES__` reads, everything else dry-run, DDL/DML refused — token-based, no regex), `bq_cost_xlsx.py` (that same report dict as .xlsx; no spreadsheet library), `release_queue.py` (BQ event log), `pr_reconcile.py` (settles PRs merged/closed outside the chat), `chg_defaults.py` (change-request fields from facts: release name/number, standard wording), `controls.py` (build verification, RCTLD control parsing), `release_window.py` (release guard), `manifest.py`, `_common.py` (GitHub client, session PAT resolution) |
 | `src/release_agent/session_creds.py` | Per-thread GitHub PAT: memory-only, masked, never logged/stored; bound to its owner when identity is on |
 | `src/release_agent/features.py` | Preview features: PREVIEW_GROUPS (pill groups) and PREVIEW_FEATURES (API + chat tools refuse) shown only to PREVIEW_USERS — verified emails, or `*` for a testers-only release. Ship new features behind it |
 | `src/release_agent/identity.py` | Signed-in user from the mesh's RCToken (IDENTITY_HEADER) — signature-VERIFIED against the issuer's JWKS, never just decoded; the verified email beats any typed one |
@@ -51,14 +51,32 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    repo's chain (`DF_RELEASE_BRANCHES`, landing on the first — no SIT), with its own guard; promotion copies marker-listed files
    verbatim (`RELEASE-FILES-JSON:` in the release PR body). prl1_only charts never
    reach PRD; df_images never enter helm deploy workflows.
+   CARE in mono mode (`CARE_RELEASE_MODE=mono`, `care_release.py`) is the one
+   exception: the release is ONE committed file, `CARE_RELEASE_FILE` in
+   `CARE_RELEASE_REPO`, changed by a minimal splice (`json_splice.py` — only the
+   values that change move; a key the file lacks, like df_images, is refused) on a
+   `CARE_RELEASE_BRANCH_PREFIX` branch, and raised as a PR against
+   `CARE_RELEASE_BASE_BRANCH` that the portal NEVER merges — a person does, and
+   the repo's own workflow updates the deployment repo. Same CONFIRM token; apply
+   refuses if the file on the base moved since the preview. The PR names who
+   raised it (the verified email, else the typed one marked unverified). Its guard
+   counts only open PRs into the base whose branch has the prefix, and runs at
+   preview AND again at apply; apply reuses an open PR only when its branch
+   already carries exactly the approved file — never writing over another
+   release or a reviewer's edit. The queue drains when `pr_reconcile` sees the
+   merge (`released`); closed unmerged, the charts stay queued. Only this mode's
+   form opens pre-drafted, with the team's "Low risk." / "No user impact is
+   expected." leads (`chg_draft._draft_mono`). DF, and CARE in fileset mode, are
+   unchanged — their button-drafted change request included.
 3. **BQ event log is OPTIONAL and APPEND-ONLY**: `release_intents` table, INSERT only;
    queue + per-env deployed state are derived (latest event wins). Empty `BQ_DATASET`
    disables cleanly; BQ outages degrade to error dicts — never block a release.
    Schema changes: edit `bigquery/release_intents.schema.json` + `_SCHEMA` in
    `release_queue.py` together (additive nullable columns only).
-   Only what LANDED is `deployed`/`removed`: a change stopped at a PR awaiting
-   review is a `pending` event against the PR that completes it, settled later
-   by `pr_reconcile` at the PR's merge time (or `abandoned` if closed).
+   Only what LANDED is `deployed`/`removed`/`released`: a change stopped at a PR
+   awaiting review is a `pending` event against the PR that completes it, settled
+   later by `pr_reconcile` at the PR's merge time (or `abandoned` if closed) —
+   queue reads trigger it too, throttled to once a minute per process.
 4. **Queue eligibility**: queueing for a release REQUIRES the GitHub Actions run URL;
    failed build or failed control (RCTLDEF*/RLFT/RFTL prefixes,
    case-insensitive, steps or jobs) → refused with the failures listed.

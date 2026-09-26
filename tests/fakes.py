@@ -19,27 +19,37 @@ folded in here — a repo needing that kind of hook can subclass ``FakeRepo`` an
 override ``create_pull``/``FakePR.merge`` the way tests/test_change_request.py's
 ``_ProtectedRepo`` does.
 """
+import hashlib
 import json
 from types import SimpleNamespace
+
+
+def blob_sha(text):
+    """Git's blob id for ``text`` — content-addressed, like GitHub's."""
+    data = text.encode()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
 class FakeContent:
     """What ``repo.get_contents(...)`` returns: decoded_content + sha."""
 
-    def __init__(self, text):
+    def __init__(self, text, sha="sha"):
         self.decoded_content = text.encode()
-        self.sha = "sha"
+        self.sha = sha
 
 
 class FakeRef:
     """What ``repo.get_git_ref(...)`` returns: an object with the branch tip's
-    sha, and a delete() for cleaning up a short-lived change branch."""
+    sha, and a delete() for cleaning up a short-lived change branch (it drops
+    the branch from ``files`` when the ref came from a FakeRepo)."""
 
-    def __init__(self, sha):
+    def __init__(self, sha, repo=None):
         self.object = SimpleNamespace(sha=sha)
+        self._repo = repo
 
     def delete(self):
-        pass
+        if self._repo is not None:
+            self._repo.files.pop(self.object.sha, None)
 
 
 class FakePR:
@@ -85,7 +95,15 @@ class FakeRepo:
     file-set is a mix of JSON and YAML text) — either way ``files[branch][path]``
     ends up as the raw text ``get_contents``/``create_file``/``update_file`` work
     with.
+
+    A commit sha is the branch's NAME (``get_git_ref``, ``get_branch``), and a
+    blob sha is git's content hash of the file, so a file that changed has a
+    new sha. ``strict_sha = True`` makes ``update_file`` refuse a stale blob sha
+    the way GitHub does (409); off by default, so older callers keep passing
+    whatever sha they like.
     """
+
+    strict_sha = False
 
     def __init__(self, initial):
         self.files = {
@@ -93,28 +111,38 @@ class FakeRepo:
             for b, fs in initial.items()
         }
         self.prs = []
-        self.writes = []          # every create_file/update_file: path, msg, branch, author
+        self.writes = []          # every create_file/update_file: path, msg, branch, author, sha
         self._pr = 0
 
     def get_git_ref(self, name):
-        return FakeRef(name.split("heads/", 1)[1])  # sha == branch name
+        return FakeRef(name.split("heads/", 1)[1], repo=self)  # sha == branch name
+
+    def get_branch(self, name):
+        if name not in self.files:
+            raise Exception("404 Branch not found")
+        return SimpleNamespace(name=name, commit=SimpleNamespace(sha=name))
 
     def create_git_ref(self, ref, sha):
         work = ref.split("heads/", 1)[1]
+        if work in self.files:
+            raise Exception('422 {"message": "Reference already exists"}')
         self.files[work] = dict(self.files.get(sha, {}))
 
     def get_contents(self, path, ref=None):
         fs = self.files.get(ref, {})
         if path not in fs:
             raise Exception("404")
-        return FakeContent(fs[path])
+        return FakeContent(fs[path], sha=blob_sha(fs[path]))
 
     def create_file(self, path, msg, content, branch=None, author=None):
         self.writes.append({"path": path, "msg": msg, "branch": branch, "author": author})
         self.files.setdefault(branch, {})[path] = content
 
     def update_file(self, path, msg, content, sha, branch=None, author=None):
-        self.writes.append({"path": path, "msg": msg, "branch": branch, "author": author})
+        current = self.files.get(branch, {}).get(path)
+        if self.strict_sha and (current is None or blob_sha(current) != sha):
+            raise Exception(f"409 {path} does not match {sha}")
+        self.writes.append({"path": path, "msg": msg, "branch": branch, "author": author, "sha": sha})
         self.files.setdefault(branch, {})[path] = content
 
     def create_pull(self, title, body, head, base):
@@ -122,5 +150,8 @@ class FakeRepo:
         self.prs.append(pr)
         return pr
 
-    def get_pulls(self, state="open", base=None, sort=None, direction=None):
-        return [p for p in self.prs if p.state == state and (base is None or p.base.ref == base)]
+    def get_pulls(self, state="open", base=None, sort=None, direction=None, head=None):
+        """``head`` is GitHub's "owner:branch" filter."""
+        branch = head.split(":", 1)[-1] if head else None
+        return [p for p in self.prs if p.state == state and (base is None or p.base.ref == base)
+                and (branch is None or p.head.ref == branch)]

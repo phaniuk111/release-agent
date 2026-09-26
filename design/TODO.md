@@ -47,6 +47,40 @@ approximates Xray's database). Parked by choice before any fix was tested.
   scanners (all install via Homebrew / `uvx pip-audit`) and build the image
   locally to scan the final layers, the way Xray does.
 
+## Deferred by choice (2026-09-26)
+
+### CARE release as one committed file — the reviewers' safeguards not built
+Built: `CARE_RELEASE_MODE=mono` (`tools/care_release.py`) splices the release
+into the one committed file, raises a PR the portal never merges, names who
+raised it, and drains the queue when `pr_reconcile` sees the merge. Kept
+low-risk on purpose: the person releasing owns the wording and the PR review
+is the check. What the plan reviews asked for, and why each would matter:
+- **Server-side re-validation of prose and provenance** — the form's checks run
+  in the browser; JSON pasted into chat reaches the file with only
+  `validate_release`'s shape checks (a chart that never passed the queue gate,
+  any prose).
+- **Evidence table in the PR** — per chart: previous → new version, ticket,
+  developer text, run URL, controls. Without it the reviewer has nothing to
+  check the summary against.
+- **Segregation-of-duties checks** — with the server token the bot authors the
+  PR, so the requester can approve and merge their own release; nothing reads
+  the PR's reviews to flag it.
+- **Action-run tracking after merge** — `released` means merged into the base,
+  not deployed: a failed workflow run still drains the queue and nobody is told.
+- **Drafted-by provenance event** — nothing durable records which fields a
+  model drafted and which a person wrote (model and prompt version, facts hash).
+- **Action trigger / env-var prerequisites** — the repo's workflow must run only
+  on a push to the base branch and read the prose through env vars, never
+  `${{ }}` inside `run:`; otherwise a branch push or shell-quoted prose acts
+  before anyone reviews.
+- **Team branch prefix + PR label** — `release/` can match other teams'
+  branches in a shared repo (a false "release in flight"); a team namespace and
+  a label would make the guard exact.
+- **Withdraw-while-in-PR guard** — a chart withdrawn while its release PR is
+  open stays in the file; the merge ships it and reconcile marks it released.
+- **Status-banner repo split** — the banner still reads the deploy repo's
+  guard branches, so an open mono-repo release PR does not show as in flight.
+
 ## Built — 2026-09-19
 
 ### BigQuery cost report — `design/BQ_COST.md`
