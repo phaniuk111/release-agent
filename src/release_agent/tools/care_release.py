@@ -14,8 +14,8 @@ workflow takes it from there to the deployment repo.
             since the preview (the guard runs again: only a PR already
             carrying exactly this text — this approval, applied before — is
             not another release); commit the one file on a new release
-            branch, raise the PR, record the release as pending against it.
-            pr_reconcile drains the queue when someone merges it.
+            branch, raise the PR, and release its charts in the queue at once
+            (they move to Release history; no merge is tracked).
 
 Same prep/result contract as release_fileset, so the CONFIRM-token flow in
 adk_release_agent/deploy.py is unchanged. DF releases, and CARE in the
@@ -327,19 +327,24 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
                             f"opened: {e}. Open a PR from {branch} into {base} by hand — nothing "
                             "was merged.") from None
 
-    # The queue drains when this PR merges — outside any chat turn, so the
-    # merge is found by pr_reconcile. Best-effort, like every event write.
-    try:
-        from .pr_reconcile import record_pending
+    # Raising the PR IS the release as far as the queue is concerned: its charts
+    # leave the queue now and appear in Release history under this PR. If the
+    # release does not go through (the PR is closed, the workflow fails), they
+    # are put back from Release history — no merge is tracked. Only once per
+    # release: a re-apply that reuses the open PR unchanged has recorded it.
+    untracked = False
+    if action == "release_pr_opened" or committed:
+        try:
+            from .release_queue import mark_released
 
-        recorded = record_pending("", prep.get("artifacts") or [], repo, pr.number,
-                                  on_merge="released", tag=prep.get("release_name") or title)
-    except Exception as e:  # noqa: BLE001
-        recorded = {"ok": False, "error": str(e)}
-    untracked = not recorded.get("ok") and not recorded.get("disabled")
-    if untracked:
-        logger.warning("care release: PR %s#%s raised but not recorded as pending: %s",
-                       repo, pr.number, recorded.get("error"))
+            recorded = mark_released(prep.get("release_name") or title, pr.number,
+                                     prep.get("artifacts") or [], deployment_repo=repo)
+        except Exception as e:  # noqa: BLE001 — never fails a raised PR
+            recorded = {"ok": False, "error": str(e)}
+        untracked = not recorded.get("ok") and not recorded.get("disabled")
+        if untracked:
+            logger.warning("care release: PR %s#%s raised but the queue was not drained: %s",
+                           repo, pr.number, recorded.get("error"))
 
     link = f"[PR #{pr.number}]({pr.html_url})"
     if action == "release_pr_opened":
@@ -357,7 +362,9 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
         "pr_url": pr.html_url,
         "merged": False,
         "committed": committed,
-        "note": note + " Review and merge it — the portal never merges it."
-                + (" The release queue could not record this PR, so its charts will not leave the queue "
-                   "on their own when it merges — withdraw them after the merge." if untracked else ""),
+        "note": note + " Review and merge it — the portal never merges it. Its charts have moved from the "
+                "release queue to Release history; if this release does not go through, put them back "
+                "from there."
+                + (" (The queue could not be updated just now — its charts still show there; remove them "
+                   "by hand.)" if untracked else ""),
     }

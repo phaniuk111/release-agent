@@ -545,18 +545,7 @@ def _fetch_events(days: int = 120) -> list[dict[str, Any]]:
 def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Pure reduction: replay events chronologically; an artifact is queued when
     its LATEST event is 'queued' (withdrawn/released clear it). Re-queue after a
-    release naturally re-enters the next queue.
-
-    One exception. A release PR a person merges (pr_reconcile) is 'released' at
-    its MERGE time, which can be days after the PR was raised — and a chart
-    re-queued at another version in between is not what that PR shipped. So a
-    'released' event leaves a different version queued when it was queued after
-    the PR's 'pending' event, i.e. after the release was raised without it."""
-    raised_at: dict[tuple[Any, Any], str] = {}
-    for ev in events:
-        if ev.get("event_type") == "pending" and ev.get("pr_number"):
-            raised_at.setdefault((ev.get("deployment_repo"), ev.get("pr_number")),
-                                 ev.get("event_ts") or "")
+    release naturally re-enters the next queue."""
     state: dict[str, dict[str, Any]] = {}
     for ev in events:
         name = ev.get("artifact_name")
@@ -581,14 +570,7 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "target_envs": ev.get("target_envs") or "",
                 "allowed_failures": allowed,
             }
-        elif etype == "released" and name in state:
-            item = state[name]
-            since = raised_at.get((ev.get("deployment_repo"), ev.get("pr_number")))
-            if (since and item.get("artifact_version") != ev.get("artifact_version")
-                    and (item.get("requested_at") or "") > since):
-                continue
-            state.pop(name, None)
-        elif etype == "withdrawn":
+        elif etype in ("withdrawn", "released"):
             state.pop(name, None)
     return sorted(state.values(), key=lambda x: x.get("requested_at") or "")
 
@@ -632,21 +614,6 @@ def current_queue(use_cache: bool = True) -> dict[str, Any]:
             return _queue_cache["value"]
     try:
         events = _fetch_events()
-        # A release PR merged in GitHub leaves the queue only once pr_reconcile
-        # settles it, and the Create-release form reads THIS, not the stats.
-        # Throttled per process; neither step may fail the read.
-        try:
-            from .pr_reconcile import reconcile_pending
-
-            settled = reconcile_pending(events)
-        except Exception:
-            logger.warning("release queue: reconciliation skipped", exc_info=True)
-            settled = 0
-        if settled:
-            try:
-                events = _fetch_events()
-            except Exception:
-                pass   # answer from what we had rather than fail the read
         result = {"ok": True}
         queue = reduce_queue(events)
         result.update(queue=queue, count=len(queue), events_considered=len(events))
@@ -794,15 +761,6 @@ def history(days: int = 21, limit: int = 25, use_cache: bool = True) -> dict[str
         return cached["value"]
     try:
         events = _fetch_events(days)
-        # A release PR merged in GitHub belongs in the history as soon as it is
-        # read here, not after someone happens to open the queue.
-        try:
-            from .pr_reconcile import reconcile_pending
-
-            if reconcile_pending(events):
-                events = _fetch_events(days)
-        except Exception:  # noqa: BLE001 — settling is best-effort; the history still renders
-            logger.debug("history: reconcile skipped", exc_info=True)
         result = {"ok": True, "days": days, "events_considered": len(events),
                   "releases": release_history(events, limit)}
     except Exception as e:

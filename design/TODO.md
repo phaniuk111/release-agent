@@ -52,7 +52,9 @@ approximates Xray's database). Parked by choice before any fix was tested.
 ### CARE release as one committed file — the reviewers' safeguards not built
 Built: `CARE_RELEASE_MODE=mono` (`tools/care_release.py`) splices the release
 into the one committed file, raises a PR the portal never merges, names who
-raised it, and drains the queue when `pr_reconcile` sees the merge. Kept
+raised it, and moves its charts from the queue to Release history as soon as
+the PR is raised (no merge tracking — a release that does not go through is
+put back from Release history, by the person). Kept
 low-risk on purpose: the person releasing owns the wording and the PR review
 is the check. What the plan reviews asked for, and why each would matter:
 - **Server-side re-validation of prose and provenance** — the form's checks run
@@ -65,8 +67,9 @@ is the check. What the plan reviews asked for, and why each would matter:
 - **Segregation-of-duties checks** — with the server token the bot authors the
   PR, so the requester can approve and merge their own release; nothing reads
   the PR's reviews to flag it.
-- **Action-run tracking after merge** — `released` means merged into the base,
-  not deployed: a failed workflow run still drains the queue and nobody is told.
+- **Merge and Action-run tracking** — `released` is written when the PR is
+  raised, not merged or deployed: a closed PR or a failed workflow run leaves
+  the charts in Release history, and nobody is told to put them back.
 - **Drafted-by provenance event** — nothing durable records which fields a
   model drafted and which a person wrote (model and prompt version, facts hash).
 - **Action trigger / env-var prerequisites** — the repo's workflow must run only
@@ -77,7 +80,7 @@ is the check. What the plan reviews asked for, and why each would matter:
   branches in a shared repo (a false "release in flight"); a team namespace and
   a label would make the guard exact.
 - **Withdraw-while-in-PR guard** — a chart withdrawn while its release PR is
-  open stays in the file; the merge ships it and reconcile marks it released.
+  open stays in the file; the merge ships it.
 - **Status-banner repo split** — the banner still reads the deploy repo's
   guard branches, so an open mono-repo release PR does not show as in flight.
 

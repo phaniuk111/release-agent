@@ -63,8 +63,10 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    counts only open PRs into the base whose branch has the prefix, and runs at
    preview AND again at apply; apply reuses an open PR only when its branch
    already carries exactly the approved file — never writing over another
-   release or a reviewer's edit. The queue drains when `pr_reconcile` sees the
-   merge (`released`); closed unmerged, the charts stay queued. Only this mode's
+   release or a reviewer's edit. Raising the PR releases its charts in the queue
+   at once (`mark_released`): they leave the queue for Release history, and if
+   the release does not go through they are put back from there — no merge is
+   tracked. Only this mode's
    form opens pre-drafted, with the team's "Low risk." / "No user impact is
    expected." leads (`chg_draft._draft_mono`). DF, and CARE in fileset mode, are
    unchanged — their button-drafted change request included.
@@ -73,10 +75,9 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    disables cleanly; BQ outages degrade to error dicts — never block a release.
    Schema changes: edit `bigquery/release_intents.schema.json` + `_SCHEMA` in
    `release_queue.py` together (additive nullable columns only).
-   Only what LANDED is `deployed`/`removed`/`released`: a change stopped at a PR
+   Only what LANDED is `deployed`/`removed`: a change stopped at a PR
    awaiting review is a `pending` event against the PR that completes it, settled
-   later by `pr_reconcile` at the PR's merge time (or `abandoned` if closed) —
-   queue reads trigger it too, throttled to once a minute per process.
+   later by `pr_reconcile` at the PR's merge time (or `abandoned` if closed).
 4. **Queue eligibility**: queueing for a release REQUIRES the GitHub Actions run URL;
    failed build or failed control (RCTLDEF*/RLFT/RFTL prefixes,
    case-insensitive, steps or jobs) → refused with the failures listed.

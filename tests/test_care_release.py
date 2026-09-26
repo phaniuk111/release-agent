@@ -15,7 +15,7 @@ from release_agent import identity
 from release_agent.tools import care_release as CR
 from release_agent.tools import git_snapshot as G
 from release_agent.tools import json_splice
-from release_agent.tools import pr_reconcile
+from release_agent.tools import release_queue
 from release_agent.tools import release_fileset as RF
 from tests.fakes import FakeRepo
 
@@ -95,9 +95,12 @@ def repo(monkeypatch):
 
 @pytest.fixture
 def pending(monkeypatch):
+    """Every mark_released call: raising the PR drains the queue at once."""
     calls = []
-    monkeypatch.setattr(pr_reconcile, "record_pending",
-                        lambda *a, **kw: calls.append((a, kw)) or {"ok": True})
+    monkeypatch.setattr(release_queue, "mark_released",
+                        lambda release_name, pr_number, artifacts, deployment_repo="":
+                        calls.append({"release_name": release_name, "pr_number": pr_number,
+                                      "artifacts": artifacts, "repo": deployment_repo}) or {"ok": True})
     return calls
 
 
@@ -271,8 +274,8 @@ def test_a_second_release_confirmed_while_the_first_is_open_is_refused(repo, pen
             "One release at a time — merge or close it first. Nothing was pushed.")}
     assert repo.prs == [pr] and len(repo.writes) == 1 and set(repo.files) == {"main", BRANCH}
     assert repo.files[BRANCH][FILE] == approved, "the first PR still carries what its person approved"
-    [(args, _kw)] = pending
-    assert args[1] == first["artifacts"] and args[3] == out["pr_number"]
+    [call] = pending
+    assert call["artifacts"] == first["artifacts"] and call["pr_number"] == out["pr_number"]
 
 
 def test_a_same_named_release_racing_past_the_guard_never_writes_over_the_open_pr(
@@ -291,7 +294,7 @@ def test_a_same_named_release_racing_past_the_guard_never_writes_over_the_open_p
         f"PR #{pr.number} ({pr.html_url}) for this release name is open with different content — "
         "nothing was pushed. One release at a time: merge or close it first.")}
     assert repo.files[BRANCH][FILE] == approved and len(repo.writes) == 1 and repo.prs == [pr]
-    assert len(pending) == 1, "the second release's charts are not recorded against the first PR"
+    assert len(pending) == 1, "the second release's charts are not released under the first PR"
 
 
 def test_a_retry_never_writes_over_an_edit_made_on_the_open_pr(repo, pending):
@@ -312,12 +315,23 @@ def test_a_leftover_branch_without_a_pr_is_never_written_to(repo, pending):
     assert repo.files[BRANCH] == {FILE: "{}", "stale.txt": "left behind"}
 
 
-def test_the_release_is_recorded_as_pending_against_its_pr(repo, pending):
+def test_raising_the_pr_moves_its_charts_from_the_queue_to_release_history(repo, pending):
+    """Asked for: charts leave the queue as soon as the release is triggered and
+    show in Release history under this PR; if it does not go through, they are
+    put back from there. No merge is tracked."""
+    prep, out = _raise_pr()
+    assert pending == [{"release_name": "<TEAM> CARE Release - 2026.10.01", "pr_number": out["pr_number"],
+                        "artifacts": [{"name": "svc-a", "tag": "5.0.470"}, {"name": "svc-c", "tag": "1.2.3"}],
+                        "repo": MONO}]
+    assert "moved from the release queue to Release history" in out["note"]
+    RF.apply_release_fileset(prep)
+    assert len(pending) == 1, "re-applying onto the same open PR does not release its charts twice"
+
+
+def test_a_queue_outage_never_fails_the_raised_pr_and_says_so(repo, monkeypatch):
+    monkeypatch.setattr(release_queue, "mark_released", lambda *a, **k: {"ok": False, "error": "BigQuery down"})
     _prep, out = _raise_pr()
-    [(args, kwargs)] = pending
-    assert args == ("", [{"name": "svc-a", "tag": "5.0.470"}, {"name": "svc-c", "tag": "1.2.3"}],
-                    MONO, out["pr_number"])
-    assert kwargs == {"on_merge": "released", "tag": "<TEAM> CARE Release - 2026.10.01"}
+    assert out["ok"] and out["pr_number"] and "remove them by hand" in out["note"]
 
 
 def test_a_failed_commit_leaves_no_branch_behind(repo, pending, monkeypatch):
@@ -352,7 +366,7 @@ def test_a_pr_that_cannot_be_opened_says_where_the_commit_is(repo, pending, monk
                         lambda **kw: (_ for _ in ()).throw(Exception("422 Validation Failed")))
     out = RF.apply_release_fileset(prep)
     assert out["ok"] is False and BRANCH in out["error"] and "by hand" in out["error"]
-    assert pending == [], "no PR, nothing pending"
+    assert pending == [], "no PR, nothing released"
 
 
 def test_apply_never_raises(repo, pending, monkeypatch):

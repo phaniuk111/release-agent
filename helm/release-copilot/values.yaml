@@ -340,7 +340,8 @@ config:
   # edits CARE_RELEASE_FILE in CARE_RELEASE_REPO on a CARE_RELEASE_BRANCH_PREFIX
   # branch and raises a PR against CARE_RELEASE_BASE_BRANCH. A person reviews and
   # merges it — the portal never does — and the repo's own workflow updates the
-  # deployment repo; the queue drains once the merge is seen. The token needs
+  # deployment repo. Its charts leave the queue for Release history as soon as
+  # the PR is raised (put them back from there if it does not go through). The token needs
   # contents + pull-request write on that repo. "fileset" (default) keeps the
   # updater-script model above for CARE; DF releases always use it.
   CARE_RELEASE_MODE: "fileset"
