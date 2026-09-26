@@ -195,11 +195,11 @@ export function requeuePlan(items) {
         if (it.in_queue) { skipped.push({ artifact, reason: 'already queued for the next release' }); continue; }
         if (it.from_queue) { direct.push({ artifact_name: it.artifact_name, artifact_version: it.artifact_version || '' }); continue; }
         if (!it.build_run_url) {
-            skipped.push({ artifact, reason: 'never went through the queue — paste the run that built it in the Build column, then tick' });
+            skipped.push({ artifact, reason: 'never went through the queue — paste the run that built it in its row, then tick' });
             continue;
         }
         if (!it.jira_ticket) {
-            skipped.push({ artifact, reason: 'never went through the queue — the gate needs a JIRA ticket; add it in the JIRA column, then tick' });
+            skipped.push({ artifact, reason: 'never went through the queue — the gate needs a JIRA ticket; add it in its row, then tick' });
             continue;
         }
         gated.push({ artifact, build_run_url: it.build_run_url, jira_ticket: it.jira_ticket || '',
