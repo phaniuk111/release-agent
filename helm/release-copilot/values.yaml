@@ -344,6 +344,14 @@ config:
   # the PR is raised (put them back from there if it does not go through). The token needs
   # contents + pull-request write on that repo. "fileset" (default) keeps the
   # updater-script model above for CARE; DF releases always use it.
+  # The model that drafts the change-request summary/description/reason (thinking
+  # off — it only summarises what developers wrote). gemini-3.5-flash is served
+  # only at Vertex's "global" endpoint, which does not keep processing in one
+  # region; set CHG_DRAFT_LOCATION to a region (and a model served there, e.g.
+  # gemini-2.5-flash) if data-residency policy requires it. Empty = GEMINI_MODEL
+  # at GOOGLE_CLOUD_LOCATION.
+  CHG_DRAFT_MODEL: "gemini-3.5-flash"
+  CHG_DRAFT_LOCATION: "global"
   CARE_RELEASE_MODE: "fileset"
   CARE_RELEASE_REPO: ""                    # owner/<mono-repo>; required in mono mode
   CARE_RELEASE_BASE_BRANCH: "main"

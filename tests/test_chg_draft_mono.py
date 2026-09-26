@@ -457,7 +457,7 @@ def test_the_drafting_client_stays_alive_for_the_whole_call(monkeypatch):
         def __del__(self):
             self._conn.closed = True
 
-    monkeypatch.setattr(_genai, "drafting_client", lambda timeout: _Client())
+    monkeypatch.setattr(_genai, "drafting_client", lambda timeout, location="": _Client())
     assert D._ask_model("prompt", ["svc-a"])["services"] == []
 
 
@@ -469,3 +469,68 @@ def test_both_prompts_forbid_recasting_a_developers_meaning():
     for prompt in (D._PROMPT, D._DF_PROMPT):
         assert "never turn a\n  note about a build, a control or a test result into a change" in prompt
         assert "do not call a change a fix" in prompt
+
+
+def test_drafting_thinks_as_little_as_each_model_allows(monkeypatch):
+    """Flash: off (0). Pro refuses 0 — its lowest is 128 (checked against
+    Vertex). A model that rejects any budget is asked once more without one."""
+    from adk_release_agent import _genai
+    from adk_release_agent import chg_draft as D
+    from release_agent.config import settings
+
+    assert D.thinking_budget("gemini-2.5-flash") == 0 and D.thinking_budget("gemini-2.5-pro") == 128
+
+    configs = []
+    reply = ('{"services": [], "change_description": "", "change_reason": "", '
+             '"risk_detail": "", "consequence": "", "impact_detail": ""}')
+
+    class _Models:
+        def __init__(self, refuse):
+            self.refuse = refuse
+
+        def generate_content(self, model, contents, config):
+            configs.append(dict(config))
+            if self.refuse and "thinking_config" in config:
+                raise RuntimeError("400 INVALID_ARGUMENT: model does not support setting thinking_budget")
+            return type("R", (), {"text": reply})()
+
+    class _Client:
+        def __init__(self, refuse):
+            self.models = _Models(refuse)
+
+    for model, refuse, want in (("gemini-2.5-flash", False, 0), ("gemini-2.5-pro", False, 128)):
+        configs.clear()
+        monkeypatch.setattr(settings, "gemini_model", model, raising=False)
+        monkeypatch.setattr(_genai, "drafting_client", lambda timeout, location="", r=refuse: _Client(r))
+        D._ask_model("p", ["svc-a"])
+        assert configs[0]["thinking_config"] == {"thinking_budget": want}
+
+    configs.clear()
+    monkeypatch.setattr(_genai, "drafting_client", lambda timeout, location="": _Client(True))
+    assert D._ask_model("p", ["svc-a"])["services"] == []
+    assert len(configs) == 2 and "thinking_config" not in configs[1], "retried once without a budget"
+
+
+def test_the_draft_uses_its_own_model_and_location_when_set(monkeypatch):
+    from adk_release_agent import _genai
+    from adk_release_agent import chg_draft as D
+    from release_agent.config import settings
+
+    seen = {}
+
+    class _Client:
+        def __init__(self):
+            self.models = self
+
+        def generate_content(self, model, contents, config):
+            seen["model"], seen["budget"] = model, config["thinking_config"]["thinking_budget"]
+            return type("R", (), {"text": '{"services": [], "change_description": "", "change_reason": "", '
+                                          '"risk_detail": "", "consequence": "", "impact_detail": ""}'})()
+
+    monkeypatch.setattr(settings, "gemini_model", "gemini-2.5-pro", raising=False)
+    monkeypatch.setattr(settings, "chg_draft_model", "gemini-3.5-flash", raising=False)
+    monkeypatch.setattr(settings, "chg_draft_location", "global", raising=False)
+    monkeypatch.setattr(_genai, "drafting_client",
+                        lambda timeout, location="": seen.update(location=location) or _Client())
+    D._ask_model("p", ["svc-a"])
+    assert seen == {"location": "global", "model": "gemini-3.5-flash", "budget": 0}

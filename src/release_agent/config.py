@@ -330,6 +330,13 @@ class Settings(BaseSettings):
     care_release_name_format: str = Field(
         default="", validation_alias=AliasChoices("CARE_RELEASE_NAME_FORMAT"),
     )
+    # The model that drafts change-request prose, and where Vertex serves it.
+    # Empty = GEMINI_MODEL / GOOGLE_CLOUD_LOCATION. A draft summarises what
+    # developers wrote, so a fast model with thinking off is enough; newer
+    # models (gemini-3.5-flash) answer only at the "global" endpoint, which does
+    # not pin processing to one region — set a region here if policy requires it.
+    chg_draft_model: str = Field(default="", validation_alias=AliasChoices("CHG_DRAFT_MODEL"))
+    chg_draft_location: str = Field(default="", validation_alias=AliasChoices("CHG_DRAFT_LOCATION"))
     # Base path prepended when a developer supplies bare name:version instead of a
     # full artifactory URL (e.g. https://artifactory.../com/db/acme-ds/).
     artifactory_base_url: str = Field(

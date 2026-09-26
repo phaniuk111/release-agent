@@ -33,16 +33,25 @@ def classifier_client():
     return genai.Client(http_options=types.HttpOptions(retry_options=retry_options(2)))
 
 
-def drafting_client(timeout_seconds: float):
+def drafting_client(timeout_seconds: float, location: str = ""):
     """A classifier client whose every attempt is also bounded in time.
 
     A caller that waits on the answer from a request thread needs this: without
     a timeout, a Vertex call that never answers holds that thread indefinitely.
+    ``location`` pins the Vertex endpoint when the drafting model is served
+    somewhere other than GOOGLE_CLOUD_LOCATION — newer Gemini models (3.5
+    Flash) answer only at "global" and are "not found" in a region.
     """
+    import os
+
     from google import genai
     from google.genai import types
 
-    return genai.Client(http_options=types.HttpOptions(
+    http = types.HttpOptions(
         retry_options=retry_options(2),
         timeout=max(1000, int(float(timeout_seconds) * 1000)),   # the SDK counts milliseconds
-    ))
+    )
+    if location:
+        return genai.Client(vertexai=True, project=os.environ.get("GOOGLE_CLOUD_PROJECT") or None,
+                            location=location, http_options=http)
+    return genai.Client(http_options=http)

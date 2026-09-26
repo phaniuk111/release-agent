@@ -237,6 +237,15 @@ def _schema(names: list[str]) -> dict[str, Any]:
     }
 
 
+def thinking_budget(model: str) -> int:
+    """How much hidden reasoning a draft may spend. Summarising what developers
+    wrote needs none: measured in Langfuse, 591 of the 714 tokens a DF draft
+    generated were thinking — most of its 5 s. Flash accepts 0 (off); Pro
+    refuses 0 ("does not support setting thinking_budget to 0") and its
+    lowest is 128."""
+    return 128 if "pro" in (model or "").lower() else 0
+
+
 def _ask_model(prompt: str, names: list[str], schema: dict[str, Any] | None = None) -> Any:
     from release_agent.config import settings
 
@@ -246,15 +255,22 @@ def _ask_model(prompt: str, names: list[str], schema: dict[str, Any] | None = No
     # client when it is garbage-collected, so one used only inline
     # ("drafting_client(...).models.generate_content(...)") can be closed before
     # the request is sent — found live: "the client has been closed".
-    client = drafting_client(TIMEOUT_SECONDS)
-    response = client.models.generate_content(
-        model=settings.gemini_model or "gemini-2.5-flash",
-        contents=prompt,
-        # Deterministic: the same queue must not produce a different change
-        # record on a second press.
-        config={"temperature": 0.0, "response_mime_type": "application/json",
-                "response_schema": schema or _schema(names)},
-    )
+    client = drafting_client(TIMEOUT_SECONDS, settings.chg_draft_location)
+    model = settings.chg_draft_model or settings.gemini_model or "gemini-2.5-flash"
+    # Deterministic: the same queue must not produce a different change record
+    # on a second press.
+    config = {"temperature": 0.0, "response_mime_type": "application/json",
+              "response_schema": schema or _schema(names),
+              "thinking_config": {"thinking_budget": thinking_budget(model)}}
+    try:
+        response = client.models.generate_content(model=model, contents=prompt, config=config)
+    except Exception as e:
+        # A model that takes no budget at all must not cost the draft: once more
+        # at its own default.
+        if "thinking" not in str(e).lower():
+            raise
+        config.pop("thinking_config")
+        response = client.models.generate_content(model=model, contents=prompt, config=config)
     return json.loads((response.text or "").strip())
 
 
