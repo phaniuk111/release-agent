@@ -23,6 +23,30 @@ writes nothing; Terraform is where the team applies a suggestion.
   never a label. Most policies are log-based metrics templated per service —
   the report collapses a template into one row and one suggestion.
 
+### Image vulnerabilities (JFrog Xray) — parked 2026-09-26
+Scanned 2026-09-24 with pip-audit, osv-scanner, grype and trivy (the union
+approximates Xray's database). Parked by choice before any fix was tested.
+- **App libraries — all transitive, all fixable:** anyio 4.14.1 → 4.14.2
+  (CVE-2026-63374 9.3, -63349, -64847), cryptography 49.0.0 → 50.x
+  (CVE-2026-69247 / GHSA-g6cj-pr64-35w5, 8.2 — a MAJOR bump: check pyOpenSSL's
+  cap and the RS256 path in identity.py), pyasn1 0.6.3 → 0.6.4
+  (CVE-2026-59884/-59885/-59886). The untested lock change is in
+  `git stash` ("parked: security upgrade …"); redoing it from scratch is
+  `uv lock --upgrade-package anyio --upgrade-package cryptography
+  --upgrade-package pyasn1`, then add `[tool.uv] constraint-dependencies`
+  floors, re-export requirements.txt, full tests, rescan.
+- **Base image's own system-Python libraries (unused by the app, which runs
+  from /opt/venv):** pip 24.0, setuptools 79.0.1, wheel 0.45.1,
+  jaraco.context 5.3.0 (9 findings, 2 HIGH). Fix: remove them — and the
+  ensurepip bundled wheels — in the runtime stage's existing RUN, no apt.
+- **Debian OS layer:** 156 (44 HIGH), none with a released fix. Nothing to
+  upgrade today; rebuild on the current slim tag as Debian ships fixes, and
+  record Xray ignore rules for packages the app never uses.
+- **Clean:** vendored Chart.js 4.4.9 and Font Awesome 6.5.1.
+- **Needs to restart:** the scan output was local-only; re-run the four
+  scanners (all install via Homebrew / `uvx pip-audit`) and build the image
+  locally to scan the final layers, the way Xray does.
+
 ## Built — 2026-09-19
 
 ### BigQuery cost report — `design/BQ_COST.md`
