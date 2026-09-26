@@ -84,6 +84,30 @@ is the check. What the plan reviews asked for, and why each would matter:
 - **Status-banner repo split** — the banner still reads the deploy repo's
   guard branches, so an open mono-repo release PR does not show as in flight.
 
+### Autonomous release agent — parked 2026-09-27
+Research only: can the portal run a release end to end on its own? Yes, as
+SUPERVISED autonomy — a durable, event-triggered state machine per release
+(planned → PR raised → merged → Action run → UAT verified → awaiting PRD
+approval → promoted → verified → closed / rolled back) with idempotent tools
+at each step, the model only drafting, summarising and diagnosing, and a
+policy — not the model — deciding what runs unattended: reversible steps run
+on their own; merge to main, PRD promotion and prod removals always pause for
+a human (approver ≠ requester). ADK supports the pause/resume directly
+(long-running tools / RequestInput, `run_async(invocation_id=…)`), and the
+deploy Workflow graph already uses it.
+- **Gaps:** event triggers (GitHub webhooks, release-window schedule) instead
+  of chat; a background worker with persistent sessions (today in-memory, one
+  replica); watching the mono repo's Action run (Actions: read); post-deploy
+  pass/fail thresholds; approvals outside chat (Teams/email); one release
+  record tying the events together; a rollback playbook.
+- **First step if restarted — Level 1 "release conductor", read-only:** after
+  a person raises the PR, follow it (merged → Action run → UAT), post progress,
+  explain a failed run from its logs, suggest re-queueing what did not ship.
+  ~1–2 weeks. Then Level 2 (reversible steps automatic: raise the PR at the
+  window, UAT verify, re-queue) and Level 3 (PRD with one-click approval).
+- **Not recommended:** unattended production in a bank — it removes the change
+  approval and segregation of duties.
+
 ## Built — 2026-09-19
 
 ### BigQuery cost report — `design/BQ_COST.md`
