@@ -1,6 +1,6 @@
 import { escapeHtml as esc, shortName } from '../core/format.js';
 import { buildSummary, forRelease, releaseRouteText } from '../core/queue.js';
-import { CHIPS, PROSE_FIELDS, canReplace, chipState, itemsKey, monoReleaseNote } from '../core/chg.js';
+import { CHIPS, DF_DRAFT_FIELDS, PROSE_FIELDS, canReplace, chipState, itemsKey, monoReleaseNote } from '../core/chg.js';
 import { getContext, QUEUE_PATH, releaseDefaults, releaseDraft, whoami } from '../api.js';
 import { sendMessage } from '../chat.js';
 import { ctxNote, labeledField, opening, withDismiss } from './common.js';
@@ -138,8 +138,12 @@ export async function showReleaseForm(kind) {
     // (draftFor), otherwise the defaults' standard wording — and neither
     // replaces what the person typed. A chip beside each label says where its
     // text came from.
-    const proseEls = { change_description: descEl, change_reason: reasonEl, associated_risk: riskEl,
-                       consequence: consEl, user_service_impact: impactEl };
+    // DF drafts like CARE in mono mode (auto on open, chips, Regenerate), and
+    // its summary as well; CARE in fileset mode keeps the button draft.
+    const autoDraft = mono || isDf;
+    const draftFields = isDf ? DF_DRAFT_FIELDS : PROSE_FIELDS;
+    const proseEls = { change_summary: sumEl, change_description: descEl, change_reason: reasonEl,
+                       associated_risk: riskEl, consequence: consEl, user_service_impact: impactEl };
     const proseAuto = {};                 // field -> {value, source}: the last automatic write
     let draftFor = null;                  // itemsKey of the items the draft in the fields describes
     const chips = {};
@@ -162,8 +166,8 @@ export async function showReleaseForm(kind) {
         }
         paintChip(field);
     };
-    if (mono) {
-        PROSE_FIELDS.forEach(field => {
+    if (autoDraft) {
+        draftFields.forEach(field => {
             const el = proseEls[field];
             const label = el.parentElement && el.parentElement.querySelector('label');
             if (label) {
@@ -217,7 +221,7 @@ export async function showReleaseForm(kind) {
         if (seq !== defaultsSeq || !res || !res.ok) return;   // a newer request won
         const f = res.fields || {};
         fillAuto(nameEl, 'name', f.release_name);
-        if (!mono) {
+        if (!autoDraft) {
             fillAuto(sumEl, 'summary', f.change_summary);
             fillAuto(descEl, 'desc', f.change_description);
             fillAuto(reasonEl, 'reason', f.change_reason);
@@ -226,7 +230,7 @@ export async function showReleaseForm(kind) {
             fillAuto(impactEl, 'impact', f.user_service_impact);
             return;
         }
-        syncSummary();
+        if (mono) syncSummary();
         // A draft of other items no longer describes this release: the standard
         // wording takes its fields back (edits stay) until Regenerate.
         if (draftFor !== null && draftFor !== itemsKey(artifactLines())) {
@@ -234,7 +238,7 @@ export async function showReleaseForm(kind) {
             draftNote('The items changed since the AI draft — the standard wording is back. ' +
                       'Regenerate to draft these items.');
         }
-        if (draftFor === null) PROSE_FIELDS.forEach(field => writeProse(field, f[field], 'team'));
+        if (draftFor === null) draftFields.forEach(field => writeProse(field, f[field], 'team'));
     };
     const refreshDefaults = () => {
         clearTimeout(defaultsTimer);
@@ -387,8 +391,8 @@ export async function showReleaseForm(kind) {
         qctx.queue.forEach(q => applyItem(q, true));
         wrap.insertBefore(draftRow, grid);
 
-        if (!mono) {
-            // DF, and CARE in fileset mode: draft the change-request prose from
+        if (!autoDraft) {
+            // CARE in fileset mode: draft the change-request prose from
             // the ticked items' own details. Button, not automatic: it costs a
             // model call, and a governance field that fills itself silently
             // stops being read. Everything it writes stays editable and nothing
@@ -423,7 +427,7 @@ export async function showReleaseForm(kind) {
                     ' item(s) — review every field before submitting.</span>';
             });
         } else {
-            // CARE in mono mode: the form opens already drafted — one model
+            // DF, and CARE in mono mode: the form opens already drafted — one model
             // call, from every artifact line (a full registry URL resolves
             // server-side), so the person can edit or just go ahead. Regenerate
             // drafts again and replaces only the fields the person has not
@@ -438,7 +442,7 @@ export async function showReleaseForm(kind) {
                 draftNote('Drafting the change request from the queued items…');
                 let res = null;
                 try {
-                    res = await releaseDraft({ artifacts: lines, kind: 'care' });
+                    res = await releaseDraft({ artifacts: lines, kind: isDf ? 'df' : 'care' });
                 } catch (e) {
                     res = { ok: false, error: 'Could not reach the drafting service — the standard wording stays.' };
                 }
@@ -453,7 +457,7 @@ export async function showReleaseForm(kind) {
                 }
                 draftFor = key;
                 const draft = res.draft || {}, sources = res.sources || {};
-                PROSE_FIELDS.forEach(field => writeProse(field, draft[field], sources[field] || 'ai'));
+                draftFields.forEach(field => writeProse(field, draft[field], sources[field] || 'ai'));
                 const n = res.grounded_on || lines.length;
                 draftNote('AI draft of ' + n + ' item' + (n === 1 ? '' : 's') +
                           ' — review every field; anything you edit is kept.', 'text-amber-300');

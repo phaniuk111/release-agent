@@ -4,9 +4,10 @@ A change request is a regulated record, so the two properties worth pinning are
 that the draft is GROUNDED (built only from what developers actually wrote) and
 that a drafting failure leaves the form usable rather than half-filled.
 
-This is the draft DF releases, and CARE releases in the default fileset mode,
-have always had — switching CARE_RELEASE_MODE to mono must not change it. CARE
-in mono mode drafts differently (tests/test_chg_draft_mono.py).
+CARE releases in the default fileset mode keep the draft they have always had
+(switching CARE_RELEASE_MODE to mono must not change it). DF uses the CARE
+summariser with DF's own wording (below); CARE in mono mode is in
+tests/test_chg_draft_mono.py.
 """
 import json
 
@@ -95,10 +96,60 @@ def test_a_draft_returns_every_field(model):
     assert out["draft"]["associated_risk"] == "Not provided."
 
 
-def test_a_dataflow_release_is_described_as_such(model):
-    seen = model(_GOOD)
+# --- DF: the CARE summariser, DF's own risk/consequence/impact wording ------------
+
+_DF_GOOD = json.dumps({
+    "services": [{"name": "payments-api", "clause": "retries settlement callbacks with backoff"},
+                 {"name": "risk-fetcher", "clause": "longer fetch timeout"}],
+    "change_summary": "Settlement retry and a longer fetch timeout",
+    "change_description": "payments-api retries settlement callbacks with backoff; risk-fetcher gets a longer timeout.",
+    "change_reason": "ABC-4471 makes settlement callbacks resilient; the timeout bump reduces fetch failures.",
+})
+
+
+def test_a_dataflow_release_summarises_every_developer_entry_as_data(model):
+    seen = model(_DF_GOOD)
     D.draft_change_request(_ITEMS, kind="df")
-    assert "Dataflow release" in seen["prompt"]
+    prompt = seen["prompt"]
+    assert "Dataflow images" in prompt and D.DATA_CLAUSE in prompt
+    for fact in ("payments-api", "1.4.2", "ABC-4471", "adds a retry with backoff", "risk-fetcher", "timeout bump"):
+        assert fact in prompt
+    assert "dev@acme.com" not in prompt, "who queued it is not the model's business"
+    assert "response_schema" in seen["config"] and seen["config"]["temperature"] == 0.0
+
+
+def test_a_dataflow_draft_writes_summary_description_reason_and_keeps_df_wording(model):
+    model(_DF_GOOD)
+    out = D.draft_change_request(_ITEMS, kind="df")
+    assert out["ok"] and list(out["draft"]) == list(D.DF_FIELDS) and out["grounded_on"] == 2
+    assert out["draft"]["change_summary"] == "Settlement retry and a longer fetch timeout"
+    assert {f: out["sources"][f] for f in ("change_summary", "change_description", "change_reason")} == \
+        {"change_summary": "ai", "change_description": "ai", "change_reason": "ai"}
+    assert {out["sources"][f] for f in ("associated_risk", "consequence", "user_service_impact")} == {"team"}
+    assert not out["draft"]["associated_risk"].startswith("Low risk."), "no mono lead for DF"
+    assert "user_impact" not in out["draft"]
+
+
+@pytest.mark.parametrize("field,text", [
+    ("change_reason", "ABC-9999 makes settlement callbacks resilient."),           # a ticket nobody gave
+    ("change_summary", "Upgrade to payments-api 2.0.0"),                           # a version nobody gave
+    ("change_description", "payments-api cuts latency by 40 percent; risk-fetcher timeout."),  # a figure
+])
+def test_a_dataflow_draft_that_invents_an_identifier_falls_back(model, field, text):
+    reply = json.loads(_DF_GOOD)
+    reply[field] = text
+    model(json.dumps(reply))
+    out = D.draft_change_request(_ITEMS, kind="df")
+    assert out["sources"][field] == "fallback" and text not in out["draft"][field]
+
+
+def test_a_dataflow_description_missing_an_image_is_rebuilt_from_its_clauses(model):
+    reply = json.loads(_DF_GOOD)
+    reply["change_description"] = "payments-api retries settlement callbacks with backoff."
+    model(json.dumps(reply))
+    out = D.draft_change_request(_ITEMS, kind="df")
+    d = out["draft"]["change_description"]
+    assert "payments-api" in d and "risk-fetcher" in d and out["sources"]["change_description"] == "ai"
 
 
 def test_nothing_selected_is_refused_without_a_model_call(model):
@@ -140,11 +191,9 @@ def test_a_fileset_care_draft_is_the_models_six_fields_without_the_mono_leads(mo
     assert "never state that risk is low/high" in seen["prompt"].lower()
 
 
-def test_a_dataflow_draft_is_unchanged_in_mono_mode(model, mono):
-    seen = model(_GOOD)
-    out = D.draft_change_request(_ITEMS, kind="df")
-    assert out == {"ok": True, "draft": json.loads(_GOOD), "grounded_on": 2}
-    assert "Dataflow release" in seen["prompt"] and "response_schema" not in seen["config"]
+def test_a_dataflow_draft_is_the_same_in_mono_mode(model, mono):
+    model(_DF_GOOD)
+    assert list(D.draft_change_request(_ITEMS, kind="df")["draft"]) == list(D.DF_FIELDS)
 
 
 def test_only_a_care_release_in_mono_mode_takes_the_mono_draft(model, mono, monkeypatch):
@@ -165,7 +214,6 @@ def test_the_endpoint_answers_as_before_outside_mono_mode(model, monkeypatch):
 
     monkeypatch.setattr(RQ, "current_queue", lambda *a, **k: {"ok": True, "queue": [dict(i) for i in _ITEMS]})
     model(_GOOD)
-    for kind in ("care", "df"):
-        r = TestClient(A.app).post("/api/release-draft", json={
-            "kind": kind, "artifacts": ["payments-api:1.4.2", "risk-fetcher:4.0.153"]}).json()
-        assert r == {"ok": True, "draft": json.loads(_GOOD), "grounded_on": 2}, kind
+    r = TestClient(A.app).post("/api/release-draft", json={
+        "kind": "care", "artifacts": ["payments-api:1.4.2", "risk-fetcher:4.0.153"]}).json()
+    assert r == {"ok": True, "draft": json.loads(_GOOD), "grounded_on": 2}

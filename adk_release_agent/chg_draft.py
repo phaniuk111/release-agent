@@ -51,6 +51,8 @@ def draft_change_request(items: list[dict[str, Any]], kind: str = "care") -> dic
     never an exception: the form stays usable, exactly as if nothing had been
     asked.
     """
+    if str(kind or "").lower() == "df":
+        return _draft_df(items)
     if chg_defaults.care_mono(kind):
         return _draft_mono(items)
     return _draft_fileset(items, kind)
@@ -100,6 +102,9 @@ them all, in plain factual English.
 Rules:
 - Use only FACTS. Never invent tickets, versions, charts, downtime, testing,
   approvals or anything else FACTS does not state.
+- Keep each developer's meaning. Never recast it: do not call a change a fix,
+  improvement, feature or upgrade unless their own words do, and never turn a
+  note about a build, a control or a test result into a change.
 - Do not rate the risk or state the user impact: the release team adds that
   wording itself.
 - No people's names, email addresses, links or markdown.
@@ -126,6 +131,21 @@ def _unnamed(text: str, names: list[str]) -> list[str]:
     not count as named because "svc-ab" is."""
     present = set(_tokens(text))
     return [n for n in names if n.lower() not in present]
+
+
+def _fact_tokens(facts: list[dict[str, Any]]) -> set[str]:
+    """Every token the developers' entries contain — names, versions, tickets,
+    their own words. What the model may repeat."""
+    blob = " ".join(str(v) for f in facts for v in f.values() if isinstance(v, str))
+    return set(_tokens(blob))
+
+
+def _invented(text: str, known: set[str]) -> list[str]:
+    """Tokens in ``text`` that carry a digit — a ticket, a version, a number,
+    an id — but appear nowhere in the facts. The model may paraphrase words;
+    it may never introduce an identifier or a figure the developers did not
+    give. Any such token rejects the field."""
+    return [t for t in _tokens(text) if any(c.isdigit() for c in t) and t not in known]
 
 
 def _prose_words(text: str, names: list[str]) -> int:
@@ -217,18 +237,23 @@ def _schema(names: list[str]) -> dict[str, Any]:
     }
 
 
-def _ask_model(prompt: str, names: list[str]) -> Any:
+def _ask_model(prompt: str, names: list[str], schema: dict[str, Any] | None = None) -> Any:
     from release_agent.config import settings
 
     from ._genai import drafting_client
 
-    response = drafting_client(TIMEOUT_SECONDS).models.generate_content(
+    # Held in a name for the whole call: a google-genai Client closes its HTTP
+    # client when it is garbage-collected, so one used only inline
+    # ("drafting_client(...).models.generate_content(...)") can be closed before
+    # the request is sent — found live: "the client has been closed".
+    client = drafting_client(TIMEOUT_SECONDS)
+    response = client.models.generate_content(
         model=settings.gemini_model or "gemini-2.5-flash",
         contents=prompt,
         # Deterministic: the same queue must not produce a different change
         # record on a second press.
         config={"temperature": 0.0, "response_mime_type": "application/json",
-                "response_schema": _schema(names)},
+                "response_schema": schema or _schema(names)},
     )
     return json.loads((response.text or "").strip())
 
@@ -246,11 +271,17 @@ def _standard_wording(items: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def _assemble(data: dict[str, Any], names: list[str],
-              standard: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+              standard: dict[str, str], known: set[str] | None = None) -> tuple[dict[str, str], dict[str, str]]:
     draft: dict[str, str] = {}
     sources: dict[str, str] = {}
+    # The composed description says how many charts there are; that count is code's.
+    known = (known or set()) | {str(len(names))}
 
     def put(field: str, text: str, source: str) -> None:
+        if source == "ai" and _invented(text, known):
+            logger.info("CHG draft: %s names %s, which no developer gave — standard wording used",
+                        field, _invented(text, known))
+            text, source = standard.get(field) or "", "fallback"
         draft[field], sources[field] = text, source
 
     def fall_back(field: str) -> None:
@@ -313,7 +344,7 @@ def _draft_mono(items: list[dict[str, Any]]) -> dict[str, Any]:
                     "error": f"Could not draft ({e}) — the standard wording stays; edit it manually."}
         if not isinstance(data, dict):
             return {"ok": False, "error": "Drafting returned an unexpected shape — the standard wording stays."}
-        draft, sources = _assemble(data, names, standard)
+        draft, sources = _assemble(data, names, standard, _fact_tokens(facts))
         if "ai" not in sources.values():
             return {"ok": False, "error": "Drafting returned nothing usable — the standard wording stays."}
         return {"ok": True, "draft": draft, "sources": sources, "grounded_on": len(facts)}
@@ -322,8 +353,117 @@ def _draft_mono(items: list[dict[str, Any]]) -> dict[str, Any]:
         return {"ok": False, "error": f"Could not draft ({e}) — the standard wording stays; edit it manually."}
 
 
-# --- DF, and CARE in fileset mode ------------------------------------------------
-# The draft these releases have always had; mono mode must not change it.
+# --- DF ---------------------------------------------------------------------------
+# The same summariser as CARE mono mode: every developer's entry summarised into
+# one brief summary, description and reason, from the facts only, with the same
+# code-side checks. A DF change record keeps its own risk, consequence and impact
+# wording (tools/chg_defaults, DF) — there is no "Low risk." lead for DF, and the
+# model writes no claims.
+
+DF_FIELDS = ("change_summary", "change_description", "change_reason",
+             "associated_risk", "consequence", "user_service_impact")
+DF_CAPS = {"change_summary": 20, "change_description": 60, "change_reason": 40}
+
+_DF_PROMPT = """You summarise the Dataflow images shipping in one software release for its
+change request. A person on the release team reviews and edits everything you write.
+
+FACTS lists every image in the release with its version and, where the
+developer gave them, its JIRA ticket, what changed and why (change_details) and
+a note to the release team. Several developers wrote these entries separately:
+summarise ALL of their points, briefly, in plain factual English.
+
+- services: one entry per image in FACTS, with a clause of at most 8 words
+  saying what changed in it.
+- change_summary: one line of at most 20 words saying what this release
+  delivers overall.
+- change_description: one short paragraph of at most 60 words that names every
+  image exactly once, with one short clause per image.
+- change_reason: why these changes ship, at most 40 words, grouped by JIRA
+  ticket, naming each ticket once.
+
+Rules:
+- Use only FACTS. Never invent tickets, versions, images, numbers, downtime,
+  testing, approvals, risk or impact, or anything else FACTS does not state.
+  If FACTS does not say why, say only what changed.
+- Keep each developer's meaning. Never recast it: do not call a change a fix,
+  improvement, feature or upgrade unless their own words do, and never turn a
+  note about a build, a control or a test result into a change.
+- No people's names, email addresses, links or markdown.
+"""
+
+
+def _df_schema(names: list[str]) -> dict[str, Any]:
+    order = ["services", "change_summary", "change_description", "change_reason"]
+    base = _schema(names)
+    return {
+        "type": "OBJECT",
+        "properties": {"services": base["properties"]["services"],
+                       **{key: {"type": "STRING"} for key in order[1:]}},
+        "required": order,
+        "property_ordering": order,
+    }
+
+
+def _draft_df(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """A DF release's change-request prose: summary, description and reason from
+    the developers' entries; risk, consequence and impact the DF standard
+    wording. Same answer shape as ``_draft_mono``. Never raises."""
+    try:
+        items = _unique(items)
+        if not items:
+            return {"ok": False, "error": "Nothing selected — tick the items to include first."}
+        facts = _facts(items)
+        names = list(dict.fromkeys(f["name"] for f in facts))
+        standard = chg_defaults.build_defaults([
+            {"name": _text(it.get("artifact_name")), "version": _text(it.get("artifact_version")),
+             "jira_ticket": it.get("jira_ticket"), "change_details": it.get("change_details"),
+             "requested_by": it.get("requested_by"), "build_verified": it.get("build_verified"),
+             "prl1_only": it.get("prl1_only")}
+            for it in items
+        ], "df")
+        prompt = _DF_PROMPT + "\n" + DATA_CLAUSE + "\nFACTS:\n" + json.dumps(
+            {"images": facts}, ensure_ascii=False, indent=2)
+        try:
+            data = _ask_model(prompt, names, _df_schema(names))
+        except Exception as e:
+            logger.info("CHG drafting unavailable: %s", e)
+            return {"ok": False,
+                    "error": f"Could not draft ({e}) — the standard wording stays; edit it manually."}
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "Drafting returned an unexpected shape — the standard wording stays."}
+
+        known = _fact_tokens(facts) | {str(len(names))}
+        draft: dict[str, str] = {}
+        sources: dict[str, str] = {}
+
+        def take(field: str, text: str, ok: bool) -> None:
+            if ok and text and not _invented(text, known):
+                draft[field], sources[field] = text, "ai"
+            else:
+                draft[field], sources[field] = standard.get(field) or "", "fallback"
+
+        summary = _clean(data.get("change_summary"))
+        take("change_summary", summary, len(summary.split()) <= DF_CAPS["change_summary"])
+        description = _clean(data.get("change_description"))
+        if description and _unnamed(description, names):
+            description = _compose(data.get("services"), names)
+        take("change_description", description,
+             _prose_words(description, names) <= DF_CAPS["change_description"])
+        reason = _clean(data.get("change_reason"))
+        take("change_reason", reason, len(reason.split()) <= DF_CAPS["change_reason"])
+        for field in ("associated_risk", "consequence", "user_service_impact"):
+            draft[field], sources[field] = standard.get(field) or "", "team"
+        if "ai" not in sources.values():
+            return {"ok": False, "error": "Drafting returned nothing usable — the standard wording stays."}
+        return {"ok": True, "draft": {f: draft[f] for f in DF_FIELDS},
+                "sources": {f: sources[f] for f in DF_FIELDS}, "grounded_on": len(facts)}
+    except Exception as e:                         # never raises
+        logger.warning("CHG drafting failed: %s", e, exc_info=True)
+        return {"ok": False, "error": f"Could not draft ({e}) — the standard wording stays; edit it manually."}
+
+
+# --- CARE in fileset mode ---------------------------------------------------------
+# The draft this release has always had; mono mode and DF must not change it.
 
 _FIELDS = ("change_summary", "change_description", "change_reason",
            "associated_risk", "consequence", "user_impact")

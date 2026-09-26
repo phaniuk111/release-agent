@@ -404,3 +404,68 @@ def test_endpoint_reports_an_unavailable_queue(model, monkeypatch):
     r = TestClient(A.app).post("/api/release-draft", json={"artifacts": ["payments-api:1.4.2"]}).json()
     assert r["ok"] is False and "BigQuery unavailable" in r["error"]
     assert "prompt" not in seen
+
+
+def test_a_mono_draft_that_invents_an_identifier_falls_back():
+    """No hallucinated tickets, versions or figures in a CARE change record
+    either: any token carrying a digit must come from the developers' entries."""
+    from adk_release_agent import chg_draft as D
+
+    facts = [{"name": "svc-a", "version": "5.0.470", "jira_ticket": "ABC-1", "change_details": "heap fix",
+              "note": "", "prl1_only": False}]
+    known = D._fact_tokens(facts)
+    assert D._invented("svc-a 5.0.470 heap fix for ABC-1", known) == []
+    assert D._invented("fixes ABC-2 and cuts memory by 30", known) == ["abc-2", "30"]
+    standard = {"change_reason": "fallback reason", "change_description": "fb", "consequence": "fb",
+                "associated_risk": "Low risk.", "user_service_impact": "No user impact is expected."}
+    draft, sources = D._assemble({"change_description": "svc-a heap fix", "change_reason": "Ships ABC-7.",
+                                  "consequence": "minor fixes", "risk_detail": "", "impact_detail": ""},
+                                 ["svc-a"], standard, known)
+    assert sources["change_reason"] == "fallback" and draft["change_reason"] == "fallback reason"
+    assert sources["change_description"] == "ai"
+
+
+def test_the_drafting_client_stays_alive_for_the_whole_call(monkeypatch):
+    """Found live: "Cannot send a request, as the client has been closed". Like
+    google-genai, the fake's .models does not keep its Client alive, and a
+    collected Client closes the connection — so an inline
+    drafting_client(...).models.generate_content(...) fails here too."""
+    import gc
+
+    from adk_release_agent import _genai
+    from adk_release_agent import chg_draft as D
+
+    class _Conn:
+        closed = False
+
+    class _Models:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def generate_content(self, model, contents, config):
+            gc.collect()
+            if self.conn.closed:
+                raise RuntimeError("Cannot send a request, as the client has been closed.")
+            return type("R", (), {"text": '{"services": [], "change_description": "", "change_reason": "", '
+                                          '"risk_detail": "", "consequence": "", "impact_detail": ""}'})()
+
+    class _Client:
+        def __init__(self):
+            self._conn = _Conn()
+            self.models = _Models(self._conn)
+
+        def __del__(self):
+            self._conn.closed = True
+
+    monkeypatch.setattr(_genai, "drafting_client", lambda timeout: _Client())
+    assert D._ask_model("prompt", ["svc-a"])["services"] == []
+
+
+def test_both_prompts_forbid_recasting_a_developers_meaning():
+    """Found live: "only control 1691 failed" (a build note) came back as "fixed
+    a control 1691 failure" — every token grounded, the meaning invented."""
+    from adk_release_agent import chg_draft as D
+
+    for prompt in (D._PROMPT, D._DF_PROMPT):
+        assert "never turn a\n  note about a build, a control or a test result into a change" in prompt
+        assert "do not call a change a fix" in prompt

@@ -13,6 +13,9 @@
 export const PROSE_FIELDS = ['change_description', 'change_reason', 'associated_risk',
     'consequence', 'user_service_impact'];
 
+/** A DF release drafts its summary too (a CARE mono summary is the release name). */
+export const DF_DRAFT_FIELDS = ['change_summary', ...PROSE_FIELDS];
+
 /** What each chip says, and its tooltip. */
 export const CHIPS = {
     ai: { label: 'AI draft', title: 'Summarised by the model from the developers\' queue entries — review it' },

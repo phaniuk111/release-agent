@@ -87,3 +87,10 @@ test('the mono header names the one file and its repo, and says a person merges'
         'PR for you to review and merge; you\'ll see the exact change before anything is pushed.');
     assert.match(monoReleaseNote('', ''), /CARE_RELEASE_REPO is not set/);
 });
+
+import { DF_DRAFT_FIELDS } from '../../src/release_agent/static/core/chg.js';
+
+test('a DF release drafts its summary as well as the CARE prose fields', () => {
+    assert.deepEqual(DF_DRAFT_FIELDS, ['change_summary', 'change_description', 'change_reason',
+        'associated_risk', 'consequence', 'user_service_impact']);
+});
