@@ -14,3 +14,17 @@ from release_agent.config import settings
 @pytest.fixture(autouse=True)
 def _disable_bq_queue(monkeypatch):
     monkeypatch.setattr(settings, "bq_dataset", "", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_bigquery(monkeypatch):
+    """No test may send a query to real BigQuery. Blanking the dataset was not
+    enough: a read that skipped the enabled check still reached the project the
+    developer's gcloud points at, ten times a run (found in the job log as
+    notFound queries). A test that needs query results stubs release_queue."""
+    from google.cloud import bigquery
+
+    def refuse(self, query, *args, **kwargs):
+        raise AssertionError(f"a test sent a real BigQuery query: {str(query)[:80]}")
+
+    monkeypatch.setattr(bigquery.Client, "query", refuse)

@@ -317,7 +317,12 @@ def queue_release_intent(
             result["jira"] = jira_issue
     if result.get("ok"):
         result["build_verified"] = verified
+        # Only with a queue configured: without one this read still reached
+        # BigQuery — "<project>..release_intents" — and failed silently on
+        # every queue call (found as bursts of notFound jobs in the job log).
         try:
+            if not _rq.queue_enabled():
+                raise LookupError("no release queue configured")
             events = _rq._fetch_events()
             result["last_shipped"] = _rq.last_shipped(events, name)
             result["last_time_flags"] = _rq.last_queued_flags(events, name)

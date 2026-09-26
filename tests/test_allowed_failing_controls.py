@@ -234,3 +234,12 @@ def test_a_real_control_failure_still_refuses(queue):
     assert not out["ok"] and out["failed_controls"] == ["RCTLDEF0000043"]
     assert "RCTLDEF0000043" in out["reason"], "the refusal names the control, not the step"
     assert not queue.writes
+
+
+def test_queueing_with_no_queue_configured_never_reads_bigquery(queue, monkeypatch):
+    """The hint read after a queue write ('last shipped', 'last time flags') ran
+    even with no queue configured and reached real BigQuery."""
+    reads = []
+    monkeypatch.setattr(RQ, "_fetch_events", lambda *a, **k: reads.append(1) or [])
+    out = queue(report([ctl("RCTLDEF0000104")]))
+    assert out["ok"] and reads == [], "no dataset, no BigQuery read"
