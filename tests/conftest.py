@@ -28,3 +28,13 @@ def _no_real_bigquery(monkeypatch):
         raise AssertionError(f"a test sent a real BigQuery query: {str(query)[:80]}")
 
     monkeypatch.setattr(bigquery.Client, "query", refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_github_at_preview(monkeypatch):
+    """A deploy preview asks GitHub whether a PR or another deploy blocks it
+    (deploy._uat_deploy_blocked). Tests preview offline, as they always have; a
+    test of that check sets its own answer here."""
+    from adk_release_agent import deploy
+
+    monkeypatch.setattr(deploy, "_uat_deploy_blocked", lambda req: "")

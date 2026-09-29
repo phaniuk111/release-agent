@@ -20,6 +20,8 @@ Entries are keyed by helm_chart_name (one entry per chart per env file).
 
 import itertools
 import json
+import threading
+import time
 import uuid
 
 from pydantic import BaseModel, Field
@@ -112,6 +114,82 @@ def _read_include(repo, branch: str, path: str) -> list:
     return inc if isinstance(inc, list) else []
 
 
+# --- one UAT deploy at a time ----------------------------------------------
+# A UAT deploy OVERWRITES uat/deployment.json with exactly what the developer
+# gives. Two at once would each overwrite the other (load test, 2026-09-29: ten
+# simultaneous deploys, people told "Deployed" whose charts were then replaced),
+# so a deploy goes ahead only when nothing else is changing that file: no open PR
+# into SIT or UAT touches it (a deploy held for review, a release promotion, a
+# hand-made PR — merge it and what is in it deploys, close it and it is
+# abandoned), and no other portal deploy is running (its PRs are raised and
+# merged within seconds, so for those seconds there may be no PR to see). The
+# chart runs one replica, so the running marker below is authoritative.
+_UAT_DEPLOYS_RUNNING: dict[str, dict] = {}
+_UAT_DEPLOYS_GUARD = threading.Lock()
+
+
+def _claim_uat_deploy(repo_full: str, who: str, charts: str) -> dict | None:
+    """Mark a UAT deploy running on ``repo_full``. Returns None when claimed, or
+    the deploy already running."""
+    key = (repo_full or "").lower()
+    with _UAT_DEPLOYS_GUARD:
+        running = _UAT_DEPLOYS_RUNNING.get(key)
+        if running is not None:
+            return running
+        _UAT_DEPLOYS_RUNNING[key] = {"by": who or "someone", "charts": charts, "since": time.time()}
+        return None
+
+
+def _release_uat_deploy(repo_full: str) -> None:
+    with _UAT_DEPLOYS_GUARD:
+        _UAT_DEPLOYS_RUNNING.pop((repo_full or "").lower(), None)
+
+
+def _requested_by(pr) -> str:
+    """Who asked for a PR: the portal's Requested-by trailer, else its GitHub author."""
+    for line in reversed((getattr(pr, "body", "") or "").splitlines()):
+        key, _, value = line.partition(":")
+        if key.strip() == "Requested-by" and value.strip():
+            return value.strip()
+    return getattr(getattr(pr, "user", None), "login", "") or "unknown"
+
+
+def open_uat_file_prs(repo) -> list[dict]:
+    """Open PRs into SIT or UAT that change uat/deployment.json."""
+    path = _deployment_path("uat")
+    found = []
+    for branch in (settings.sit_branch, settings.uat_branch):
+        for pr in repo.get_pulls(state="open", base=branch):
+            if any(f.filename == path for f in pr.get_files()):
+                found.append({"number": pr.number, "url": pr.html_url, "title": pr.title,
+                              "base": branch, "by": _requested_by(pr)})
+    return found
+
+
+def _running_message(running: dict) -> str:
+    return (f"{running['by']} is deploying to UAT right now ({running['charts']}). "
+            "Try again in a minute — nothing was applied.")
+
+
+def _open_pr_message(repo) -> str:
+    prs = open_uat_file_prs(repo)
+    if not prs:
+        return ""
+    listed = "; ".join(f"[PR #{p['number']}]({p['url']}) into {p['base']} — {p['title']}, "
+                       f"raised by {p['by']}" for p in prs)
+    return (f"uat/deployment.json has an open PR: {listed}. Merge it (what is in it deploys) or "
+            "close it (it is abandoned), then deploy again — nothing was applied.")
+
+
+def uat_deploy_blocker(repo, repo_full: str) -> str:
+    """Why a UAT deploy may not start now, in words the developer acts on; ""
+    when it may. Asked when the form opens and at preview; the apply asks again
+    (the check that counts) while holding the running marker."""
+    with _UAT_DEPLOYS_GUARD:
+        running = _UAT_DEPLOYS_RUNNING.get((repo_full or "").lower())
+    return _running_message(running) if running is not None else _open_pr_message(repo)
+
+
 # --- PR plumbing ------------------------------------------------------------
 # Returned by _merge_pr when another change landed on the base branch while this
 # PR was being raised — the one refusal that rebuilding on the new head fixes.
@@ -147,8 +225,10 @@ def _merge_pr(pr, method: str = "squash"):
     except Exception as e:
         reason = _merge_refusal_reason(e)
         # The base moved between GitHub computing mergeability and the merge:
-        # someone else's change landed in that window.
-        if getattr(e, "status", None) in (405, 409) and "branch was modified" in reason.lower():
+        # someone else's change landed in that window. GitHub words it either
+        # way (both seen in the ten-developer load test).
+        if getattr(e, "status", None) in (405, 409) and (
+                "branch was modified" in reason.lower() or "merge conflict" in reason.lower()):
             return False, MERGE_CONFLICT
         return False, reason
 
@@ -260,7 +340,7 @@ def _supersede(repo, pr, work: str, branch: str) -> None:
 
 def _promote_targeted(
     repo, file_mutations: list, summary: str, extra_files: dict | None = None,
-    branches: tuple | None = None,
+    branches: tuple | None = None, rebuild_on_conflict: bool = True,
 ) -> dict:
     """Promote a change to PRD through SIT -> UAT -> PRD by applying the SAME targeted
     file mutation to each branch in order, each via its own working-branch PR.
@@ -281,7 +361,10 @@ def _promote_targeted(
     hop in the list merged.
 
     The chain stops if a hop's PR fails to merge (branch protection/review) so a change
-    can't reach a downstream env without clearing the upstream one."""
+    can't reach a downstream env without clearing the upstream one.
+
+    ``rebuild_on_conflict=False`` (UAT deploys, which run one at a time) leaves a
+    conflicting PR open and says so, instead of rebuilding it on the new head."""
     sit, uat, prd = settings.sit_branch, settings.uat_branch, settings.prd_branch
     chain = tuple(branches) if branches else (sit, uat, prd)
     prs: list = []
@@ -298,7 +381,7 @@ def _promote_targeted(
             if pr is None:
                 break
             ok, detail = _merge_pr(pr, "squash")
-            if ok or detail != MERGE_CONFLICT or attempt == _CONFLICT_REBUILDS:
+            if ok or detail != MERGE_CONFLICT or attempt == _CONFLICT_REBUILDS or not rebuild_on_conflict:
                 break
             _supersede(repo, pr, work, branch)
             superseded.append(pr.number)
@@ -390,6 +473,11 @@ def _pending_note(what: str, prs: list, final_branch: str, env_label: str,
     """
     waiting = _open_prs(prs)
     links = ", ".join(_pr_link(p) for p in waiting) or "the raised PR"
+    if any(p.get("detail") == MERGE_CONFLICT for p in waiting):
+        # Not a review hold: another change landed on the branch at the same
+        # time and this one no longer merges on top of it.
+        return (f"{what} — NOT {done}: another change landed on the branch at the same time and "
+                f"this one conflicts with it. {_pr_chain_note(prs)} Close {links} and run it again.")
     head = f"{what} — awaiting approval, NOT {done} yet. {_pr_chain_note(prs)} "
     if waiting and waiting[-1]["stage"] == f"→{final_branch}":
         return head + f"Approve and merge {links}; {env_label} is unchanged until it merges."
@@ -553,20 +641,35 @@ def open_release_pr(
     # working->SIT->UAT whole-branch merge conflicted permanently once SIT/UAT
     # histories diverged — observed live on deployment-repo PRs #93, #96, #103.)
     uat_path = _deployment_path("uat")
-    # The override REPLACES the file: a chart on UAT now and not in `entries`
-    # leaves UAT. Reported so it is logged as removed — otherwise the derived
-    # per-environment state would show it deployed forever.
-    before = _read_include(repo, settings.uat_branch, uat_path)
-    kept = {e.get("helm_chart_name") for e in entries if isinstance(e, dict)}
-    dropped = [{"name": b.get("helm_chart_name"), "tag": b.get("helm_chart_version")}
-               for b in before if isinstance(b, dict) and b.get("helm_chart_name")
-               and b.get("helm_chart_name") not in kept]
-    res = _promote_targeted(
-        repo,
-        [(uat_path, _replace_with(entries))],
-        f"Deploy {chart_str} to uat",
-        branches=(settings.sit_branch, settings.uat_branch),
-    )
+    repo_key = target_repo or active_deploy_repo()
+    from . import attribution
+
+    running = _claim_uat_deploy(repo_key, attribution.requester_email(), chart_str)
+    if running is not None:
+        return json.dumps({"ok": False, "action": "blocked", "environment": "uat", "image_tags": chart_str,
+                           "error": _running_message(running)}, indent=2)
+    try:
+        blocker = _open_pr_message(repo)
+        if blocker:
+            return json.dumps({"ok": False, "action": "blocked", "environment": "uat",
+                               "image_tags": chart_str, "error": blocker}, indent=2)
+        # The override REPLACES the file: a chart on UAT now and not in `entries`
+        # leaves UAT. Reported so it is logged as removed — otherwise the derived
+        # per-environment state would show it deployed forever.
+        before = _read_include(repo, settings.uat_branch, uat_path)
+        kept = {e.get("helm_chart_name") for e in entries if isinstance(e, dict)}
+        dropped = [{"name": b.get("helm_chart_name"), "tag": b.get("helm_chart_version")}
+                   for b in before if isinstance(b, dict) and b.get("helm_chart_name")
+                   and b.get("helm_chart_name") not in kept]
+        res = _promote_targeted(
+            repo,
+            [(uat_path, _replace_with(entries))],
+            f"Deploy {chart_str} to uat",
+            branches=(settings.sit_branch, settings.uat_branch),
+            rebuild_on_conflict=False,
+        )
+    finally:
+        _release_uat_deploy(repo_key)
     if not res["changed"]:
         return json.dumps(
             {"ok": True, "action": "no_change", "environment": "uat", "image_tags": chart_str,

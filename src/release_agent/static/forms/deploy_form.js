@@ -1,5 +1,5 @@
 import { deployTemplatePath, getContext } from '../api.js';
-import { sendMessage } from '../chat.js';
+import { renderMarkdown, sendMessage } from '../chat.js';
 import { showBqCost } from './bq_cost.js';
 import { ctxNote, labeledField, opening, withDismiss } from './common.js';
 import { showDfDeployForm } from './df_deploy_form.js';
@@ -59,6 +59,14 @@ export async function showDeployForm(target, name, version) {
         ' <span class="text-slate-400 font-normal text-xs">' + subText + '</span>';
     wrap.appendChild(title);
     const depNote = ctxNote(dctx, 'the live deployment.json'); if (depNote) wrap.appendChild(depNote);
+    // The server's own sentence: an open PR changes this file, or someone is
+    // deploying right now — this deploy would be refused until that clears.
+    if (dctx.blocked) {
+        const warn = document.createElement('div');
+        warn.className = 'mb-2 rounded-lg border border-amber-600 bg-amber-500/15 px-3 py-2 text-xs text-amber-200';
+        warn.innerHTML = '<i class="fa-solid fa-triangle-exclamation mr-1"></i>' + renderMarkdown(dctx.blocked);
+        wrap.appendChild(warn);
+    }
 
     const taId = 'deploy-json-' + env;
     const ta = document.createElement('textarea');

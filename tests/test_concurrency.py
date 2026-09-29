@@ -352,9 +352,11 @@ def test_a_conflict_is_rebuilt_on_the_new_head_and_both_changes_survive():
     assert first.state == "closed" and "Superseded" in first.comments[0]
 
 
-def test_a_uat_override_racing_another_lands_as_the_latest():
-    """UAT deploys are a full override of uat/deployment.json by design; the
-    other person's run already fired on their merge. Ours must still land."""
+def test_an_override_mutation_that_is_rebuilt_lands_as_the_latest():
+    """The chain's rebuild mode, for a replace mutation: rebuilt on the new head,
+    it lands as the latest. UAT DEPLOYS no longer take this path — they run one
+    at a time and a conflict is left open, not rebuilt over someone else's
+    change (test_uat_deploy_guard.py)."""
     initial = {b: {"uat/deployment.json": {"include": [_chart("base", "1.0")]}} for b in ("SIT", "UAT")}
     repo = _RacingRepo(initial, race=_lands_once(
         "UAT", lambda inc: (inc.clear(), inc.append(_chart("theirs", "2.0")))))

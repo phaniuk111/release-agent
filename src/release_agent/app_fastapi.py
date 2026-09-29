@@ -1229,6 +1229,17 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
     except Exception:
         logger.exception("deploy-template: could not read current %s on %s", path, branch)
 
+    # Said as the form opens, not after someone has filled it in: a UAT deploy
+    # is refused while an open PR changes this file or another deploy is running.
+    blocked = ""
+    if from_repo:
+        from .tools.promotion import uat_deploy_blocker
+
+        try:
+            blocked = uat_deploy_blocker(repo, settings.deploy_repo)
+        except Exception:
+            logger.warning("deploy-template: could not check for open PRs", exc_info=True)
+
     # Upsert the requested chart (from a chat command) into the current set, by chart name.
     if name and version:
         entry = assemble_entry(name, version, env_key)
@@ -1247,6 +1258,7 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
         "environment": env_key,
         "deployment": {"include": include},
         "from_repo": from_repo,
+        "blocked": blocked,
         # Default target for the form's "Deployment repo" field (user-overridable;
         # travels in the deploy JSON payload as deployment_repo).
         "deploy_repo": settings.deploy_repo,

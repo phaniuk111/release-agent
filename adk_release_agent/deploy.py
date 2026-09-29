@@ -172,6 +172,21 @@ def _extract_confirmation_token(text: str, prefix: str = "CONFIRM-") -> str:
 
 
 
+def _uat_deploy_blocked(req: dict[str, Any]) -> str:
+    """Early word, before a token is minted, that this UAT deploy would be refused
+    (an open PR changes uat/deployment.json, or someone is deploying right now).
+    Best-effort: if GitHub cannot be asked, the confirm asks again — that is the
+    check that counts (promotion.open_release_pr)."""
+    try:
+        from release_agent.tools._common import _get_github_client, active_deploy_repo
+        from release_agent.tools.promotion import uat_deploy_blocker
+
+        repo_full = req.get("deployment_repo") or active_deploy_repo()
+        return uat_deploy_blocker(_get_github_client().get_repo(repo_full), repo_full)
+    except Exception:
+        return ""
+
+
 def prepare_deploy_preview(
     message: str = "",
     image_tags: str = "",
@@ -260,6 +275,10 @@ def prepare_deploy_preview(
                 "(Add to next release), then raise the CARE or DF release, then promote it."
             ),
         }
+    if req.get("deployment_type") != "dataflow":
+        blocked = _uat_deploy_blocked(req)
+        if blocked:
+            return {"ok": False, "error": f"Not deployed — {blocked}"}
     preview = _build_preview(req)
     token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
     pending = {"token": token, "request": req, "preview": preview,
