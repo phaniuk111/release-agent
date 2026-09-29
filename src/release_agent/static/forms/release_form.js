@@ -2,6 +2,7 @@ import { escapeHtml as esc, shortName } from '../core/format.js';
 import { buildSummary, forRelease, releaseRouteText } from '../core/queue.js';
 import { CHIPS, DF_DRAFT_FIELDS, PROSE_FIELDS, canReplace, chipState, itemsKey, monoReleaseNote } from '../core/chg.js';
 import { getContext, QUEUE_PATH, releaseDefaults, releaseDraft, whoami } from '../api.js';
+import { llmEnabled } from '../core/capabilities.js';
 import { sendMessage } from '../chat.js';
 import { ctxNote, labeledField, opening, withDismiss } from './common.js';
 
@@ -140,7 +141,10 @@ export async function showReleaseForm(kind) {
     // text came from.
     // DF drafts like CARE in mono mode (auto on open, chips, Regenerate), and
     // its summary as well; CARE in fileset mode keeps the button draft.
-    const autoDraft = mono || isDf;
+    // With no model (LLM_ENABLED=false) there is no draft at all: every form
+    // takes the standard wording, which the person edits.
+    const llm = llmEnabled(window.PORTAL_UI);
+    const autoDraft = llm && (mono || isDf);
     const draftFields = isDf ? DF_DRAFT_FIELDS : PROSE_FIELDS;
     const proseEls = { change_summary: sumEl, change_description: descEl, change_reason: reasonEl,
                        associated_risk: riskEl, consequence: consEl, user_service_impact: impactEl };
@@ -389,9 +393,9 @@ export async function showReleaseForm(kind) {
         });
         wrap.insertBefore(qBox, grid);
         qctx.queue.forEach(q => applyItem(q, true));
-        wrap.insertBefore(draftRow, grid);
+        if (llm) wrap.insertBefore(draftRow, grid);
 
-        if (!autoDraft) {
+        if (llm && !autoDraft) {
             // CARE in fileset mode: draft the change-request prose from
             // the ticked items' own details. Button, not automatic: it costs a
             // model call, and a governance field that fills itself silently
@@ -426,7 +430,7 @@ export async function showReleaseForm(kind) {
                 draftMsg.innerHTML = '<span class="text-amber-300">Draft from ' + res.grounded_on +
                     ' item(s) — review every field before submitting.</span>';
             });
-        } else {
+        } else if (llm) {
             // DF, and CARE in mono mode: the form opens already drafted — one model
             // call, from every artifact line (a full registry URL resolves
             // server-side), so the person can edit or just go ahead. Regenerate

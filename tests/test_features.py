@@ -32,8 +32,8 @@ def test_only_listed_verified_users_are_testers(monkeypatch):
 def test_the_check_group_is_hidden_by_default_for_everyone_else():
     assert features.hidden_groups(OTHER) == ["Check"]
     assert features.hidden_groups(TESTER) == []
-    assert features.ui_config(TESTER) == {"hiddenGroups": [], "previewGroups": ["Check"], "preview": True}
-    assert features.ui_config(None) == {"hiddenGroups": ["Check"], "previewGroups": [], "preview": False}
+    assert features.ui_config(TESTER) == {"hiddenGroups": [], "previewGroups": ["Check"], "preview": True, "llm": True}
+    assert features.ui_config(None) == {"hiddenGroups": ["Check"], "previewGroups": [], "preview": False, "llm": True}
 
 
 def test_monitoring_is_refused_server_side_not_just_hidden(monkeypatch):
@@ -64,7 +64,7 @@ def test_the_page_is_rendered_with_this_callers_view(monkeypatch):
 
     monkeypatch.setattr(APP, "_caller", lambda request: None)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
-    assert 'window.PORTAL_UI = {"hiddenGroups": ["Check"], "previewGroups": [], "preview": false};' in html
+    assert 'window.PORTAL_UI = {"hiddenGroups": ["Check"], "previewGroups": [], "preview": false, "llm": true};' in html
     monkeypatch.setattr(APP, "_caller", lambda request: TESTER)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
     assert '"preview": true' in html and "{PORTAL_UI}" not in html

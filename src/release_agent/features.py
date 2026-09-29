@@ -57,4 +57,6 @@ def ui_config(caller) -> dict[str, Any]:
         # Shown to testers as a "preview" tag, so nobody mistakes it for released.
         "previewGroups": _names(settings.preview_groups) if preview else [],
         "preview": preview,
+        # LLM_ENABLED=false: the page hides what needs the AI assistant.
+        "llm": bool(settings.llm_enabled),
     }

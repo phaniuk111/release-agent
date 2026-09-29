@@ -144,18 +144,8 @@ def _model():
     )
 
 
-# Environment words that mark a high-impact PRODUCTION scope.
-_PROD_ENV_WORDS = {"prod", "prd", "production"}
-
-
-def _remove_needs_confirmation(environment: str = "staging", **kwargs) -> bool:
-    """Confirm ``remove_from_release`` only when it targets live PROD."""
-    return str(environment).lower() in _PROD_ENV_WORDS
-
-
-def _promote_needs_confirmation(target: str = "", **kwargs) -> bool:
-    """Confirm release promotion only for terminal environments (PRD / PRL1)."""
-    return str(target).lower() in (_PROD_ENV_WORDS | {"prl1"})
+# What pauses for approval is defined once, in approvals.py, and shared with
+# the commands workflow (LLM_ENABLED=false) — see _chat_additional_tools.
 
 
 def _chat_additional_tools():
@@ -171,11 +161,7 @@ def _chat_additional_tools():
 
     from google.adk.tools import FunctionTool
 
-    confirm = {
-        "remove_from_release": _remove_needs_confirmation,
-        "promote_release": _promote_needs_confirmation,
-        "promote_df_release": _promote_needs_confirmation,
-    }
+    from .approvals import RULES as confirm
     return [
         FunctionTool(tool, require_confirmation=confirm[tool.__name__])
         if tool.__name__ in confirm else tool

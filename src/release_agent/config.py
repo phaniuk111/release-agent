@@ -335,6 +335,11 @@ class Settings(BaseSettings):
     # developers wrote, so a fast model with thinking off is enough; newer
     # models (gemini-3.5-flash) answer only at the "global" endpoint, which does
     # not pin processing to one region — set a region here if policy requires it.
+    # False runs the portal with no model at all: forms, the CONFIRM-token
+    # deploy/release path, the queue and the reports work as always; the chat
+    # answers a fixed set of commands (src/release_agent/commands.py) and says
+    # "enable LLM access" for anything that needs the AI assistant.
+    llm_enabled: bool = Field(default=True, validation_alias=AliasChoices("LLM_ENABLED"))
     chg_draft_model: str = Field(default="", validation_alias=AliasChoices("CHG_DRAFT_MODEL"))
     chg_draft_location: str = Field(default="", validation_alias=AliasChoices("CHG_DRAFT_LOCATION"))
     # Base path prepended when a developer supplies bare name:version instead of a

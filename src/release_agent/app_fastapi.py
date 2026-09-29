@@ -910,6 +910,9 @@ def release_draft(req: ReleaseDraftRequest):
     name:version). A line that is not queued is still a chart in the release,
     so it is named, with nothing beyond its name and version to describe.
     """
+    if not settings.llm_enabled:
+        return {"ok": False, "disabled": True,
+                "error": "AI drafting is off (LLM_ENABLED=false) — the standard wording stays."}
     from adk_release_agent.chg_draft import draft_change_request
     from .tools import release_queue
 
@@ -1469,19 +1472,24 @@ def diagnostics(request: Request):
     }
 
     # Vertex: the smallest possible real generation — proves auth, region and model.
-    try:
-        from google import genai
+    # With no model configured there is nothing to prove, and a failed ping
+    # must not mark a portal that never calls Vertex as unhealthy.
+    if not settings.llm_enabled:
+        report["vertex"] = {"ok": True, "skipped": True, "note": "LLM: off (LLM_ENABLED=false)"}
+    else:
+        try:
+            from google import genai
 
-        client = genai.Client()
-        resp = client.models.generate_content(
-            model=settings.gemini_model,
-            contents="ping",
-            config={"max_output_tokens": 1},
-        )
-        report["vertex"] = {"ok": True, "model": settings.gemini_model,
-                           "responded": bool(resp)}
-    except Exception as e:
-        report["vertex"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
+            client = genai.Client()
+            resp = client.models.generate_content(
+                model=settings.gemini_model,
+                contents="ping",
+                config={"max_output_tokens": 1},
+            )
+            report["vertex"] = {"ok": True, "model": settings.gemini_model,
+                               "responded": bool(resp)}
+        except Exception as e:
+            report["vertex"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
 
     # GitHub: can we actually see the deploy repo with the resolved token?
     try:

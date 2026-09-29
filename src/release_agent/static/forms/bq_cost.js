@@ -4,6 +4,7 @@ import {
     insightText, orderShapes, reportMeta, whoText,
 } from '../core/bq_cost.js';
 import { bqCostReport, bqCostReportXlsx } from '../api.js';
+import { llmEnabled } from '../core/capabilities.js';
 import { sendMessage } from '../chat.js';
 import { opening, withDismiss } from './common.js';
 
@@ -46,8 +47,10 @@ function rowHtml(s, i) {
         // The preview is 180 characters of someone's SQL: one truncated line, the whole of it on hover.
         td('<span class="font-mono text-[10px] text-slate-400 block truncate" style="max-width:26rem" title="' +
             esc(preview) + '">' + esc(preview) + '</span>') +
-        td('<button type="button" data-ask="' + i + '" class="text-sky-400 hover:underline whitespace-nowrap">' +
-            '<i class="fa-solid fa-comment-dots mr-1"></i>Ask why</button>', 'text-right') +
+        // "Ask why" is the model's job: no model (LLM_ENABLED=false), no button.
+        td(llmEnabled(window.PORTAL_UI)
+            ? '<button type="button" data-ask="' + i + '" class="text-sky-400 hover:underline whitespace-nowrap">' +
+              '<i class="fa-solid fa-comment-dots mr-1"></i>Ask why</button>' : '', 'text-right') +
         '</tr>';
 }
 

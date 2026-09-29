@@ -7,6 +7,7 @@ import { showCapabilities, openPalette } from './palette.js';
 import { toggleInsights, renderInsights } from './insights.js';
 import { loadReleaseStatus, toggleBannerDetail, startBannerAgeTicker, showBannerIdle } from './status.js';
 import { renderConsoleLinks } from './links.js';
+import { llmEnabled } from './core/capabilities.js';
 
 // Inline onclick handlers in the served HTML (and interrupt-box templates).
 // EXACTLY the names an onclick= names — a global nothing calls is a module
@@ -18,6 +19,11 @@ Object.assign(window, {
 });
 
 document.getElementById('thread-label').textContent = getThreadId();
+// No model (LLM_ENABLED=false): the chat answers the pills and their commands
+// only — say so where people type.
+if (!llmEnabled(window.PORTAL_UI)) {
+    document.getElementById('input').placeholder = 'Pick an action above, or type a command — / for the list';
+}
 
 window.onload = () => {
     const chat = document.getElementById('chat');

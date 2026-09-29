@@ -2,6 +2,8 @@
 memory tool, conditional prod-ops confirmation, and the deploy output_schema."""
 import pytest
 
+from adk_release_agent import approvals
+
 pytest.importorskip("google.adk")
 
 from adk_release_agent import agent as agent_module  # noqa: E402
@@ -50,11 +52,11 @@ def test_memory_tool_present_when_enabled_and_absent_when_disabled(monkeypatch):
 # --- conditional prod-ops confirmation ------------------------------------------
 
 def test_remove_confirmation_predicate_only_fires_for_prod():
-    assert agent_module._remove_needs_confirmation(environment="prod") is True
-    assert agent_module._remove_needs_confirmation(environment="prd") is True
-    assert agent_module._remove_needs_confirmation(environment="production") is True
-    assert agent_module._remove_needs_confirmation(environment="uat") is False
-    assert agent_module._remove_needs_confirmation() is False
+    assert approvals.remove_needs_confirmation(environment="prod") is True
+    assert approvals.remove_needs_confirmation(environment="prd") is True
+    assert approvals.remove_needs_confirmation(environment="production") is True
+    assert approvals.remove_needs_confirmation(environment="uat") is False
+    assert approvals.remove_needs_confirmation() is False
 
 
 def test_high_impact_ops_tools_are_confirmation_wrapped():

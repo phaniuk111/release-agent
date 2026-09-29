@@ -35,8 +35,10 @@ from adk_release_agent import intent as adk_intent
 from release_agent.agent import parsing as adk_parsing
 from adk_release_agent.telemetry import traced_stream
 from adk_release_agent.agent import app as chat_app
+from adk_release_agent.commands_workflow import build_commands_app
 from adk_release_agent.deploy_workflow import build_deploy_app
 
+from . import commands as release_commands
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -489,6 +491,17 @@ class AdkChatService:
         # it alone would let one person's "yes" answer another's paused prod-ops
         # approval. Identity off = one shared owner = the behaviour as before.
         self._pending_adk_calls: dict[tuple[str, str], PendingAdkCall] = {}
+        # LLM_ENABLED=false: the chat's fixed commands, a Workflow in the same
+        # ADK runtime (same session service, same pause/resume) — so a paused
+        # approval there is keyed and answered exactly like the ones above.
+        self.commands_runner = Runner(
+            app=build_commands_app(),
+            artifact_service=self.artifact_service,
+            session_service=self.session_service,
+            memory_service=self.memory_service,
+            auto_create_session=True,
+        )
+        self._pending_commands: dict[tuple[str, str], str] = {}
 
     async def stream_chat(self, message: str, thread_id: str) -> AsyncGenerator[dict[str, Any], None]:
         """Yield UI-compatible SSE event payloads."""
@@ -538,6 +551,34 @@ class AdkChatService:
                 f"Dropped the pending approval for **{_operation_label(pending_call)}** — "
                 "nothing was applied. Previewing the new request instead.")}
             # ...and fall through: the new request is previewed below.
+
+        if not settings.llm_enabled:
+            approval_id = self._pending_commands.get((owner, thread_id)) or \
+                await self._command_state_value(thread_id, "command_approval_id")
+            if approval_id:
+                kind = _reply_kind(message)
+                if kind in ("yes", "no"):
+                    async with aclosing(traced_stream(
+                            self._stream_command_resume(thread_id, approval_id, confirmed=kind == "yes"),
+                            "command:approval", thread_id=thread_id,
+                            user_id=owner, session_id=_session_id(thread_id, "command"))) as events:
+                        async for event in events:
+                            yield event
+                    return
+                pending = await self._command_state(thread_id)
+                label = ((pending or {}).get("command_pending") or {}).get("label") or "The operation"
+                if kind != "request":
+                    yield {"type": "token", "content": (
+                        f"**{label}** is still waiting for your answer — nothing has happened yet. "
+                        "Reply `yes` to approve it or `no` to reject it. To do something else "
+                        "first, send the new deploy or release request and this one is dropped.")}
+                    yield {"type": "done"}
+                    return
+                await self._resume_command(thread_id, approval_id, confirmed=False)
+                yield {"type": "token", "content": (
+                    f"Dropped the pending approval for **{label}** — nothing was applied. "
+                    "Previewing the new request instead.")}
+                # ...and fall through: the new request is previewed below.
 
         token = adk_deploy._extract_confirmation_token(message)
         pending_token = self._pending_deploy.get((owner, thread_id))
@@ -604,6 +645,18 @@ class AdkChatService:
                     self._stream_deploy_preview(message, thread_id),
                     "deploy_workflow:deterministic", thread_id=thread_id,
                     user_id=_user_id(), session_id=_session_id(thread_id, "deploy"))) as events:
+                async for event in events:
+                    yield event
+            return
+
+        # No model: the chat is the fixed commands (the pills and the same
+        # phrases typed), run by the commands Workflow. Nothing is classified —
+        # a message that is not a command is told what is.
+        if not settings.llm_enabled:
+            async with aclosing(traced_stream(
+                    self._stream_command(message, thread_id),
+                    "command", thread_id=thread_id,
+                    user_id=owner, session_id=_session_id(thread_id, "command"))) as events:
                 async for event in events:
                     yield event
             return
@@ -721,6 +774,60 @@ class AdkChatService:
         # A cancelled resume applied nothing: saying otherwise makes every
         # wrong-token reply re-read the release banner for no reason.
         yield {"type": "done", "mutated": bool(confirmed)}
+
+    async def _stream_command(self, message: str, thread_id: str) -> AsyncGenerator[dict[str, Any], None]:
+        """One command through the commands Workflow: its answer, or its pause."""
+        result: dict[str, Any] | None = None
+        approval_id = None
+        # Run to the end even past the pause: leaving the runner's generator
+        # early cancels the Workflow's leftover tasks mid-flight.
+        async for event in self.commands_runner.run_async(
+            user_id=_user_id(),
+            session_id=_session_id(thread_id, "command"),
+            new_message=_content_from_text(message),
+        ):
+            output = getattr(event, "output", None)
+            if isinstance(output, dict) and "text" in output:
+                result = output
+            approval_id = _interrupt_token_from_event(event) or approval_id
+        if approval_id:
+            self._pending_commands[(_user_id(), thread_id)] = approval_id
+            pending = ((await self._command_state(thread_id)) or {}).get("command_pending") or {}
+            yield {"type": "interrupt", "data": release_commands.approval_payload(
+                pending.get("name") or "", pending.get("label") or "This operation")}
+            yield {"type": "done"}
+            return
+        result = result or {"text": "That command ended without an answer — nothing was changed."}
+        yield {"type": "token", "content": str(result.get("text") or "")}
+        yield {"type": "done", "mutated": bool(result.get("mutated"))}
+
+    async def _resume_command(self, thread_id: str, approval_id: str, confirmed: bool) -> dict[str, Any]:
+        """Answer the commands Workflow's pause; the terminal node's output."""
+        self._pending_commands.pop((_user_id(), thread_id), None)
+        result: dict[str, Any] = {}
+        async for event in self.commands_runner.run_async(
+            user_id=_user_id(),
+            session_id=_session_id(thread_id, "command"),
+            new_message=_confirmation_response(approval_id, confirmed),
+        ):
+            output = getattr(event, "output", None)
+            if isinstance(output, dict) and "text" in output:
+                result = output
+        return result
+
+    async def _stream_command_resume(
+        self, thread_id: str, approval_id: str, confirmed: bool
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        result = await self._resume_command(thread_id, approval_id, confirmed)
+        yield {"type": "token", "content": str(result.get("text") or "Nothing was changed.")}
+        yield {"type": "done", "mutated": bool(result.get("mutated"))}
+
+    async def _command_state(self, thread_id: str) -> dict[str, Any] | None:
+        return await self._session_state(self.commands_runner, thread_id, "command")
+
+    async def _command_state_value(self, thread_id: str, key: str) -> str | None:
+        value = ((await self._command_state(thread_id)) or {}).get(key)
+        return str(value) if value else None
 
     async def _run_chat_agent(
         self,
@@ -880,17 +987,22 @@ class AdkChatService:
         return await self._deploy_state_value(thread_id, "deploy_confirm_token")
 
     async def _deploy_state_value(self, thread_id: str, key: str) -> str | None:
+        value = ((await self._session_state(self.deploy_runner, thread_id, "deploy")) or {}).get(key)
+        return str(value) if value else None
+
+    async def _session_state(self, runner: Runner, thread_id: str, lane: str) -> dict[str, Any] | None:
+        """A Workflow's session state for this person's thread; None on any
+        failure — a routing hint must never break a chat turn."""
         try:
             session = await self.session_service.get_session(
-                app_name=self.deploy_runner.app_name,
+                app_name=runner.app_name,
                 user_id=_user_id(),
-                session_id=_session_id(thread_id, "deploy"),
+                session_id=_session_id(thread_id, lane),
             )
         except Exception:
-            logger.debug("deploy-state lookup (%s) failed for %s", key, thread_id, exc_info=True)
+            logger.debug("%s-state lookup failed for %s", lane, thread_id, exc_info=True)
             return None
-        value = ((session.state if session else None) or {}).get(key)
-        return str(value) if value else None
+        return dict(session.state) if session and session.state else None
 
     async def _persist_session_to_memory(self, thread_id: str) -> None:
         """Best-effort: add the finished chat session to the memory service."""

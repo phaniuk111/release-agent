@@ -16,3 +16,13 @@ export function visibleCapabilities(groups, capabilities, ui) {
         capabilities: capabilities.filter(c => !hidden.has(c.group)),
     };
 }
+
+/**
+ * Whether the portal has a model behind it (LLM_ENABLED). Anything that only a
+ * model can answer — the chat's free text, "Ask why", AI drafting — is offered
+ * only when this is true. A page without the flag predates it: a model is on.
+ * @param {{llm?: boolean}} ui
+ */
+export function llmEnabled(ui) {
+    return !ui || ui.llm !== false;
+}
