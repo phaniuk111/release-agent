@@ -374,11 +374,22 @@ _STATE_CHANGING_TOOLS = frozenset({
 })
 
 
-def _changes_release_state(event: Any) -> bool:
-    for call in event.get_function_calls() or []:
-        if (getattr(call, "name", "") or "") in _STATE_CHANGING_TOOLS:
-            return True
-    return False
+def _landed_changes(event: Any) -> list[tuple[str, str]]:
+    """(tool, note) for each state-changing tool that RAN in this event, whatever
+    the model does next. A response is not a run when it is only a refusal —
+    ADK's answer to a "no" ({"error": "This tool call is rejected."}) or the
+    mutation guard's block — neither carries the tool's own ok/note/result.
+    Found under load: a 429 after a "no" was reported as the promotion running."""
+    landed = []
+    for response in event.get_function_responses() or []:
+        name = getattr(response, "name", "") or ""
+        body = getattr(response, "response", None) or {}
+        if name not in _STATE_CHANGING_TOOLS or not isinstance(body, dict):
+            continue
+        if not ({"ok", "note", "result"} & set(body)):
+            continue
+        landed.append((name, _result_note(event, name)))
+    return landed
 
 
 def _progress_events(event: Any) -> list[str]:
@@ -848,35 +859,57 @@ class AdkChatService:
         said_anything = False
         approved_note = ""       # the approved operation's own result sentence
         repeat = None            # the model asking to run the approved operation AGAIN
-        async for event in self.chat_runner.run_async(
-            user_id=_user_id(),
-            session_id=_session_id(thread_id, "chat"),
-            invocation_id=invocation_id,
-            new_message=content,
-        ):
-            for label in _progress_events(event):
-                yield {"type": "progress", "content": label}
-            if _changes_release_state(event):
-                mutated = True
-            text = _text_from_event(event)
-            if text:
-                said_anything = True
-                yield {"type": "token", "content": text}
-            if approved:
-                approved_note = _result_note(event, approved[0]) or approved_note
-            pending = _pending_call_from_event(event)
-            if pending is not None and approved and approved_note and _original_call(pending) == approved:
-                # Seen live: after an approved PRD promotion ran, the model asked to
-                # run the SAME promotion again — a second approval for something
-                # already done. Decline it here instead of asking the person.
-                repeat = pending
-                break
-            if pending is not None:
-                self._pending_adk_calls[(_user_id(), thread_id)] = pending
-                await self._persist_pending_call(thread_id, pending)
-                yield {"type": "interrupt", "data": _confirmation_interrupt_payload(pending)}
-                interrupted = True
-                break
+        landed: list[tuple[str, str]] = []   # state-changing tools that returned this turn
+        try:
+            async for event in self.chat_runner.run_async(
+                user_id=_user_id(),
+                session_id=_session_id(thread_id, "chat"),
+                invocation_id=invocation_id,
+                new_message=content,
+            ):
+                for label in _progress_events(event):
+                    yield {"type": "progress", "content": label}
+                # A change is a tool that RAN, not one the model called: a call
+                # that pauses for approval changed nothing (load test: a paused
+                # promotion marked a "deploy status" turn as a change).
+                ran = _landed_changes(event)
+                mutated = mutated or bool(ran)
+                landed += ran
+                text = _text_from_event(event)
+                if text:
+                    said_anything = True
+                    yield {"type": "token", "content": text}
+                if approved:
+                    approved_note = _result_note(event, approved[0]) or approved_note
+                pending = _pending_call_from_event(event)
+                if pending is not None and approved and approved_note and _original_call(pending) == approved:
+                    # Seen live: after an approved PRD promotion ran, the model asked to
+                    # run the SAME promotion again — a second approval for something
+                    # already done. Decline it here instead of asking the person.
+                    repeat = pending
+                    break
+                if pending is not None:
+                    self._pending_adk_calls[(_user_id(), thread_id)] = pending
+                    await self._persist_pending_call(thread_id, pending)
+                    yield {"type": "interrupt", "data": _confirmation_interrupt_payload(pending)}
+                    interrupted = True
+                    break
+        except Exception:
+            if not landed:
+                raise           # nothing ran: the endpoint's "nothing was changed" is true
+            # Found under load: Vertex answered 429 AFTER an approved promotion
+            # had run, and the person was told "Nothing was changed". The tool's
+            # own sentence says what happened; the model's summary is what failed.
+            logger.warning("Chat turn failed after %s ran | thread=%s",
+                           ", ".join(n for n, _ in landed), thread_id, exc_info=True)
+            done = "\n".join(f"- **{n.replace('_', ' ')}** ran: {note or 'see the release banner'}"
+                             for n, note in landed)
+            yield {"type": "token", "content": (
+                f"{done}\n\nThe AI model then failed before it could finish its reply, so "
+                "check the release banner before trying anything again — do NOT repeat the "
+                "operation above.")}
+            yield {"type": "done", "mutated": True}
+            return
 
         if repeat is not None:
             # Answer the repeat with "no" so the session never holds an open

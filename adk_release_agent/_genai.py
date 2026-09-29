@@ -12,13 +12,13 @@ from __future__ import annotations
 RETRYABLE_STATUS = [429, 500, 502, 503, 504]
 
 
-def retry_options(attempts: int):
+def retry_options(attempts: int, max_delay: float = 8.0):
     from google.genai import types
 
     return types.HttpRetryOptions(
         attempts=max(1, int(attempts)),
         initial_delay=1.0,
-        max_delay=8.0,
+        max_delay=max_delay,
         exp_base=2.0,
         jitter=0.5,
         http_status_codes=RETRYABLE_STATUS,

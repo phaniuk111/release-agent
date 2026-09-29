@@ -13,8 +13,11 @@ NOT here — it runs through the deterministic ADK ``Workflow`` graph in
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import pathlib
 import sys
+import weakref
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -127,20 +130,46 @@ Two DIFFERENT confirmation flows — never mix their wording:
 ROOT_APP_NAME = "adk_release_agent"
 
 
+_MODEL_SLOTS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _model_slots():
+    """The per-event-loop semaphore that caps the chat model's calls in flight
+    (GEMINI_MAX_CONCURRENCY). Per loop because an asyncio primitive belongs to
+    the loop that first waits on it — the app has one, tests start many."""
+    cap = int(settings.gemini_max_concurrency or 0)
+    if cap <= 0:
+        return contextlib.nullcontext()
+    loop = asyncio.get_running_loop()
+    slots = _MODEL_SLOTS.get(loop)
+    if slots is None:
+        slots = _MODEL_SLOTS[loop] = asyncio.Semaphore(cap)
+    return slots
+
+
 def _model():
     """The chat agent's model, with transport retries on transient failures.
 
-    Retries use the full budget (``gemini_retry_attempts``) since a failed call
-    here fails the user's turn — see ``_genai.RETRYABLE_STATUS`` for what retries.
+    Retries use the full budget (``gemini_retry_attempts``, backing off up to
+    16 s) since a failed call here fails the user's turn — see
+    ``_genai.RETRYABLE_STATUS`` for what retries. Calls in flight are capped
+    (``_model_slots``); a call holds its slot through its own backoff, so a busy
+    pool slows new calls down instead of receiving more of them.
     """
     from google.adk.models.google_llm import Gemini
 
     from ._genai import retry_options
 
+    class _BoundedGemini(Gemini):
+        async def generate_content_async(self, llm_request, stream: bool = False):
+            async with _model_slots():
+                async for response in super().generate_content_async(llm_request, stream):
+                    yield response
+
     model_name = settings.gemini_model or "gemini-flash-latest"
-    return Gemini(
+    return _BoundedGemini(
         model=model_name,
-        retry_options=retry_options(settings.gemini_retry_attempts),
+        retry_options=retry_options(settings.gemini_retry_attempts, max_delay=16.0),
     )
 
 

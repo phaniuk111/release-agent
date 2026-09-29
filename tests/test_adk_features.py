@@ -153,3 +153,41 @@ def test_deploy_outcome_schema_is_workflow_output_schema_and_allows_extra():
     assert dumped["ok"] is True
     assert dumped["pr_url"] == "http://x"
     assert dumped["pr_number"] == 7
+
+
+def test_the_chat_model_caps_its_calls_in_flight(monkeypatch):
+    """Load test, 2026-09-29: ten developers at once fired more model calls than
+    the shared Vertex pool would take and most turns failed 429. Above the cap
+    a call waits for a slot instead of failing."""
+    import asyncio
+
+    from google.adk.models.google_llm import Gemini
+
+    from adk_release_agent import agent as A
+
+    monkeypatch.setattr(A.settings, "gemini_max_concurrency", 3)
+    in_flight, peak = 0, 0
+
+    async def fake(self, llm_request, stream=False):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        yield "response"
+
+    monkeypatch.setattr(Gemini, "generate_content_async", fake)
+    model = A._model()
+
+    async def call():
+        return [r async for r in model.generate_content_async(None)]
+
+    async def burst():
+        return await asyncio.gather(*(call() for _ in range(12)))
+
+    assert asyncio.run(burst()) == [["response"]] * 12
+    assert peak == 3
+    monkeypatch.setattr(A.settings, "gemini_max_concurrency", 0)
+    peak = 0
+    asyncio.run(burst())
+    assert peak == 12, "0 = no cap"

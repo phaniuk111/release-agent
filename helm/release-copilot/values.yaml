@@ -350,6 +350,10 @@ config:
   # the same yes/no approvals (an ADK workflow, not the agent); change-request
   # drafting, "Ask why" and onboarding guidance say to enable LLM access.
   LLM_ENABLED: "true"
+  # Chat-model calls in flight at once in this pod (0 = no cap). Above it a call
+  # waits for a slot rather than being refused 429 by the shared Vertex pool —
+  # ten developers at once measured most chat turns failing without it.
+  GEMINI_MAX_CONCURRENCY: "8"
   # The model that drafts the change-request summary/description/reason (thinking
   # off — it only summarises what developers wrote). gemini-3.5-flash is served
   # only at Vertex's "global" endpoint, which does not keep processing in one

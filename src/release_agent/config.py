@@ -548,8 +548,16 @@ class Settings(BaseSettings):
     # the shared pool was busy, not a quota you exceeded) or 503. Backoff with
     # jitter; the last failure surfaces to the user as "model busy, try again".
     gemini_retry_attempts: int = Field(
-        default=4,
+        default=6,
         validation_alias=AliasChoices("GEMINI_RETRY_ATTEMPTS"),
+    )
+    # The chat agent's model calls in flight at once, per process (0 = no cap).
+    # Every user shares one event loop, so a burst of ten people fires ten-plus
+    # calls together and the shared pool answers most of them 429; above the cap
+    # a call waits its turn instead of failing (load test, 2026-09-29).
+    gemini_max_concurrency: int = Field(
+        default=8,
+        validation_alias=AliasChoices("GEMINI_MAX_CONCURRENCY"),
     )
     scope_guard: str = Field(
         default="log",

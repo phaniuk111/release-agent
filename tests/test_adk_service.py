@@ -152,25 +152,43 @@ def test_progress_events_describe_tool_calls():
     assert S._progress_events(SimpleNamespace(get_function_calls=lambda: [])) == []
 
 
-def test_only_state_changing_tools_mark_a_turn_mutated():
+def test_only_state_changing_tools_that_ran_mark_a_turn_mutated():
     """The banner is refreshed only when a turn actually changed release state —
-    that is what keeps read-only questions off GitHub's rate limit."""
+    that is what keeps read-only questions off GitHub's rate limit. A CALL is
+    not a change: one that pauses for approval has changed nothing yet."""
     from types import SimpleNamespace
 
     from release_agent import adk_service as S
 
-    def ev(*names):
-        return SimpleNamespace(
-            get_function_calls=lambda: [SimpleNamespace(name=n, args={}) for n in names]
-        )
+    def ran(*names):
+        return SimpleNamespace(get_function_responses=lambda: [
+            SimpleNamespace(name=n, response={"ok": True, "note": "done"}) for n in names])
 
-    assert S._changes_release_state(ev("promote_release")) is True
-    assert S._changes_release_state(ev("promote_df_release")) is True
-    assert S._changes_release_state(ev("remove_from_release")) is True
+    assert S._landed_changes(ran("promote_release"))
+    assert S._landed_changes(ran("promote_df_release"))
+    assert S._landed_changes(ran("remove_from_release"))
     # reads must NOT trigger a refresh
-    assert S._changes_release_state(ev("release_stats", "find_prs")) is False
-    assert S._changes_release_state(ev("list_release_queue")) is False
-    assert S._changes_release_state(ev()) is False
+    assert S._landed_changes(ran("release_stats", "find_prs")) == []
+    assert S._landed_changes(ran("list_release_queue")) == []
+    assert S._landed_changes(ran()) == []
+
+
+def test_a_turn_that_only_pauses_for_approval_is_not_a_change():
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            from types import SimpleNamespace
+
+            yield _Ev(calls=[SimpleNamespace(id="o1", name="promote_release", args={"target": "prd"})])
+            yield _Ev(calls=[_confirmation_call("c9")], long_running=["c9"])
+
+    service.chat_runner = _Runner()
+    events = asyncio.run(_drain(service._run_chat_agent(None, "t-pause")))
+    assert _interrupt(events)
+    assert events[-1] == {"type": "done", "mutated": False}
 
 
 # --- a repeat of an operation the person just approved --------------------------
@@ -634,3 +652,84 @@ def test_live_workflow_a_second_request_cancels_the_first_preview_and_mints_a_ne
     refused = _collect(service, first, "t-live")
     assert "not the token waiting" in refused[0]["content"] and second in refused[0]["content"]
     assert service._pending_deploy[(_user_id(), "t-live")] == second
+
+
+def test_a_model_failure_after_a_change_landed_says_what_ran_not_nothing_changed():
+    """Found under load: Vertex answered 429 after an approved promotion ran, and
+    the endpoint told the person "Nothing was changed"."""
+    from types import SimpleNamespace
+
+    from release_agent.adk_service import PendingAdkCall
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(responses=[SimpleNamespace(name="promote_release", response={
+                "ok": True, "note": "Release file-set promoted to PRD via PR #151 (merged)."})])
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    service.chat_runner = _Runner()
+    service._pending_adk_calls[(_user_id(), "t-429")] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
+        args=_confirmation_call("c1").args)
+    events = _collect(service, "yes", thread_id="t-429")
+
+    text = "".join(e["content"] for e in _token_events(events))
+    assert "PR #151" in text and "do NOT repeat" in text
+    assert events[-1] == {"type": "done", "mutated": True}, "the banner is refreshed"
+
+
+def test_a_model_failure_before_anything_ran_still_reaches_the_endpoint():
+    import pytest
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(text="Let me look")
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    service.chat_runner = _Runner()
+    with pytest.raises(RuntimeError):
+        asyncio.run(_drain(service._run_chat_agent(None, "t-429b")))
+
+
+async def _drain(gen):
+    return [e async for e in gen]
+
+
+def test_a_model_failure_after_a_no_is_not_reported_as_a_change():
+    """Found in the ten-developer load test: the person answered "no", ADK sent
+    the tool its rejection, Vertex then answered 429 — and the turn claimed the
+    promotion had run (mutated=True). A refusal is not a run."""
+    from types import SimpleNamespace
+
+    from release_agent import adk_service as S
+
+    def responses(body):
+        return _Ev(responses=[SimpleNamespace(name="promote_release", response=body)])
+
+    assert S._landed_changes(responses({"error": "This tool call is rejected."})) == []
+    assert S._landed_changes(responses({"error": "blocked", "error_code": "MUTATION_BLOCKED",
+                                        "blocked_tool": "promote_release"})) == []
+    assert S._landed_changes(responses({"ok": True, "note": "PR #1"})) == [("promote_release", "PR #1")]
+    assert S._landed_changes(responses({"result": "ERROR promoting: no release"})) == [("promote_release", "")]
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield responses({"error": "This tool call is rejected."})
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    service.chat_runner = _Runner()
+    import pytest
+    with pytest.raises(RuntimeError):      # nothing ran: the endpoint's "nothing was changed" is true
+        asyncio.run(_drain(service._run_chat_agent(None, "t-no429")))
