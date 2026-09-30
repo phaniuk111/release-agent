@@ -3,7 +3,7 @@
 // all decisions live server-side.
 import { getThreadId, rotateThreadId } from './state.js';
 import { openChat, sessionDisconnect } from './api.js';
-import { escapeHtml } from './core/format.js';
+import { escapeHtml, splitUrl } from './core/format.js';
 import { liftFences } from './core/fences.js';
 import { showDeployForm } from './forms/deploy_form.js';
 import { parseDeployIntent } from './forms/parse.js';
@@ -144,7 +144,11 @@ export function renderMarkdown(t) {
         _links.push('<a href="' + url + '" target="_blank" class="underline text-emerald-400">' + txt + '</a>');
         return 'LINKTOKEN' + (_links.length - 1) + 'ENDTOKEN';
     });
-    t = t.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" class="underline text-emerald-400">$1</a>');
+    // Only the URL is the link: a ")" or "." after it closes the sentence (core/format.js).
+    t = t.replace(/(https?:\/\/[^\s<]+)/g, function(m) {
+        const { url, rest } = splitUrl(m);
+        return '<a href="' + url + '" target="_blank" class="underline text-emerald-400">' + url + '</a>' + rest;
+    });
     t = t.replace(/LINKTOKEN(\d+)ENDTOKEN/g, function(m, i) { return _links[+i]; });
     t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     t = t.replace(/`([^`]+)`/g, '<code class="bg-slate-800 px-1 rounded text-emerald-300">$1</code>');
