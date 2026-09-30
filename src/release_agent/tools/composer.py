@@ -199,7 +199,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
             try:
                 gh_repo.update_file(
                     path,
-                    attribution.with_trailer(f"Bump {name} DF template version to {version}"),
+                    attribution.commit_message(f"Bump {name} DF template version to {version}"),
                     desired,
                     branch_blob.sha,
                     branch=branch,
@@ -249,7 +249,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
     )
     try:
         pr = gh_repo.create_pull(
-            title=f"Bump {environment.upper()} DAG DF template version to {version}",
+            title=attribution.titled(f"Bump {environment.upper()} DAG DF template version to {version}"),
             body=attribution.with_trailer(body), head=branch, base=settings.composer_branch,
         )
     except Exception as e:

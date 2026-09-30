@@ -15,6 +15,7 @@ def _payload(**over):
         "start_date": "2026-07-20 10:00:00",
         "end_date": "2026-07-21 23:00:00",
         "change_initiator": "dev@example.com",
+        "jira": "ABC-1234",
         "change_summary": "Release 31",
         "prl1_only": ["acme-risk-fetcher"],
         "df_images": [],

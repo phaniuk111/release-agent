@@ -1,4 +1,5 @@
 import { deployTemplatePath, getContext } from '../api.js';
+import { JIRA_LABEL, JIRA_PLACEHOLDER, cleanJira, jiraError } from '../core/jira.js';
 import { renderMarkdown, sendMessage } from '../chat.js';
 import { showBqCost } from './bq_cost.js';
 import { ctxNote, labeledField, opening, withDismiss } from './common.js';
@@ -85,6 +86,9 @@ export async function showDeployForm(target, name, version) {
         value: defaultDeployRepo,
         boxClass: 'mb-2',
     });
+    const jiraEl = labeledField(wrap, {
+        label: JIRA_LABEL, id: 'deploy-jira-' + env, placeholder: JIRA_PLACEHOLDER, boxClass: 'mb-2',
+    });
 
     // No change-request fields here: the change request belongs to the release
     // (release_form.js), which is the only way to PROD.
@@ -115,7 +119,9 @@ export async function showDeployForm(target, name, version) {
             err.textContent = 'Deployment repo is required (owner/repo).';
             return;
         }
-        const payload = { environment: env, include: parsed.include, deployment_repo: deployRepo };
+        if (jiraError(jiraEl.value)) { err.textContent = jiraError(jiraEl.value); return; }
+        const payload = { environment: env, include: parsed.include, deployment_repo: deployRepo,
+                          jira: cleanJira(jiraEl.value) };
         // Re-render the normalized JSON so the user sees exactly what we parsed
         // (commas added / wrapped into include[] when they left them out).
         document.getElementById(taId).value = JSON.stringify({ include: parsed.include }, null, 2);

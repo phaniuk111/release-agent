@@ -2,6 +2,7 @@ import { escapeHtml as esc } from '../core/format.js';
 import { dfTemplatePath, getContext } from '../api.js';
 import { sendMessage } from '../chat.js';
 import { ctxNote, fieldControl, labeledField, opening, withDismiss } from './common.js';
+import { JIRA_LABEL, JIRA_PLACEHOLDER, cleanJira, jiraError } from '../core/jira.js';
 
 // ---- Dataflow flex-template deploy (workflow-dispatch golden path) ------
 // The dev supplies image name + tag; deploying dispatches the DF repo's
@@ -63,6 +64,10 @@ export async function showDfDeployForm() {
     });
     updateEcho();
 
+    const jiraEl = labeledField(wrap, {
+        label: JIRA_LABEL, id: 'df-jira', placeholder: JIRA_PLACEHOLDER, boxClass: 'mb-2',
+    });
+
     // Composer DAGs to point at the new template version. The developer names
     // the files — no picker to keep in sync with the repo, and a typo is caught
     // by the preview, which reads each file and reports it by name before the
@@ -122,7 +127,9 @@ export async function showDfDeployForm() {
                 (fTag.label || 'tag').toLowerCase() + ' are both required.';
             return;
         }
-        const payload = { deployment_type: 'dataflow', environment: 'uat', image: image, tag: tag };
+        if (jiraError(jiraEl.value)) { err.textContent = jiraError(jiraEl.value); return; }
+        const payload = { deployment_type: 'dataflow', environment: 'uat', image: image, tag: tag,
+                          jira: cleanJira(jiraEl.value) };
         const dags = dagEl.value.split('\n').map(l => l.trim()).filter(Boolean);
         if (dags.length) {
             payload.dag_files = dags;

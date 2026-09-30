@@ -79,8 +79,8 @@ class FakePR:
         if state:
             self.state = state
 
-    def merge(self, merge_method="squash", commit_message=None):
-        self.merge_message = commit_message
+    def merge(self, merge_method="squash", commit_message=None, commit_title=None):
+        self.merge_message, self.merge_title = commit_message, commit_title
         self.repo.files.setdefault(self.base.ref, {}).update(
             self.repo.files.get(self.head.ref, {})
         )

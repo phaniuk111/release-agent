@@ -329,12 +329,13 @@ def test_validate_release_deployment_repo():
         "end_date": "2026-07-21 10:00:00",
         "change_initiator": "dev@example.com",
         "change_summary": "R1",
+        "jira": "ABC-1234",
         "artefact": ["svc-a:1.0.0"],
     }
     details, errors = RF.validate_release({**payload, "deployment_repo": "org/deploy-repo"})
     assert errors == []
     # kept OUT of release_details.json — the live script's input shape is sacred
-    assert "deployment_repo" not in details
+    assert "deployment_repo" not in details and "jira" not in details
 
     _, errors = RF.validate_release({**payload, "deployment_repo": "not-a-repo"})
     assert any("deployment_repo" in e for e in errors)

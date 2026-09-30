@@ -300,7 +300,7 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
         # A reused branch already carries ``text`` (_claim_branch), so only a
         # new one is ever written to.
         try:
-            gh_repo.update_file(path, attribution.with_trailer(title), text, blob_sha,
+            gh_repo.update_file(path, attribution.commit_message(title), text, blob_sha,
                                 branch=branch, **attribution.author_kwargs())
         except Exception as e:
             # urllib3 retries a PUT after a 5xx that may already have landed, and
@@ -314,7 +314,8 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
     action = "release_pr_exists"
     if pr is None:
         try:
-            pr = gh_repo.create_pull(title=title, body=attribution.with_trailer(_pr_body(details, path)),
+            pr = gh_repo.create_pull(title=attribution.titled(title),
+                                     body=attribution.with_trailer(_pr_body(details, path)),
                                      head=branch, base=base)
             action = "release_pr_opened"
         except Exception as e:

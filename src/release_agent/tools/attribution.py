@@ -19,11 +19,52 @@ identity off the portal writes nothing extra rather than something unverified.
 """
 from __future__ import annotations
 
-from typing import Any
+import contextlib
+import contextvars
+from typing import Any, Iterator
 
 from release_agent import identity
 
 TRAILER_KEY = "Requested-by"
+
+# The JIRA the developer typed on the form (Deploy to CARE/DF UAT, CARE/DF
+# Release): every commit and PR title of that action starts with it, so commit
+# history reads "ABC-1234 <message>". Taken as typed — no lookup — and set for
+# one action at a time, like the caller's identity.
+_JIRA: contextvars.ContextVar[str] = contextvars.ContextVar("jira", default="")
+
+
+@contextlib.contextmanager
+def jira(key: str) -> Iterator[None]:
+    token = _JIRA.set((key or "").strip())
+    try:
+        yield
+    finally:
+        _JIRA.reset(token)
+
+
+def current_jira() -> str:
+    return _JIRA.get()
+
+
+def use_jira(key: str) -> None:
+    """Fill the JIRA of the ``jira()`` scope already open around this call — for
+    an action that learns its key part-way (a promotion reads it from the release
+    PR). Outside such a scope the value would leak to the rest of the context."""
+    _JIRA.set((key or "").strip())
+
+
+def titled(text: str) -> str:
+    """A PR title or commit subject, led by this action's JIRA (once)."""
+    key = _JIRA.get()
+    if not key or text == key or text.startswith(key + " "):
+        return text
+    return f"{key} {text}"
+
+
+def commit_message(text: str) -> str:
+    """A commit message: the JIRA-led subject, then the Requested-by trailer."""
+    return with_trailer(titled(text))
 
 
 def requester_email() -> str:
@@ -64,8 +105,14 @@ def author_kwargs() -> dict[str, Any]:
     return {"author": InputGitAuthor(*who)}
 
 
-def merge_kwargs() -> dict[str, Any]:
+def merge_kwargs(pr: Any = None) -> dict[str, Any]:
     """The merge commit's body: the trailer, so the merge itself says who asked.
-    GitHub keeps its default title ("Merge pull request #N …")."""
+    With a JIRA, its title too — GitHub's default for a merge ("Merge pull
+    request #N from …") would not start with it."""
+    out: dict[str, Any] = {}
     line = trailer()
-    return {"commit_message": line} if line else {}
+    if line:
+        out["commit_message"] = line
+    if _JIRA.get() and pr is not None:
+        out["commit_title"] = f"{titled(pr.title)} (#{pr.number})"
+    return out

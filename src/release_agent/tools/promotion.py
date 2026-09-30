@@ -220,7 +220,7 @@ def _merge_pr(pr, method: str = "squash"):
     from . import attribution
 
     try:
-        pr.merge(merge_method=method, **attribution.merge_kwargs())
+        pr.merge(merge_method=method, **attribution.merge_kwargs(pr))
         return True, "merged"
     except Exception as e:
         reason = _merge_refusal_reason(e)
@@ -322,7 +322,8 @@ def _raise_hop_pr(repo, branch: str, file_mutations: list, extra_files: dict | N
         return None, None
     from . import attribution
 
-    return repo.create_pull(title=f"{summary} (→ {branch})", body=attribution.with_trailer(summary),
+    return repo.create_pull(title=attribution.titled(f"{summary} (→ {branch})"),
+                            body=attribution.with_trailer(summary),
                             head=work, base=branch), work
 
 

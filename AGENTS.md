@@ -108,8 +108,12 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    a header value is never trusted just because it is present. Every commit
    and PR the portal makes names that verified caller (`tools/attribution.py`:
    a `Requested-by:` trailer + the git author; `{requested_by}` for DF run
-   names) — never a typed email, which is a claim, not an identity. `.env` and
-   `.claude/launch.json` stay untracked.
+   names) — never a typed email, which is a claim, not an identity. Every commit
+   message and PR title an action from a form creates (Deploy to CARE/DF UAT,
+   CARE/DF Release — each has a required JIRA field) starts with that JIRA, taken
+   as typed (`attribution.jira`/`titled`/`commit_message`, merge titles too); a
+   release's promotions reuse it (`RELEASE-JIRA:` in the release PR body); chat
+   actions without a form carry none. `.env` and `.claude/launch.json` stay untracked.
 6. **LLM boundaries**: facts come from tools; charts/tables are model-emitted specs
    rendered by deterministic code (vendored Chart.js, no CDN — Tailwind, Font Awesome and Inter are vendored too, `static/vendor/`); the classifier routes
    only — it never mutates. `LLM_ENABLED=false` runs with no model at all: the

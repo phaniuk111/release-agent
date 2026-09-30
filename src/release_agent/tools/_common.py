@@ -169,7 +169,7 @@ def _upsert_json_file(repo, branch: str, path: str, new_doc: dict) -> None:
     from . import attribution
 
     content = json.dumps(new_doc, indent=2)
-    msg = attribution.with_trailer(f"chore(release): update {path}")
+    msg = attribution.commit_message(f"chore(release): update {path}")
     who = attribution.author_kwargs()
     if sha:
         repo.update_file(path, msg, content, sha, branch=branch, **who)

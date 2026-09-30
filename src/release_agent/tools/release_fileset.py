@@ -53,6 +53,9 @@ from .promotion import _merge_pr
 from .release_window import _open_prd_pr_blocker
 
 _FILES_MARKER = "RELEASE-FILES-JSON:"
+# The release manager's JIRA, kept in the release PR so its promotions — the
+# Promote pill has no form — start their commits with the same key.
+_JIRA_MARKER = "RELEASE-JIRA:"
 
 
 # --- payload validation ------------------------------------------------------
@@ -102,6 +105,10 @@ def validate_release(payload: dict) -> tuple[dict | None, list[str]]:
     for key in required:
         if not str(payload.get(key) or "").strip():
             errors.append(f"'{key}' is required.")
+    # Kept OUT of the details dict, like deployment_repo below: it leads the
+    # release's commit messages and never reaches release_details.json.
+    if not str(payload.get("jira") or "").strip():
+        errors.append("'jira' is required — every commit of the release starts with it.")
 
     for key in ("start_date", "end_date"):
         v = str(payload.get(key) or "")
@@ -303,6 +310,7 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         "details": details,             # the inputs apply regenerates from
         "fileset_hash": fileset_hash,
         "deployment_repo": repo_full,
+        "jira": str(payload.get("jira") or "").strip(),
         "kind": kind,
         "landing_branch": landing,
         "artifacts": artifact_pairs,
@@ -361,7 +369,7 @@ def apply_release_fileset(prep: dict) -> dict:
         # in its own repo regenerated against the CARE repo.
         regenerated = prepare_release_fileset(
             {**details, "deployment_repo": prep.get("deployment_repo") or "",
-             "release_kind": prep.get("kind") or ""},
+             "release_kind": prep.get("kind") or "", "jira": prep.get("jira") or ""},
             _keep_workdir=True,
         )
         if not regenerated.get("ok"):
@@ -394,7 +402,7 @@ def apply_release_fileset(prep: dict) -> dict:
             sha = git_snapshot.commit_via_api(
                 gh_repo, repo_dir, git_snapshot.stage_all(repo_dir),
                 git_snapshot.base_commit(repo_dir),
-                attribution.with_trailer(prep.get("release_name") or branch),
+                attribution.commit_message(prep.get("release_name") or branch),
                 author_name, author_email,
             )
             gh_repo.create_git_ref(f"refs/heads/{branch}", sha)
@@ -409,11 +417,12 @@ def apply_release_fileset(prep: dict) -> dict:
             f"`{settings.release_updater_script}` from a transient release_details.json.\n\n"
             f"Window: {preview.get('window')}\nInitiator: {preview.get('initiator')}\n\n"
             f"{_FILES_MARKER} {json.dumps(preview.get('changed_files', []))}\n"
+            + (f"{_JIRA_MARKER} {attribution.current_jira()}\n" if attribution.current_jira() else "")
         )
         kind = prep.get("kind") or "care"
         landing = prep.get("landing_branch") or release_chain.landing(kind)
         pr = gh_repo.create_pull(
-            title=prep.get("release_name"), body=attribution.with_trailer(body),
+            title=attribution.titled(prep.get("release_name") or branch), body=attribution.with_trailer(body),
             head=branch, base=landing,
         )
         merged, detail = _merge_pr(pr, "merge")
@@ -571,12 +580,27 @@ class PromoteReleaseInput(BaseModel):
     )
 
 
+def _release_jira_from_pr(pr) -> str:
+    body = (pr.body or "") if pr is not None else ""
+    idx = body.find(_JIRA_MARKER)
+    if idx == -1:
+        return ""
+    rest = body[idx + len(_JIRA_MARKER):].strip().splitlines()
+    return rest[0].strip() if rest else ""
+
+
 @tool(args_schema=PromoteReleaseInput)
 def promote_release(target: str, release_branch: str = "", deployment_repo: str = "", kind: str = "") -> str:
     """Promote the current release's FILE-SET to the next environment branch of its
     chain (CARE: SIT -> UAT -> PRD/PRL1; DF: DF_RELEASE_BRANCHES, e.g. RELEASE_UAT ->
     RELEASE_PRD): copies the release's changed files verbatim onto the target via
-    a short-lived change branch + PR (auto-merged when allowed)."""
+    a short-lived change branch + PR (auto-merged when allowed). Its commits start
+    with the JIRA the release was raised with (RELEASE-JIRA: in the release PR)."""
+    with attribution.jira(""):      # the scope _promote fills once it finds the release
+        return _promote(target, release_branch, deployment_repo, kind)
+
+
+def _promote(target: str, release_branch: str, deployment_repo: str, kind: str) -> str:
     t = target.strip().lower()
     kind = kind.strip().lower()
     if kind and kind not in release_chain.KINDS:
@@ -617,6 +641,7 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
         files = _release_files_from_pr(pr) if pr and pr.head.ref == release_branch else []
     if not files:
         return json.dumps({"ok": False, "error": f"Could not determine the release file list for {release_branch}."})
+    attribution.use_jira(_release_jira_from_pr(pr) if pr is not None and pr.head.ref == release_branch else "")
 
     # Copy the file-set verbatim from the release branch onto a change branch of target.
     work = f"change/release/{uuid.uuid4().hex[:8]}"
@@ -631,7 +656,7 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             current = _read_raw(gh_repo, path, work)
             if current == content:
                 continue
-            message = attribution.with_trailer(f"Promote release file {path} -> {target_branch}")
+            message = attribution.commit_message(f"Promote release file {path} -> {target_branch}")
             who = attribution.author_kwargs()
             try:
                 existing = gh_repo.get_contents(path, ref=work)
@@ -650,7 +675,7 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             })
         release_name = (pr.title if pr else release_branch)
         promo_pr = gh_repo.create_pull(
-            title=f"{release_name} (→ {target_branch})",
+            title=attribution.titled(f"{release_name} (→ {target_branch})"),
             body=attribution.with_trailer(f"Promotes the release file-set from {release_branch}."),
             head=work, base=target_branch,
         )

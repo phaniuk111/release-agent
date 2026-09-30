@@ -257,6 +257,7 @@ def prepare_deploy_preview(
             "environment": env,
             "image_tags": prep["release_name"],
             "heading": heading,
+            "jira": _jira_of(req),
             "token": token,
             "proposed": prep["preview"],
             "deployment_repo": "",
@@ -295,6 +296,7 @@ def prepare_deploy_preview(
         "proposed": preview,
         "change_request": req.get("change_request"),
         "deployment_repo": req.get("deployment_repo") or "",
+        "jira": _jira_of(req),
         "message": f"Reply with exactly {token} to apply this deploy.",
     }
 
@@ -374,7 +376,20 @@ def _outcome_of(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _jira_of(req: dict[str, Any]) -> str:
+    """The JIRA typed on the form this request came from ("" when none)."""
+    return str(req.get("jira") or (req.get("release") or {}).get("jira") or "").strip()
+
+
 def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
+    # Every commit and PR title this action creates starts with the form's JIRA.
+    from release_agent.tools import attribution
+
+    with attribution.jira(_jira_of(req)):
+        return _apply_request(req, env, token)
+
+
+def _apply_request(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
     args: dict[str, Any]
     if req.get("deployment_type") == "release":
         from release_agent.tools import release_fileset as _rf

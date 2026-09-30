@@ -327,6 +327,8 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
                 str(f).strip() for f in (data.get("dag_files") or []) if str(f).strip()
             ],
             "composer_repo": str(data.get("composer_repo") or "").strip(),
+            # The form's JIRA: leads every commit and PR title of this deploy.
+            "jira": str(data.get("jira") or "").strip(),
             "raw": "json-paste",
         }
 
@@ -383,6 +385,8 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
         "change_request": data.get("change_request"),
         # Deploy form: target deployment repo (owner/repo) for this deploy.
         "deployment_repo": str(data.get("deployment_repo") or data.get("deploy_repo") or ""),
+        # The form's JIRA: leads every commit and PR title of this deploy.
+        "jira": str(data.get("jira") or "").strip(),
         "raw": "json-paste",
     }
 

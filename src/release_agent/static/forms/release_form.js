@@ -5,6 +5,7 @@ import { getContext, QUEUE_PATH, releaseDefaults, releaseDraft, whoami } from '.
 import { llmEnabled } from '../core/capabilities.js';
 import { sendMessage } from '../chat.js';
 import { ctxNote, labeledField, opening, withDismiss } from './common.js';
+import { JIRA_LABEL, JIRA_PLACEHOLDER, cleanJira, jiraError } from '../core/jira.js';
 
 // ---- CARE / DF release (live model) --------------------------------------
 // One form, two flavors, same backend pipeline (release_details.json → the
@@ -82,6 +83,9 @@ export async function showReleaseForm(kind) {
     grid.className = 'grid gap-2 mb-2';
     const mk = (labelText, spec) => labeledField(grid, Object.assign({ label: labelText }, spec));
     const nameEl = mk('Release name *', { id: 'rel-name', placeholder: 'e.g. July 20th 2026 : Release 31' });
+    // The release manager's JIRA: every commit of this release — and of its
+    // promotions to PRD/PRL1 — starts with it.
+    const jiraEl = mk(JIRA_LABEL, { id: 'rel-jira', placeholder: JIRA_PLACEHOLDER });
     const startEl = mk('Start *', { id: 'rel-start', type: 'datetime-local' });
     const endEl = mk('End *', { id: 'rel-end', type: 'datetime-local' });
     const initEl = mk('Change initiator (email) *', { id: 'rel-initiator', placeholder: 'you@company.com' });
@@ -496,6 +500,7 @@ export async function showReleaseForm(kind) {
         if (!nameEl.value.trim() || !startEl.value || !endEl.value || !initEl.value.trim() || !sumEl.value.trim()) {
             err.textContent = 'Release name, start, end, initiator and summary are required.'; return;
         }
+        if (jiraError(jiraEl.value)) { err.textContent = jiraError(jiraEl.value); return; }
         try { localStorage.setItem('release_initiator', initEl.value.trim()); } catch (e) {}
         if (!repoEl.value.trim() || repoEl.value.indexOf('/') < 1) {
             err.textContent = 'Deployment repo is required (owner/repo).'; return;
@@ -508,6 +513,7 @@ export async function showReleaseForm(kind) {
             start_date: fmt(startEl.value),
             end_date: fmt(endEl.value),
             change_initiator: initEl.value.trim(),
+            jira: cleanJira(jiraEl.value),
             change_summary: sumEl.value.trim(),
             change_description: descEl.value.trim(),
             change_reason: reasonEl.value.trim(),

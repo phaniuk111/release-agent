@@ -134,7 +134,7 @@ def wired(monkeypatch, df_remote):
 
 DF_PAYLOAD = {
     "release_name": "DF Release 7", "start_date": "2026-09-20 18:00:00",
-    "end_date": "2026-09-20 20:00:00", "change_initiator": "dev@example.com",
+    "end_date": "2026-09-20 20:00:00", "change_initiator": "dev@example.com", "jira": "ABC-1234",
     "change_summary": "df weekly", "artefact": ["df-orders:2.0.0"], "df_images": ["df-orders"],
     "deployment_repo": "o/df-release", "release_kind": "df",
 }

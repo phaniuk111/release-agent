@@ -54,6 +54,7 @@ def _payload(**over):
         "start_date": "2026-10-01 10:00:00",
         "end_date": "2026-10-02 23:00:00",
         "change_initiator": "someone@example.com",
+        "jira": "ABC-1234",
         "change_summary": "<TEAM> CARE Release - 2026.10.01",
         "change_description": "Swagger fix and memory heap improvements.",
         "change_reason": "Tunes the heap — fewer restarts.",
