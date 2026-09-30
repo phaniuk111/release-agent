@@ -304,7 +304,10 @@ def _raise_hop_pr(repo, branch: str, file_mutations: list, extra_files: dict | N
         include = doc.get("include") if isinstance(doc.get("include"), list) else []
         if mutate_fn(include):
             doc["include"] = include
-            doc["updated_by"] = "release-copilot"
+            # Nothing but the change: the portal used to stamp its own name into
+            # the file; a stamp it left earlier goes with the next change.
+            if doc.get("updated_by") == "release-copilot":
+                del doc["updated_by"]
             _upsert_json_file(repo, work, path, doc)
             changed = True
 

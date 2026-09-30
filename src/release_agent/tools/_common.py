@@ -160,15 +160,18 @@ def _parse_pairs(image_tags: str) -> list[tuple[str, str]]:
 
 
 def _upsert_json_file(repo, branch: str, path: str, new_doc: dict) -> None:
-    """Create or update a JSON file on a branch."""
+    """Create or update a JSON file on a branch. The file keeps its ending: a
+    trailing newline it had stays, so the diff shows only the change."""
+    ends_with_newline = True
     try:
         c = repo.get_contents(path, ref=branch)
         sha = c.sha
+        ends_with_newline = c.decoded_content.endswith(b"\n")
     except Exception:
         sha = None
     from . import attribution
 
-    content = json.dumps(new_doc, indent=2)
+    content = json.dumps(new_doc, indent=2) + ("\n" if ends_with_newline else "")
     msg = attribution.commit_message(f"chore(release): update {path}")
     who = attribution.author_kwargs()
     if sha:

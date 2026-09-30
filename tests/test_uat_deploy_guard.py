@@ -205,3 +205,26 @@ def test_the_deploy_form_opens_with_the_reason_it_would_be_refused(uat, monkeypa
     body = TestClient(A.app).get("/api/deploy-template", params={"env": "uat"}).json()
 
     assert body["from_repo"] is True and "PR #7" in body["blocked"]
+
+
+# --- the file carries the change and nothing else --------------------------------
+
+def test_a_deploy_writes_no_stamp_and_drops_the_old_one(uat):
+    repo = uat()
+    for b in ("SIT", "UAT"):
+        doc = json.loads(repo.files[b][UAT_FILE])
+        repo.files[b][UAT_FILE] = json.dumps({**doc, "updated_by": "release-copilot"}, indent=2) + "\n"
+
+    _deploy()
+
+    for b in ("SIT", "UAT"):
+        text = repo.files[b][UAT_FILE]
+        assert "updated_by" not in text, "no stamp added, and the old one is gone"
+        assert text.endswith("}\n"), "the file keeps its trailing newline"
+        assert list(json.loads(text)) == ["include"]
+
+
+def test_a_file_without_a_trailing_newline_is_left_without_one(uat):
+    repo = uat()
+    _deploy()
+    assert not repo.files["UAT"][UAT_FILE].endswith("\n")
