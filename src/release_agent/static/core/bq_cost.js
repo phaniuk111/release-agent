@@ -116,57 +116,22 @@ export function reportMeta(report) {
     return parts.join(' · ');
 }
 
-/** What the card does not show but the Excel does — the findings history:
- * "history: 2 adopted, 1 still open — in the Excel". "" when there is none.
- * (Storage and writes have their own tables on the card.) */
+/** What the table does not show but the Excel does: "storage: 3 findings ·
+ * writes: unavailable · history: 2 adopted, 1 still open — in the Excel".
+ * "" when there is nothing beyond the table. */
 export function extrasText(report) {
     const r = report && typeof report === 'object' ? report : {};
+    const parts = [];
+    const section = (name, items, error) => {
+        const n = list(items).length;
+        if (n) parts.push(name + ': ' + formatCount(n) + plural(n, ' finding', ' findings'));
+        else if (error) parts.push(name + ': unavailable');
+    };
+    section('storage', r.storage, r.storage_error);
+    section('writes', r.writes, r.writes_error);
     const h = historyText(r.history);
-    return h ? 'history: ' + h.split(' · ').join(', ') + ' — in the Excel' : '';
-}
-
-const STORAGE_KINDS = {
-    no_expiration: 'no expiration — kept, and billed, until someone deletes it',
-    unread: 'not read in the window',
-    large_unpartitioned: 'large, read often, not partitioned',
-};
-const WRITE_KINDS = {
-    unbatched: 'small writes — few rows per request',
-    errors: 'write requests rejected',
-};
-
-/** A storage finding in words. */
-export function storageKindText(kind) {
-    return STORAGE_KINDS[kind] || String(kind || '').replace(/_/g, ' ');
-}
-
-/** A write finding in words. */
-export function writeKindText(kind) {
-    return WRITE_KINDS[kind] || String(kind || '').replace(/_/g, ' ');
-}
-
-/** Why a storage or writes section has no rows: the role it needs (when the
- * access list names it), the section's own hint or error, or that there was
- * simply nothing to report. */
-export function sectionNote(report, section) {
-    const r = report && typeof report === 'object' ? report : {};
-    const label = section === 'storage' ? 'Table storage' : 'Write activity';
-    const needs = list(r.missing_access).find(a => a && list(a.sections).some(s => String(s).startsWith(label)));
-    if (needs) return 'needs ' + needs.role + ' on ' + needs.grant_on + ' (see above)';
-    const hint = r[section + '_hint'];
-    const error = r[section + '_error'];
-    if (hint) return String(hint);
-    if (error) return 'not available: ' + String(error).slice(0, 160);
-    return section === 'storage' ? 'no storage findings' : 'no write findings';
-}
-
-/** Read counts unknown (job history refused): the storage findings that
- * depend on them — "not read", "read often" — cannot be made. */
-export function readsNote(report) {
-    const r = report && typeof report === 'object' ? report : {};
-    return r.storage_reads_error
-        ? 'read counts need job history, so "not read" and "large, read often" findings are not possible here'
-        : '';
+    if (h) parts.push('history: ' + h.split(' · ').join(', '));
+    return parts.length ? parts.join(' · ') + ' — in the Excel' : '';
 }
 
 /** The lead line of a partial report's "access needed" panel. */

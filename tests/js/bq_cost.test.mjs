@@ -117,10 +117,11 @@ test('history counts adoptions from numbers or from the list', () => {
     assert.equal(historyText(null), '');
 });
 
-test('only the findings history is left to the Excel — storage and writes are on the card', () => {
+test('what the table leaves to the Excel is said in one line', () => {
     assert.equal(extrasText({ storage: [{}, {}, {}], writes: [{}], history: { adopted: 2, still_open: 1 } }),
-        'history: 2 adopted, 1 still open — in the Excel');
-    assert.equal(extrasText({ storage: [], writes: [], writes_error: 'denied' }), '');
+        'storage: 3 findings · writes: 1 finding · history: 2 adopted, 1 still open — in the Excel');
+    assert.equal(extrasText({ storage: [], writes: [], writes_error: 'denied' }), 'writes: unavailable — in the Excel');
+    assert.equal(extrasText({ storage: [], writes: [] }), '');
     assert.equal(extrasText(null), '');
 });
 
@@ -163,27 +164,4 @@ test('refused job history shows as unreadable, not as zero queries and zero cost
         totals: { queries: 0, slot_hours: 0, gb_billed: 0, cache_hit_pct: 0 } });
     assert.match(s, /query costs not readable/);
     assert.doesNotMatch(s, /0 queries|slot-hours|billed/);
-});
-
-import { readsNote, sectionNote, storageKindText, writeKindText } from '../../src/release_agent/static/core/bq_cost.js';
-
-test('storage and write findings read as words', () => {
-    assert.match(storageKindText('no_expiration'), /no expiration/);
-    assert.equal(storageKindText('unread'), 'not read in the window');
-    assert.match(writeKindText('unbatched'), /few rows per request/);
-    assert.equal(writeKindText('some_new_kind'), 'some new kind');
-});
-
-test('an empty section says why: the role it needs, its hint, its error, or nothing to report', () => {
-    const report = { missing_access: [{ role: 'roles/bigquery.metadataViewer', grant_on: 'project p',
-        sections: ['Write activity (streaming and Storage Write API)'] }] };
-    assert.equal(sectionNote(report, 'writes'), 'needs roles/bigquery.metadataViewer on project p (see above)');
-    assert.equal(sectionNote({ storage_hint: 'fell back per dataset' }, 'storage'), 'fell back per dataset');
-    assert.match(sectionNote({ writes_error: 'boom' }, 'writes'), /^not available: boom/);
-    assert.equal(sectionNote({}, 'storage'), 'no storage findings');
-});
-
-test('without job history the read-based storage findings are said to be impossible', () => {
-    assert.match(readsNote({ storage_reads_error: '403' }), /read counts need job history/);
-    assert.equal(readsNote({}), '');
 });
