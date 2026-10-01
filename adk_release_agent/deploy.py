@@ -378,10 +378,10 @@ def _outcome_of(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _uat_flow_note(req: dict[str, Any]) -> str:
-    """How a CARE UAT deploy finishes when UAT changes flow via SIT."""
+    """How a CARE UAT deploy finishes: UAT changes flow via SIT."""
     from release_agent.config import settings
 
-    if req.get("deployment_type") or not settings.uat_via_sit_pr:
+    if req.get("deployment_type"):
         return ""
     return (f"This merges into {settings.sit_branch}. Your repository then raises "
             f"{settings.sit_branch} → {settings.uat_branch}; merging that PR deploys to UAT.")

@@ -1215,10 +1215,10 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
             "(Add to next release), then raise the CARE or DF release, and promote it.")}
     env_key = "uat"
     path = settings.deployment_path_pattern.format(env=env_key)
-    # Via SIT, SIT is the front of the line: a change waiting in an unmerged
-    # SIT -> UAT PR is already there, and the overwrite replaces SIT's file — so
-    # that is the file the developer must see.
-    branch = settings.sit_branch if settings.uat_via_sit_pr else settings.uat_branch
+    # UAT changes flow via SIT, so SIT is the front of the line: a change waiting
+    # in an unmerged SIT -> UAT PR is already there, and the overwrite replaces
+    # SIT's file — so that is the file the developer must see.
+    branch = settings.sit_branch
 
     include: list = []
     from_repo = False

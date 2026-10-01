@@ -65,8 +65,8 @@ def _uat_request(jira=""):
 def test_a_uat_deploy_leads_every_pr_commit_and_merge_with_the_forms_jira(deploy_repo):
     out = deploy._apply(_uat_request(KEY), "uat", "CONFIRM-A1B2C3")
 
-    assert out["ok"] and out["action"] == "deployed"
-    assert [p.base.ref for p in deploy_repo.prs] == ["SIT", "UAT"]
+    assert out["ok"] and out["action"] == "pending_review"
+    assert [p.base.ref for p in deploy_repo.prs] == ["SIT"], "UAT changes via the repo's SIT -> UAT PR"
     assert all(p.title.startswith(f"{KEY} Deploy orders-api:1.2.3") for p in deploy_repo.prs)
     assert deploy_repo.writes and all(w["msg"].startswith(f"{KEY} ") for w in deploy_repo.writes)
     assert all(p.merge_title.startswith(f"{KEY} ") for p in deploy_repo.prs)

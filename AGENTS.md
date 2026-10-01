@@ -48,10 +48,10 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    changes that file (merge it — what is in it deploys — or close it) or another
    portal deploy is still running (`promotion.uat_deploy_blocker`, asked as the
    form opens, at preview, and at confirm); its conflicts are left open, never
-   rebuilt over someone else's change. With `UAT_VIA_SIT_PR=true` (the real repo,
-   where SIT and UAT stay in sync) a UAT deploy/removal merges into SIT only; the
-   deployment repo's OWN workflow raises SIT -> UAT, which the portal waits for,
-   shows, and records as the pending PR — never raises or merges it. The form
+   rebuilt over someone else's change. UAT changes always flow via SIT (SIT and
+   UAT stay in sync): a UAT deploy/removal merges into SIT only; the deployment
+   repo's OWN workflow raises SIT -> UAT, which the portal waits for, shows, and
+   records as the pending PR — never raises or merges it. The form
    then reads SIT's file, and the running marker is held until that PR appears. Other chain changes (promotions, removals)
    rebuild a PR that conflicts with a concurrent merge on the new head
    (`MERGE_CONFLICT`); a review hold is never retried. A failure in the chat

@@ -38,3 +38,10 @@ def _no_github_at_preview(monkeypatch):
     from adk_release_agent import deploy
 
     monkeypatch.setattr(deploy, "_uat_deploy_blocked", lambda req: "")
+
+
+@pytest.fixture(autouse=True)
+def _no_wait_for_the_sit_to_uat_pr(monkeypatch):
+    """A UAT deploy waits for the repository's SIT -> UAT PR to appear. No test
+    has that workflow, so none may sit out the real wait."""
+    monkeypatch.setattr(settings, "uat_pr_wait_seconds", 0)

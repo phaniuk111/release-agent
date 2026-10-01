@@ -321,12 +321,10 @@ config:
   UAT_BRANCH: "UAT"
   PRD_BRANCH: "PRD"
   PRL1_BRANCH: "PRL1"
-  # UAT changes flow via SIT: a UAT deploy/removal merges its PR into SIT only;
-  # the deployment repo's own workflow raises SIT -> UAT on a change to
-  # uat/deployment.json, and the portal shows that PR for the developer to merge
-  # (waiting up to UAT_PR_WAIT_SECONDS for it to appear). "false" = the portal
-  # edits SIT then UAT itself.
-  UAT_VIA_SIT_PR: "true"
+  # UAT changes always flow via SIT: a UAT deploy/removal merges its PR into SIT
+  # only; the deployment repo's own workflow raises SIT -> UAT on a change to
+  # uat/deployment.json, and the portal shows that PR for the developer to merge.
+  # How long it waits for that PR to appear:
   UAT_PR_WAIT_SECONDS: "90"
   # One release at a time: adds are blocked while an OPEN PR targets one of
   # these. Empty = just PRD_BRANCH. Recommended: "SIT,UAT,PRD,PRL1".

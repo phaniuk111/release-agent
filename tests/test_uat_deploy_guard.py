@@ -40,8 +40,10 @@ class _Repo(_RacingRepo):
         self.open_prs = list(open_prs)
         self.full_name = "o/deploy"
 
-    def get_pulls(self, state="open", base=None):
-        return [p for p in self.open_prs if p.base == base]
+    def get_pulls(self, state="open", base=None, head=None, **kw):
+        branch = head.split(":", 1)[-1] if head else None
+        return [p for p in self.open_prs if p.base == base
+                and (branch is None or getattr(p, "head", None) == branch)]
 
     # A signed-in caller's deploy names them as commit author and merger.
     def create_file(self, path, msg, content, branch=None, **attribution):
@@ -99,8 +101,9 @@ def test_an_open_pr_on_other_files_does_not_block(uat):
 
     out = _deploy()
 
-    assert out["ok"] is True and out["action"] == "deployed"
-    assert repo.include("UAT") == ["ours:2.0"], "an overwrite with exactly what was given"
+    assert out["ok"] is True and out["action"] == "pending_review"
+    assert repo.include("SIT") == ["ours:2.0"], "an overwrite with exactly what was given"
+    assert repo.include("UAT") == ["base:1.0"], "UAT waits for the SIT -> UAT PR"
 
 
 def test_once_the_pr_is_closed_the_next_deploy_overwrites_the_file(uat):
@@ -110,8 +113,8 @@ def test_once_the_pr_is_closed_the_next_deploy_overwrites_the_file(uat):
 
     repo.open_prs.remove(blocking)            # Alice's PR merged or closed
 
-    assert _deploy("bob", "3.0")["action"] == "deployed"
-    assert repo.include("SIT") == ["bob:3.0"] and repo.include("UAT") == ["bob:3.0"]
+    assert _deploy("bob", "3.0")["action"] == "pending_review"
+    assert repo.include("SIT") == ["bob:3.0"], "the next deploy overwrites SIT's file"
 
 
 # --- another deploy still running blocks a deploy ------------------------------
@@ -141,8 +144,8 @@ def test_two_deploys_at_once_one_runs_and_the_other_is_told_who_is_deploying(uat
 
     assert results["bob"]["action"] == "blocked"
     assert "alice@example.com is deploying to UAT right now" in results["bob"]["error"]
-    assert results["alice"]["action"] == "deployed"
-    assert repo.include("UAT") == ["alice:1.0"]
+    assert results["alice"]["action"] == "pending_review"
+    assert repo.include("SIT") == ["alice:1.0"], "only alice's change is on SIT"
 
 
 def test_the_running_marker_is_cleared_even_when_a_deploy_fails(uat):
@@ -160,14 +163,14 @@ def test_the_running_marker_is_cleared_even_when_a_deploy_fails(uat):
 # --- a conflict is reported, not rebuilt over someone else's change -------------
 
 def test_a_uat_deploy_that_conflicts_is_left_open_and_said_to_conflict(uat):
-    repo = uat(race=_lands_once("UAT", lambda inc: inc.append(_chart("theirs", "9.0"))))
+    repo = uat(race=_lands_once("SIT", lambda inc: inc.append(_chart("theirs", "9.0"))))
 
     out = _deploy()
 
     assert out["ok"] is True and out["action"] == "pending_review"
     assert "conflicts" in out["note"] and "awaiting approval" not in out["note"]
-    assert len([p for p in repo.prs if p.base == "UAT"]) == 1, "not rebuilt over their change"
-    assert "theirs:9.0" in repo.include("UAT")
+    assert len([p for p in repo.prs if p.base == "SIT"]) == 1, "not rebuilt over their change"
+    assert "theirs:9.0" in repo.include("SIT")
 
 
 def test_github_saying_merge_conflicts_is_read_as_a_conflict():
@@ -217,14 +220,14 @@ def test_a_deploy_writes_no_stamp_and_drops_the_old_one(uat):
 
     _deploy()
 
-    for b in ("SIT", "UAT"):
-        text = repo.files[b][UAT_FILE]
-        assert "updated_by" not in text, "no stamp added, and the old one is gone"
-        assert text.endswith("}\n"), "the file keeps its trailing newline"
-        assert list(json.loads(text)) == ["include"]
+    text = repo.files["SIT"][UAT_FILE]
+    assert "updated_by" not in text, "no stamp added, and the old one is gone"
+    assert text.endswith("}\n"), "the file keeps its trailing newline"
+    assert list(json.loads(text)) == ["include"]
+    assert "updated_by" in repo.files["UAT"][UAT_FILE], "UAT is the SIT -> UAT PR's to change"
 
 
 def test_a_file_without_a_trailing_newline_is_left_without_one(uat):
     repo = uat()
     _deploy()
-    assert not repo.files["UAT"][UAT_FILE].endswith("\n")
+    assert not repo.files["SIT"][UAT_FILE].endswith("\n")

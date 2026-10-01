@@ -1,4 +1,4 @@
-"""UAT changes flow via SIT (UAT_VIA_SIT_PR): a CARE UAT deploy or removal
+"""UAT changes always flow via SIT: a CARE UAT deploy or removal
 raises and merges its PR into SIT only. The deployment repository's OWN
 workflow raises SIT -> UAT on a change to uat/deployment.json; the portal finds
 that PR and shows it for the developer to merge — it never raises or merges it.
@@ -40,7 +40,6 @@ class _RepoWithSitToUatWorkflow(FakeRepo):
 
 @pytest.fixture
 def via_sit(monkeypatch):
-    monkeypatch.setattr(settings, "uat_via_sit_pr", True)
     monkeypatch.setattr(settings, "uat_pr_wait_seconds", 0)
     monkeypatch.setattr(settings, "sit_branch", "SIT")
     monkeypatch.setattr(settings, "uat_branch", "UAT")
@@ -117,15 +116,16 @@ def test_a_removal_from_uat_also_goes_via_sit(via_sit):
     assert [p.base.ref for p in repo.prs if p.head.ref.startswith("change/")] == ["SIT"]
 
 
-def test_switched_off_the_portal_edits_sit_then_uat_itself(via_sit, monkeypatch):
-    repo = via_sit(workflow=False)
-    monkeypatch.setattr(settings, "uat_via_sit_pr", False)
+def test_the_portal_never_edits_uat_itself(via_sit):
+    """No setting brings back a direct UAT edit: UAT changes only when someone
+    merges the repository's SIT -> UAT PR."""
+    repo = via_sit()
 
-    out = _deploy()
+    _deploy()
 
-    assert out["action"] == "deployed"
-    assert [p.base.ref for p in repo.prs] == ["SIT", "UAT"]
-    assert _names(repo, "UAT") == ["orders-api:1.2.3"]
+    assert not [p for p in repo.prs if p.base.ref == "UAT" and p.head.ref != "SIT"]
+    assert not any(w["branch"] == "UAT" for w in repo.writes)
+    assert _names(repo, "UAT") == []
 
 
 def test_the_preview_says_how_the_deploy_finishes(via_sit):

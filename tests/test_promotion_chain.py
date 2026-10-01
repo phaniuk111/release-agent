@@ -161,15 +161,16 @@ def test_a_last_hop_already_in_state_counts_as_delivered():
     assert res["delivered"] is True
 
 
-def test_uat_deploy_blocked_by_review_says_so_and_links_the_pr(monkeypatch):
-    """The reported bug: 'Deployed … to UAT' and a chart count read from the
-    UNCHANGED live file, while the UAT PR sat in review."""
+def test_a_uat_deploy_never_claims_uat_changed(monkeypatch):
+    """The reported bug was 'Deployed … to UAT' and a chart count read from the
+    UNCHANGED live file. UAT now changes only when the repository's SIT -> UAT
+    PR is merged, so a deploy never says it landed on UAT."""
     from types import SimpleNamespace
 
     from release_agent.tools import promotion as P
 
     initial = {b: {"uat/deployment.json": {"include": [_chart("1.0.0")]}} for b in ("SIT", "UAT")}
-    repo = _ProtectedRepo(initial)
+    repo = _FakeRepo(initial)
 
     monkeypatch.setattr(P, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
     monkeypatch.setattr(P, "active_deploy_repo", lambda: "example-org/deploy")
@@ -177,10 +178,8 @@ def test_uat_deploy_blocked_by_review_says_so_and_links_the_pr(monkeypatch):
 
     assert out["action"] == "pending_review"
     assert out["uat_charts"] is None, "must not quote the pre-deploy file as the result"
-    assert "NOT deployed yet" in out["note"] and "Deployed svc-a" not in out["note"]
-    [pending] = out["pending_prs"]
-    assert pending["url"] and f"[PR #{pending['number']}]({pending['url']})" in out["note"]
-    assert pending["reason"].startswith("Waiting on code owner review")
+    assert "UAT is unchanged" in out["note"] and "Deployed svc-a" not in out["note"]
+    assert [p.base.ref for p in repo.prs] == ["SIT"], "the portal raises no PR into UAT"
 
 
 def test_pending_deploy_is_not_recorded_as_deployed(monkeypatch):
@@ -218,7 +217,8 @@ def test_uat_deploy_blocked_at_sit_says_to_run_it_again(monkeypatch):
     assert out["action"] == "pending_review"
     [pending] = out["pending_prs"]
     assert pending["stage"] == "→SIT" and pending["final"] is False
-    assert "then run this again" in out["note"]
+    assert "Approve and merge" in out["note"]
+    assert "your repository raises SIT → UAT" in out["note"], "no need to run it again"
 
 
 def _other(version):
@@ -239,7 +239,7 @@ def test_a_uat_override_reports_the_charts_it_takes_off(monkeypatch):
     monkeypatch.setattr(P, "_get_github_client", lambda: SimpleNamespace(get_repo=lambda full: repo))
     monkeypatch.setattr(P, "active_deploy_repo", lambda: "example-org/deploy")
     out = json.loads(P.open_release_pr.invoke({"environment": "uat", "image_tags": "svc-a:2.0.0"}))
-    assert out["action"] == "deployed"
+    assert out["action"] == "pending_review", "it lands on UAT when the SIT -> UAT PR merges"
     assert out["dropped"] == [{"name": "svc-b", "tag": "3.0.0"}]
 
 

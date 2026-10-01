@@ -191,13 +191,10 @@ def uat_deploy_blocker(repo, repo_full: str) -> str:
 
 
 # --- UAT via SIT --------------------------------------------------------------
-def _uat_hops() -> tuple:
-    """The branches the portal itself changes for a UAT change."""
-    if settings.uat_via_sit_pr:
-        return (settings.sit_branch,)
-    return (settings.sit_branch, settings.uat_branch)
-
-
+# Every change to UAT flows through SIT, as in the real deployment repo where
+# SIT and UAT stay in sync: the portal changes SIT only; the repository's own
+# workflow raises SIT -> UAT on a change to uat/deployment.json, and a person
+# merges it. The portal shows that PR — it never raises or merges it.
 def _sit_to_uat_pr(repo, repo_full: str):
     """The open SIT -> UAT PR the deployment repo's own workflow raises once a
     change to uat/deployment.json lands on SIT. Waited for briefly — that
@@ -719,13 +716,13 @@ def open_release_pr(
             repo,
             [(uat_path, _replace_with(entries))],
             f"Deploy {chart_str} to uat",
-            branches=_uat_hops(),
+            branches=(settings.sit_branch,),
             rebuild_on_conflict=False,
         )
-        # Via SIT: still "deploying" until the SIT -> UAT PR is there to show, so
-        # nobody lands a second change on SIT in between (it would ride along).
+        # Still "deploying" until the SIT -> UAT PR is there to show, so nobody
+        # lands a second change on SIT in between (it would ride along).
         via_sit = (_via_sit_outcome(repo, repo_key, res["prs"], f"Deploy {chart_str} to UAT")
-                   if settings.uat_via_sit_pr and res["changed"] and res["delivered"] else None)
+                   if res["changed"] and res["delivered"] else None)
     finally:
         _release_uat_deploy(repo_key)
     if not res["changed"]:
@@ -741,35 +738,24 @@ def open_release_pr(
             "files_updated": ["uat/deployment.json"], "uat_charts": None, "dropped": dropped,
             "prs": res["prs"], "deploy_run": None, "note": via_sit["note"],
         }, indent=2)
-    if res["delivered"]:
-        uat_now = _read_include(repo, settings.uat_branch, uat_path)
-        note = (
-            f"Deployed {chart_str} to UAT (override). {_pr_chain_note(res['prs'])} "
-            f"Replaced uat/deployment.json. {len(uat_now)} chart(s) on UAT." + _deploy_run_note(res)
-        )
-        action = "deployed"
-    else:
-        # The chain stopped at a PR branch protection would not let us merge.
-        # Nothing has reached UAT: saying "Deployed" here — or quoting the live
-        # chart count, which is the PRE-deploy file — told people a change had
-        # landed when it was sitting in review.
-        note = _pending_note(f"Raised {chart_str} for UAT", res["prs"],
-                             settings.uat_branch, "UAT", done="deployed") + _deploy_run_note(res)
-        action = "pending_review"
+    # The PR into SIT itself is held (review, or a conflicting change): nothing
+    # has reached SIT, so no SIT -> UAT PR exists yet either.
     return json.dumps(
         {
             "ok": True,
             "environment": "uat",
-            "action": action,
+            "action": "pending_review",
             "pending_prs": _pending_prs(res["prs"], settings.uat_branch),
             "image_tags": chart_str,
             "files_updated": ["uat/deployment.json"],
-            # Only when it landed: before the merge the live file is the OLD one.
-            "uat_charts": uat_now if res["delivered"] else None,
+            "uat_charts": None,
             "dropped": dropped,
             "prs": res["prs"],
-            "deploy_run": res.get("deploy_run"),
-            "note": note,
+            "deploy_run": None,
+            "note": _pending_note(f"Raised {chart_str} for UAT", res["prs"],
+                                  settings.sit_branch, "SIT", done="deployed")
+                    + f" Once it is merged, your repository raises {settings.sit_branch} → "
+                      f"{settings.uat_branch}; merging that deploys to UAT.",
         },
         indent=2,
     )
@@ -861,8 +847,8 @@ def remove_from_release(image_names: str, environment: str = "uat", deployment_r
     else:
         # Targeted per-branch edits stopping at UAT (whole-branch SIT->UAT merges
         # conflict whenever UAT has moved independently of SIT).
-        res = _promote_targeted(repo, [(uat_path, _mut)], summary, branches=_uat_hops())
-    if env != "prod" and settings.uat_via_sit_pr and res["changed"] and res["delivered"]:
+        res = _promote_targeted(repo, [(uat_path, _mut)], summary, branches=(settings.sit_branch,))
+    if env != "prod" and res["changed"] and res["delivered"]:
         repo_full = target_repo or active_deploy_repo()
         outcome = _via_sit_outcome(repo, repo_full, res["prs"],
                                    f"Remove {', '.join(removed)} from UAT")

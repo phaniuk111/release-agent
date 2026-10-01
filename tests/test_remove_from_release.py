@@ -54,18 +54,18 @@ def _live_branches(with_targeted_on_uat=True):
 
 # --- explicit live removal --------------------------------------------------------
 
-def test_uat_removal_uses_targeted_per_branch_edits(make_repo):
+def test_uat_removal_goes_via_sit(make_repo):
+    """UAT changes flow via SIT: the removal lands on SIT; UAT keeps the chart
+    until the repository's SIT -> UAT PR is merged. PRD is never touched."""
     repo = make_repo(_live_branches())
 
     res = json.loads(P.remove_from_release("targeted-svc", environment="uat"))
 
-    assert res["action"] == "removed" and res["environment"] == "uat"
-    # Targeted edits landed on SIT and UAT; PRD was never part of the chain.
+    assert res["action"] == "removal_pending_review" and res["environment"] == "uat"
     assert "targeted-svc" not in _include(repo, "SIT", UAT_PATH)
-    assert "targeted-svc" not in _include(repo, "UAT", UAT_PATH)
+    assert "targeted-svc" in _include(repo, "UAT", UAT_PATH), "UAT waits for the SIT -> UAT PR"
     assert _include(repo, "PRD", PRD_PATH) == {"base-svc"}
-    stages = [p["stage"] for p in res["prs"]]
-    assert stages == ["→SIT", "→UAT"]  # per-branch working PRs, no SIT→UAT branch merge
+    assert [p["stage"] for p in res["prs"]] == ["→SIT"]
 
 
 def test_uat_is_the_default_environment(make_repo):
@@ -73,8 +73,8 @@ def test_uat_is_the_default_environment(make_repo):
 
     res = json.loads(P.remove_from_release("targeted-svc"))
 
-    assert res["environment"] == "uat" and res["action"] == "removed"
-    assert "targeted-svc" not in _include(repo, "UAT", UAT_PATH)
+    assert res["environment"] == "uat" and res["action"] == "removal_pending_review"
+    assert "targeted-svc" not in _include(repo, "SIT", UAT_PATH)
 
 
 def test_prod_removal_removes_from_both_live_files(make_repo):
@@ -115,15 +115,15 @@ def test_removing_a_chart_not_deployed_is_a_no_op(make_repo):
 # conflicted permanently once SIT/UAT histories diverged — deployment-repo PRs
 # #93/#96/#103. It now applies the same override to each branch independently.)
 
-def test_uat_deploy_overrides_both_branches_via_targeted_edits(monkeypatch):
+def test_uat_deploy_overrides_sit_and_leaves_uat_to_the_sit_to_uat_pr(monkeypatch):
     def entry(name, version, values="uat/values_uat.yaml"):
         return {
             "helm_chart_name": name, "helm_chart_version": version,
             "helm_chart_dir": "d", "helm_values_file_name": values, "gke_namespace": "ns",
         }
 
-    # SIT and UAT deliberately start with DIFFERENT contents (diverged state):
-    # a whole-branch merge could not reconcile these; targeted edits don't care.
+    # SIT and UAT start with different contents: the override replaces SIT's
+    # file exactly; UAT changes only when the SIT -> UAT PR is merged.
     initial = {
         "SIT": {UAT_PATH: {"include": [entry("old-svc", "0.1")]}},
         "UAT": {UAT_PATH: {"include": [entry("other-svc", "7.7"), entry("old-svc", "0.2")]}},
@@ -136,17 +136,16 @@ def test_uat_deploy_overrides_both_branches_via_targeted_edits(monkeypatch):
         "environment": "uat",
         "deployment_json": json.dumps({"include": [entry("new-svc", "1.0")]}),
     }))
-    assert out["ok"] is True and out["action"] == "deployed"
+    assert out["ok"] is True and out["action"] == "pending_review"
 
-    # Both branches end with EXACTLY the override — divergence self-healed.
-    for br in ("SIT", "UAT"):
-        inc = json.loads(repo.files[br][UAT_PATH])["include"]
-        assert [(e["helm_chart_name"], e["helm_chart_version"]) for e in inc] == [("new-svc", "1.0")], br
+    sit = json.loads(repo.files["SIT"][UAT_PATH])["include"]
+    assert [(e["helm_chart_name"], e["helm_chart_version"]) for e in sit] == [("new-svc", "1.0")]
+    uat = json.loads(repo.files["UAT"][UAT_PATH])["include"]
+    assert [e["helm_chart_name"] for e in uat] == ["other-svc", "old-svc"], "UAT untouched by the portal"
     # PRD untouched by a UAT deploy.
     assert json.loads(repo.files["PRD"][UAT_PATH])["include"] == []
-    # Two targeted PRs (one per branch), both merged — no SIT->UAT branch merge.
     stages = [(p.get("stage"), p.get("merged")) for p in out["prs"] if p.get("number")]
-    assert stages == [("→SIT", True), ("→UAT", True)]
+    assert stages == [("→SIT", True)], "one PR, into SIT"
 
 
 # --- PROD is not a single-chart deploy target any more ------------------------
