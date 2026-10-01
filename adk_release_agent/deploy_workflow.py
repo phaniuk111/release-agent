@@ -114,12 +114,14 @@ def _diff_block(diff: str) -> str:
 
 def _preview_text(
     preview: dict[str, Any], token: str, env: str, image_tags: str, change_request: Any = None,
-    deployment_repo: str = "", heading: str = "", jira: str = "",
+    deployment_repo: str = "", heading: str = "", jira: str = "", flow: str = "",
 ) -> str:
     """Human-readable preview shown to the user before confirmation."""
     repo_line = f"\n\n**Deployment repo:** `{deployment_repo}`" if deployment_repo else ""
     if jira:
         repo_line += f"\n\n**JIRA:** `{jira}` — every commit and PR title starts with it."
+    if flow:
+        repo_line += f"\n\n{flow}"
     # A release that edits a committed file previews the file's diff — shown
     # as a diff, not as one escaped JSON string. A copy: the dict itself is the
     # pending preview, persisted in session state and in-process.
@@ -180,6 +182,7 @@ async def _deploy_gate(ctx: Any, node_input: str):
             result.get("deployment_repo") or "",
             result.get("heading") or "",
             jira=result.get("jira") or "",
+            flow=result.get("flow") or "",
         )
         yield Event(
             content=types.Content(role="model", parts=[types.Part.from_text(text=text)]),

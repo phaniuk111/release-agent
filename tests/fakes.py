@@ -79,6 +79,13 @@ class FakePR:
         if state:
             self.state = state
 
+    def get_files(self):
+        """The files this PR changes: those that differ between head and base."""
+        head = self.repo.files.get(self.head.ref, {})
+        base = self.repo.files.get(self.base.ref, {})
+        return [SimpleNamespace(filename=path) for path in sorted(set(head) | set(base))
+                if head.get(path) != base.get(path)]
+
     def merge(self, merge_method="squash", commit_message=None, commit_title=None):
         self.merge_message, self.merge_title = commit_message, commit_title
         self.repo.files.setdefault(self.base.ref, {}).update(

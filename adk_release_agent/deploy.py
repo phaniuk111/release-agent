@@ -297,6 +297,7 @@ def prepare_deploy_preview(
         "change_request": req.get("change_request"),
         "deployment_repo": req.get("deployment_repo") or "",
         "jira": _jira_of(req),
+        "flow": _uat_flow_note(req),
         "message": f"Reply with exactly {token} to apply this deploy.",
     }
 
@@ -374,6 +375,16 @@ def _outcome_of(result: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": text.strip()}
     result.setdefault("ok", True)
     return result
+
+
+def _uat_flow_note(req: dict[str, Any]) -> str:
+    """How a CARE UAT deploy finishes when UAT changes flow via SIT."""
+    from release_agent.config import settings
+
+    if req.get("deployment_type") or not settings.uat_via_sit_pr:
+        return ""
+    return (f"This merges into {settings.sit_branch}. Your repository then raises "
+            f"{settings.sit_branch} → {settings.uat_branch}; merging that PR deploys to UAT.")
 
 
 def _jira_of(req: dict[str, Any]) -> str:

@@ -55,7 +55,8 @@ export async function showDeployForm(target, name, version) {
 
     const title = document.createElement('div');
     title.className = 'mb-2 font-semibold flex items-center gap-2 text-emerald-300';
-    const subText = '— current uat/deployment.json; edit (add/remove entries), then submit OVERRIDES the file with exactly what you see';
+    const subText = '— current uat/deployment.json' + (dctx.branch ? ' on ' + dctx.branch : '') +
+        '; edit (add/remove entries), then submit OVERRIDES the file with exactly what you see';
     title.innerHTML = '<i class="fa-solid fa-flask"></i> ' + heading +
         ' <span class="text-slate-400 font-normal text-xs">' + subText + '</span>';
     wrap.appendChild(title);

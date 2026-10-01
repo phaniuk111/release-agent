@@ -190,6 +190,56 @@ def uat_deploy_blocker(repo, repo_full: str) -> str:
     return _running_message(running) if running is not None else _open_pr_message(repo)
 
 
+# --- UAT via SIT --------------------------------------------------------------
+def _uat_hops() -> tuple:
+    """The branches the portal itself changes for a UAT change."""
+    if settings.uat_via_sit_pr:
+        return (settings.sit_branch,)
+    return (settings.sit_branch, settings.uat_branch)
+
+
+def _sit_to_uat_pr(repo, repo_full: str):
+    """The open SIT -> UAT PR the deployment repo's own workflow raises once a
+    change to uat/deployment.json lands on SIT. Waited for briefly — that
+    workflow takes a few seconds — and never raised or merged here."""
+    owner = (repo_full or "").split("/")[0]
+    deadline = time.time() + max(0.0, float(settings.uat_pr_wait_seconds or 0))
+    while True:
+        try:
+            for pr in repo.get_pulls(state="open", base=settings.uat_branch,
+                                     head=f"{owner}:{settings.sit_branch}"):
+                return pr
+        except Exception:
+            pass
+        if time.time() >= deadline:
+            return None
+        time.sleep(5)
+
+
+def _via_sit_outcome(repo, repo_full: str, prs: list, what: str) -> dict:
+    """The change is on SIT; the PR that finishes it is SIT -> UAT, the
+    developer's to merge. Its pending entry is ``final``: merging it is what
+    lands the change (recorded then by pr_reconcile)."""
+    sit, uat = settings.sit_branch, settings.uat_branch
+    lead = f"{what}: merged into {sit} — {_pr_chain_note(prs)}"
+    pr = _sit_to_uat_pr(repo, repo_full)
+    if pr is not None:
+        return {
+            "pending_prs": [{"number": pr.number, "url": pr.html_url, "stage": f"→{uat}",
+                             "reason": f"{sit} → {uat}, raised by the repository's workflow",
+                             "final": True}],
+            "note": (f"{lead} Now merge [PR #{pr.number}]({pr.html_url}) {sit} → {uat} to finish — "
+                     f"{uat} is unchanged until it is merged."),
+        }
+    pulls = f"{getattr(repo, 'html_url', '') or 'https://github.com/' + repo_full}/pulls"
+    return {
+        "pending_prs": [],
+        "note": (f"{lead} The {sit} → {uat} PR your repository's workflow raises has not appeared "
+                 f"yet — find it under open PRs into {uat} ({pulls}) and merge it to finish. "
+                 f"{uat} is unchanged until then."),
+    }
+
+
 # --- PR plumbing ------------------------------------------------------------
 # Returned by _merge_pr when another change landed on the base branch while this
 # PR was being raised — the one refusal that rebuilding on the new head fixes.
@@ -669,9 +719,13 @@ def open_release_pr(
             repo,
             [(uat_path, _replace_with(entries))],
             f"Deploy {chart_str} to uat",
-            branches=(settings.sit_branch, settings.uat_branch),
+            branches=_uat_hops(),
             rebuild_on_conflict=False,
         )
+        # Via SIT: still "deploying" until the SIT -> UAT PR is there to show, so
+        # nobody lands a second change on SIT in between (it would ride along).
+        via_sit = (_via_sit_outcome(repo, repo_key, res["prs"], f"Deploy {chart_str} to UAT")
+                   if settings.uat_via_sit_pr and res["changed"] and res["delivered"] else None)
     finally:
         _release_uat_deploy(repo_key)
     if not res["changed"]:
@@ -680,6 +734,13 @@ def open_release_pr(
              "note": f"No change — uat/deployment.json already matches {chart_str}."},
             indent=2,
         )
+    if via_sit is not None:
+        return json.dumps({
+            "ok": True, "environment": "uat", "action": "pending_review",
+            "pending_prs": via_sit["pending_prs"], "image_tags": chart_str,
+            "files_updated": ["uat/deployment.json"], "uat_charts": None, "dropped": dropped,
+            "prs": res["prs"], "deploy_run": None, "note": via_sit["note"],
+        }, indent=2)
     if res["delivered"]:
         uat_now = _read_include(repo, settings.uat_branch, uat_path)
         note = (
@@ -800,9 +861,25 @@ def remove_from_release(image_names: str, environment: str = "uat", deployment_r
     else:
         # Targeted per-branch edits stopping at UAT (whole-branch SIT->UAT merges
         # conflict whenever UAT has moved independently of SIT).
-        res = _promote_targeted(
-            repo, [(uat_path, _mut)], summary,
-            branches=(settings.sit_branch, settings.uat_branch),
+        res = _promote_targeted(repo, [(uat_path, _mut)], summary, branches=_uat_hops())
+    if env != "prod" and settings.uat_via_sit_pr and res["changed"] and res["delivered"]:
+        repo_full = target_repo or active_deploy_repo()
+        outcome = _via_sit_outcome(repo, repo_full, res["prs"],
+                                   f"Remove {', '.join(removed)} from UAT")
+        final_pr = next((p for p in outcome["pending_prs"] if p["final"]), None)
+        if final_pr:
+            try:
+                from .pr_reconcile import record_pending
+
+                record_pending("uat", [{"name": n} for n in removed], repo_full, final_pr["number"],
+                               on_merge="removed", tag="removed_from_live")
+            except Exception:
+                pass
+        return json.dumps(
+            {"ok": True, "action": "removal_pending_review", "environment": env,
+             "removed": [], "requested": sorted(set(removed)),
+             "pending_prs": outcome["pending_prs"], "prs": res["prs"], "note": outcome["note"]},
+            indent=2,
         )
     if not res["changed"]:
         return json.dumps(

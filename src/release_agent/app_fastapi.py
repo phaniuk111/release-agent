@@ -1215,7 +1215,10 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
             "(Add to next release), then raise the CARE or DF release, and promote it.")}
     env_key = "uat"
     path = settings.deployment_path_pattern.format(env=env_key)
-    branch = settings.uat_branch
+    # Via SIT, SIT is the front of the line: a change waiting in an unmerged
+    # SIT -> UAT PR is already there, and the overwrite replaces SIT's file — so
+    # that is the file the developer must see.
+    branch = settings.sit_branch if settings.uat_via_sit_pr else settings.uat_branch
 
     include: list = []
     from_repo = False
@@ -1258,6 +1261,7 @@ def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""
         "environment": env_key,
         "deployment": {"include": include},
         "from_repo": from_repo,
+        "branch": branch,
         "blocked": blocked,
         # Default target for the form's "Deployment repo" field (user-overridable;
         # travels in the deploy JSON payload as deployment_repo).

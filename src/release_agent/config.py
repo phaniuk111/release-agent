@@ -284,6 +284,13 @@ class Settings(BaseSettings):
         default="UAT",
         validation_alias=AliasChoices("UAT_BRANCH", "RELEASE_UAT_BRANCH"),
     )
+    # UAT changes flow via SIT: a UAT deploy/removal raises and merges its PR into
+    # SIT only; the deployment repo's OWN workflow then raises SIT -> UAT, and the
+    # developer merges that. The portal waits up to UAT_PR_WAIT_SECONDS for it to
+    # appear and shows it — never raises or merges it. Off = the portal edits SIT
+    # then UAT itself (targeted per-branch PRs).
+    uat_via_sit_pr: bool = Field(default=False, validation_alias=AliasChoices("UAT_VIA_SIT_PR"))
+    uat_pr_wait_seconds: float = Field(default=90.0, validation_alias=AliasChoices("UAT_PR_WAIT_SECONDS"))
     prd_branch: str = Field(
         default="PRD",
         validation_alias=AliasChoices("PRD_BRANCH", "PROD_BRANCH", "RELEASE_PRD_BRANCH"),
