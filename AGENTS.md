@@ -130,6 +130,11 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
 
 ## Workflows
 
+GitHub Copilot (VS Code) also reads `.github/copilot-instructions.md` — the short
+version of the rules below, and the only file Copilot code review reads — and
+`.github/instructions/*.instructions.md` (per-path, by `applyTo`). When a rule here
+changes, update those in the same commit.
+
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest -q     # tests (169+)
 .venv/bin/python -m ruff check src adk_release_agent tests
