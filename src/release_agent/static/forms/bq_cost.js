@@ -1,8 +1,8 @@
 import { escapeHtml as esc } from '../core/format.js';
 import {
     ENABLE_HINT, PARTIAL_LEAD, accessLines, costSummary, emptyText, explainPrompt, extrasText, formatBytes,
-    formatCount, formatGb, formatUsd,
-    insightText, orderShapes, reportMeta, whoText,
+    formatCount, formatGb, formatUsd, insightText, orderShapes, readsNote, reportMeta, sectionNote,
+    storageKindText, whoText, writeKindText,
 } from '../core/bq_cost.js';
 import { bqCostReport, bqCostReportXlsx } from '../api.js';
 import { llmEnabled } from '../core/capabilities.js';
@@ -10,10 +10,10 @@ import { sendMessage } from '../chat.js';
 import { opening, withDismiss } from './common.js';
 
 // ---- BigQuery cost -----------------------------------------------------------
-// One table: the most expensive query shapes, straight from /api/bq-cost/report
+// Three tables — the most expensive query shapes, storage, writes — straight from /api/bq-cost/report
 // (tools/bq_cost.py measures — INFORMATION_SCHEMA reads, never a row of data).
 // "Ask why" hands a row to the chat, which investigates and proves any rewrite
-// with the bq_* tools; the full report (storage, writes, history) is the Excel
+// with the bq_* tools; the full report (and the findings history) is the Excel
 // download, built server-side from the same cached scan.
 //
 // Every value is BigQuery job metadata — SQL previews, user emails — so all of
@@ -55,6 +55,51 @@ function rowHtml(s, i) {
         '</tr>';
 }
 
+// Storage and writes: the other two sections, each its own small table —
+// they are what an account WITHOUT job history (resourceViewer) can still see.
+function sectionHead(title) {
+    return '<div class="mt-3 mb-1 text-[11px] font-semibold text-slate-300">' + esc(title) + '</div>';
+}
+
+function storageHtml(res) {
+    const rows = Array.isArray(res.storage) ? res.storage.filter(t => t && typeof t === 'object') : [];
+    let html = sectionHead('Storage');
+    const reads = readsNote(res);
+    if (reads) html += '<div class="text-[10px] text-slate-500 mb-1">' + esc(reads) + '</div>';
+    if (!rows.length) return html + '<div class="text-[11px] text-slate-400">' + esc(sectionNote(res, 'storage')) + '</div>';
+    return html + '<div class="overflow-x-auto"><table class="w-full text-[11px]">' +
+        '<thead class="text-slate-500 border-b border-slate-700"><tr>' +
+        th('table') + th('finding') + th('GB', 'text-right') + th('physical GB', 'text-right') +
+        th('reads', 'text-right') + th('≈ $ / month', 'text-right') + '</tr></thead><tbody>' +
+        rows.map(t => '<tr class="border-b border-slate-800 align-top">' +
+            td(esc(t.table || ''), 'font-mono text-[10px] text-slate-200') +
+            td('<span class="text-amber-400">' + esc(storageKindText(t.kind)) + '</span>') +
+            td(esc(formatGb(t.gb)), 'text-right whitespace-nowrap') +
+            td(esc(formatGb(t.physical_gb)), 'text-right whitespace-nowrap') +
+            td(esc(t.reads == null ? '—' : formatCount(t.reads)), 'text-right') +
+            td(esc(formatUsd(t.approx_usd_month)), 'text-right whitespace-nowrap') + '</tr>').join('') +
+        '</tbody></table></div>';
+}
+
+function writesHtml(res) {
+    const rows = Array.isArray(res.writes) ? res.writes.filter(w => w && typeof w === 'object') : [];
+    let html = sectionHead('Writes (Storage Write API and streaming — not queries)');
+    if (!rows.length) return html + '<div class="text-[11px] text-slate-400">' + esc(sectionNote(res, 'writes')) + '</div>';
+    return html + '<div class="overflow-x-auto"><table class="w-full text-[11px]">' +
+        '<thead class="text-slate-500 border-b border-slate-700"><tr>' +
+        th('source') + th('finding') + th('requests', 'text-right') + th('rows', 'text-right') +
+        th('rows / request', 'text-right') + th('errors', 'text-right') + '</tr></thead><tbody>' +
+        rows.map(w => '<tr class="border-b border-slate-800 align-top">' +
+            td(esc(w.source === 'streaming' ? 'streaming inserts' : 'Storage Write API'), 'text-slate-200 whitespace-nowrap') +
+            td('<span class="text-amber-400">' + esc(writeKindText(w.kind)) + '</span>') +
+            td(esc(formatCount(w.requests)), 'text-right') +
+            td(esc(formatCount(w.rows)), 'text-right') +
+            td(esc(w.rows_per_request == null ? '—' : String(w.rows_per_request)), 'text-right') +
+            td(esc(formatCount(w.errors)), 'text-right') + '</tr>').join('') +
+        '</tbody></table></div>' +
+        '<div class="text-[10px] text-slate-500 mt-1">BigQuery reports these per project — no table or caller is named.</div>';
+}
+
 async function render(wrap, fresh) {
     wrap.querySelectorAll('.bqc-body').forEach(n => n.remove());
     const body = document.createElement('div');
@@ -81,13 +126,14 @@ async function render(wrap, fresh) {
         '<button type="button" data-bqc="refresh" title="Scan again now" aria-label="Scan again now" ' +
         'class="text-slate-400 hover:text-white text-xs"><i class="fa-solid fa-rotate-right"></i></button></div>' +
         '<div class="text-[10px] text-slate-500 mb-2">' + esc(reportMeta(res)) + (extras ? ' · ' + esc(extras) : '') + '</div>';
-    if (res.hint) {
-        html += '<div class="text-[11px] text-amber-400 mb-2"><i class="fa-solid fa-triangle-exclamation mr-1"></i>' +
-            esc(res.hint) + '</div>';
-    }
     // A partial report: what this account could read is below; this says which
     // role unlocks the rest, and where to grant it.
     const access = accessLines(res);
+    // The one-line hint, unless it only repeats a role the panel already names.
+    if (res.hint && !access.some(a => String(res.hint).includes(a.role))) {
+        html += '<div class="text-[11px] text-amber-400 mb-2"><i class="fa-solid fa-triangle-exclamation mr-1"></i>' +
+            esc(res.hint) + '</div>';
+    }
     if (access.length) {
         html += '<div class="mb-2 rounded-lg border border-amber-600 bg-amber-500/15 px-3 py-2 text-[11px] text-amber-200">' +
             '<div class="mb-1"><i class="fa-solid fa-key mr-1"></i>' + esc(PARTIAL_LEAD) + '</div>' +
@@ -112,6 +158,7 @@ async function render(wrap, fresh) {
             '</tr></thead><tbody>' + shapes.map((s, i) => rowHtml(s && typeof s === 'object' ? s : {}, i)).join('') +
             '</tbody></table></div>';
     }
+    if (res.ok !== false && !res.disabled) html += storageHtml(res) + writesHtml(res);
     body.innerHTML = html;
 
     body.querySelector('[data-bqc="refresh"]').addEventListener('click', () => render(wrap, true));
