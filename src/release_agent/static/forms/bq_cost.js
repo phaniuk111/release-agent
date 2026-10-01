@@ -1,6 +1,7 @@
 import { escapeHtml as esc } from '../core/format.js';
 import {
-    ENABLE_HINT, costSummary, emptyText, explainPrompt, extrasText, formatBytes, formatCount, formatGb, formatUsd,
+    ENABLE_HINT, PARTIAL_LEAD, accessLines, costSummary, emptyText, explainPrompt, extrasText, formatBytes,
+    formatCount, formatGb, formatUsd,
     insightText, orderShapes, reportMeta, whoText,
 } from '../core/bq_cost.js';
 import { bqCostReport, bqCostReportXlsx } from '../api.js';
@@ -83,6 +84,18 @@ async function render(wrap, fresh) {
     if (res.hint) {
         html += '<div class="text-[11px] text-amber-400 mb-2"><i class="fa-solid fa-triangle-exclamation mr-1"></i>' +
             esc(res.hint) + '</div>';
+    }
+    // A partial report: what this account could read is below; this says which
+    // role unlocks the rest, and where to grant it.
+    const access = accessLines(res);
+    if (access.length) {
+        html += '<div class="mb-2 rounded-lg border border-amber-600 bg-amber-500/15 px-3 py-2 text-[11px] text-amber-200">' +
+            '<div class="mb-1"><i class="fa-solid fa-key mr-1"></i>' + esc(PARTIAL_LEAD) + '</div>' +
+            access.map(a => '<div class="pl-4">• <span class="font-mono text-amber-100">' + esc(a.role) + '</span> on ' +
+                esc(a.grantOn) + ' — unlocks ' + esc(a.unlocks) +
+                ' <span class="text-amber-300/80">(' + esc(a.permission) + ')</span>' +
+                (a.note ? '<div class="text-amber-300/80 pl-3">' + esc(a.note) + '</div>' : '') + '</div>').join('') +
+            '</div>';
     }
     if (res.disabled) {
         html += '<div class="text-[11px] text-amber-400">' + esc(ENABLE_HINT) + '</div>';

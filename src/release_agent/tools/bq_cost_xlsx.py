@@ -223,6 +223,9 @@ def sheets_for(report: dict[str, Any]) -> list[Sheet]:
         ["Statements the scan issued", report.get("queries_run")],
         ["Storage read via", _words(report.get("storage_source")) or "not available"],
     ]
+    if report.get("missing_access"):
+        summary_rows.append(["Report", "PARTIAL — some sections need more access; see the "
+                                       "'Access needed' sheet"])
     for label, key in (("Note", "hint"), ("Storage note", "storage_hint"), ("Writes note", "writes_hint")):
         if report.get(key):
             summary_rows.append([label, report[key]])
@@ -236,7 +239,8 @@ def sheets_for(report: dict[str, Any]) -> list[Sheet]:
          s.get("approx_usd"), s.get("slot_hours"), s.get("p50_bytes"), s.get("last_run"),
          _join(s.get("insights")), _join(s.get("referenced_tables")), s.get("sql_preview")]
         for i, s in enumerate(report.get("shapes") or [], start=1)
-    ] or [["no query shape worth a row in this window"]]
+    ] or [["query costs unavailable — this account needs more access (see 'Access needed')"
+            if report.get("shapes_error") else "no query shape worth a row in this window"]]
     storage = [
         [t.get("table"), _words(t.get("kind")), t.get("gb"), t.get("physical_gb"), t.get("reads"),
          t.get("last_read"), t.get("last_modified"), t.get("expiration"), t.get("approx_usd_month")]
@@ -253,6 +257,12 @@ def sheets_for(report: dict[str, Any]) -> list[Sheet]:
         for a in history.get("adoption") or []
     ] or [["no earlier runs to compare with" if not history else "nothing changed since the last run"]]
 
+    access = [
+        [a.get("role"), a.get("grant_on"), a.get("permission"), "; ".join(a.get("sections") or []),
+         a.get("note") or ""]
+        for a in report.get("missing_access") or []
+    ]
+
     return [
         ("Summary", ["Field", "Value"], summary_rows),
         ("Top queries", ["#", "Query hash", "Run by", "Distinct users", "Runs", "GB billed", "≈ USD",
@@ -263,7 +273,8 @@ def sheets_for(report: dict[str, Any]) -> list[Sheet]:
         ("Writes", ["Table", "Source", "Finding", "Requests", "Rows", "Rows per request", "Input GB",
                     "Errors"], writes),
         ("History", ["Query hash", "Status", "Times reported", "GB before", "GB now", "Change %"], adoption),
-    ]
+    ] + ([("Access needed", ["Role to grant", "Grant on", "Permission", "Unlocks", "Note"], access)]
+         if access else [])
 
 
 def report_workbook(report: dict[str, Any]) -> bytes:

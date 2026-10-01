@@ -133,3 +133,35 @@ test('the card\'s small print names the scope, and an empty window says so', () 
     assert.equal(emptyText({ days: 14 }), 'nothing significant in the last 14 days');
     assert.equal(emptyText({}), 'nothing significant in the window');
 });
+
+import { PARTIAL_LEAD, accessLines, emptyText as emptyTextForAccess } from '../../src/release_agent/static/core/bq_cost.js';
+
+test('a partial report lists each missing role, where to grant it and what it unlocks', () => {
+    const lines = accessLines({ missing_access: [{
+        role: 'roles/bigquery.resourceViewer', permission: 'bigquery.jobs.listAll',
+        grant_on: 'project p', sections: ['Query costs', 'Table read counts'],
+    }] });
+    assert.deepEqual(lines, [{ role: 'roles/bigquery.resourceViewer', grantOn: 'project p',
+        permission: 'bigquery.jobs.listAll', unlocks: 'Query costs; Table read counts', note: '' }]);
+    assert.match(PARTIAL_LEAD, /Partial report/);
+});
+
+test('nothing missing, or an old report without the field, shows no access panel', () => {
+    assert.deepEqual(accessLines({ missing_access: [] }), []);
+    assert.deepEqual(accessLines({}), []);
+    assert.deepEqual(accessLines(null), []);
+});
+
+test('query costs refused for want of a role is not "nothing significant"', () => {
+    assert.match(emptyTextForAccess({ shapes_error: '403', days: 14 }), /needs more access/);
+    assert.match(emptyTextForAccess({ days: 14 }), /nothing significant/);
+});
+
+import { costSummary as costSummaryForAccess } from '../../src/release_agent/static/core/bq_cost.js';
+
+test('refused job history shows as unreadable, not as zero queries and zero cost', () => {
+    const s = costSummaryForAccess({ ok: true, shapes_error: '403', report_cost_bytes: 1024,
+        totals: { queries: 0, slot_hours: 0, gb_billed: 0, cache_hit_pct: 0 } });
+    assert.match(s, /query costs not readable/);
+    assert.doesNotMatch(s, /0 queries|slot-hours|billed/);
+});

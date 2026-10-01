@@ -92,10 +92,12 @@ export function costSummary(report) {
     if (report.ok === false) return 'BigQuery cost report is unavailable';
     const t = report.totals && typeof report.totals === 'object' ? report.totals : {};
     const parts = [];
-    if (num(t.queries) !== null) parts.push(formatCount(t.queries) + plural(t.queries, ' query', ' queries'));
-    if (num(t.slot_hours) !== null) parts.push(trim(num(t.slot_hours)) + ' slot-hours');
-    if (num(t.gb_billed) !== null) parts.push(formatGb(t.gb_billed) + ' billed');
-    if (num(t.cache_hit_pct) !== null) parts.push(trim(num(t.cache_hit_pct)) + '% from cache');
+    // Job history refused: the totals are unknown, not zero.
+    if (report.shapes_error) parts.push('query costs not readable with this access');
+    else if (num(t.queries) !== null) parts.push(formatCount(t.queries) + plural(t.queries, ' query', ' queries'));
+    if (!report.shapes_error && num(t.slot_hours) !== null) parts.push(trim(num(t.slot_hours)) + ' slot-hours');
+    if (!report.shapes_error && num(t.gb_billed) !== null) parts.push(formatGb(t.gb_billed) + ' billed');
+    if (!report.shapes_error && num(t.cache_hit_pct) !== null) parts.push(trim(num(t.cache_hit_pct)) + '% from cache');
     if (num(report.report_cost_bytes) !== null) {
         parts.push('this report read ' + formatBytes(num(report.report_cost_bytes)));
     }
@@ -132,8 +134,30 @@ export function extrasText(report) {
     return parts.length ? parts.join(' · ') + ' — in the Excel' : '';
 }
 
+/** The lead line of a partial report's "access needed" panel. */
+export const PARTIAL_LEAD = "Partial report — this account can't read every section. " +
+    'Grant these to see the rest:';
+
+/** The roles a partial report is missing, one per role and where to grant it:
+ * {role, grantOn, permission, unlocks, note}. [] when nothing is missing. */
+export function accessLines(report) {
+    const r = report && typeof report === 'object' ? report : {};
+    return list(r.missing_access)
+        .filter(a => a && typeof a === 'object' && a.role)
+        .map(a => ({
+            role: String(a.role),
+            grantOn: String(a.grant_on || ''),
+            permission: String(a.permission || ''),
+            unlocks: list(a.sections).join('; '),
+            note: String(a.note || ''),
+        }));
+}
+
 /** A window with nothing worth a row. */
 export function emptyText(report) {
+    if (report && report.shapes_error) {
+        return 'query costs unavailable — this account needs more access (see above)';
+    }
     const d = num(report && report.days);
     return d === null ? 'nothing significant in the window'
         : 'nothing significant in the last ' + formatCount(d) + plural(d, ' day', ' days');

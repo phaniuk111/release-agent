@@ -634,19 +634,25 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"BigQuery unavailable: {e}", "hint": None}
 
+    # Each section stands alone: a role missing for one (job history needs
+    # resourceViewer, storage metadataViewer) must not blank the others. The one
+    # refusal that stops everything is jobs.create — then no query can run.
+    access: list[dict[str, Any] | None] = []
+    shapes_error = None
     try:
         shape_rows = _run_rows(client, _shapes_sql(), budget, params=[_int_param("days", days)])
-    except Exception as e:  # noqa: BLE001
-        error = str(e)
-        return {"ok": False, "error": error, "hint": hint_for(error)}
-    try:
         shapes = rank_shapes(shape_rows, settings.bq_cost_billing, top)
     except Exception as e:  # noqa: BLE001 — ranking must not be able to raise out of scan() either
-        error = str(e)
-        return {"ok": False, "error": error, "hint": hint_for(error)}
+        shapes_error, shape_rows, shapes = str(e), [], []
+        needed = access_needed("jobs", shapes_error)
+        if needed and needed["role"] == _JOB_USER[0]:
+            return {"ok": False, "error": shapes_error, "hint": hint_for(shapes_error),
+                    "missing_access": _merge_access([needed])}
+        access.append(needed)
 
     try:
-        totals_rows = _run_rows(client, _totals_sql(), budget, params=[_int_param("days", days)])
+        totals_rows = (_run_rows(client, _totals_sql(), budget, params=[_int_param("days", days)])
+                       if shapes_error is None else [])
     except Exception:  # noqa: BLE001 — totals are a nicety; the shapes stand alone
         totals_rows = []
     trow = totals_rows[0] if totals_rows else {}
@@ -657,7 +663,8 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
         "gb_billed": round((trow.get("total_bytes_billed") or 0) / _GIB, 2),
         "cache_hit_pct": round(100.0 * (trow.get("cache_hits") or 0) / tqueries, 1) if tqueries else 0.0,
     }
-    hint = hint_for("", rows_seen=tqueries, users_seen=int(trow.get("distinct_users") or 0))
+    hint = (hint_for(shapes_error) if shapes_error is not None
+            else hint_for("", rows_seen=tqueries, users_seen=int(trow.get("distinct_users") or 0)))
 
     job_ids = [s["sample_job"] for s in shapes if s.get("sample_job")]
     if job_ids:
@@ -680,6 +687,7 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
         # be reported as a verified zero (see _storage_entries) — that turned a permissions gap
         # into "delete me" advice on every large table.
         read_rows, reads_known, reads_error = [], False, str(e)
+        access.append(access_needed("reads", reads_error))
     reads_by_table: dict[str, dict[str, Any]] = {}
     for r in read_rows:
         key = f'{r.get("project_id")}.{r.get("dataset_id")}.{r.get("table_id")}'
@@ -695,6 +703,9 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
         storage, storage_source, storage_hint = [], None, None
         storage_error = f"storage section failed: {e}"
 
+    if storage_error:
+        access.append(access_needed("storage", storage_error))
+
     try:
         writes, writes_error, writes_hint = _scan_writes(client, budget, days)
     except bq_guard.GuardRefused as e:
@@ -704,6 +715,9 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
         writes, writes_hint = [], None
         writes_error = f"writes section failed: {e}"
 
+    if writes_error:
+        access.append(access_needed("writes", writes_error, region_wide=True))
+
     history = None
     if settings.bq_cost_dataset:
         try:
@@ -712,8 +726,9 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
             counts = {s: sum(1 for a in adoption_list if a["status"] == s)
                       for s in ("adopted", "still_open", "new", "gone")}
             history = {"adoption": adoption_list, **counts}
-        except Exception:  # noqa: BLE001 — best effort, never fails the scan
+        except Exception as e:  # noqa: BLE001 — best effort, never fails the scan
             history = None
+            access.append(access_needed("history", str(e)))
 
     out: dict[str, Any] = {
         "ok": True,
@@ -731,7 +746,13 @@ def scan(days: int | None = None, top: int | None = None) -> dict[str, Any]:
         "writes": writes,
         "history": history,
         "hint": hint,
+        # The sections refused for want of a role, and the role each needs —
+        # the report is still everything the granted roles could see.
+        "missing_access": _merge_access(access),
     }
+    out["partial"] = bool(out["missing_access"]) or shapes_error is not None
+    if shapes_error is not None:
+        out["shapes_error"] = shapes_error
     if storage_error:
         out["storage_error"], out["storage_hint"] = storage_error, storage_hint
     if not reads_known:
@@ -1432,6 +1453,85 @@ _HINT_DATASET_LEVEL = (
     "each visible dataset; that is expected in any shared project."
 )
 _HINT_PROJECT_LEVEL = "grant roles/bigquery.metadataViewer (bigquery.tables.list at project level)."
+
+
+# What each report section needs, for the "access needed" list a partial report
+# carries. Permissions per Google's INFORMATION_SCHEMA reference pages: the JOBS
+# views need bigquery.jobs.listAll, the TABLE_STORAGE / *_TIMELINE / dataset
+# metadata views bigquery.tables.list (+ .get) — all at project level.
+_SECTION_ACCESS = {
+    "jobs": ("Query costs (who ran what, slot time, bytes billed)",
+             "roles/bigquery.resourceViewer", "bigquery.jobs.listAll", "project"),
+    "reads": ("Table read counts (which large tables nobody reads)",
+              "roles/bigquery.resourceViewer", "bigquery.jobs.listAll", "project"),
+    "storage": ("Table storage (sizes, storage cost, expiration)",
+                "roles/bigquery.metadataViewer", "bigquery.tables.list, bigquery.tables.get", "project"),
+    "writes": ("Write activity (streaming and Storage Write API)",
+               "roles/bigquery.metadataViewer", "bigquery.tables.list", "project"),
+    "history": ("Findings history (what was fixed since earlier scans)",
+                "roles/bigquery.dataEditor", "bigquery.tables.getData, bigquery.tables.updateData", "dataset"),
+}
+_JOB_USER = ("roles/bigquery.jobUser", "bigquery.jobs.create")
+# When BigQuery names the permission it refused, that beats the section default.
+_ROLE_FOR_PERMISSION = {
+    "bigquery.jobs.listall": "roles/bigquery.resourceViewer",
+    "bigquery.tables.list": "roles/bigquery.metadataViewer",
+    "bigquery.tables.get": "roles/bigquery.metadataViewer",
+    "bigquery.tables.getdata": "roles/bigquery.dataViewer",
+    "bigquery.tables.updatedata": "roles/bigquery.dataEditor",
+}
+
+
+def _is_permission_error(error: str) -> bool:
+    low = (error or "").lower()
+    return any(w in low for w in ("403", "permission", "forbidden", "access denied", "denied"))
+
+
+def access_needed(section: str, error: str, *, region_wide: bool = False) -> dict[str, Any] | None:
+    """PURE: the role a refused section needs — or None when the failure is not a
+    missing permission (a bug, a timeout, the query budget), or is the one denial
+    no role fixes: a region-wide view refused because of BigQuery's hidden
+    per-user result datasets ("at the dataset level")."""
+    if not _is_permission_error(error):
+        return None
+    low = error.lower()
+    project = _project()
+    if "bigquery.jobs.create" in low:
+        role, permission = _JOB_USER
+        return {"section": "Every section — no query can run", "role": role, "permission": permission,
+                "grant_on": f"project {project}"}
+    if "at the dataset level" in low and section in ("storage", "writes"):
+        return None
+    if section not in _SECTION_ACCESS:
+        return None
+    label, role, permission, scope = _SECTION_ACCESS[section]
+    named = next((perm for perm in _ROLE_FOR_PERMISSION if perm in low), None)
+    if named:
+        role = _ROLE_FOR_PERMISSION[named]
+        permission = next(w.strip("'\"(),") for w in error.split() if w.lower().strip("'\"(),") == named)
+    grant_on = (f"dataset {project}.{settings.bq_cost_dataset}" if scope == "dataset"
+                else f"project {project}")
+    out = {"section": label, "role": role, "permission": permission, "grant_on": grant_on}
+    if region_wide:
+        out["note"] = ("if this role is already granted, BigQuery's hidden per-user result datasets "
+                       "can still refuse this region-wide view — no role fixes that.")
+    return out
+
+
+def _merge_access(entries: list[dict[str, Any] | None]) -> list[dict[str, Any]]:
+    """One line per (role, where to grant it), naming every section it unlocks."""
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for e in entries:
+        if not e:
+            continue
+        key = (e["role"], e["grant_on"])
+        if key in merged:
+            if e["section"] not in merged[key]["sections"]:
+                merged[key]["sections"].append(e["section"])
+            continue
+        merged[key] = {"role": e["role"], "permission": e["permission"], "grant_on": e["grant_on"],
+                       "sections": [e["section"]], **({"note": e["note"]} if e.get("note") else {})}
+    return list(merged.values())
 
 
 def hint_for(error: str, *, rows_seen: int = 0, users_seen: int = 0, region_wide: bool = False) -> str | None:

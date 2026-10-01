@@ -185,3 +185,24 @@ def test_report_filename_strips_header_injection_characters_from_the_date_too():
     name = X.report_filename(hostile)
     assert all(ch not in "\r\n\"" for ch in name)
     assert name == "bq-cost-report-team-bq-Set-Cook.xlsx"
+
+
+def test_a_partial_report_gets_an_access_needed_sheet():
+    from release_agent.tools import bq_cost_xlsx as X
+
+    report = {"project": "p", "shapes": [], "shapes_error": "403", "storage": [], "writes": [],
+              "missing_access": [{"role": "roles/bigquery.resourceViewer", "grant_on": "project p",
+                                  "permission": "bigquery.jobs.listAll", "sections": ["Query costs"]}]}
+    sheets = {name: rows for name, _header, rows in X.sheets_for(report)}
+
+    assert sheets["Access needed"] == [["roles/bigquery.resourceViewer", "project p",
+                                        "bigquery.jobs.listAll", "Query costs", ""]]
+    assert any(r[0] == "Report" and "PARTIAL" in r[1] for r in sheets["Summary"])
+    assert "needs more access" in sheets["Top queries"][0][0]
+
+
+def test_a_complete_report_has_no_access_sheet():
+    from release_agent.tools import bq_cost_xlsx as X
+
+    names = [name for name, _h, _r in X.sheets_for({"project": "p", "shapes": [], "missing_access": []})]
+    assert "Access needed" not in names

@@ -553,8 +553,12 @@ def test_scan_error_and_hint_on_a_403(monkeypatch):
     })
     monkeypatch.setattr(C, "_get_client", lambda: client)
     result = C.scan()
-    assert result["ok"] is False
+    # A refused first query no longer fails the whole report: it is partial,
+    # says why, and names the role BigQuery said was missing.
+    assert result["ok"] is True and result["partial"] is True and result["shapes"] == []
     assert result["hint"] == C._HINT_PROJECT_LEVEL
+    assert result["missing_access"][0]["role"] == "roles/bigquery.metadataViewer"
+    assert result["missing_access"][0]["permission"] == "bigquery.tables.list"
 
 
 def test_scan_includes_history_from_adoption_when_memory_is_on(monkeypatch):
@@ -950,3 +954,89 @@ def test_run_rows_refuses_a_non_metadata_statement_before_ever_issuing_it():
     with pytest.raises(AssertionError, match="INFORMATION_SCHEMA"):
         C._run_rows(client, "SELECT * FROM orders", None)
     assert client.queries == []  # refused up front — never even reached BigQuery
+
+
+
+# --- a partial report: whatever the granted roles can see, and what's missing ----
+
+_DENIED_JOBS = RuntimeError("403 Access Denied: User does not have permission bigquery.jobs.listAll "
+                            "on project test-project")
+
+
+def test_without_resource_viewer_storage_and_writes_are_still_reported(monkeypatch):
+    client = _FakeClient(answers=_happy_answers(**{
+        "p50_bytes_processed": _DENIED_JOBS, "rt.project_id, rt.dataset_id, rt.table_id": _DENIED_JOBS}))
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    out = C.scan()
+
+    assert out["ok"] is True and out["partial"] is True
+    assert out["shapes"] == [] and "jobs.listAll" in out["shapes_error"]
+    assert out["storage"] and out["writes"], "the sections this account CAN read are reported"
+    assert out["missing_access"] == [{
+        "role": "roles/bigquery.resourceViewer", "permission": "bigquery.jobs.listAll",
+        "grant_on": "project test-project",
+        "sections": ["Query costs (who ran what, slot time, bytes billed)",
+                     "Table read counts (which large tables nobody reads)"],
+    }]
+
+
+def test_without_job_user_nothing_can_run_and_that_is_the_one_role_named(monkeypatch):
+    denied = RuntimeError("403 Access Denied: User does not have bigquery.jobs.create permission in project")
+    client = _FakeClient(answers={"p50_bytes_processed": denied})
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    out = C.scan()
+
+    assert out["ok"] is False
+    assert [a["role"] for a in out["missing_access"]] == ["roles/bigquery.jobUser"]
+    assert len(client.queries) == 1, "no point issuing the rest"
+
+
+def test_without_metadata_viewer_the_query_costs_are_still_reported(monkeypatch):
+    denied = RuntimeError("User does not have the required permissions ('bigquery.tables.list' "
+                          "permission(s) at the project level) to query system entity.")
+    client = _FakeClient(answers=_happy_answers(**{
+        "s.total_logical_bytes >= @min_bytes": denied,
+        "STREAMING_TIMELINE_BY_PROJECT": denied, "WRITE_API_TIMELINE_BY_PROJECT": denied}))
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    out = C.scan()
+
+    assert out["ok"] is True and out["shapes"], "query costs need resourceViewer, which is granted"
+    roles = {a["role"]: a for a in out["missing_access"]}
+    assert "roles/bigquery.metadataViewer" in roles
+    assert "Write activity (streaming and Storage Write API)" in roles["roles/bigquery.metadataViewer"]["sections"]
+
+
+def test_a_denial_from_hidden_datasets_names_no_role(monkeypatch):
+    """BigQuery's hidden per-user result datasets refuse the region-wide view
+    whatever is granted — storage falls back per dataset; no role to ask for."""
+    assert C.access_needed("storage", "Access Denied: ... permission(s) at the dataset level ...") is None
+
+
+def test_a_refused_findings_history_names_data_editor_on_that_dataset(monkeypatch):
+    monkeypatch.setattr(C.settings, "bq_cost_dataset", "cost_memory", raising=False)
+    monkeypatch.setattr(C, "_read_own_findings_table",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("403 Access Denied on table")))
+    client = _FakeClient(answers=_happy_answers())
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+
+    out = C.scan()
+
+    assert out["history"] is None and out["partial"] is True
+    [needed] = out["missing_access"]
+    assert needed["role"] == "roles/bigquery.dataEditor"
+    assert needed["grant_on"] == "dataset test-project.cost_memory"
+
+
+def test_a_healthy_scan_is_not_partial(monkeypatch):
+    client = _FakeClient(answers=_happy_answers())
+    monkeypatch.setattr(C, "_get_client", lambda: client)
+    out = C.scan()
+    assert out["partial"] is False and out["missing_access"] == []
+
+
+@pytest.mark.parametrize("error", ["timeout after 30s", "internal error", "", "query budget exhausted"])
+def test_failures_that_are_not_permissions_name_no_role(error):
+    assert C.access_needed("jobs", error) is None
