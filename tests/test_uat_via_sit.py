@@ -1,4 +1,4 @@
-"""UAT changes always flow via SIT: a CARE UAT deploy or removal
+"""UAT changes always flow via SIT: a CARE UAT deploy
 raises and merges its PR into SIT only. The deployment repository's OWN
 workflow raises SIT -> UAT on a change to uat/deployment.json; the portal finds
 that PR and shows it for the developer to merge — it never raises or merges it.
@@ -104,16 +104,6 @@ def test_the_next_deploy_waits_for_the_sit_to_uat_pr(via_sit):
 
     assert second["ok"] is False and second["action"] == "blocked"
     assert f"PR #{number}" in second["error"] and "Merge it" in second["error"]
-
-
-def test_a_removal_from_uat_also_goes_via_sit(via_sit):
-    repo = via_sit(uat=[_chart("orders-api", "1.0.0")])
-
-    out = json.loads(P.remove_from_release.invoke({"image_names": "orders-api", "environment": "uat"}))
-
-    assert out["action"] == "removal_pending_review" and out["pending_prs"][0]["final"] is True
-    assert _names(repo, "SIT") == [] and _names(repo, "UAT") == ["orders-api:1.0.0"]
-    assert [p.base.ref for p in repo.prs if p.head.ref.startswith("change/")] == ["SIT"]
 
 
 def test_the_portal_never_edits_uat_itself(via_sit):

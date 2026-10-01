@@ -2,7 +2,6 @@
 memory tool, conditional prod-ops confirmation, and the deploy output_schema."""
 import pytest
 
-from adk_release_agent import approvals
 
 pytest.importorskip("google.adk")
 
@@ -51,26 +50,17 @@ def test_memory_tool_present_when_enabled_and_absent_when_disabled(monkeypatch):
 
 # --- conditional prod-ops confirmation ------------------------------------------
 
-def test_remove_confirmation_predicate_only_fires_for_prod():
-    assert approvals.remove_needs_confirmation(environment="prod") is True
-    assert approvals.remove_needs_confirmation(environment="prd") is True
-    assert approvals.remove_needs_confirmation(environment="production") is True
-    assert approvals.remove_needs_confirmation(environment="uat") is False
-    assert approvals.remove_needs_confirmation() is False
-
-
 def test_high_impact_ops_tools_are_confirmation_wrapped():
     from google.adk.tools import FunctionTool
 
     toolset = agent_module.build_root_agent().tools[0]
     provided = toolset._provided_tools_by_name
 
-    remove = provided["remove_from_release"]
     promote = provided["promote_release"]
     promote_df = provided["promote_df_release"]
-    # remove uses the prod-only predicate; the promotions use the terminal-env
-    # (PRD/PRL1) predicate — nothing here confirms unconditionally any more.
-    assert isinstance(remove, FunctionTool) and callable(remove._require_confirmation)
+    # The promotions use the terminal-env (PRD/PRL1) predicate — nothing here
+    # confirms unconditionally. There is no removal tool to wrap.
+    assert "remove_from_release" not in provided
     assert isinstance(promote, FunctionTool) and callable(promote._require_confirmation)
     assert isinstance(promote_df, FunctionTool) and callable(promote_df._require_confirmation)
 

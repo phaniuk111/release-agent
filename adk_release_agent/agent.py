@@ -181,8 +181,7 @@ def _chat_additional_tools():
     """Read/ops tools surfaced via skill activation, each run off the event loop.
 
     When ``adk_confirm_prod_ops`` is on, the high-impact ops mutations are wrapped
-    with ADK tool confirmation: a prod ``remove_from_release`` confirms while UAT
-    passes straight through, and a terminal (PRD/PRL1) release promotion confirms.
+    with ADK tool confirmation: a terminal (PRD/PRL1) release promotion confirms.
     """
     tools = [release_tools.off_event_loop(tool) for tool in release_tools.ADK_CHAT_TOOLS]
     if not settings.adk_confirm_prod_ops:

@@ -342,7 +342,6 @@ _TOOL_LABELS = {
     "get_build_report": "Diagnosing the build run",
     "promote_release": "Promoting the release file-set",
     "promote_df_release": "Promoting the DF release file-set",
-    "remove_from_release": "Removing from the release",
     "bq_cost_scan": "Scanning BigQuery costs",
     "bq_query_detail": "Reading the query's stages",
     "bq_table_layout": "Reading the table layout",
@@ -370,7 +369,6 @@ def _progress_label(name: str, args: dict[str, Any]) -> str:
 _STATE_CHANGING_TOOLS = frozenset({
     "promote_release",
     "promote_df_release",
-    "remove_from_release",
 })
 
 
@@ -439,19 +437,6 @@ def _confirmation_interrupt_payload(pending: PendingAdkCall) -> dict[str, Any]:
         hint = (
             f"Promote the current {which}'s file-set to **{target}**? This copies the "
             "release files onto that environment branch and merges the promotion PR."
-        )
-    elif function == "remove_from_release":
-        # The most destructive scoped op had no hint of its own, so it fell
-        # through to ADK's developer-facing boilerplate ("respond with a
-        # FunctionResponse with an expected ToolConfirmation payload") — the
-        # worst prompt on the highest-impact action. Say what will happen.
-        args = original.get("args") or {}
-        charts = str(args.get("image_names") or "").strip() or "the named charts"
-        env = str(args.get("environment") or "").strip().upper() or "that environment"
-        hint = (
-            f"Remove **{charts}** from **{env}**? This raises and merges a PR taking "
-            "them out of the live deployment file, and the environment redeploys "
-            "without them."
         )
     else:
         # ADK supplies its own hint describing the FunctionResponse protocol —

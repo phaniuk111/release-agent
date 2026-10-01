@@ -8,7 +8,8 @@ def test_adk_chat_tools_exclude_release_defining_mutations():
     # Stronger than checking a private duplicate set: this is the SAME set the
     # MutationGuardPlugin enforces against at runtime.
     assert not (BLOCKED_FREEFORM_TOOLS & names)
-    assert {"remove_from_release", "promote_release", "promote_df_release"} <= names
+    assert {"promote_release", "promote_df_release"} <= names
+    assert "remove_from_release" not in names, "the portal has no removals"
 
 
 def test_adk_tool_result_coercion_preserves_json_objects():

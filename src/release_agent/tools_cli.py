@@ -20,7 +20,7 @@ Usage:
     python -m release_agent.tools_cli get_recent_runs limit=5
     python -m release_agent.tools_cli open_release_pr environment=uat image_tags=payments-api:v1.5.0
 
-    # --dry-run: simulate mutating tools (open_release_pr, remove_from_release, ...)
+    # --dry-run: simulate mutating tools (open_release_pr, ...)
     # without executing — read-only tools still run.
     python -m release_agent.tools_cli --dry-run open_release_pr environment=uat image_tags=x:1
 
@@ -39,7 +39,6 @@ _BY_NAME = {t.name: t for t in GH_TOOLS}
 # the runner prints the call it would make. Read-only tools always run.
 _MUTATING = {
     "open_release_pr",
-    "remove_from_release",
     "retrigger_deployment_workflow",
 }
 

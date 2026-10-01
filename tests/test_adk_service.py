@@ -166,7 +166,6 @@ def test_only_state_changing_tools_that_ran_mark_a_turn_mutated():
 
     assert S._landed_changes(ran("promote_release"))
     assert S._landed_changes(ran("promote_df_release"))
-    assert S._landed_changes(ran("remove_from_release"))
     # reads must NOT trigger a refresh
     assert S._landed_changes(ran("release_stats", "find_prs")) == []
     assert S._landed_changes(ran("list_release_queue")) == []
@@ -350,18 +349,6 @@ def _confirmation_pending(function, args):
               "toolConfirmation": {"hint": "Please approve or reject the tool call "
                                            f"{function}() by responding with a FunctionResponse "
                                            "with an expected ToolConfirmation payload."}})
-
-
-def test_a_prod_removal_is_described_in_words_a_person_can_act_on():
-    """Found live: remove_from_release had no hint of its own, so the highest-
-    impact scoped op showed ADK's FunctionResponse boilerplate."""
-    from release_agent.adk_service import _confirmation_interrupt_payload
-
-    p = _confirmation_interrupt_payload(
-        _confirmation_pending("remove_from_release",
-                              {"image_names": "targeted-svc", "environment": "prod"}))
-    assert "targeted-svc" in p["message"] and "PROD" in p["message"]
-    assert "FunctionResponse" not in p["message"]
 
 
 def test_adk_protocol_boilerplate_is_never_shown_as_the_question():

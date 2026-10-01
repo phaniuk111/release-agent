@@ -1,7 +1,7 @@
 """Tests for the generic SIT->UAT->PRD targeted-PR promotion chain (_promote_targeted
 and its helpers): protected-branch refusals, conflict handling, dedupe, and the
 UAT-deploy-drops-a-chart reporting. None of this is specific to any one caller —
-open_release_pr (uat), remove_from_release and the CARE/DF release promotion all
+open_release_pr (uat) and the CARE/DF release promotion all
 share it.
 """
 import json

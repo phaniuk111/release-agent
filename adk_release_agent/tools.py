@@ -100,19 +100,6 @@ def get_build_report(
     )
 
 
-def remove_from_release(
-    image_names: str, environment: str = "staging", deployment_repo: str = ""
-) -> dict[str, Any]:
-    """Unstage chart names from today's PRD release PR (environment='staging', the
-    default) or remove them from a live environment ('uat' or 'prod' — only when the
-    user explicitly names it). deployment_repo (owner/repo) targets a non-default
-    deployment repo — pass it only when the user names one."""
-    return _invoke_tool(
-        "remove_from_release",
-        {"image_names": image_names, "environment": environment, "deployment_repo": deployment_repo},
-    )
-
-
 def promote_release(
     target: str, release_branch: str = "", deployment_repo: str = ""
 ) -> dict[str, Any]:
@@ -359,7 +346,6 @@ ADK_CHAT_TOOLS = [
     get_pr_details,
     get_pr_comments,
     get_build_report,
-    remove_from_release,
     promote_release,
     promote_df_release,
     queue_release_intent,

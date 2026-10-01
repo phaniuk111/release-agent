@@ -11,11 +11,6 @@ from __future__ import annotations
 PROD_ENV_WORDS = {"prod", "prd", "production"}
 
 
-def remove_needs_confirmation(environment: str = "staging", **kwargs) -> bool:
-    """Confirm ``remove_from_release`` only when it targets live PROD."""
-    return str(environment).lower() in PROD_ENV_WORDS
-
-
 def promote_needs_confirmation(target: str = "", **kwargs) -> bool:
     """Confirm release promotion only for terminal environments (PRD / PRL1)."""
     return str(target).lower() in (PROD_ENV_WORDS | {"prl1"})
@@ -23,7 +18,6 @@ def promote_needs_confirmation(target: str = "", **kwargs) -> bool:
 
 # Tool name -> its rule. A tool not listed never pauses.
 RULES = {
-    "remove_from_release": remove_needs_confirmation,
     "promote_release": promote_needs_confirmation,
     "promote_df_release": promote_needs_confirmation,
 }

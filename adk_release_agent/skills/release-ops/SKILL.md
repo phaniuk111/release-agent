@@ -1,9 +1,8 @@
 ---
 name: release-ops
-description: "Perform tightly scoped release operations: remove or unstage charts from the release, and promote a CARE or DF release to the next environment."
+description: "Perform tightly scoped release operations: promote a CARE or DF release to the next environment."
 metadata:
   adk_additional_tools:
-    - remove_from_release
     - promote_release
     - promote_df_release
     - find_prs
@@ -13,7 +12,6 @@ metadata:
 Use this skill only when the user gives a direct operation command, not when they ask a question about how an operation works.
 
 Allowed actions:
-- `remove_from_release` to unstage chart names from the open release, or to remove them from a live environment.
 - `promote_release` to promote the current release's FILE-SET to the next environment branch (target=uat, prd or prl1). Use for 'promote release to uat/prd/prl1'. Terminal targets (prd, prl1) pause on a yes/no approval.
 - CARE and DF releases are DIFFERENT releases with different repos and branch chains. "DF", "Dataflow" or "df release" → `promote_df_release`; otherwise → `promote_release` (CARE). A DF release lands on its UAT branch directly (no SIT), so its usual promotion is to prd — if the tool says a target is not in the chain, tell the user which targets are. Never call `promote_release` for a DF release.
 
@@ -25,13 +23,13 @@ which release model was meant, and never offer to deploy a chart to prod instead
 Promoting to a terminal target finalizes the release: charts added afterwards
 belong to the NEXT release.
 
-Choosing `remove_from_release`'s environment:
-- "remove X from the release" / "unstage X" / "don't ship X" → `environment="staging"` (the default). This only edits the open release; live environments are untouched.
-- Pass `environment="uat"` or `environment="prod"` ONLY when the user explicitly names that live environment (e.g. "remove X from UAT"). These change what is actually deployed — never infer them from an unqualified "remove from the release".
-- If unsure which the user means, ask before calling the tool.
+There are NO removals. Do not offer or attempt to remove a chart from any environment or release:
+- "Remove X from the release" / "don't ship X": withdraw it from the release queue (`withdraw_release_intent`, release-queue skill) — the only way to take a chart out.
+- "Remove X from UAT": a UAT deploy overwrites the file, so tell the user to deploy UAT without the chart (Deploy to CARE UAT). Do not call a tool.
+- "Remove X from prod/PRD": not supported here — say so; PRD changes only by promoting a release.
 
 Targeting a non-default deployment repo:
-- `remove_from_release` and `promote_release` accept an optional `deployment_repo` (owner/repo). Pass it ONLY when the user names a repo (e.g. "promote the release to prd in my-org/my-deploy-repo" — typically because their release targeted that repo). Never guess it; empty uses the configured default.
+- `promote_release` accepts an optional `deployment_repo` (owner/repo). Pass it ONLY when the user names a repo (e.g. "promote the release to prd in my-org/my-deploy-repo" — typically because their release targeted that repo). Never guess it; empty uses the configured default.
 
 Narrating the approval flow:
 - Terminal promotions (prd, prl1) and prod removals pause on a **yes/no approval
@@ -41,7 +39,7 @@ Narrating the approval flow:
   yes/no approval.
 - If the user approves, summarize what the tool actually did from its result.
 - If the user rejects, address them directly: "You rejected it — nothing was
-  released/removed. Ask again when you're ready." Do NOT write "I was unable
+  promoted. Ask again when you're ready." Do NOT write "I was unable
   to…", "the system rejected it", or any passive "was rejected": the tool
   worked and the person declined, and blaming the tool or "the system" reads as
   a broken portal. Do not explain the deploy Workflow or tokens.

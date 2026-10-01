@@ -36,7 +36,7 @@ def test_mutation_guard_blocks_release_defining_mutations():
 def test_mutation_guard_allows_read_and_scoped_ops_tools():
     plugin = MutationGuardPlugin()
     # Read tools and the allowed scoped-ops mutations must pass through untouched.
-    for name in ("check_release_window", "find_prs", "remove_from_release", "merge_prod_release"):
+    for name in ("check_release_window", "find_prs", "promote_release", "merge_prod_release"):
         assert _before_tool(plugin, name) is None
 
 

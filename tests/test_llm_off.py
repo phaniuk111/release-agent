@@ -70,9 +70,9 @@ def _interrupt(events):
     ("check build controls for payments-api:1.2.3", "get_build_report", {"image": "payments-api", "tag": "1.2.3"}),
     ("find the deployment PR for payments-api:1.2.3", "find_prs", {"search_term": "payments-api:1.2.3"}),
     ("track PR #123", "get_pr_details", {"pr_number": 123}),
-    ("remove svc-a, svc-b from the release", "remove_from_release",
-     {"image_names": "svc-a,svc-b", "environment": "staging"}),
-    ("remove svc-a from prod", "remove_from_release", {"image_names": "svc-a", "environment": "prod"}),
+    ("remove svc-a, svc-b from the release", "no_removal", {}),
+    ("remove svc-a from uat", "no_removal", {}),
+    ("remove svc-a from prod", "no_removal", {}),
 ])
 def test_each_pill_phrase_is_the_tool_the_agent_would_call(message, name, args):
     command = commands.parse(message)
@@ -126,7 +126,6 @@ def test_nothing_is_guessed_a_phrase_without_a_target_never_promotes(message):
     ("promote the CARE release to prd", True),
     ("promote the DF release to prl1", True),
     ("promote the CARE release to uat", False),
-    ("remove svc-a from prod", True),
     ("remove svc-a from the release", False),
 ])
 def test_what_needs_a_yes_is_the_chat_agents_own_rule(message, needs):

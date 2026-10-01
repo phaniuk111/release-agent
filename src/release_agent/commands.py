@@ -26,6 +26,11 @@ from .agent.parsing import _extract_images_from_text, _norm_words
 
 ONBOARDING_OFF = ("Enable LLM access for this — API onboarding guidance needs the AI assistant, "
                   "which is switched off in this portal (LLM_ENABLED=false).")
+# The portal has no removals. The one way to take a chart out is to withdraw it
+# from the release queue; a UAT deploy overwrites the file with what is submitted.
+NO_REMOVAL = ("There are no removals here. To keep a chart out of the next release, withdraw it "
+              "from the release queue (Check release queue). To take a chart off UAT, deploy UAT "
+              "without it (Deploy to CARE UAT — the file becomes exactly what you submit).")
 AI_ONLY_OFF = ("Enable LLM access for this — it needs the AI assistant, which is switched off in "
                "this portal (LLM_ENABLED=false).")
 
@@ -39,7 +44,7 @@ answers these commands only — the pills above send them for you:
 - `verify <image>:<tag>` — the build report for that tag (`… in <owner/repo>` for another build repo)
 - `check build controls for <image>:<tag>`
 - `find the deployment PR for <image>:<tag>`, or `PR #123`
-- `remove <chart>[, <chart>] from the release` (add `from prod` for production)
+- no removals — withdraw a chart from the release queue (Check release queue)
 
 Deploys and releases work as always through their forms."""
 
@@ -88,17 +93,6 @@ def _repo(message: str) -> str:
     return ""
 
 
-def _removal_names(message: str) -> list[str]:
-    """The chart names between 'remove' and 'from': 'remove a, b and c from …'."""
-    low = message.lower()
-    start = low.find("remove")
-    end = low.find(" from ", start)
-    if start < 0 or end < 0:
-        return []
-    chunk = message[start + len("remove"):end].replace(" and ", ",")
-    return [n.strip(" .") for n in chunk.split(",") if n.strip(" .")]
-
-
 def parse(message: str) -> Command | None:
     """The command a message is, or None. Order matters only where phrases share
     words: an image:tag lookup is read before 'promote' because 'what images can
@@ -138,11 +132,8 @@ def parse(message: str) -> Command | None:
         which = "DF" if df else "CARE"
         return Command(name, {"target": target}, f"Promote the {which} release to {target.upper()}")
 
-    if "remove" in ws and (names := _removal_names(text)):
-        env = "prod" if ws & {"prod", "prd", "production"} else ("uat" if "uat" in ws else "staging")
-        where = {"prod": "production", "uat": "UAT", "staging": "today's PRD release"}[env]
-        return Command("remove_from_release", {"image_names": ",".join(names), "environment": env},
-                       f"Remove {', '.join(names)} from {where}")
+    if "remove" in ws:
+        return Command("no_removal", label="Remove")
 
     if "status" in ws and ws & {"deploy", "deployment", "release", "uat", "prd"}:
         return Command("check_release_window", label="Deploy status")
@@ -231,6 +222,8 @@ def run(command: Command) -> str:
     """Call the command's tool (blocking — the caller runs this off the event loop)."""
     if command.name == "onboarding":
         return ONBOARDING_OFF
+    if command.name == "no_removal":
+        return NO_REMOVAL
     from adk_release_agent import tools as T
 
     tool = getattr(T, command.name)

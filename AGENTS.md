@@ -26,7 +26,9 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
 
 1. **Two confirmation flows, never mixed**: chart:version deploys and releases run a
    deterministic preview → exact `CONFIRM-XXXXXX` token. High-impact ops tools
-   (merge_prod_release, prod removals, terminal promotions) pause on a yes/no approval.
+   (merge_prod_release, terminal promotions) pause on a yes/no approval. The portal
+   has NO removals: a chart leaves the next release only by being withdrawn from
+   the release queue; a UAT deploy overwrites the file with what is submitted.
    Free-form chat can NEVER mutate deployments (MutationGuardPlugin enforces).
    Tokens are SINGLE-USE: spent before anything mutates. A pending approval or
    token is consumed ONLY by an explicit answer (yes/no; the exact token, or
@@ -49,10 +51,10 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    portal deploy is still running (`promotion.uat_deploy_blocker`, asked as the
    form opens, at preview, and at confirm); its conflicts are left open, never
    rebuilt over someone else's change. UAT changes always flow via SIT (SIT and
-   UAT stay in sync): a UAT deploy/removal merges into SIT only; the deployment
+   UAT stay in sync): a UAT deploy merges into SIT only; the deployment
    repo's OWN workflow raises SIT -> UAT, which the portal waits for, shows, and
    records as the pending PR — never raises or merges it. The form
-   then reads SIT's file, and the running marker is held until that PR appears. Other chain changes (promotions, removals)
+   then reads SIT's file, and the running marker is held until that PR appears. Other chain changes (release promotions)
    rebuild a PR that conflicts with a concurrent merge on the new head
    (`MERGE_CONFLICT`); a review hold is never retried. A failure in the chat
    model after a state-changing tool RAN says what ran, never "nothing changed".

@@ -30,7 +30,8 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
 
 - **Two confirmation flows, never mixed.** Deploys and releases: deterministic
   preview → exact single-use `CONFIRM-XXXXXX` token. High-impact ops (PRD/PRL1
-  promotions, prod removals): a yes/no approval. Free-form chat can never
+  promotions): a yes/no approval. There are no removals — a chart leaves the
+  next release only by being withdrawn from the release queue. Free-form chat can never
   mutate deployments. A new request replaces a pending one; anything else is a
   reminder, never a rejection. Pending items are keyed by (owner, thread).
 - **One event loop serves every user.** Blocking work (GitHub, git, BigQuery)

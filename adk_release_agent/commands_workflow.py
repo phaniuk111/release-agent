@@ -48,7 +48,7 @@ _APPROVAL_STATE_KEY = "command_approval_id"
 _PENDING_STATE_KEY = "command_pending"
 
 # Tools that change a release or an environment: the page re-reads the banner.
-MUTATING = {"promote_release", "promote_df_release", "remove_from_release"}
+MUTATING = {"promote_release", "promote_df_release"}
 
 
 class CommandOutcome(BaseModel):
