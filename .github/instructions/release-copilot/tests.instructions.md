@@ -1,5 +1,5 @@
 ---
-applyTo: "tests/**"
+applyTo: "release-copilot/tests/**,tests/**"
 ---
 # Tests
 

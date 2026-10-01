@@ -1,5 +1,5 @@
 ---
-applyTo: "src/release_agent/tools/**/*.py"
+applyTo: "release-copilot/src/release_agent/tools/**/*.py,src/release_agent/tools/**/*.py"
 ---
 # Tool layer (GitHub, BigQuery, git)
 

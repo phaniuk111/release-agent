@@ -1,5 +1,5 @@
 ---
-applyTo: "helm/**"
+applyTo: "helm/release-copilot/**"
 ---
 # Helm chart
 

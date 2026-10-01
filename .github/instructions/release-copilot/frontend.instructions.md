@@ -1,5 +1,5 @@
 ---
-applyTo: "src/release_agent/static/**"
+applyTo: "release-copilot/src/release_agent/static/**,src/release_agent/static/**"
 ---
 # Frontend (plain ES modules, no build step)
 

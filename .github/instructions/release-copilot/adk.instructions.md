@@ -1,5 +1,5 @@
 ---
-applyTo: "adk_release_agent/**,src/release_agent/adk_service.py"
+applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent/adk_service.py,adk_release_agent/**,src/release_agent/adk_service.py"
 ---
 # ADK app and chat router
 

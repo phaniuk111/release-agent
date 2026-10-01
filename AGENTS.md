@@ -130,10 +130,15 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
 
 ## Workflows
 
-GitHub Copilot (VS Code) also reads `.github/copilot-instructions.md` — the short
-version of the rules below, and the only file Copilot code review reads — and
-`.github/instructions/*.instructions.md` (per-path, by `applyTo`). When a rule here
-changes, update those in the same commit.
+GitHub Copilot reads the app's rules from `.github/instructions/release-copilot/`
+(per path, by `applyTo`; code review and the cloud agent use them too):
+`app.instructions.md` is the short version of this guide, the others add per-area
+rules. Their `applyTo` globs list the monorepo paths (`release-copilot/…`,
+`helm/release-copilot/…`) and this repo's, so the folder moves into a monorepo
+unchanged. When a rule here changes, update those in the same commit. In a
+monorepo this file sits in `release-copilot/` and the chart in the root `helm/`;
+VS Code reads an AGENTS.md outside the workspace root only when nested AGENTS.md
+support is turned on — or open `release-copilot/` as the workspace.
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest -q     # tests (169+)
