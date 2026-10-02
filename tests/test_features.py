@@ -102,18 +102,17 @@ def test_every_server_gated_pill_sits_in_a_preview_group_by_default():
     # the server, so the worst case is a visible pill that answers "not yet".
 
 
-def test_the_bq_cost_report_is_released_not_preview():
-    """Asked for explicitly: the BQ cost report is for everyone — nothing gates
-    its routes or tools by default and its Monitoring group is not hidden."""
+def test_the_bq_cost_report_is_preview_by_default():
+    """Hidden for now: its routes and tools refuse anyone but PREVIEW_USERS and
+    its Monitoring group is not rendered for them — config, not code, releases it."""
     from release_agent.config import Settings
 
     fields = Settings.model_fields
-    assert "bq-cost" not in fields["preview_features"].default
-    assert "Monitoring" not in fields["preview_groups"].default
+    assert "bq-cost" in fields["preview_features"].default
+    assert "Monitoring" in fields["preview_groups"].default
     palette = (pathlib.Path(APP.__file__).parent / "static" / "palette.js").read_text()
     line = next(line for line in palette.splitlines() if "form:'bq-cost'" in line)
     assert "group:'Monitoring'" in line
-    assert features.allowed("bq-cost", None), "an anonymous caller is allowed under the default gating"
 
 
 def test_a_refusal_names_the_feature_like_a_person_would():

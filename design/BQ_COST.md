@@ -210,9 +210,9 @@ HTTP: `GET /api/bq-cost/report?fresh=0|1` (JSON) and
 `GET /api/bq-cost/report.xlsx` — the same cached scan as a workbook (Summary,
 Top queries, Storage, Writes, History; `tools/bq_cost_xlsx.py`, no
 spreadsheet library). Pill **BQ cost report** in the *Monitoring* group beside
-the release/deploy pills — a different audience from *Check* — released to
-everyone (add `bq-cost` to `PREVIEW_FEATURES` and `Monitoring` to
-`PREVIEW_GROUPS` to restrict it to testers during a rollout). The pill is
+the release/deploy pills — a different audience from *Check* — preview by
+default (`bq-cost` in `PREVIEW_FEATURES`, `Monitoring` in `PREVIEW_GROUPS`,
+so only `PREVIEW_USERS` see or use it; drop both keys to release it). The pill is
 deliberately one table: a row per query shape
 with *Ask why*, and the Excel download; investigating a row and proving a
 rewrite happen in the chat through the tools above, not in the card. Weekly: a `CronJob` in the Helm chart

@@ -113,8 +113,9 @@ deploy Workflow graph already uses it.
 ### BigQuery cost report — `design/BQ_COST.md`
 Shipped as the **BQ cost report** pill in its own *Monitoring* group (the
 "different audience" question was answered with a group of its own, not a
-separate agent), the `bq-cost` skill and `/api/bq-cost/*` — released, not
-preview (the PromQL checks stay in the preview *Check* row). What the
+separate agent), the `bq-cost` skill and `/api/bq-cost/*` — preview for now
+(`bq-cost` in PREVIEW_FEATURES, *Monitoring* in PREVIEW_GROUPS, beside the
+PromQL checks' *Check* row; drop both keys to release it). What the
 build learned that the design did not know is recorded at the top of
 `BQ_COST.md` (anonymous datasets deny region-wide views, no partition count
 in `JOBS`, parameterised dry runs price as 0 bytes, the scan labels and
@@ -241,8 +242,8 @@ mostly Grafana's default 80) are in the 2026-09-19 session transcript.
   `roles/bigquery.resourceViewer` + `roles/bigquery.metadataViewer` +
   `roles/bigquery.jobUser` on the team's BigQuery project (no `dataViewer`);
   set `BQ_COST_REGION: "region-europe-west3"`, `BQ_COST_PROJECT` if it is
-  not the Vertex project, no preview keys needed — it is released
-  (add `bq-cost` / `Monitoring` to the preview keys only to restrict it). Optional memory: the
+  not the Vertex project; it is preview by default — list testers in
+  `PREVIEW_USERS`, or drop `bq-cost` / `Monitoring` from the preview keys to release it. Optional memory: the
   `bq_cost_findings` table via the terraform variable + `BQ_COST_DATASET`.
 - GCP: `sql-553@…` has a user-managed key — delete it if unused.
 - `backstage_poc` branch: `eod1` in `backstage/app-config.yaml` console URLs
