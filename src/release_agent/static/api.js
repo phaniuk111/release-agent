@@ -81,6 +81,16 @@ export const bqCostReportXlsx = () => API_BASE + '/api/bq-cost/report.xlsx';
 // ---- support triage -----------------------------------------------------------
 export const supportTriage = (date, fresh) => get('/api/support/triage?' + query({ date: date || '', fresh: fresh ? 1 : 0 }));
 
+// ---- support feedback ---------------------------------------------------------
+/** One "was this right?" answer. Who answered is the verified caller, decided server-side.
+ * @param {{business_date: string, incident_id: string, title?: string, verdict: 'right'|'direction'|'wrong',
+ *          actual_cause?: string, category?: string, action?: string, model?: string,
+ *          model_calls?: number, seconds?: number}} payload
+ * @returns {ok, recorded} or {ok: false, error, hint?, disabled?} */
+export const supportFeedback = (payload) => post('/api/support/feedback', payload);
+/** How the investigations were rated: totals, accuracy, by category/model, the newest wrong answers. */
+export const supportFeedbackStats = (days) => get('/api/support/feedback/stats?' + query({ days: days || 30 }));
+
 // ---- release queue ----------------------------------------------------------
 export const QUEUE_PATH = '/api/release-queue';
 export const getQueue = () => get(QUEUE_PATH);

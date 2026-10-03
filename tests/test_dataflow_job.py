@@ -307,3 +307,28 @@ def test_no_credentials_never_raises(monkeypatch):
     monkeypatch.setattr(dj, "_session", refuse)
     out = dj.inspect(JOB)
     assert out["ok"] is False and "no credentials" in out["error"] and out["hint"]
+
+
+def test_the_worker_log_read_is_bounded_by_the_jobs_create_time():
+    """Measured live: unbounded, Cloud Logging scanned its default range for the
+    filter — 13.5 s for one job against 0.6 s with a floor."""
+    from release_agent.tools import dataflow_job as dj
+
+    assert dj._log_floor("2026-10-03T10:30:02.311626Z") == "2026-10-03T10:29:02Z"
+    assert dj._log_floor("") == "" and dj._log_floor("not a time") == ""
+    seen = []
+
+    class Http:
+        pass
+
+    def fake_call(http, method, url, json=None, **_):
+        seen.append(json["filter"])
+        return {"entries": []}
+
+    orig, dj._call = dj._call, fake_call
+    try:
+        dj._read_logs(Http(), "p", "job-1", 10, "2026-10-03T10:30:02Z")
+        dj._read_logs(Http(), "p", "job-1", 10)
+    finally:
+        dj._call = orig
+    assert seen[0].endswith('AND timestamp>="2026-10-03T10:29:02Z"') and "timestamp" not in seen[1]

@@ -316,6 +316,14 @@ export async function sendMessage(overrideText) {
                             botMsg.remove();
                         }
                         addMessage('interrupt', data.data || {});
+                    } else if (data.type === 'investigation') {
+                        // An Investigate answer is complete: let the person say
+                        // whether it was right. Loaded on use and guarded, so a
+                        // missing or broken feedback module never costs the
+                        // answer that is already on the page.
+                        import('./forms/support_feedback.js')
+                            .then(m => m.renderInvestigationFeedback(botMsg, data.data || {}))
+                            .catch(e => console.warn('investigation feedback unavailable', e));
                     } else if (data.type === 'done') {
                         // Refresh the banner ONLY when this turn actually changed
                         // release/deploy state — a question shouldn't cost 5

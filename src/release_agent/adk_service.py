@@ -11,13 +11,19 @@ back it, both sharing in-memory session/artifact/memory services:
   ``CONFIRM-xxxxxx`` token. Deploy intent routes here via the deterministic parser,
   with a classify-only LLM fallback for free-form phrasings (routing only — the
   Workflow's token gate is unchanged).
+* the **investigate Workflow** — the Investigate button's pipeline
+  (:mod:`adk_release_agent.investigate_workflow`): evidence collected in code,
+  then ONE capped model step; read-only, recognised by its message alone.
 
 The external SSE contract is unchanged: ``token`` / ``interrupt`` / ``done`` events,
-with a ``confirmation`` interrupt carrying the ``CONFIRM-`` token.
+with a ``confirmation`` interrupt carrying the ``CONFIRM-`` token. An
+investigation adds an ``investigation`` event (what the feedback row needs)
+just before ``done``.
 """
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import aclosing
 import json
 import logging
@@ -34,9 +40,11 @@ from adk_release_agent import deploy as adk_deploy
 from adk_release_agent import intent as adk_intent
 from release_agent.agent import parsing as adk_parsing
 from adk_release_agent.telemetry import traced_stream
+from adk_release_agent import agent as chat_agent_module
 from adk_release_agent.agent import app as chat_app
 from adk_release_agent.commands_workflow import build_commands_app
 from adk_release_agent.deploy_workflow import build_deploy_app
+from adk_release_agent import investigate_workflow
 
 from . import commands as release_commands
 from .config import settings
@@ -44,6 +52,39 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 _USER_ID = "fastapi-user"
+
+# The investigate lane's findings, shared between people: (business date,
+# incident id) → (when, the finished run). Only a finding the MODEL wrote from
+# evidence that was read is kept — a fallback summary or a failed collect is
+# retried by the next person. In-process, like every other cache here.
+_FINDING_TTL = 600.0
+_FINDING_MAX = 64
+_findings: dict[tuple, tuple[float, Any]] = {}
+_finding_locks: dict[tuple, asyncio.Lock] = {}
+
+
+def _finding_hit(key: tuple) -> tuple[float, Any] | None:
+    hit = _findings.get(key)
+    if hit and time.time() - hit[0] < _FINDING_TTL:
+        return hit
+    return None
+
+
+def _finding_keep(key: tuple, run: Any) -> None:
+    bundle = run.bundle if isinstance(run.bundle, dict) else {}
+    if not (key[1] and bundle.get("ok") and run.calls and run.text and not run.fallback):
+        return
+    if len(_findings) >= _FINDING_MAX:
+        _findings.clear()
+    _findings[key] = (time.time(), run)
+
+
+def _finding_lock(key: tuple) -> asyncio.Lock:
+    """One lock per incident per event loop (an asyncio lock belongs to the loop
+    that first waits on it — the app has one, tests start many)."""
+    if len(_finding_locks) > 256:
+        _finding_locks.clear()
+    return _finding_locks.setdefault((id(asyncio.get_running_loop()), *key), asyncio.Lock())
 
 
 def _user_id() -> str:
@@ -350,6 +391,7 @@ _TOOL_LABELS = {
     "bq_verify_rewrite": "Testing the rewrite",
     "bq_findings": "Reading earlier findings",
     "support_triage": "Reading the control table",
+    "investigate_evidence": "Collecting the evidence",
     "source_metrics": "Checking the source's metrics",
     "source_logs": "Reading the source's logs",
     "source_audit": "Reading the audit logs",
@@ -506,6 +548,15 @@ class AdkChatService:
             auto_create_session=True,
         )
         self._pending_commands: dict[tuple[str, str], str] = {}
+        # The Investigate button: collect in code, one capped model step. Read-only,
+        # so it has no pending state to key and never touches the ones above.
+        self.investigate_runner = Runner(
+            app=investigate_workflow.build_investigate_app(),
+            artifact_service=self.artifact_service,
+            session_service=self.session_service,
+            memory_service=self.memory_service,
+            auto_create_session=True,
+        )
 
     async def stream_chat(
         self, message: str, thread_id: str, abort_signal: asyncio.Event | None = None,
@@ -514,7 +565,7 @@ class AdkChatService:
 
         ``abort_signal`` is tripped by the endpoint when the person's browser
         has gone. It reaches ONLY the free-form chat agent (the last lane
-        below): a turn nobody will read stops at its next event boundary
+        below; the investigate lane, like the Workflows, runs to its end): a turn nobody will read stops at its next event boundary
         instead of running the model and its tools to the end. It is NEVER
         handed to the deploy or commands Workflow runners — their nodes do
         blocking GitHub work, and a graph stopped between gate and apply
@@ -534,6 +585,21 @@ class AdkChatService:
         # read as the reply to it — the person was told "you rejected it" and
         # never saw a preview of what they had actually asked for.
         owner = _user_id()
+        # The Investigate button's message goes FIRST, ahead of everything that
+        # is waiting: it is a read-only request, neither a yes/no nor a token,
+        # so it must run while an approval or a CONFIRM token is pending —
+        # without consuming, cancelling or even reminding about them. Both
+        # stay exactly as they were for the person's real answer.
+        investigate = adk_parsing.investigate_request(message)
+        if investigate is not None:
+            async with aclosing(traced_stream(
+                    self._stream_investigation(investigate, thread_id),
+                    "investigate", thread_id=thread_id, detail=investigate.get("incident_id", ""),
+                    user_id=owner, session_id=_session_id(thread_id, "investigate"))) as events:
+                async for event in events:
+                    yield event
+            return
+
         pending_call = self._pending_adk_calls.get((owner, thread_id))
         if pending_call is None:
             # The pause may have been served by another replica, or by this one
@@ -707,6 +773,106 @@ class AdkChatService:
                 user_id=_user_id(), session_id=_session_id(thread_id, "chat"))) as events:
             async for event in events:
                 yield event
+
+    async def _stream_investigation(
+        self, request: dict[str, str], thread_id: str
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """One investigation: evidence collected in code, then one model step.
+
+        Like the deploy and commands lanes it never receives the endpoint's
+        abort signal: the Workflow is iterated to its natural end and, if the
+        reader has left, the turn simply finishes detached. Nothing in it
+        changes anything, so a reader who left costs a model call, not safety.
+        """
+        from . import features, identity
+
+        if not features.allowed("support-triage", identity.current()):
+            yield {"type": "token", "content": features.refusal("support-triage")}
+            yield {"type": "done", "mutated": False}
+            return
+        run = investigate_workflow.InvestigateRun(
+            business_date=request.get("business_date", ""), incident_id=request.get("incident_id", ""))
+        # The mode is part of the key: an answer written by a model is not the
+        # answer for a deployment (or a test) running without one, or on another.
+        key = (run.business_date, run.incident_id, f"{settings.llm_enabled}:{run.model}")
+        shared = _finding_hit(key)
+        if shared is None:
+            lock = _finding_lock(key)
+            if lock.locked():
+                yield {"type": "progress",
+                       "content": "Someone is already investigating this incident — waiting for that finding"}
+            async with lock:
+                shared = _finding_hit(key)
+                if shared is None:
+                    async with aclosing(investigate_workflow.stream_run(
+                            self.investigate_runner, run, user_id=_user_id(),
+                            session_id=_session_id(thread_id, "investigate"))) as events:
+                        async for event in events:
+                            yield event
+                    _finding_keep(key, run)
+        if shared is not None:
+            # ONE finding per incident, shared for ten minutes. Load test: ten
+            # people on one incident made ten model calls, the sandbox throttled
+            # them (429, 8–16 s backoffs) and the slowest waited 59 s for an
+            # answer the first already had. It is also the same answer for
+            # everyone, which a model asked ten times would not give.
+            age = max(0, int(time.time() - shared[0]))
+            run = shared[1]
+            yield {"type": "progress", "content": f"Using the finding written {age} s ago for this incident"}
+            yield {"type": "token", "content": run.text}
+        bundle = run.bundle if isinstance(run.bundle, dict) else {}
+        if bundle.get("ok"):
+            await self._remember_investigation(thread_id, run)
+            incident = bundle.get("incident") if isinstance(bundle.get("incident"), dict) else {}
+            data = {
+                "business_date": str(bundle.get("business_date") or run.business_date),
+                "incident_id": str(incident.get("id") or run.incident_id),
+                "title": str(incident.get("title") or ""),
+                "model": run.model if run.calls else "",
+                "model_calls": run.calls,
+                "seconds": run.seconds,
+            }
+            if shared is not None:
+                data["shared"] = True
+            yield {"type": "investigation", "data": data}
+        yield {"type": "done", "mutated": False}
+
+    # What the chat lane learns of an investigation: kept small — a follow-up
+    # needs the finding, not the evidence (the tools can read that again).
+    _INVESTIGATION_KEY = chat_agent_module.LAST_INVESTIGATION_KEY
+    _INVESTIGATION_MAX_CHARS = 4000
+
+    async def _remember_investigation(self, thread_id: str, run: Any) -> None:
+        """Write the finding to the CHAT session's state, for follow-up questions.
+
+        State only, never a message event: the chat session may hold a paused
+        approval, and a text turn between a function call and its response would
+        break the order the model requires. The chat agent's instruction reads
+        it back (agent._root_instruction). Best-effort: the answer is already
+        on the person's screen.
+        """
+        try:
+            from google.adk.events.event import Event
+            from google.adk.events.event_actions import EventActions
+
+            session = await self._chat_session(thread_id)
+            if session is None:
+                session = await self.session_service.create_session(
+                    app_name=self.chat_runner.app_name, user_id=_user_id(),
+                    session_id=_session_id(thread_id, "chat"))
+            incident = (run.bundle or {}).get("incident")
+            await self.session_service.append_event(
+                session=session,
+                event=Event(author="release_copilot", actions=EventActions(state_delta={
+                    self._INVESTIGATION_KEY: {
+                        "incident_id": run.incident_id,
+                        "business_date": str((run.bundle or {}).get("business_date") or run.business_date),
+                        "title": str((incident or {}).get("title") or "") if isinstance(incident, dict) else "",
+                        "finding": run.text[:self._INVESTIGATION_MAX_CHARS],
+                    }})),
+            )
+        except Exception:
+            logger.debug("could not remember the investigation for %s", thread_id, exc_info=True)
 
     async def _stream_deploy_preview(
         self, message: str, thread_id: str

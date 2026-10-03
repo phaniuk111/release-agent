@@ -459,6 +459,13 @@ class Settings(BaseSettings):
     advisor_model: str = Field(default="", validation_alias=AliasChoices("ADVISOR_MODEL"))
     advisor_max_uses: int = Field(default=2, validation_alias=AliasChoices("ADVISOR_MAX_USES"))
     advisor_session_max_uses: int = Field(default=5, validation_alias=AliasChoices("ADVISOR_SESSION_MAX_USES"))
+    # The Investigate button's one model step (adk_release_agent/investigate_workflow):
+    # evidence is collected in code, then the model writes the finding ONCE.
+    # Empty = GEMINI_MODEL. The cap counts every model call of one investigation
+    # (the finding model and any advisor consult); past it the answer is the
+    # model-free evidence summary, never an error.
+    investigate_model: str = Field(default="", validation_alias=AliasChoices("INVESTIGATE_MODEL"))
+    investigate_max_model_calls: int = Field(default=4, validation_alias=AliasChoices("INVESTIGATE_MAX_MODEL_CALLS"))
     gemini_model: str = Field(
         default="gemini-2.5-flash",
         validation_alias=AliasChoices("GEMINI_MODEL", "VERTEX_MODEL", "RELEASE_GEMINI_MODEL"),
@@ -703,6 +710,12 @@ class Settings(BaseSettings):
     # skill, with {source} {namespace} {cluster} {window} filled in; empty = the
     # built-in restarts / up / 5xx-rate set (adk_release_agent/tools.py).
     support_source_promql: str = Field(default="", validation_alias=AliasChoices("SUPPORT_SOURCE_PROMQL"))
+    # Was the investigation right? — the feedback memory (tools/support_feedback.py):
+    # an append-only table in this dataset (bigquery/support_findings.schema.json),
+    # in the project the triage reads (SUPPORT_PROJECT, else BQ_PROJECT). EMPTY
+    # dataset = no memory: the "Was this right?" buttons say so and nothing is written.
+    support_feedback_dataset: str = Field(default="", validation_alias=AliasChoices("SUPPORT_FEEDBACK_DATASET"))
+    support_feedback_table: str = Field(default="support_findings", validation_alias=AliasChoices("SUPPORT_FEEDBACK_TABLE"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every

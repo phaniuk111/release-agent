@@ -33,3 +33,8 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   stop signal handed to ADK while NO tool is in flight (never the endpoint's
   signal directly, never to a Workflow). Iterate every Workflow run to its
   natural end — do not `break` at a pause.
+- **Investigate is a pipeline, not a free agent.** `investigate_workflow.py`:
+  collect (code) → finding (one capped model step, no evidence tools). The
+  model never decides the action for a failure kind or whether a cause is
+  established — `investigation.with_judgement` does. Change the instruction or
+  the model only with `scripts/eval_investigate.py` passing before and after.

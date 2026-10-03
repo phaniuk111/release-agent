@@ -63,6 +63,12 @@ variable "bq_cost_findings_table" {
   default     = ""
 }
 
+variable "support_findings_table" {
+  description = "Optional memory table for 'was the support investigation right?' answers (tools/support_feedback.py) — must match Helm values config.SUPPORT_FEEDBACK_TABLE, with config.SUPPORT_FEEDBACK_DATASET = this dataset (and SUPPORT_PROJECT/BQ_PROJECT = this project). Empty = not created."
+  type        = string
+  default     = ""
+}
+
 resource "google_bigquery_dataset" "release_agent" {
   project     = var.project_id
   dataset_id  = var.dataset_id
@@ -109,6 +115,28 @@ resource "google_bigquery_table" "bq_cost_findings" {
   schema = file("${path.module}/../bq_cost_findings.schema.json")
 }
 
+# The support investigation's feedback memory: one row per "right / right
+# direction / wrong" answer, append-only like the event log. Corrections are new
+# rows — the app picks each person's latest per incident when it reads — so the
+# table is never UPDATEd or DELETEd. Same dataset as above: the dataEditor
+# binding below already covers it.
+resource "google_bigquery_table" "support_findings" {
+  count       = var.support_findings_table == "" ? 0 : 1
+  project     = var.project_id
+  dataset_id  = google_bigquery_dataset.release_agent.dataset_id
+  table_id    = var.support_findings_table
+  description = "Support investigation feedback (append-only) — accuracy is derived by the app; actual_cause holds people's own words"
+
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "created_at"
+  }
+
+  schema = file("${path.module}/../support_findings.schema.json")
+}
+
 # Least privilege for the runtime SA: insert + select on THIS dataset only,
 # plus the project-level right to run query jobs. No schema permissions —
 # column additions are applied here (terraform), not by the app.
@@ -135,4 +163,9 @@ output "table_id" {
 output "bq_cost_findings_table_id" {
   value       = var.bq_cost_findings_table == "" ? null : "${var.project_id}.${var.dataset_id}.${var.bq_cost_findings_table}"
   description = "Fully-qualified id of the BQ cost report's memory table, when created."
+}
+
+output "support_findings_table_id" {
+  value       = var.support_findings_table == "" ? null : "${var.project_id}.${var.dataset_id}.${var.support_findings_table}"
+  description = "Fully-qualified id of the support feedback memory table, when created."
 }

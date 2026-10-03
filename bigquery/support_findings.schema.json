@@ -1,0 +1,14 @@
+[
+  {"name": "created_at", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "UTC time the app received the answer (server time, not the browser's)"},
+  {"name": "business_date", "type": "DATE", "mode": "NULLABLE", "description": "Business date of the incident that was investigated"},
+  {"name": "incident_id", "type": "STRING", "mode": "NULLABLE", "description": "The triage's stable incident id for that date"},
+  {"name": "title", "type": "STRING", "mode": "NULLABLE", "description": "Incident title as shown to L1 (capped at 200 characters)"},
+  {"name": "verdict", "type": "STRING", "mode": "NULLABLE", "description": "right | direction | wrong — the person's rating of the investigation's finding"},
+  {"name": "actual_cause", "type": "STRING", "mode": "NULLABLE", "description": "What the cause really was, in the person's own words, as typed (capped at 500 characters); runbook material when the verdict is wrong"},
+  {"name": "category", "type": "STRING", "mode": "NULLABLE", "description": "The incident's category from the triage"},
+  {"name": "action", "type": "STRING", "mode": "NULLABLE", "description": "The L1 action the investigation recommended (wait | retrigger | check | escalate)"},
+  {"name": "model", "type": "STRING", "mode": "NULLABLE", "description": "Model that wrote the finding; empty when no model was involved"},
+  {"name": "model_calls", "type": "INT64", "mode": "NULLABLE", "description": "Model calls the investigation took"},
+  {"name": "seconds", "type": "FLOAT64", "mode": "NULLABLE", "description": "Seconds the investigation took"},
+  {"name": "actor", "type": "STRING", "mode": "NULLABLE", "description": "The verified signed-in email of who answered; empty when identity is off — never a typed value"}
+]

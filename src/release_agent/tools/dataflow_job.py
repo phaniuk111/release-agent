@@ -318,10 +318,33 @@ def _read_messages(http, project: str, region: str, job_id: str, importance: str
     return out[:cap]
 
 
-def _read_logs(http, project: str, job_id: str, cap: int) -> list[dict[str, Any]]:
+def _log_floor(created: str) -> str:
+    """The earliest time a job's worker logs can carry: a minute before the job
+    was created, as RFC 3339 — or "" when the job has no usable create time."""
+    from datetime import datetime, timedelta, timezone
+
+    text = _text(created)
+    if not text:
+        return ""
+    try:
+        at = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return (at - timedelta(minutes=1)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _read_logs(http, project: str, job_id: str, cap: int, created: str = "") -> list[dict[str, Any]]:
     # job_id was validated character by character, so it is safe inside the filter
     flt = (f'resource.type="dataflow_step" AND resource.labels.job_id="{job_id}" '
            f'AND severity>=ERROR')
+    # Without a time bound Cloud Logging scans its whole default range for the
+    # filter — measured 13.5 s for one job against 0.6 s bounded. A job cannot
+    # have logged before it existed, so its create time is a safe floor.
+    floor = _log_floor(created)
+    if floor:
+        flt += f' AND timestamp>="{floor}"'
     out: list[dict[str, Any]] = []
     token = ""
     for _ in range(_MAX_PAGES):
@@ -398,7 +421,7 @@ def inspect(job_id: str, *, region: str = "") -> dict[str, Any]:
     log_groups: list[dict[str, Any]] = []
     try:
         cap = max(1, int(getattr(settings, "support_logs_max_lines", 500)))
-        log_groups = group_logs(_read_logs(http, project, job_id, cap))
+        log_groups = group_logs(_read_logs(http, project, job_id, cap, _text(job.get("createTime"))))
     except _ApiError as e:
         notes.append(f"worker logs could not be read ({e.status}) — "
                      f"{_hint(e, project, region, job_id) or _text(e)[:100]}.")

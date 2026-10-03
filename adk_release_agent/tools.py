@@ -391,24 +391,25 @@ def _support_gate():
     return None
 
 
-def _cob_window(business_date: str) -> tuple[str, str]:
-    """The window a business date's pipelines run in: from that date's 00:00
-    UTC to noon the day after (overnight batches land after the date they are
-    for). Empty = the last 36 hours."""
+def _window(business_date: str):
+    """The business date's overnight window as datetimes (investigation.cob_window
+    — one definition for these tools and the collector); no date = the last 36
+    hours."""
     from datetime import datetime, timedelta, timezone
 
+    from release_agent.tools import investigation
     from release_agent.tools.support_triage import _to_date
 
     d = _to_date(business_date.strip()) if business_date.strip() else None
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    if d is None:
-        end = now
-        start = end - timedelta(hours=36)
-    else:
-        start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
-        # Today's date is still running: the window ends now, not at a time
-        # that has not happened yet (an instant query there would see nothing).
-        end = min(start + timedelta(hours=36), now)
+    if d is not None:
+        return investigation.cob_window(d)
+    end = datetime.now(timezone.utc).replace(microsecond=0)
+    return end - timedelta(hours=36), end
+
+
+def _cob_window(business_date: str) -> tuple[str, str]:
+    """:func:`_window` as ISO strings, for the log and audit readers."""
+    start, end = _window(business_date)
     return start.isoformat(), end.isoformat()
 
 
@@ -421,43 +422,21 @@ def source_metrics(source: str, business_date: str = "") -> dict[str, Any]:
     refused = _support_gate()
     if refused:
         return refused
-    from release_agent.config import settings
+    from release_agent.tools import investigation
     from release_agent.tools import monitoring as _mon
 
     source = (source or "").strip()
     if not source or not all(c.isalnum() or c in "-_." for c in source):
         return {"ok": False, "error": "source must be a service name (letters, digits, '-', '_', '.')."}
-    start, end = _cob_window(business_date)
-    fills = {"source": source, "namespace": getattr(settings, "support_namespace", ""),
-             "cluster": getattr(settings, "support_cluster", ""), "window": "36h"}
-    checks = {}
-    for item in str(getattr(settings, "support_source_promql", "") or _DEFAULT_SOURCE_PROMQL).split(";"):
-        name, sep, expr = item.partition("=")
-        if sep and name.strip() and expr.strip():
-            checks[name.strip()] = expr.strip().format(**fills)
-    results = {name: _remembered(("promql", expr, end), lambda e=expr: _mon.run_query(e, at=end))
+    start, end = _window(business_date)
+    at = end.isoformat()
+    try:
+        checks = investigation.metric_checks(source)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    results = {name: _remembered(("promql", expr, at), lambda e=expr: _mon.run_query(e, at=at))
                for name, expr in checks.items()}
-    verdicts = []
-    for name, res in results.items():
-        if not res.get("ok"):
-            verdicts.append(f"{name}: not measured ({res.get('error', '')[:80]})")
-            continue
-        values = [s.get("value") for s in res.get("series") or [] if s.get("value") is not None]
-        verdicts.append(f"{name}: no series" if not values else f"{name}: {max(values):g}")
-    return {"ok": True, "source": source, "window": {"start": start, "end": end},
-            "checks": results, "summary": " · ".join(verdicts)}
-
-
-# name=expr;… with {source} {namespace} {cluster} {window} filled in. The pod
-# label the person's clusters carry is `app` (SUPPORT_SOURCE_LABEL) — these
-# defaults assume kube-state-metrics and an http_requests_total counter;
-# a deployment overrides the string for its own exporters.
-_DEFAULT_SOURCE_PROMQL = (
-    'restarts=sum(increase(kube_pod_container_status_restarts_total{{namespace="{namespace}",pod=~"{source}.*"}}[{window}]));'
-    'up=min(up{{app="{source}",namespace="{namespace}"}});'
-    'error_rate=sum(rate(http_requests_total{{app="{source}",namespace="{namespace}",code=~"5.."}}[{window}]))'
-    ' / sum(rate(http_requests_total{{app="{source}",namespace="{namespace}"}}[{window}]))'
-)
+    return investigation.assemble_metrics(source, start, end, results)
 
 
 def source_logs(source: str, business_date: str = "", min_severity: str = "ERROR") -> dict[str, Any]:
@@ -543,6 +522,40 @@ def what_changed(names: list[str], before: str, days: int = 7) -> dict[str, Any]
     return _rl.what_changed(list(names or [])[:10], when or date.today(), days=int(days or 7))
 
 
+def investigate_evidence(
+    business_date: str = "", incident_id: str = "", source: str = "", process: str = "",
+    job_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """ALL the evidence about ONE incident in a single call: the incident's
+    triage facts, its source's metrics, logs and audit denials, its Dataflow
+    jobs, and what was released just before — read in parallel, with a timeline,
+    the leads code found, and every step it could not take (with what it
+    needed). Give the incident_id and business_date (YYYY-MM-DD) from the
+    triage. With no incident id, name what the person named: a report/process
+    (e.g. REPORT-B) goes in `process`, a fetcher or feed service (e.g.
+    sys-b-fetcher) in `source`, and job_ids if known — a call with none of
+    these has nothing to look at, so find the incident with `support_triage`
+    first. One call is the whole routine — answer from it; the single-source
+    tools are for a targeted follow-up only. Read-only."""
+    refused = _support_gate()
+    if refused:
+        return refused
+    from release_agent.tools import investigation
+
+    jobs = [str(j) for j in (job_ids or [])][:10]
+    if not any(((incident_id or "").strip(), (source or "").strip(), (process or "").strip(), jobs)):
+        # Nothing to look at: reading a whole day's logs for no one is noise.
+        return {"ok": False, "error": "No incident, source, process or job was named.",
+                "hint": "Call support_triage for the business date to find the incident, "
+                        "then call investigate_evidence with its id."}
+    bundle = investigation.collect(
+        (business_date or "").strip(), (incident_id or "").strip(),
+        source=(source or "").strip(), process=(process or "").strip(),
+        job_ids=jobs or None,
+    )
+    return investigation.for_model(bundle)
+
+
 # Every tool the free-form chat agent can call. The per-domain grouping a skill
 # actually surfaces (status/PR/controls/ops/queue/monitoring) is declared in
 # that skill's own SKILL.md frontmatter (adk_additional_tools) — this flat list
@@ -572,6 +585,7 @@ ADK_CHAT_TOOLS = [
     bq_verify_rewrite,
     bq_findings,
     support_triage,
+    investigate_evidence,
     source_metrics,
     source_logs,
     source_audit,

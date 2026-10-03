@@ -1,0 +1,1157 @@
+[
+  {
+    "name": "upstream file not delivered",
+    "bundle": {
+      "ok": true,
+      "business_date": "2026-10-02",
+      "window": {
+        "start": "2026-10-02T00:00:00+00:00",
+        "end": "2026-10-03T12:00:00+00:00"
+      },
+      "incident": {
+        "id": "e-1a2b3c4d",
+        "title": "REPORT-B: 14 runs failed — file not found",
+        "category": "upstream",
+        "priority": "high",
+        "facts": [
+          "14 of 14 runs of REPORT-B failed with the same error",
+          "system SYS-A · source FEED-A",
+          "first failed 2026-10-02 02:10 UTC; last success 2026-10-01"
+        ],
+        "action": "wait",
+        "steps": [
+          "Check that SYS-A delivered its data for this date.",
+          "Do not re-run before it has landed — the same error will repeat.",
+          "Once it has landed, re-trigger the failed runs.",
+          "Not landed by your cut-off: escalate to Data intake team."
+        ],
+        "owner": "Data intake team",
+        "runbook": null,
+        "shared": {
+          "system": "SYS-A",
+          "source": "FEED-A"
+        },
+        "job_ids": [
+          "2026-10-02_01_58_14-4412345678901234567"
+        ],
+        "note": "[Support triage] Business date 2026-10-02: REPORT-B: 14 runs failed — file not found\nPriority: high · Action: wait\n- 14 of 14 runs of REPORT-B failed with the same error\n- system SYS-A · source FEED-A\n- first failed 2026-10-02 02:10 UTC; last success 2026-10-01\n- Jobs: 2026-10-02_01_58_14-4412345678901234567\n- Known issue: no runbook match\n- Next steps: Check that SYS-A delivered its data for this date. Do not re-run before it has landed — the same error will repeat. Once it has landed, re-trigger the failed runs. Not landed by your cut-off: escalate to Data intake team.\n- Suggested owner: Data intake team"
+      },
+      "evidence": {
+        "metrics": {
+          "ok": true,
+          "source": "sys-a-fetcher",
+          "values": {
+            "restarts": 4,
+            "up": 1,
+            "error_rate": 0.31
+          },
+          "summary": "restarts 4 · up 1 · error_rate 0.31"
+        },
+        "logs": {
+          "ok": true,
+          "summary": "2 error signatures, 41 lines, none security-related",
+          "security_lines": 0,
+          "groups": [
+            {
+              "signature": "fetch failed: upstream returned 404 for FEED-A",
+              "count": 38,
+              "first_seen": "2026-10-02T01:05:12+00:00",
+              "last_seen": "2026-10-02T03:30:41+00:00",
+              "security": false,
+              "sample": "fetch failed: upstream returned 404 for FEED-A_20261002.csv — retrying in 300s"
+            },
+            {
+              "signature": "pod restarted after failed health probe",
+              "count": 3,
+              "first_seen": "2026-10-02T02:20:00+00:00",
+              "last_seen": "2026-10-02T03:10:00+00:00",
+              "security": false,
+              "sample": "liveness probe failed: fetch queue stalled"
+            }
+          ]
+        },
+        "audit": {
+          "ok": true,
+          "summary": "no permission-denied calls and no IAM policy changes in the window",
+          "denials_total": 0,
+          "denials": [],
+          "iam_changes": []
+        },
+        "dataflow": [
+          {
+            "ok": true,
+            "job_id": "2026-10-02_01_58_14-4412345678901234567",
+            "state": "JOB_STATE_FAILED",
+            "kind": "not_found",
+            "created": "2026-10-02T01:58:20+00:00",
+            "ended": "2026-10-02T02:10:05+00:00",
+            "summary": "failed after 12 min; kind: not_found; Read step: no files matched",
+            "errors": [
+              {
+                "text": "java.io.FileNotFoundException: No files matched spec: gs://landing-example/feed-a/2026-10-02/*.csv",
+                "time": "2026-10-02T02:10:01+00:00",
+                "count": 14
+              }
+            ],
+            "log_groups": []
+          }
+        ],
+        "changes": {
+          "ok": true,
+          "summary": "no release changes for sys-a-fetcher, REPORT-B in the 7 days before 2026-10-02",
+          "total_changes": 0,
+          "changes": []
+        }
+      },
+      "unavailable": [],
+      "timeline": [
+        {
+          "time": "2026-10-01T00:00:00+00:00",
+          "kind": "run",
+          "source": "control_table",
+          "text": "Last successful run of this was on 2026-10-01"
+        },
+        {
+          "time": "2026-10-02T01:05:12+00:00",
+          "kind": "log",
+          "source": "logs",
+          "text": "Source first logged: fetch failed: upstream returned 404 for FEED-A_20261002.csv (×38 in all)"
+        },
+        {
+          "time": "2026-10-02T01:58:20+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …01234567 created"
+        },
+        {
+          "time": "2026-10-02T02:10:01+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …01234567 first error: java.io.FileNotFoundException: No files matched spec"
+        },
+        {
+          "time": "2026-10-02T03:30:41+00:00",
+          "kind": "log",
+          "source": "logs",
+          "text": "Source last logged: fetch failed: upstream returned 404 for FEED-A_20261002.csv"
+        }
+      ],
+      "checked": [
+        "Control table (BigQuery): REPORT-B: 14 runs failed — file not found",
+        "Source metrics (PromQL): restarts 4 · up 1 · error_rate 0.31",
+        "Source logs (Cloud Logging, sys-a-fetcher): 2 error signatures, 41 lines, none security-related",
+        "Audit logs (Cloud Audit Logs): no permission-denied calls and no IAM policy changes in the window",
+        "Dataflow job 2026-10-02_01_58_14-4412345678901234567 (Dataflow API): failed after 12 min; kind: not_found; Read step: no files matched",
+        "Release log (BigQuery release_intents): no release changes for sys-a-fetcher, REPORT-B in the 7 days before 2026-10-02"
+      ],
+      "signals": {
+        "streak": 1,
+        "last_success": "2026-10-01",
+        "security_in_logs": 0,
+        "denials": 0,
+        "iam_changes": 0,
+        "recent_change": null,
+        "leads": [
+          "The source is unhealthy by its metrics (restarts 4 · up 1 · error_rate 0.31) — start with the source.",
+          "Dataflow job …01234567: failed after 12 min; kind: not_found; Read step: no files matched"
+        ],
+        "source_healthy": false,
+        "job_kinds": [
+          "not_found"
+        ],
+        "category": "upstream"
+      },
+      "elapsed_ms": 1800
+    },
+    "expect": {
+      "must_mention_any": [
+        [
+          "feed",
+          "file"
+        ],
+        [
+          "not delivered",
+          "not been delivered",
+          "has not arrived",
+          "not arrived",
+          "not landed",
+          "has not landed",
+          "missing",
+          "late",
+          "never arrived",
+          "did not arrive",
+          "not yet",
+          "failing to deliver",
+          "failed to deliver",
+          "did not deliver",
+          "has not delivered",
+          "not delivering",
+          "did not provide",
+          "failed to provide",
+          "failing to provide",
+          "failed to fetch",
+          "fetch failed",
+          "failing to fetch",
+          "not available",
+          "was not delivered",
+          "wasn't delivered",
+          "unable to fetch"
+        ],
+        [
+          "404",
+          "no files matched",
+          "restart",
+          "unhealthy",
+          "upstream returned"
+        ]
+      ],
+      "must_not_mention": [
+        "permission",
+        "iam",
+        "out of memory",
+        "quota"
+      ],
+      "action": "wait",
+      "max_model_calls": 4
+    }
+  },
+  {
+    "name": "release changed the schema",
+    "bundle": {
+      "ok": true,
+      "business_date": "2026-10-02",
+      "window": {
+        "start": "2026-10-02T00:00:00+00:00",
+        "end": "2026-10-03T12:00:00+00:00"
+      },
+      "incident": {
+        "id": "e-2b3c4d5e",
+        "title": "REPORT-B: 9 BOOK values failed — cannot cast STRING to NUMERIC",
+        "category": "process",
+        "priority": "high",
+        "facts": [
+          "9 BOOK values of REPORT-B fail with the same error",
+          "process REPORT-B",
+          "first failed 2026-10-02 03:20 UTC; last success 2026-10-01"
+        ],
+        "action": "escalate",
+        "steps": [
+          "9 BOOK values of REPORT-B fail with the same error: likely a change or defect in that process (or its input for them), not one unit's data.",
+          "Check what was deployed for it recently (the release history).",
+          "Escalate to Reporting platform team with the note; re-running will not help."
+        ],
+        "owner": "Reporting platform team",
+        "runbook": null,
+        "shared": {
+          "process": "REPORT-B"
+        },
+        "job_ids": [
+          "2026-10-02_03_12_40-5523456789012345678",
+          "2026-10-02_03_14_02-5523456789012345679"
+        ],
+        "note": "[Support triage] Business date 2026-10-02: REPORT-B: 9 BOOK values failed — cannot cast STRING to NUMERIC\nPriority: high · Action: escalate\n- 9 BOOK values of REPORT-B fail with the same error\n- process REPORT-B\n- first failed 2026-10-02 03:20 UTC; last success 2026-10-01\n- Jobs: 2026-10-02_03_12_40-5523456789012345678, 2026-10-02_03_14_02-5523456789012345679\n- Known issue: no runbook match\n- Next steps: 9 BOOK values of REPORT-B fail with the same error: likely a change or defect in that process (or its input for them), not one unit's data. Check what was deployed for it recently (the release history). Escalate to Reporting platform team with the note; re-running will not help.\n- Suggested owner: Reporting platform team"
+      },
+      "evidence": {
+        "metrics": {
+          "ok": true,
+          "source": "report-b-transform",
+          "values": {
+            "restarts": 0,
+            "up": 1,
+            "error_rate": 0.0
+          },
+          "summary": "restarts 0 · up 1 · error_rate 0"
+        },
+        "logs": {
+          "ok": true,
+          "summary": "no error lines from report-b-transform in the window",
+          "security_lines": 0,
+          "groups": []
+        },
+        "audit": {
+          "ok": true,
+          "summary": "no permission-denied calls and no IAM policy changes in the window",
+          "denials_total": 0,
+          "denials": [],
+          "iam_changes": []
+        },
+        "dataflow": [
+          {
+            "ok": true,
+            "job_id": "2026-10-02_03_12_40-5523456789012345678",
+            "state": "JOB_STATE_FAILED",
+            "kind": "schema",
+            "created": "2026-10-02T03:12:44+00:00",
+            "ended": "2026-10-02T03:20:10+00:00",
+            "summary": "failed after 8 min; kind: schema; Parse step: cannot cast STRING to NUMERIC",
+            "errors": [
+              {
+                "text": "Parse step: cannot cast STRING 'N/A' to NUMERIC for column exposure_amount",
+                "time": "2026-10-02T03:19:58+00:00",
+                "count": 9
+              }
+            ],
+            "log_groups": []
+          },
+          {
+            "ok": true,
+            "job_id": "2026-10-02_03_14_02-5523456789012345679",
+            "state": "JOB_STATE_FAILED",
+            "kind": "schema",
+            "created": "2026-10-02T03:14:05+00:00",
+            "ended": "2026-10-02T03:21:30+00:00",
+            "summary": "failed after 7 min; kind: schema; Parse step: cannot cast STRING to NUMERIC",
+            "errors": [
+              {
+                "text": "Parse step: cannot cast STRING 'N/A' to NUMERIC for column exposure_amount",
+                "time": "2026-10-02T03:21:20+00:00",
+                "count": 9
+              }
+            ],
+            "log_groups": []
+          }
+        ],
+        "changes": {
+          "ok": true,
+          "summary": "1 release change for report-b-transform in the 7 days before 2026-10-02",
+          "total_changes": 1,
+          "changes": [
+            {
+              "artifact": "report-b-transform",
+              "environment": "PRD",
+              "from_version": "1.4.1",
+              "to_version": "1.4.2",
+              "when": "2026-09-30T16:20:00+00:00",
+              "jira_ticket": "ABC-2231",
+              "release_name": "R-2026.10"
+            }
+          ]
+        }
+      },
+      "unavailable": [],
+      "timeline": [
+        {
+          "time": "2026-10-01T00:00:00+00:00",
+          "kind": "run",
+          "source": "control_table",
+          "text": "Last successful run of this was on 2026-10-01"
+        },
+        {
+          "time": "2026-09-30T16:20:00+00:00",
+          "kind": "release",
+          "source": "release_log",
+          "text": "report-b-transform 1.4.1 → 1.4.2 on PRD"
+        },
+        {
+          "time": "2026-10-02T03:12:44+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …12345678 created"
+        },
+        {
+          "time": "2026-10-02T03:19:58+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …12345678 first error: Parse step: cannot cast STRING 'N/A' to NUMERIC for column exposure_amount"
+        }
+      ],
+      "checked": [
+        "Control table (BigQuery): REPORT-B: 9 BOOK values failed — cannot cast STRING to NUMERIC",
+        "Source metrics (PromQL): restarts 0 · up 1 · error_rate 0",
+        "Source logs (Cloud Logging, report-b-transform): no error lines from report-b-transform in the window",
+        "Audit logs (Cloud Audit Logs): no permission-denied calls and no IAM policy changes in the window",
+        "Dataflow job 2026-10-02_03_12_40-5523456789012345678 (Dataflow API): failed after 8 min; kind: schema; Parse step: cannot cast STRING to NUMERIC",
+        "Dataflow job 2026-10-02_03_14_02-5523456789012345679 (Dataflow API): failed after 7 min; kind: schema; Parse step: cannot cast STRING to NUMERIC",
+        "Release log (BigQuery release_intents): 1 release change for report-b-transform in the 7 days before 2026-10-02"
+      ],
+      "signals": {
+        "streak": 1,
+        "last_success": "2026-10-01",
+        "security_in_logs": 0,
+        "denials": 0,
+        "iam_changes": 0,
+        "recent_change": {
+          "artifact": "report-b-transform",
+          "to_version": "1.4.2",
+          "from_version": "1.4.1",
+          "environment": "PRD",
+          "when": "2026-09-30T16:20:00+00:00",
+          "days_before": 2
+        },
+        "leads": [
+          "report-b-transform went 1.4.1 → 1.4.2 on PRD 2 days before the first failure.",
+          "Dataflow job …12345678: failed after 8 min; kind: schema; Parse step: cannot cast STRING to NUMERIC",
+          "The source is healthy by its metrics — the problem is downstream of it."
+        ],
+        "source_healthy": true,
+        "job_kinds": [
+          "schema"
+        ],
+        "category": "process"
+      },
+      "elapsed_ms": 1800
+    },
+    "expect": {
+      "must_mention_any": [
+        [
+          "1.4.2",
+          "1.4.1",
+          "abc-2231",
+          "r-2026.10"
+        ],
+        [
+          "release",
+          "deploy",
+          "version",
+          "change"
+        ],
+        [
+          "schema",
+          "cast",
+          "type",
+          "column",
+          "numeric"
+        ]
+      ],
+      "must_not_mention": [
+        "re-run",
+        "rerun",
+        "re-trigger",
+        "retrigger",
+        "retry"
+      ],
+      "action": "escalate",
+      "max_model_calls": 4
+    }
+  },
+  {
+    "name": "permission revoked",
+    "bundle": {
+      "ok": true,
+      "business_date": "2026-10-02",
+      "window": {
+        "start": "2026-10-02T00:00:00+00:00",
+        "end": "2026-10-03T12:00:00+00:00"
+      },
+      "incident": {
+        "id": "e-3c4d5e6f",
+        "title": "REPORT-B: 3 runs failed — permission denied",
+        "category": "spread",
+        "priority": "high",
+        "facts": [
+          "3 runs failed with the same error",
+          "no shared system, process or unit",
+          "first failed 2026-10-02 02:14 UTC; last success 2026-10-01"
+        ],
+        "action": "escalate",
+        "steps": [
+          "No shared system, process or unit: this points at the platform (quota, permissions, capacity).",
+          "Escalate to Platform operations."
+        ],
+        "owner": "Platform operations",
+        "runbook": null,
+        "shared": {},
+        "job_ids": [
+          "2026-10-02_02_30_10-6634567890123456789"
+        ],
+        "note": "[Support triage] Business date 2026-10-02: REPORT-B: 3 runs failed — permission denied\nPriority: high · Action: escalate\n- 3 runs failed with the same error\n- no shared system, process or unit\n- first failed 2026-10-02 02:14 UTC; last success 2026-10-01\n- Jobs: 2026-10-02_02_30_10-6634567890123456789\n- Known issue: no runbook match\n- Next steps: No shared system, process or unit: this points at the platform (quota, permissions, capacity). Escalate to Platform operations.\n- Suggested owner: Platform operations"
+      },
+      "evidence": {
+        "metrics": {
+          "ok": true,
+          "source": "sys-a-fetcher",
+          "values": {
+            "restarts": 0,
+            "up": 1,
+            "error_rate": 0.0
+          },
+          "summary": "restarts 0 · up 1 · error_rate 0"
+        },
+        "logs": {
+          "ok": true,
+          "summary": "1 security signature, 12 lines",
+          "security_lines": 12,
+          "groups": [
+            {
+              "signature": "PERMISSION_DENIED storage.objects.get",
+              "count": 12,
+              "first_seen": "2026-10-02T02:14:09+00:00",
+              "last_seen": "2026-10-02T03:05:30+00:00",
+              "security": true,
+              "sample": "PERMISSION_DENIED: caller lacks storage.objects.get on bucket landing-example"
+            }
+          ]
+        },
+        "audit": {
+          "ok": true,
+          "summary": "12 permission-denied calls, 1 IAM policy change in the window",
+          "denials_total": 12,
+          "denials": [
+            {
+              "method": "storage.objects.get",
+              "resource": "projects/_/buckets/landing-example",
+              "count": 12,
+              "first_seen": "2026-10-02T02:14:09+00:00",
+              "last_seen": "2026-10-02T03:05:30+00:00",
+              "principals": [
+                "svc-pipeline@example-project.iam.gserviceaccount.com"
+              ]
+            }
+          ],
+          "iam_changes": [
+            {
+              "time": "2026-10-02T02:09:00+00:00",
+              "principal": "admin@example.com",
+              "resource": "projects/_/buckets/landing-example"
+            }
+          ]
+        },
+        "dataflow": [
+          {
+            "ok": true,
+            "job_id": "2026-10-02_02_30_10-6634567890123456789",
+            "state": "JOB_STATE_FAILED",
+            "kind": "permission",
+            "created": "2026-10-02T02:30:15+00:00",
+            "ended": "2026-10-02T02:41:00+00:00",
+            "summary": "failed after 11 min; kind: permission; Read step: 403 Forbidden",
+            "errors": [
+              {
+                "text": "403 Forbidden: svc-pipeline@example-project.iam.gserviceaccount.com does not have storage.objects.get access to landing-example",
+                "time": "2026-10-02T02:40:50+00:00",
+                "count": 3
+              }
+            ],
+            "log_groups": []
+          }
+        ],
+        "changes": {
+          "ok": true,
+          "summary": "no release changes for sys-a-fetcher in the 7 days before 2026-10-02",
+          "total_changes": 0,
+          "changes": []
+        }
+      },
+      "unavailable": [],
+      "timeline": [
+        {
+          "time": "2026-10-01T00:00:00+00:00",
+          "kind": "run",
+          "source": "control_table",
+          "text": "Last successful run of this was on 2026-10-01"
+        },
+        {
+          "time": "2026-10-02T02:09:00+00:00",
+          "kind": "iam",
+          "source": "audit",
+          "text": "IAM policy changed on projects/_/buckets/landing-example by admin@example.com"
+        },
+        {
+          "time": "2026-10-02T02:14:09+00:00",
+          "kind": "denied",
+          "source": "audit",
+          "text": "First permission denied: storage.objects.get on projects/_/buckets/landing-example (×12 in all)"
+        },
+        {
+          "time": "2026-10-02T02:14:09+00:00",
+          "kind": "security",
+          "source": "logs",
+          "text": "Source first logged: PERMISSION_DENIED: caller lacks storage.objects.get on bucket landing-example (×12 in all)"
+        },
+        {
+          "time": "2026-10-02T02:40:50+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …23456789 first error: 403 Forbidden"
+        }
+      ],
+      "checked": [
+        "Control table (BigQuery): REPORT-B: 3 runs failed — permission denied",
+        "Source metrics (PromQL): restarts 0 · up 1 · error_rate 0",
+        "Source logs (Cloud Logging, sys-a-fetcher): 1 security signature, 12 lines",
+        "Audit logs (Cloud Audit Logs): 12 permission-denied calls, 1 IAM policy change in the window",
+        "Dataflow job 2026-10-02_02_30_10-6634567890123456789 (Dataflow API): failed after 11 min; kind: permission; Read step: 403 Forbidden",
+        "Release log (BigQuery release_intents): no release changes for sys-a-fetcher in the 7 days before 2026-10-02"
+      ],
+      "signals": {
+        "streak": 1,
+        "last_success": "2026-10-01",
+        "security_in_logs": 12,
+        "denials": 12,
+        "iam_changes": 1,
+        "recent_change": null,
+        "leads": [
+          "The source's own logs show 12 security lines (PERMISSION_DENIED: caller lacks storage.objects.get on bucket landing-example) — look at what it was denied.",
+          "An IAM policy changed at 02:09 UTC, 5 minutes before the first denial.",
+          "12 permission-denied calls in the audit log (most: storage.objects.get on projects/_/buckets/landing-example) — look at which access was removed or never granted."
+        ],
+        "source_healthy": true,
+        "job_kinds": [
+          "permission"
+        ],
+        "category": "spread"
+      },
+      "elapsed_ms": 1800
+    },
+    "expect": {
+      "must_mention_any": [
+        [
+          "permission",
+          "access",
+          "denied",
+          "forbidden",
+          "403"
+        ],
+        [
+          "iam",
+          "role",
+          "policy",
+          "binding",
+          "revoked",
+          "removed"
+        ]
+      ],
+      "must_not_mention": [
+        "out of memory",
+        "schema",
+        "re-run",
+        "rerun",
+        "re-trigger",
+        "retrigger"
+      ],
+      "action": "escalate",
+      "max_model_calls": 4
+    }
+  },
+  {
+    "name": "out of memory on one unit",
+    "bundle": {
+      "ok": true,
+      "business_date": "2026-10-02",
+      "window": {
+        "start": "2026-10-02T00:00:00+00:00",
+        "end": "2026-10-03T12:00:00+00:00"
+      },
+      "incident": {
+        "id": "e-4d5e6f70",
+        "title": "REPORT-B: BOOK-17 failed — out of memory",
+        "category": "unit",
+        "priority": "medium",
+        "facts": [
+          "Only BOOK-17 fails (1 of 9 BOOK values of REPORT-B)",
+          "first failed 2026-10-02 04:31 UTC; last success 2026-10-01",
+          "input rows read: 41.2M, against 20.4M on 2026-10-01"
+        ],
+        "action": "check",
+        "steps": [
+          "Only BOOK-17 fails: check that unit's input and static data.",
+          "Input looks right: re-trigger once, then escalate to Reporting platform team."
+        ],
+        "owner": "Reporting platform team",
+        "runbook": null,
+        "shared": {
+          "process": "REPORT-B",
+          "unit": "BOOK-17"
+        },
+        "job_ids": [
+          "2026-10-02_04_05_31-7745678901234567890"
+        ],
+        "note": "[Support triage] Business date 2026-10-02: REPORT-B: BOOK-17 failed — out of memory\nPriority: medium · Action: check\n- Only BOOK-17 fails (1 of 9 BOOK values of REPORT-B)\n- first failed 2026-10-02 04:31 UTC; last success 2026-10-01\n- input rows read: 41.2M, against 20.4M on 2026-10-01\n- Jobs: 2026-10-02_04_05_31-7745678901234567890\n- Known issue: no runbook match\n- Next steps: Only BOOK-17 fails: check that unit's input and static data. Input looks right: re-trigger once, then escalate to Reporting platform team.\n- Suggested owner: Reporting platform team"
+      },
+      "evidence": {
+        "metrics": {
+          "ok": true,
+          "source": "report-b-transform",
+          "values": {
+            "restarts": 0,
+            "up": 1,
+            "error_rate": 0.0
+          },
+          "summary": "restarts 0 · up 1 · error_rate 0"
+        },
+        "logs": {
+          "ok": true,
+          "summary": "no error lines from report-b-transform in the window",
+          "security_lines": 0,
+          "groups": []
+        },
+        "audit": {
+          "ok": true,
+          "summary": "no permission-denied calls and no IAM policy changes in the window",
+          "denials_total": 0,
+          "denials": [],
+          "iam_changes": []
+        },
+        "dataflow": [
+          {
+            "ok": true,
+            "job_id": "2026-10-02_04_05_31-7745678901234567890",
+            "state": "JOB_STATE_FAILED",
+            "kind": "out_of_memory",
+            "created": "2026-10-02T04:05:40+00:00",
+            "ended": "2026-10-02T04:31:12+00:00",
+            "summary": "failed after 26 min; kind: out_of_memory; workers killed at the 8 GB limit during the group-by step",
+            "errors": [
+              {
+                "text": "java.lang.OutOfMemoryError: Java heap space (worker killed, memory limit 8 GB)",
+                "time": "2026-10-02T04:30:58+00:00",
+                "count": 4
+              }
+            ],
+            "log_groups": [
+              {
+                "sample": "GroupByKey: shuffle read 38.9 GB, 3 workers restarted by the memory limit",
+                "count": 3,
+                "first_seen": "2026-10-02T04:22:00+00:00",
+                "last_seen": "2026-10-02T04:30:00+00:00"
+              }
+            ]
+          }
+        ],
+        "changes": {
+          "ok": true,
+          "summary": "no release changes for report-b-transform, REPORT-B in the 7 days before 2026-10-02",
+          "total_changes": 0,
+          "changes": []
+        }
+      },
+      "unavailable": [],
+      "timeline": [
+        {
+          "time": "2026-10-01T00:00:00+00:00",
+          "kind": "run",
+          "source": "control_table",
+          "text": "Last successful run of this was on 2026-10-01"
+        },
+        {
+          "time": "2026-10-02T04:05:40+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …34567890 created"
+        },
+        {
+          "time": "2026-10-02T04:30:58+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …34567890 first error: java.lang.OutOfMemoryError: Java heap space (worker killed, memory limit 8 GB)"
+        },
+        {
+          "time": "2026-10-02T04:31:12+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …34567890 ended failed (out_of_memory)"
+        }
+      ],
+      "checked": [
+        "Control table (BigQuery): REPORT-B: BOOK-17 failed — out of memory",
+        "Source metrics (PromQL): restarts 0 · up 1 · error_rate 0",
+        "Source logs (Cloud Logging, report-b-transform): no error lines from report-b-transform in the window",
+        "Audit logs (Cloud Audit Logs): no permission-denied calls and no IAM policy changes in the window",
+        "Dataflow job 2026-10-02_04_05_31-7745678901234567890 (Dataflow API): failed after 26 min; kind: out_of_memory; workers killed at the 8 GB limit during the group-by step",
+        "Release log (BigQuery release_intents): no release changes for report-b-transform, REPORT-B in the 7 days before 2026-10-02"
+      ],
+      "signals": {
+        "streak": 1,
+        "last_success": "2026-10-01",
+        "security_in_logs": 0,
+        "denials": 0,
+        "iam_changes": 0,
+        "recent_change": null,
+        "leads": [
+          "Dataflow job …34567890: failed after 26 min; kind: out_of_memory; workers killed at the 8 GB limit during the group-by step",
+          "The source is healthy by its metrics — the problem is downstream of it."
+        ],
+        "source_healthy": true,
+        "job_kinds": [
+          "out_of_memory"
+        ],
+        "category": "unit"
+      },
+      "elapsed_ms": 1800
+    },
+    "expect": {
+      "must_mention_any": [
+        [
+          "memory",
+          "oom",
+          "heap"
+        ],
+        [
+          "input",
+          "size",
+          "volume",
+          "doubled",
+          "rows",
+          "larger",
+          "twice"
+        ]
+      ],
+      "must_not_mention": [
+        "permission",
+        "iam",
+        "schema",
+        "re-run",
+        "rerun",
+        "re-trigger",
+        "retrigger",
+        "retry"
+      ],
+      "action": "escalate",
+      "max_model_calls": 4
+    }
+  },
+  {
+    "name": "quota exceeded, transient",
+    "bundle": {
+      "ok": true,
+      "business_date": "2026-10-02",
+      "window": {
+        "start": "2026-10-02T00:00:00+00:00",
+        "end": "2026-10-03T12:00:00+00:00"
+      },
+      "incident": {
+        "id": "e-5e6f7081",
+        "title": "REPORT-B: 2 runs failed — quota exceeded",
+        "category": "single",
+        "priority": "low",
+        "facts": [
+          "2 of 14 runs of REPORT-B failed; the other 12 ran in the same hour and succeeded",
+          "first failed 2026-10-02 01:42 UTC; last success 2026-10-01"
+        ],
+        "action": "retrigger",
+        "steps": [
+          "One run failed: re-trigger it once.",
+          "Fails again with the same error: escalate to Platform operations."
+        ],
+        "owner": "Platform operations",
+        "runbook": null,
+        "shared": {
+          "process": "REPORT-B"
+        },
+        "job_ids": [
+          "2026-10-02_01_40_02-8856789012345678901",
+          "2026-10-02_01_40_03-8856789012345678902"
+        ],
+        "note": "[Support triage] Business date 2026-10-02: REPORT-B: 2 runs failed — quota exceeded\nPriority: low · Action: retrigger\n- 2 of 14 runs of REPORT-B failed; the other 12 ran in the same hour and succeeded\n- first failed 2026-10-02 01:42 UTC; last success 2026-10-01\n- Jobs: 2026-10-02_01_40_02-8856789012345678901, 2026-10-02_01_40_03-8856789012345678902\n- Known issue: no runbook match\n- Next steps: One run failed: re-trigger it once. Fails again with the same error: escalate to Platform operations.\n- Suggested owner: Platform operations"
+      },
+      "evidence": {
+        "metrics": {
+          "ok": true,
+          "source": "report-b-transform",
+          "values": {
+            "restarts": 0,
+            "up": 1,
+            "error_rate": 0.0
+          },
+          "summary": "restarts 0 · up 1 · error_rate 0"
+        },
+        "logs": {
+          "ok": true,
+          "summary": "no error lines from report-b-transform in the window",
+          "security_lines": 0,
+          "groups": []
+        },
+        "audit": {
+          "ok": true,
+          "summary": "no permission-denied calls and no IAM policy changes in the window",
+          "denials_total": 0,
+          "denials": [],
+          "iam_changes": []
+        },
+        "dataflow": [
+          {
+            "ok": true,
+            "job_id": "2026-10-02_01_40_02-8856789012345678901",
+            "state": "JOB_STATE_FAILED",
+            "kind": "quota",
+            "created": "2026-10-02T01:40:05+00:00",
+            "ended": "2026-10-02T01:43:30+00:00",
+            "summary": "failed after 3 min; kind: quota; Quota CPUS exceeded at job start",
+            "errors": [
+              {
+                "text": "Quota 'CPUS' exceeded. Limit: 200.0 in region example-region (shared project quota)",
+                "time": "2026-10-02T01:42:50+00:00",
+                "count": 1
+              }
+            ],
+            "log_groups": []
+          },
+          {
+            "ok": true,
+            "job_id": "2026-10-02_01_40_03-8856789012345678902",
+            "state": "JOB_STATE_FAILED",
+            "kind": "quota",
+            "created": "2026-10-02T01:40:06+00:00",
+            "ended": "2026-10-02T01:43:35+00:00",
+            "summary": "failed after 3 min; kind: quota; Quota CPUS exceeded at job start",
+            "errors": [
+              {
+                "text": "Quota 'CPUS' exceeded. Limit: 200.0 in region example-region (shared project quota)",
+                "time": "2026-10-02T01:42:55+00:00",
+                "count": 1
+              }
+            ],
+            "log_groups": []
+          }
+        ],
+        "changes": {
+          "ok": true,
+          "summary": "no release changes for report-b-transform, REPORT-B in the 7 days before 2026-10-02",
+          "total_changes": 0,
+          "changes": []
+        }
+      },
+      "unavailable": [],
+      "timeline": [
+        {
+          "time": "2026-10-01T00:00:00+00:00",
+          "kind": "run",
+          "source": "control_table",
+          "text": "Last successful run of this was on 2026-10-01"
+        },
+        {
+          "time": "2026-10-02T01:40:05+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …56789012 created"
+        },
+        {
+          "time": "2026-10-02T01:42:50+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …56789012 first error: Quota 'CPUS' exceeded. Limit: 200.0 in region example-region (shared project quota)"
+        },
+        {
+          "time": "2026-10-02T01:43:30+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …56789012 ended failed (quota)"
+        }
+      ],
+      "checked": [
+        "Control table (BigQuery): REPORT-B: 2 runs failed — quota exceeded",
+        "Source metrics (PromQL): restarts 0 · up 1 · error_rate 0",
+        "Source logs (Cloud Logging, report-b-transform): no error lines from report-b-transform in the window",
+        "Audit logs (Cloud Audit Logs): no permission-denied calls and no IAM policy changes in the window",
+        "Dataflow job 2026-10-02_01_40_02-8856789012345678901 (Dataflow API): failed after 3 min; kind: quota; Quota CPUS exceeded at job start",
+        "Dataflow job 2026-10-02_01_40_03-8856789012345678902 (Dataflow API): failed after 3 min; kind: quota; Quota CPUS exceeded at job start",
+        "Release log (BigQuery release_intents): no release changes for report-b-transform, REPORT-B in the 7 days before 2026-10-02"
+      ],
+      "signals": {
+        "streak": 1,
+        "last_success": "2026-10-01",
+        "security_in_logs": 0,
+        "denials": 0,
+        "iam_changes": 0,
+        "recent_change": null,
+        "leads": [
+          "Dataflow job …56789012: failed after 3 min; kind: quota; Quota CPUS exceeded at job start",
+          "The source is healthy by its metrics — the problem is downstream of it."
+        ],
+        "source_healthy": true,
+        "job_kinds": [
+          "quota"
+        ],
+        "category": "single"
+      },
+      "elapsed_ms": 1800
+    },
+    "expect": {
+      "must_mention_any": [
+        [
+          "quota"
+        ],
+        [
+          "cpus",
+          "cpu",
+          "shared",
+          "limit",
+          "capacity",
+          "transient",
+          "temporary"
+        ]
+      ],
+      "must_not_mention": [
+        "permission",
+        "iam",
+        "schema",
+        "out of memory",
+        "rollback",
+        "roll back"
+      ],
+      "action": "retrigger",
+      "max_model_calls": 4
+    }
+  },
+  {
+    "name": "nothing conclusive",
+    "bundle": {
+      "ok": true,
+      "business_date": "2026-10-02",
+      "window": {
+        "start": "2026-10-02T00:00:00+00:00",
+        "end": "2026-10-03T12:00:00+00:00"
+      },
+      "incident": {
+        "id": "e-6f708192",
+        "title": "REPORT-B: BOOK-23 failed — unclassified error",
+        "category": "unit",
+        "priority": "medium",
+        "facts": [
+          "Only BOOK-23 fails (1 of 9 BOOK values of REPORT-B)",
+          "first failed 2026-10-02 05:12 UTC; last success 2026-10-01"
+        ],
+        "action": "check",
+        "steps": [
+          "Only BOOK-23 fails: check that unit's input and static data.",
+          "Input looks right: re-trigger once, then escalate to Reporting platform team."
+        ],
+        "owner": "Reporting platform team",
+        "runbook": null,
+        "shared": {
+          "process": "REPORT-B",
+          "unit": "BOOK-23"
+        },
+        "job_ids": [
+          "2026-10-02_05_00_00-9967890123456789012"
+        ],
+        "note": "[Support triage] Business date 2026-10-02: REPORT-B: BOOK-23 failed — unclassified error\nPriority: medium · Action: check\n- Only BOOK-23 fails (1 of 9 BOOK values of REPORT-B)\n- first failed 2026-10-02 05:12 UTC; last success 2026-10-01\n- Jobs: 2026-10-02_05_00_00-9967890123456789012\n- Known issue: no runbook match\n- Next steps: Only BOOK-23 fails: check that unit's input and static data. Input looks right: re-trigger once, then escalate to Reporting platform team.\n- Suggested owner: Reporting platform team"
+      },
+      "evidence": {
+        "metrics": {
+          "ok": true,
+          "source": "report-b-transform",
+          "values": {
+            "restarts": 0,
+            "up": 1,
+            "error_rate": 0.0
+          },
+          "summary": "restarts 0 · up 1 · error_rate 0"
+        },
+        "logs": {
+          "ok": true,
+          "summary": "no error lines from report-b-transform in the window",
+          "security_lines": 0,
+          "groups": []
+        },
+        "audit": {
+          "ok": true,
+          "summary": "no permission-denied calls and no IAM policy changes in the window",
+          "denials_total": 0,
+          "denials": [],
+          "iam_changes": []
+        },
+        "dataflow": [
+          {
+            "ok": true,
+            "job_id": "2026-10-02_05_00_00-9967890123456789012",
+            "state": "JOB_STATE_FAILED",
+            "kind": "unknown",
+            "created": "2026-10-02T05:00:05+00:00",
+            "ended": "2026-10-02T05:12:40+00:00",
+            "summary": "failed after 12 min; kind: unknown; the job reported no step error",
+            "errors": [
+              {
+                "text": "Workflow failed.",
+                "time": "2026-10-02T05:12:35+00:00",
+                "count": 1
+              }
+            ],
+            "log_groups": []
+          }
+        ],
+        "changes": {
+          "ok": true,
+          "summary": "no release changes for report-b-transform, REPORT-B in the 7 days before 2026-10-02",
+          "total_changes": 0,
+          "changes": []
+        }
+      },
+      "unavailable": [],
+      "timeline": [
+        {
+          "time": "2026-10-01T00:00:00+00:00",
+          "kind": "run",
+          "source": "control_table",
+          "text": "Last successful run of this was on 2026-10-01"
+        },
+        {
+          "time": "2026-10-02T05:00:05+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …67890123 created"
+        },
+        {
+          "time": "2026-10-02T05:12:35+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …67890123 first error: Workflow failed."
+        },
+        {
+          "time": "2026-10-02T05:12:40+00:00",
+          "kind": "job",
+          "source": "dataflow",
+          "text": "Dataflow job …67890123 ended failed"
+        }
+      ],
+      "checked": [
+        "Control table (BigQuery): REPORT-B: BOOK-23 failed — unclassified error",
+        "Source metrics (PromQL): restarts 0 · up 1 · error_rate 0",
+        "Source logs (Cloud Logging, report-b-transform): no error lines from report-b-transform in the window",
+        "Audit logs (Cloud Audit Logs): no permission-denied calls and no IAM policy changes in the window",
+        "Dataflow job 2026-10-02_05_00_00-9967890123456789012 (Dataflow API): failed after 12 min; kind: unknown; the job reported no step error",
+        "Release log (BigQuery release_intents): no release changes for report-b-transform, REPORT-B in the 7 days before 2026-10-02"
+      ],
+      "signals": {
+        "streak": 1,
+        "last_success": "2026-10-01",
+        "security_in_logs": 0,
+        "denials": 0,
+        "iam_changes": 0,
+        "recent_change": null,
+        "leads": [
+          "Dataflow job …67890123: failed after 12 min; kind: unknown; the job reported no step error",
+          "The source is healthy by its metrics — the problem is downstream of it."
+        ],
+        "source_healthy": true,
+        "job_kinds": [
+          "unknown"
+        ],
+        "category": "unit"
+      },
+      "elapsed_ms": 1800
+    },
+    "expect": {
+      "must_mention_any": [
+        [
+          "could not determine",
+          "cannot determine",
+          "can not determine",
+          "unable to determine",
+          "not able to determine",
+          "not enough evidence",
+          "insufficient evidence",
+          "no conclusive",
+          "could not establish",
+          "cannot establish",
+          "does not establish",
+          "did not establish",
+          "not established",
+          "does not determine",
+          "cannot be determined",
+          "could not be determined"
+        ]
+      ],
+      "must_not_mention": [
+        "permission",
+        "iam",
+        "out of memory",
+        "quota",
+        "schema"
+      ],
+      "action": "check",
+      "max_model_calls": 4,
+      "confidence_at_most": "low"
+    }
+  }
+]

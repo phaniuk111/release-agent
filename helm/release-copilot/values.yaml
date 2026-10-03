@@ -269,6 +269,18 @@ config:
   ADVISOR_MODEL: ""                  # e.g. "gemini-3.1-pro-preview"
   ADVISOR_MAX_USES: "2"
   ADVISOR_SESSION_MAX_USES: "5"
+  # Investigate runs as a fixed pipeline: the evidence is collected in code, in
+  # parallel, and the model is called on the result — so a cheaper model is
+  # enough, and the cap bounds what one investigation can spend. Past the cap
+  # (or with LLM_ENABLED=false) the answer is the evidence itself, model-free.
+  INVESTIGATE_MODEL: ""              # empty = GEMINI_MODEL; e.g. a Flash-class model
+  INVESTIGATE_MAX_MODEL_CALLS: "4"
+  # "Was this right?" on every investigation, stored APPEND-ONLY (one INSERT per
+  # answer; the latest per person wins at read time). EMPTY DATASET DISABLES it.
+  # Service account: roles/bigquery.dataEditor on THAT dataset only. The table
+  # comes from bigquery/support_findings.schema.json (terraform module).
+  SUPPORT_FEEDBACK_DATASET: ""
+  SUPPORT_FEEDBACK_TABLE: "support_findings"
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token
   # usage, each tool call, the deploy Workflow's nodes — exported as

@@ -213,6 +213,20 @@ with its evidence, and the ticket note. It needs `SUPPORT_CLUSTER`,
 excerpts, so settle that with your risk people before turning it on. Every
 step is read-only; the skill suggests, it never re-runs or rolls back.
 
+The button runs a fixed pipeline rather than a free-roaming agent: the evidence
+is collected in code, in parallel (about 5 s), merged into a time-ordered
+timeline with rule-based leads, and the model is called on that once
+(`INVESTIGATE_MODEL`, capped by `INVESTIGATE_MAX_MODEL_CALLS`). With
+`LLM_ENABLED=false`, or if the model fails, the answer is the evidence itself.
+Under every finding a "Was this right?" row (right / right direction / wrong,
+plus the actual cause) is stored append-only when `SUPPORT_FEEDBACK_DATASET` is
+set (`bigquery/support_findings.schema.json`; `GET /api/support/feedback/stats`
+gives the accuracy). `scripts/eval_investigate.py` scores the model step
+against `tests/eval/investigate_cases.json` — run it before changing the
+model or the instruction. One finding per incident is shared for ten minutes:
+ten people clicking the same incident cost one model call and read the same
+answer (measured: 18 s for all ten, against 59 s for the slowest without it).
+
 ## Agent observability — Langfuse (optional)
 
 ADK traces every chat turn as OpenTelemetry spans — the router's decision,

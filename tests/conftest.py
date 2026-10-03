@@ -45,3 +45,15 @@ def _no_wait_for_the_sit_to_uat_pr(monkeypatch):
     """A UAT deploy waits for the repository's SIT -> UAT PR to appear. No test
     has that workflow, so none may sit out the real wait."""
     monkeypatch.setattr(settings, "uat_pr_wait_seconds", 0)
+
+
+@pytest.fixture(autouse=True)
+def _no_shared_findings_between_tests():
+    """The investigate lane shares a finding per incident for ten minutes; a
+    test must never be answered by the finding an earlier test produced."""
+    from release_agent import adk_service
+
+    adk_service._findings.clear()
+    adk_service._finding_locks.clear()
+    yield
+    adk_service._findings.clear()

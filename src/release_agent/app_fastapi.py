@@ -682,6 +682,69 @@ def support_triage_report(request: Request, date: str = "", fresh: int = 0):
     return _cached(cache, _SUPPORT_TTL_SECONDS, lambda: support_triage.triage(key), fresh=bool(fresh))
 
 
+class SupportFeedbackRequest(BaseModel):
+    """One "was this right?" answer. No actor field on purpose: who answered is
+    the verified caller, never something the browser says."""
+    business_date: str
+    incident_id: str
+    title: str = ""
+    verdict: str
+    actual_cause: str = ""
+    category: str = ""
+    action: str = ""
+    model: str = ""
+    model_calls: int | None = None
+    seconds: float | None = None
+
+
+@app.post("/api/support/feedback")
+def support_feedback_record(req: SupportFeedbackRequest, request: Request):
+    """Append one rating of an investigation (right / direction / wrong, with the
+    real cause in the person's words). Answers {ok, recorded} or {ok: False,
+    error, hint?}; a memory that is off says disabled."""
+    from fastapi.responses import JSONResponse
+
+    from .tools import support_feedback
+
+    caller = _caller(request)
+    if not features.allowed("support-triage", caller):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
+    # Nothing typed stands in for the caller: with identity off the answer is
+    # anonymous, and IDENTITY_REQUIRED refuses an unverified one.
+    actor, refused = _actor_or_refusal("", caller)
+    if refused:
+        return refused
+    return support_feedback.record(
+        business_date=req.business_date, incident_id=req.incident_id, title=req.title, verdict=req.verdict,
+        actual_cause=req.actual_cause, category=req.category, action=req.action, model=req.model,
+        model_calls=req.model_calls, seconds=req.seconds, actor=actor)
+
+
+@app.get("/api/support/feedback/stats")
+def support_feedback_stats(request: Request, days: int = 30):
+    """How the investigations were rated: accuracy, by category and model, and
+    the newest wrong answers with their real causes."""
+    from fastapi.responses import JSONResponse
+
+    from .tools import support_feedback
+
+    if not features.allowed("support-triage", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
+    return support_feedback.stats(days)
+
+
+@app.get("/api/support/feedback")
+def support_feedback_for_incident(request: Request, date: str = "", incident_id: str = ""):
+    """What people said about one incident before ("2 people marked this right")."""
+    from fastapi.responses import JSONResponse
+
+    from .tools import support_feedback
+
+    if not features.allowed("support-triage", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
+    return support_feedback.for_incident(date, incident_id)
+
+
 @app.get("/api/bq-cost/report.xlsx")
 def bq_cost_report_xlsx(request: Request, fresh: int = 0):
     """The same report as a workbook to download — one sheet per section, from

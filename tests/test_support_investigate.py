@@ -51,7 +51,7 @@ def test_source_metrics_fills_the_configured_expressions_and_reads_at_the_window
             {"ok": True, "series": [{"value": 3.0}, {"value": 1.0}]}
     monkeypatch.setattr(monitoring, "run_query", fake)
     out = tools.source_metrics("svc-a", "2026-09-20")
-    assert out["ok"] and out["summary"] == "restarts: 7 · up: 3"
+    assert out["ok"] and out["summary"] == "restarts 7 · up 3"
     assert seen[0] == ('sum(x{app="svc-a",namespace="ns-a"}[36h])', "2026-09-21T12:00:00+00:00")
     assert tools.source_metrics("bad name")["ok"] is False
 
@@ -63,7 +63,7 @@ def test_a_failed_or_empty_check_is_said_not_hidden(monkeypatch):
     monkeypatch.setattr(settings, "support_source_promql", "up=up{{app=\"{source}\"}};err=err", raising=False)
     monkeypatch.setattr(monitoring, "run_query",
                         lambda expr, at="": {"ok": True, "series": []} if expr.startswith("up") else {"ok": False, "error": "403 no"})
-    assert tools.source_metrics("svc-a")["summary"] == "up: no series · err: not measured (403 no)"
+    assert tools.source_metrics("svc-a")["summary"] == "up no series · err not measured"
 
 
 def test_evidence_is_shared_for_ten_minutes_but_a_failure_is_retried(monkeypatch):
