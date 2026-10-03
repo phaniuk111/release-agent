@@ -188,13 +188,17 @@ def test_the_free_form_chat_lane_is_the_one_that_gets_it(monkeypatch):
     _drain(service, "what is deployed in uat?", abort)
 
     assert len(service.chat_runner.calls) == 1
-    assert service.chat_runner.calls[0]["abort_signal"] is abort
+    # ADK gets a PRIVATE stop signal, never the endpoint's own: handing it the
+    # endpoint's would cancel a tool's await while its worker thread carries on.
+    given = service.chat_runner.calls[0]["abort_signal"]
+    assert isinstance(given, asyncio.Event) and given is not abort
     assert service.deploy_runner.calls == [] and service.commands_runner.calls == []
 
 
 def test_an_aborted_turn_drops_the_pause_the_abort_sealed(monkeypatch):
-    """A confirmation that arrived as the person left was sealed by ADK with
-    the rest of the invocation: no reminder may invite a 'yes' to it."""
+    """The person left while only the model was busy, so ADK was told to stop
+    and sealed the invocation; a confirmation that still came through was sealed
+    with it: no reminder may invite a 'yes' to it."""
     from types import SimpleNamespace
 
     from google.genai import types as T
@@ -219,6 +223,9 @@ def test_an_aborted_turn_drops_the_pause_the_abort_sealed(monkeypatch):
     class _PausingRunner(_Recorder):
         async def run_async(self, **kwargs):
             abort.set()                 # the reader left while the model was answering
+            for _ in range(3):
+                await asyncio.sleep(0)  # …and the stop reached ADK before the pause came out
+            assert kwargs["abort_signal"].is_set()
             yield _Pause()
 
     service.chat_runner = _PausingRunner(None)
@@ -233,3 +240,42 @@ def test_an_aborted_turn_drops_the_pause_the_abort_sealed(monkeypatch):
     assert service._pending_adk_calls == {}, "the sealed pause is not left waiting for a yes"
     assert persisted[-1] is None, "and not in session state either"
     assert events[-1] == {"type": "done", "mutated": False}
+
+
+def test_a_pause_reached_before_the_reader_left_stays_a_valid_approval(monkeypatch):
+    """Nothing was stopped, so nothing was sealed: the approval waits for an
+    explicit yes or no, exactly as when the tab is simply closed at a pause."""
+    from types import SimpleNamespace
+
+    from google.genai import types as T
+
+    service = _service(monkeypatch)
+    abort = asyncio.Event()
+
+    class _Pause(_Done):
+        long_running_tool_ids = {"c1"}
+
+        def get_function_calls(self):
+            return [SimpleNamespace(id="c1", name="adk_request_confirmation", args={
+                "originalFunctionCall": {"id": "o1", "name": "promote_release",
+                                         "args": {"target": "prd"}}})]
+
+    class _PausingRunner(_Recorder):
+        async def run_async(self, **kwargs):
+            yield _Pause()
+
+    service.chat_runner = _PausingRunner(None)
+
+    async def run():
+        seen = []
+        async for e in service._run_chat_agent(
+                T.Content(role="user", parts=[T.Part(text="promote it")]), "t-pause", abort_signal=abort):
+            seen.append(e)
+            if e["type"] == "interrupt":
+                abort.set()             # the reader leaves as the pause appears
+        return seen
+
+    events = asyncio.run(run())
+
+    assert [e["type"] for e in events] == ["interrupt", "done"]
+    assert list(service._pending_adk_calls) == [(S._user_id(), "t-pause")]

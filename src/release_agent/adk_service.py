@@ -714,11 +714,19 @@ class AdkChatService:
         """Run the deploy Workflow's preview turn and surface the confirmation interrupt."""
         said_something = False
         reported = ""
+        paused = False
+        # Run to the END even past the pause — do not break at the token. A run
+        # left half-consumed is finalised later by the garbage collector, in
+        # another context: ADK then cancels the Workflow's leftover tasks there
+        # and (2.11) logs "Failed to detach context" at ERROR for each — seen on
+        # GKE on every paused preview. After the pause the run ends on its own.
         async for event in self.deploy_runner.run_async(
             user_id=_user_id(),
             session_id=_session_id(thread_id, "deploy"),
             new_message=_content_from_text(message),
         ):
+            if paused:
+                continue
             for label in _progress_events(event):
                 yield {"type": "progress", "content": label}
             text = _text_from_event(event)
@@ -757,7 +765,7 @@ class AdkChatService:
                     },
                 }
                 said_something = True
-                break
+                paused = True
         if not said_something:
             # Belt and braces: the lane must never answer a submitted form with
             # an empty turn — silence reads as "it worked" and it did not.
@@ -865,11 +873,15 @@ class AdkChatService:
         turn completes and — when memory is enabled — the session is saved to the
         memory service so future turns can recall it.
 
-        ``abort_signal`` (set when the person has left) makes ADK stop at the
-        next event boundary and seal the invocation: every function call still
-        waiting for a response, a confirmation pause included, is answered with
-        an ``INVOCATION_ABORTED`` error, so nothing dangles in the session and a
-        resume never re-runs a tool.
+        ``abort_signal`` (set when the person has left) ends the turn — but NOT
+        by handing it to ADK directly. ADK 2.11 cancels its root task the moment
+        its signal is set and seals every unanswered function call with an
+        ``INVOCATION_ABORTED`` error; our tools do their GitHub/BigQuery work on
+        a worker thread, which a cancelled await does not stop. A promotion in
+        flight would land AND be recorded as aborted — the next turn's model
+        would believe nothing happened. So ADK gets a private ``stop`` signal,
+        set only while no tool is running: a tool in flight finishes, its real
+        answer is recorded, and the turn stops right after it.
         """
         interrupted = False
         mutated = False          # did this turn change release/deploy state?
@@ -877,6 +889,15 @@ class AdkChatService:
         approved_note = ""       # the approved operation's own result sentence
         repeat = None            # the model asking to run the approved operation AGAIN
         landed: list[tuple[str, str]] = []   # state-changing tools that returned this turn
+        stop = asyncio.Event() if abort_signal is not None else None
+        tools_running = 0        # function calls the model made that have not answered yet
+
+        async def _stop_when_the_reader_left() -> None:
+            await abort_signal.wait()
+            if not tools_running:    # only the model is busy: nothing to wait for
+                stop.set()
+
+        watcher = asyncio.create_task(_stop_when_the_reader_left()) if abort_signal is not None else None
         try:
             # aclosing: the two breaks below leave the run early, and only a
             # closed generator seals an aborted invocation NOW rather than
@@ -887,9 +908,11 @@ class AdkChatService:
                 session_id=_session_id(thread_id, "chat"),
                 invocation_id=invocation_id,
                 new_message=content,
-                abort_signal=abort_signal,
+                abort_signal=stop,
             )) as run:
                 async for event in run:
+                    tools_running = max(0, tools_running + len(event.get_function_calls() or [])
+                                        - len(event.get_function_responses() or []))
                     for label in _progress_events(event):
                         yield {"type": "progress", "content": label}
                     # A change is a tool that RAN, not one the model called: a call
@@ -917,7 +940,14 @@ class AdkChatService:
                         yield {"type": "interrupt", "data": _confirmation_interrupt_payload(pending)}
                         interrupted = True
                         break
+                    if abort_signal is not None and abort_signal.is_set() and not tools_running:
+                        # The reader left while a tool was running; it has now
+                        # answered and been recorded above. Stop here.
+                        stop.set()
+                        break
         except Exception:
+            if watcher is not None:
+                watcher.cancel()
             if not landed:
                 raise           # nothing ran: the endpoint's "nothing was changed" is true
             # Found under load: Vertex answered 429 AFTER an approved promotion
@@ -949,8 +979,12 @@ class AdkChatService:
                 pass
             if not said_anything:
                 yield {"type": "token", "content": approved_note}
-        if abort_signal is not None and abort_signal.is_set():
-            # The person left mid-turn and ADK sealed the invocation. A pause
+        if watcher is not None:
+            watcher.cancel()
+        if stop is not None and stop.is_set():
+            # The person left mid-turn and ADK sealed the invocation (``stop``,
+            # not the endpoint's signal: only a stop we actually gave ADK seals
+            # anything — a pause reached before it stays a valid approval). A pause
             # that arrived in the same breath was sealed with it, so the "yes"
             # a reminder would invite could answer nothing: drop it from both
             # stores rather than leave an approval that cannot be acted on. The

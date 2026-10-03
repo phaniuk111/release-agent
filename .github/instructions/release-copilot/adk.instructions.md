@@ -28,3 +28,8 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   unlocks). Instructions say what the tool returns; they never invent facts.
 - A turn is `mutated` only when a state-changing tool RAN (`_landed_changes`) —
   a call that paused for approval, or a rejection, changed nothing.
+- **A turn outlives its reader.** The SSE endpoint relays a turn that runs in its
+  own task; when the client disconnects only the chat lane stops, via a private
+  stop signal handed to ADK while NO tool is in flight (never the endpoint's
+  signal directly, never to a Workflow). Iterate every Workflow run to its
+  natural end — do not `break` at a pause.
