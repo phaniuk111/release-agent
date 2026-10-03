@@ -20,9 +20,6 @@ data:
   {{- end }}
   {{- with $st.owners }}{{- $_ := set $fromTable "SUPPORT_OWNERS" (include "release-copilot.supportOwners" $st) }}{{- end }}
   {{- end }}
-  {{- with (.Values.supportPriority | default dict).rules }}
-  {{- $_ := set $fromTable "SUPPORT_PRIORITY" (toJson .) }}
-  {{- end }}
   {{- range $key, $val := .Values.config }}
   {{- if not (hasKey $fromTable $key) }}
   {{ $key }}: {{ $val | quote }}

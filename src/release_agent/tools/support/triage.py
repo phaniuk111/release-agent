@@ -37,7 +37,6 @@ from ...config import settings
 from . import queries
 from .config import DIMENSIONS, ConfigError, _disabled, _names, _permission_hint, enabled, parse_columns, parse_table
 from .incidents import PriorityRules, incidents, load_runbook, parse_critical, parse_owners
-from .priority import parse_rules
 from .report import _to_date, build_report
 
 
@@ -83,14 +82,8 @@ def triage(business_date: str = "") -> dict[str, Any]:
     if problem:
         out["notes"].append(problem)
     out["runbook_entries"] = len(runbook)
-    policy, problems = parse_rules(settings.support_priority, high_count=settings.support_high_count,
-                                   medium_count=settings.support_medium_count)
-    if problems:
-        out["notes"].append("The configured priority rules were not used (the built-in ones apply): "
-                            + "; ".join(problems[:3]) + ("; …" if len(problems) > 3 else ""))
-    out["priority_rules"] = "configured" if settings.support_priority.strip() and not problems else "built-in"
     rules = PriorityRules(high_count=settings.support_high_count, medium_count=settings.support_medium_count,
-                          critical=parse_critical(settings.support_critical), rules=policy)
+                          critical=parse_critical(settings.support_critical))
     out["incidents"] = incidents(out, labels=out["labels"], runbook=runbook,
                                  owners=parse_owners(settings.support_owners), rules=rules)
     return out

@@ -449,23 +449,3 @@ def test_a_stuck_incident_carries_its_runs_last_written_time():
     rep = report(counts={"open": 1}, stuck=[{"run_id": "s1", "status": "RUNNING", "updated_at": at, "total": 1}])
     inc = next(i for i in s_incidents.incidents(rep, labels={}, runbook=[], owners={}) if i["kind"] == "stuck")
     assert inc["runs"] == [{"run_id": "s1", "at": at.isoformat()}]
-
-
-def test_bad_priority_rules_leave_a_note_and_the_built_in_rules_order_the_queue(monkeypatch, configured):
-    answers = {
-        "dates": [{"d": P}, {"d": D}],
-        "counts": [{"state": "failed", "n": 3, "retried_after_failure": 0}],
-        "failures": [{"run_id": f"r{u}", "status": "FAILED", "unit": f"U{u}", "system": "SYS-A",
-                      "error": "file not found", "key": f"SYS-A|U{u}"} for u in range(3)],
-        "values": [{"role": "system", "value": "SYS-A", "n": 3}],
-    }
-    _fake_statements(monkeypatch, answers, {})
-    monkeypatch.setattr(s_config.settings, "support_priority", '[{"level": "high", "reason": "{oops}"}]')
-    out = s_triage.triage("")
-    assert out["priority_rules"] == "built-in"
-    assert any("priority rules were not used" in n and "{oops}" in n for n in out["notes"])
-    assert out["incidents"][0]["priority_reason"] == "3 runs, one upstream system"
-    monkeypatch.setattr(s_config.settings, "support_priority", '[{"level": "low", "reason": "team says: {runs}"}]')
-    out = s_triage.triage("")
-    assert out["priority_rules"] == "configured"
-    assert (out["incidents"][0]["priority"], out["incidents"][0]["priority_reason"]) == ("low", "team says: 3 runs")

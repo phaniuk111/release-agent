@@ -23,7 +23,6 @@ from .config import (
     parse_columns,
     parse_table,
 )
-from .priority import parse_rules
 from .report import _to_date
 
 # ----- the queries ---------------------------------------------------------------
@@ -325,14 +324,5 @@ def check_config() -> dict[str, Any]:
                 else "a retry counts as a separate run."))
     mapped = {c.lower() for c in columns.values()}
     out["unmapped"] = [f.name for f in table.schema if f.name.lower() not in mapped]
-    # The priority rules are checked here too: a typo in them would otherwise
-    # only show as a note on the triage, after the queue was ordered by the
-    # built-in rules instead.
-    _rules, priority_problems = parse_rules(settings.support_priority, high_count=settings.support_high_count,
-                                            medium_count=settings.support_medium_count)
-    out["problems"] += priority_problems
-    out["notes"].append(f"priority: {len(_rules)} rules, "
-                        + ("configured (SUPPORT_PRIORITY)" if settings.support_priority.strip() and not priority_problems
-                           else "built-in"))
     out["ok"] = not out["problems"]
     return out
