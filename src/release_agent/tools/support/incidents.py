@@ -254,7 +254,8 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
                     "category": err["category"], "count": err["count"], "facts": facts,
                     "error_text": err.get("sample") or err.get("signature"),
                     "shared": dict(err.get("shared") or {}),
-                    "job_ids": err.get("job_ids") or [], "runbook": known["title"] if known else None,
+                    "job_ids": err.get("job_ids") or [], "runs": err.get("runs") or [],
+                    "runbook": known["title"] if known else None,
                     "action": action, "steps": steps, "owner": owner,
                     "_rank": ("error", err["count"], err, err.get("values") or err.get("shared") or {})})
     stuck = report.get("stuck") or []
@@ -265,8 +266,10 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
                     "count": len(stuck),
                     "facts": [f"{len(stuck)} run(s) neither finished nor failed, with no update for a while.",
                               f"{no_job} of them never logged a job id." if no_job else "All of them logged a job id."],
-                    "job_ids": [s["job_id"] for s in stuck if s.get("job_id")][:3], "runbook": None,
-                    "action": "check",
+                    "job_ids": [s["job_id"] for s in stuck if s.get("job_id")][:3],
+                    # a stuck run's last row: its log lines say what it was doing when it went quiet
+                    "runs": [{"run_id": s["run_id"], "at": s["at"]} for s in stuck if s.get("run_id") and s.get("at")][:3],
+                    "runbook": None, "action": "check",
                     "steps": ["Open the job of each stuck run.",
                               "No job id: the job never started — re-trigger once.",
                               f"Still running far beyond normal, or fails again: escalate to {owner}."],

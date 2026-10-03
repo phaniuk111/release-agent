@@ -191,7 +191,7 @@ def test_incident_found_and_read_by_its_shared_source_process_and_jobs(fakes):
     calls, seen = fakes
     b = inv.collect(DAY, INCIDENT_ID, source="ignored", process="ignored")
     assert b["ok"] and b["incident"]["id"] == INCIDENT_ID
-    assert b["target"] == {"source": "sys-a-fetcher", "process": "report-b", "job_ids": ["job-1"]}
+    assert b["target"] == {"source": "sys-a-fetcher", "process": "report-b", "job_ids": ["job-1"], "runs": []}
     assert seen["logs"][0] == "sys-a-fetcher"
     assert seen["changes"] == (["sys-a-fetcher", "report-b"], date(2026, 10, 3), 7)
     assert seen["principal"] == "svc@example.test"
@@ -252,7 +252,7 @@ def test_an_unsafe_source_name_is_never_queried(fakes):
 def test_the_bundle_is_assembled_from_every_step(fakes):
     b = inv.collect(DAY, INCIDENT_ID)
     assert b["ok"] and b["unavailable"] == []
-    assert set(b["evidence"]) == {"metrics", "logs", "audit", "dataflow", "changes"}
+    assert set(b["evidence"]) == {"metrics", "logs", "audit", "dataflow", "changes", "runs"}
     assert b["evidence"]["metrics"]["summary"] == "restarts 0 · up 1 · error_rate 0"
     assert b["evidence"]["dataflow"][0]["job_id"] == "job-1"
     assert "Source metrics (PromQL): restarts 0 · up 1 · error_rate 0" in b["checked"]
@@ -842,3 +842,94 @@ def test_a_bundle_built_without_the_judgement_gets_it_when_the_model_sees_it():
     assert "The evidence suggests: escalate" in inv.render_markdown(bundle)
     bundle["signals"] = {"job_kinds": ["unknown"], "source_healthy": True}
     assert "does not establish a cause" in inv.render_markdown(bundle)
+
+
+# ----- a failed run's own lines ---------------------------------------------------------
+
+def run_result(run_id="run-7", **over):
+    out = {"ok": True, "run_id": run_id, "at": "2026-10-03T03:34:16.000000Z", "lines_read": 3, "errors": 1,
+           "groups": [{"signature": "# fetching landing #", "sample": f"{run_id} fetching landing/sys_b.csv",
+                       "count": 2, "first_seen": "2026-10-03T03:30:01Z", "last_seen": "2026-10-03T03:30:02Z",
+                       "severity": "INFO", "security": False},
+                      {"signature": "# job failed: no files matched spec", "sample": f"{run_id} job failed: no files matched spec",
+                       "count": 1, "first_seen": "2026-10-03T03:33:05Z", "last_seen": "2026-10-03T03:33:05Z",
+                       "severity": "ERROR", "security": False}],
+           "first_error": {"time": "2026-10-03T03:33:05Z", "component": "dataflow_step/report-b-load",
+                           "text": f"{run_id} job failed: no files matched spec"},
+           "components": [("k8s_container/sys-b-fetcher", 2), ("dataflow_step/report-b-load", 1)],
+           "security_lines": 0, "summary": f"3 lines name run {run_id} (1 error) from 2 components"}
+    out.update(over)
+    return out
+
+
+def with_runs(monkeypatch, fakes, result=run_result):
+    calls, seen = fakes
+    runs = [{"run_id": "run-7", "at": "2026-10-03T03:34:16+00:00"}, {"run_id": "run-9", "at": None}]
+    monkeypatch.setattr(support_triage, "triage", lambda day="": report(incident(runs=runs)))
+
+    def for_run(run_id, at, *, before_minutes=None, session=None):
+        calls.hit("runlogs")
+        seen.setdefault("runs", []).append((run_id, at))
+        return result(run_id)
+
+    monkeypatch.setattr(source_logs, "for_run", for_run)
+    return calls, seen
+
+
+def test_each_run_with_a_written_time_is_searched_by_its_id(monkeypatch, fakes):
+    calls, seen = with_runs(monkeypatch, fakes)
+    b = inv.collect(DAY, INCIDENT_ID)
+    # run-9 has no written time: nothing to anchor a window on, so it is not searched
+    assert seen["runs"] == [("run-7", datetime(2026, 10, 3, 3, 34, 16, tzinfo=timezone.utc))]
+    assert b["target"]["runs"] == [{"run_id": "run-7", "at": datetime(2026, 10, 3, 3, 34, 16, tzinfo=timezone.utc)}]
+    assert [r["run_id"] for r in b["evidence"]["runs"]] == ["run-7"]
+    assert "Run logs (Cloud Logging, run run-7): 3 lines name run run-7 (1 error) from 2 components" in b["checked"]
+    texts = [t["text"] for t in b["timeline"]]
+    assert "Run run-7 first logged: run-7 fetching landing/sys_b.csv" in texts
+    assert "Run run-7 first error (dataflow_step/report-b-load): run-7 job failed: no files matched spec" in texts
+    assert "Run run-7: its control-table row written" in texts
+    assert b["signals"]["leads"][0].startswith("Run run-7 logged its own error at 03:33 in dataflow_step/report-b-load")
+
+
+def test_the_runs_own_error_outranks_what_the_source_said_all_day(monkeypatch, fakes):
+    """The source's day-wide logs carry 403s (fixture), but the run itself says
+    its input was missing: wait for the input, do not escalate a permission."""
+    with_runs(monkeypatch, fakes)
+    b = inv.collect(DAY, INCIDENT_ID)
+    assert b["signals"]["run_kind"] == "not_found" and b["signals"]["conclusive"] is True
+    assert b["signals"]["action_hint"]["action"] == "wait"
+
+
+def test_security_in_the_runs_own_lines_is_a_permission_problem(monkeypatch, fakes):
+    def denied(run_id):
+        return run_result(run_id, groups=[{"signature": "# token expired", "sample": "auth token expired",
+                                           "count": 1, "first_seen": "2026-10-03T03:31:00Z",
+                                           "last_seen": "2026-10-03T03:31:00Z", "severity": "WARNING",
+                                           "security": True}], first_error=None, security_lines=1)
+    with_runs(monkeypatch, fakes, denied)
+    b = inv.collect(DAY, INCIDENT_ID)
+    assert b["signals"]["run_kind"] is None and b["signals"]["security_in_run"] == 1
+    assert b["signals"]["action_hint"]["action"] == "escalate"
+
+
+def test_a_run_whose_lines_could_not_be_read_is_unavailable(monkeypatch, fakes):
+    with_runs(monkeypatch, fakes, lambda run_id: {"ok": False, "error": "Cloud Logging said 429: quota",
+                                                  "hint": "Cloud Logging read quota hit — try again in a minute"})
+    b = inv.collect(DAY, INCIDENT_ID)
+    assert {"step": "run logs run-7", "error": "Cloud Logging said 429: quota",
+            "hint": "Cloud Logging read quota hit — try again in a minute"} in b["unavailable"]
+    assert b["evidence"]["runs"] == []
+
+
+def test_an_incident_without_run_times_says_there_was_nothing_to_search(fakes):
+    b = inv.collect(DAY, INCIDENT_ID)
+    assert "Run logs: no run id with a written time on this incident — nothing to search for." in b["checked"]
+
+
+def test_the_model_sees_the_runs_first_error_and_components(monkeypatch, fakes):
+    with_runs(monkeypatch, fakes)
+    m = inv.for_model(inv.collect(DAY, INCIDENT_ID))
+    run = m["evidence"]["runs"][0]
+    assert run["first_error"]["component"] == "dataflow_step/report-b-load"
+    assert run["components"] == ["k8s_container/sys-b-fetcher ×2", "dataflow_step/report-b-load ×1"]
+    assert len(run["groups"]) == 2

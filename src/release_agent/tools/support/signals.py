@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from ._common import _CHANGE_DAYS, _hhmm, _iso, _line, _list, _ok, _plural
-from .dataflow_job import _headline
+from .dataflow_job import _headline, classify
 from .dataflow_job import _when as _parse_time  # RFC 3339 up to nanoseconds, Z or offset
 
 _LEADS_MAX = 4
@@ -44,6 +44,9 @@ def first_failure(business: date, streak: int | None, evidence: dict[str, Any]) 
         d = business - timedelta(days=streak - 1)
         return datetime(d.year, d.month, d.day, tzinfo=timezone.utc), True
     seen: list[datetime] = []
+    for run in _list(evidence.get("runs")):
+        if _ok(run) and (when := _parse_time((run.get("first_error") or {}).get("time"))):
+            seen.append(when)
     for job in _list(evidence.get("dataflow")):
         if _ok(job) and job.get("kind") not in (None, "none") and (when := _parse_time(job.get("created"))):
             seen.append(when)
@@ -80,6 +83,28 @@ def recent_change(changes: dict[str, Any] | None, failed_at: datetime, whole_day
 def _earliest(groups: list[Any]) -> datetime | None:
     times = [t for g in groups if (t := _parse_time(g.get("first_seen")))]
     return min(times) if times else None
+
+
+def run_errors(evidence: dict[str, Any]) -> list[str]:
+    """The error-or-worse lines the failed runs themselves logged (by group)."""
+    texts = []
+    for run in _list(evidence.get("runs")):
+        for g in _list((_ok(run) or {}).get("groups")):
+            if g.get("severity") in ("ERROR", "CRITICAL", "ALERT", "EMERGENCY") and g.get("sample"):
+                texts.append(str(g["sample"]))
+    return texts
+
+
+def _lead_run(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
+    runs = [r for r in _list(ev.get("runs")) if _ok(r) and r.get("first_error")]
+    if not runs:
+        return None
+    run = min(runs, key=lambda r: r["first_error"].get("time") or "")
+    err = run["first_error"]
+    when = _parse_time(err.get("time"))
+    at = f" at {_hhmm(when)}" if when else ""
+    return (f"Run {run.get('run_id')} logged its own error{at} in {err.get('component') or '?'}: "
+            f"{_line(err.get('text'), 90)} — start there; it names this run, not just its source.")
 
 
 def _lead_unhealthy(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
@@ -166,7 +191,7 @@ def _lead_healthy(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
 
 # In the order a person would read them; the first _LEADS_MAX that apply are kept.
 _LEAD_RULES: tuple[Callable[[dict[str, Any], dict[str, Any]], str | None], ...] = (
-    _lead_unhealthy, _lead_security, _lead_iam, _lead_denials, _lead_change, _lead_dataflow, _lead_healthy)
+    _lead_run, _lead_unhealthy, _lead_security, _lead_iam, _lead_denials, _lead_change, _lead_dataflow, _lead_healthy)
 
 
 def compute_signals(*, business: date, evidence: dict[str, Any], category: str | None,
@@ -181,7 +206,14 @@ def compute_signals(*, business: date, evidence: dict[str, Any], category: str |
         if kind and kind != "none" and kind not in kinds:
             kinds.append(kind)
     failed_at, whole_day = first_failure(business, streak, evidence)
+    own = run_errors(evidence)
+    run_kind = classify(own) if own else None
     sig: dict[str, Any] = {
+        # what the failed runs' OWN lines say — "unknown" when they erred in words
+        # no rule knows, None when they logged no error (or were not searched)
+        "run_kind": run_kind,
+        "run_errors": len(own),
+        "security_in_run": sum(int((_ok(r) or {}).get("security_lines") or 0) for r in _list(evidence.get("runs"))),
         "source_healthy": source_is_healthy(metrics.get("values") or {}) if metrics else None,
         "security_in_logs": int((logs or {}).get("security_lines") or 0),
         "denials": int((audit or {}).get("denials_total") or 0),
@@ -225,13 +257,21 @@ def with_judgement(signals: dict[str, Any] | None) -> dict[str, Any]:
     it (an eval case, an older cache entry) is judged the same way."""
     sig = dict(signals or {})
     kinds = [k for k in _list(sig.get("job_kinds")) if k and k not in ("unknown", "none")]
+    run_kind = sig.get("run_kind") if sig.get("run_kind") not in (None, "unknown", "none") else None
+    run_security = int(sig.get("security_in_run") or 0)
     scoped_denials = int(sig.get("denials") or 0) if sig.get("audit_scope") != "project-wide" else 0
     security = int(sig.get("security_in_logs") or 0)
     change = sig.get("recent_change")
     unhealthy = sig.get("source_healthy") is False
-    sig["conclusive"] = bool(kinds or security or scoped_denials or change or unhealthy)
+    sig["conclusive"] = bool(run_kind or run_security or kinds or security or scoped_denials or change or unhealthy)
     hint: tuple[str, str] | None = None
-    if unhealthy:
+    # The run's own lines first: they say what happened to THIS run, where the
+    # source's logs and the audit log are everything that happened that day.
+    if run_kind in _KIND_ACTIONS:
+        hint = _KIND_ACTIONS[run_kind]
+    elif run_security:
+        hint = _KIND_ACTIONS["permission"]
+    elif unhealthy:
         hint = ("wait", "the source itself is unhealthy — a re-run reads the same broken source; start there")
     elif security or scoped_denials:
         hint = _KIND_ACTIONS["permission"]

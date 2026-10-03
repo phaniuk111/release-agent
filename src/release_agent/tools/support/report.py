@@ -165,8 +165,9 @@ def build_report(*, roles: list[str], cob: date | None, previous: date | None, d
 
     failures = []
     for r in rows.get("failures", []):
+        at = _to_dt(r.get("updated_at"))
         failures.append({"run_id": _text(r.get("run_id")), "status": _text(r.get("status")),
-                         "key": r.get("key"), "dims": _dims_of(r, dims), "job_id": _text(r.get("job_id")) or None,
+                         "at": at.isoformat() if at else None, "key": r.get("key"), "dims": _dims_of(r, dims), "job_id": _text(r.get("job_id")) or None,
                          "error": _text(r.get("error")), "details": _detail_values(r.get("details"), detail_keys),
                          "attempts": int(r.get("attempts") or 1)})
     if len(failures) < failed_total:
@@ -232,6 +233,8 @@ def build_report(*, roles: list[str], cob: date | None, previous: date | None, d
             "recurring": recurring,
             "new": len(members) - recurring if has_keys else None,
             "job_ids": [m["job_id"] for m in members if m["job_id"]][:3],
+            # the run id and when its row was written: what finds the run's own log lines
+            "runs": [{"run_id": m["run_id"], "at": m["at"]} for m in members if m["run_id"] and m["at"]][:3],
             "max_streak": max((s or 0 for s, _ in hists), default=None),
             "last_success": max(last_oks) if last_oks else None,
         })
@@ -259,7 +262,7 @@ def build_report(*, roles: list[str], cob: date | None, previous: date | None, d
     for r in stuck_rows:
         at = _to_dt(r.get("updated_at"))
         stuck.append({"run_id": _text(r.get("run_id")), "status": _text(r.get("status")),
-                      "dims": _dims_of(r, dims), "job_id": _text(r.get("job_id")) or None,
+                      "at": at.isoformat() if at else None, "dims": _dims_of(r, dims), "job_id": _text(r.get("job_id")) or None,
                       "minutes_since_update": int((now - at).total_seconds() // 60) if at else None})
     stuck_total = int(stuck_rows[0].get("total") or len(stuck_rows)) if stuck_rows else 0
 

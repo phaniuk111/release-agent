@@ -21,6 +21,7 @@ def test_every_investigate_tool_refuses_a_non_preview_user(monkeypatch):
     monkeypatch.setattr(features.settings, "preview_users", "")
     for call in (lambda: tools.source_metrics("svc-a"), lambda: tools.source_logs("svc-a"),
                  lambda: tools.source_audit(), lambda: tools.dataflow_job("j1"),
+                 lambda: tools.run_logs("run-7", "2026-10-03T03:34:16Z"),
                  lambda: tools.release_lookup("svc-a"), lambda: tools.what_changed(["svc-a"], "2026-10-02")):
         assert "preview" in call()["error"]
 
@@ -183,3 +184,14 @@ def test_a_follow_up_question_reuses_the_reads_of_the_investigation(monkeypatch)
     assert len(reads) == 1
     out = support_tools.source_logs("svc-a", "2026-09-20")
     assert out["ok"] and len(reads) == 1            # served from the investigation's read
+
+
+def test_run_logs_reads_the_run_once_and_refuses_a_time_it_cannot_parse(monkeypatch):
+    from release_agent.tools.support import source_logs
+
+    calls = []
+    monkeypatch.setattr(source_logs, "for_run", lambda run_id, at, **kw: calls.append((run_id, at)) or {"ok": True})
+    assert tools.run_logs("run-7", "2026-10-03T03:34:16Z") == {"ok": True}
+    assert tools.run_logs("run-7", "2026-10-03T03:34:16+00:00") == {"ok": True}   # same moment, same read
+    assert len(calls) == 1 and calls[0][0] == "run-7"
+    assert "not a timestamp" in tools.run_logs("run-7", "yesterday")["error"] and len(calls) == 1

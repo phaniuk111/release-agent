@@ -45,6 +45,10 @@ GOOD = {
     "nothing conclusive":
         "I could not determine the cause: the source is healthy, nothing was denied, nothing was released and "
         "the job reported no step error. Confidence: low.\n\nDo now: check BOOK-23's input and static data.",
+    "run's own lines: input missing, source denied elsewhere":
+        "Run rc-20261002-0007 gave up because its input file landing/sys_c_20261002.csv was not found after "
+        "three retries. The source's 403s were on an archive bucket, hours later, by another job. "
+        "Confidence: high.\n\nDo now: wait for the file to land, then re-trigger.",
 }
 
 
@@ -169,8 +173,8 @@ def test_matching_is_by_word_start_and_case_insensitive():
 
 def test_the_cases_file_is_valid():
     cases = ev.load_cases()
-    assert len(cases) == 6
-    assert len({c["name"] for c in cases}) == 6
+    assert len(cases) == 7
+    assert len({c["name"] for c in cases}) == 7
     for c in cases:
         assert ev.case_problems(c) == [], c["name"]
         assert c["expect"]["max_model_calls"] == 4
@@ -182,7 +186,8 @@ def test_every_bundle_has_the_contract_shape():
         assert b["ok"] is True and b["business_date"] and b["window"]
         assert set(b["incident"]) >= {"id", "title", "category", "facts", "action", "steps", "owner", "runbook",
                                       "note", "shared", "job_ids"}
-        assert set(b["evidence"]) == {"metrics", "logs", "audit", "dataflow", "changes"}
+        # `runs` (a failed run's own lines) arrived later: older cases have none
+        assert set(b["evidence"]) - {"runs"} == {"metrics", "logs", "audit", "dataflow", "changes"}
         assert isinstance(b["unavailable"], list) and isinstance(b["checked"], list)
         assert all(set(t) == {"time", "kind", "source", "text"} for t in b["timeline"])
         assert set(b["signals"]) >= {"source_healthy", "security_in_logs", "denials", "iam_changes", "job_kinds",
@@ -190,7 +195,7 @@ def test_every_bundle_has_the_contract_shape():
         assert isinstance(b["elapsed_ms"], int)
 
 
-def test_the_cases_cover_the_six_situations():
+def test_the_cases_cover_the_seven_situations():
     kinds = {c["name"]: [j["kind"] for j in c["bundle"]["evidence"]["dataflow"]] for c in ev.load_cases()}
     assert kinds["upstream file not delivered"] == ["not_found"]
     assert kinds["out of memory on one unit"] == ["out_of_memory"]
@@ -200,6 +205,8 @@ def test_the_cases_cover_the_six_situations():
     assert perm["signals"]["security_in_logs"] > 0 and perm["signals"]["iam_changes"] == 1
     quiet = CASES["nothing conclusive"]["expect"]
     assert quiet["confidence_at_most"] == "low" and CASES["nothing conclusive"]["bundle"]["signals"]["source_healthy"]
+    own = CASES["run's own lines: input missing, source denied elsewhere"]["bundle"]["signals"]
+    assert own["run_kind"] == "not_found" and own["security_in_logs"] > 0 and own["action_hint"]["action"] == "wait"
     assert {c["expect"]["action"] for c in ev.load_cases()} == {"wait", "retrigger", "escalate", "check"}
 
 
@@ -228,11 +235,11 @@ def good_answers(bundle):
 def test_the_runner_scores_every_case_and_prints_a_table():
     lines: list[str] = []
     summary = ev.run(ev.load_cases(), good_answers, out=lines.append)
-    assert summary["passed"] == 6 and summary["total"] == 6
+    assert summary["passed"] == 7 and summary["total"] == 7
     table = "\n".join(lines)
     assert "case" in lines[0] and "failed checks" in lines[0]
-    assert table.count("pass") >= 6 and "FAIL" not in table
-    assert "passed 6 of 6" in table and "12 model calls" in table and "21.0s" in table
+    assert table.count("pass") >= 7 and "FAIL" not in table
+    assert "passed 7 of 7" in table and "14 model calls" in table and "24.5s" in table
 
 
 def test_the_runner_reports_failures_and_survives_a_crashing_answer_fn():
@@ -246,7 +253,7 @@ def test_the_runner_reports_failures_and_survives_a_crashing_answer_fn():
     lines: list[str] = []
     summary = ev.run(ev.load_cases(), flaky, out=lines.append)
     by_name = {r["name"]: r for r in summary["results"]}
-    assert summary["passed"] == 4
+    assert summary["passed"] == 5
     assert "model unavailable" in by_name["upstream file not delivered"]["checks"]["answer_fn"]["detail"]
     assert {"mentions", "model_calls"} <= {k for k, v in by_name["release changed the schema"]["checks"].items()
                                            if not v["passed"]}
@@ -264,8 +271,10 @@ def test_the_model_free_baseline_does_not_invent_but_does_not_find_the_cause(cap
     # What code decides by itself, the model-free summary gets right: the action
     # a failure kind implies (wait for an unhealthy source). It states leads, not
     # causes — so the cases that need a cause named still fail.
+    # A run that logged "input file not found" itself is one code reads alone.
     passed = {r["name"] for r in summary["results"] if r["passed"]}
-    assert passed <= {"upstream file not delivered", "out of memory on one unit"}
+    assert passed <= {"upstream file not delivered", "out of memory on one unit",
+                      "run's own lines: input missing, source denied elsewhere"}
     missed = [r["name"] for r in summary["results"] if not r["checks"]["mentions"]["passed"]]
     assert len(missed) >= 3
     # and whatever it says, it follows the evidence's action, never the generic one
@@ -285,7 +294,7 @@ def test_main_runs_the_baseline_and_exits_nonzero_when_cases_fail(capsys):
 def test_main_json_output_is_parseable(capsys):
     ev.main(["--model-free", "--json"])
     data = json.loads(capsys.readouterr().out)
-    assert data["total"] == 6 and len(data["results"]) == 6
+    assert data["total"] == 7 and len(data["results"]) == 7
 
 
 def test_a_retry_that_fails_is_a_denied_retry_and_a_ruled_out_cause_is_not_an_invention():

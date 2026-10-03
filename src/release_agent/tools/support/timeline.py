@@ -1,7 +1,8 @@
 """PURE: every dated piece of evidence, merged into one time-ordered list.
 
 Release changes, IAM changes, the first and last of each audit-denial group and
-each log group, the Dataflow job's milestones, the last success — capped and
+each log group, each failed run's own first line, first error and row, the
+Dataflow job's milestones, the last success — capped and
 de-duplicated, each line short and never a stack trace. It is what lets a person
 check a finding against what actually happened, and when.
 """
@@ -53,6 +54,18 @@ def _entries(evidence: dict[str, Any], last_success: str | None) -> list[_Entry]
         else:
             add(g.get("first_seen"), kind, "logs", f"Source first logged: {what} (×{g.get('count')} in all)")
             add(g.get("last_seen"), kind, "logs", f"Source last logged: {what}")
+    for run in _list(evidence.get("runs")):
+        if not _ok(run):
+            continue
+        tag = f"Run {run.get('run_id')}"
+        groups = [g for g in _list(run.get("groups")) if g.get("first_seen")]
+        if groups:
+            first = min(groups, key=lambda g: g["first_seen"])
+            add(first["first_seen"], "run", "run_logs", f"{tag} first logged: {_line(first.get('sample'), 110)}")
+        if (err := run.get("first_error")):
+            add(err.get("time"), "run", "run_logs",
+                f"{tag} first error ({err.get('component') or '?'}): {_line(err.get('text'), 110)}")
+        add(run.get("at"), "run", "control_table", f"{tag}: its control-table row written")
     for job in _list(evidence.get("dataflow")):
         if not _ok(job):
             continue

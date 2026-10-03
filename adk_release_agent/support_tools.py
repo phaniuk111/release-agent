@@ -146,6 +146,27 @@ def dataflow_job(job_id: str, region: str = "") -> dict[str, Any]:
     return _cache.remembered(("dataflow", job_id, region or ""), lambda: _df.inspect(job_id, region=region or ""))
 
 
+def run_logs(run_id: str, written_at: str) -> dict[str, Any]:
+    """Every log line, in any component and at any severity, that names ONE run
+    by its run id (the control table's run id), from a few minutes before the
+    run's row was written (`written_at`, the row's timestamp as ISO 8601 —
+    take it from the triage or the investigation, never guess it) to just
+    after: the run's own story, its first error and which components logged
+    it. Read-only."""
+    refused = _support_gate()
+    if refused:
+        return refused
+    from release_agent.tools.support import source_logs as _logs
+    from release_agent.tools.support._common import _iso
+    from release_agent.tools.support.dataflow_job import _when
+
+    at = _when(written_at)
+    if at is None:
+        return {"ok": False, "error": f"{written_at!r} is not a timestamp (ISO 8601, e.g. 2026-10-03T03:34:16Z)."}
+    return _cache.remembered(("runlogs", (run_id or "").strip(), _iso(at)),
+                             lambda: _logs.for_run((run_id or "").strip(), at))
+
+
 def release_lookup(name: str, days: int = 14, as_of: str = "") -> dict[str, Any]:
     """What is deployed where for a chart/image name (exact, else substring
     match), and its changes in the last `days` days up to `as_of`

@@ -685,6 +685,9 @@ class Settings(BaseSettings):
     # Project holding those logs (and the audit logs); blank = gcp_project.
     support_logs_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_LOGS_PROJECT"))
     support_logs_max_lines: int = Field(default=500, validation_alias=AliasChoices("SUPPORT_LOGS_MAX_LINES"))
+    # A failed run's own log lines: every entry naming its run id, from this many
+    # minutes before the row was written (the failure is logged before the row).
+    support_run_log_minutes: int = Field(default=5, validation_alias=AliasChoices("SUPPORT_RUN_LOG_MINUTES"))
     # The pipelines' service account — what an audit-log question filters on.
     support_service_account: str = Field(default="", validation_alias=AliasChoices("SUPPORT_SERVICE_ACCOUNT"))
     # The L1 runbook: known errors and what to do about them (JSON; the shape is

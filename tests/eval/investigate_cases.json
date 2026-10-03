@@ -1153,5 +1153,246 @@
       "max_model_calls": 4,
       "confidence_at_most": "low"
     }
+  },
+  {
+    "name": "run's own lines: input missing, source denied elsewhere",
+    "bundle": {
+      "ok": true,
+      "business_date": "2026-10-02",
+      "window": {
+        "start": "2026-10-02T00:00:00+00:00",
+        "end": "2026-10-03T12:00:00+00:00"
+      },
+      "incident": {
+        "id": "e-5e6f7a8b",
+        "kind": "error",
+        "title": "REPORT-C: 6 runs failed — fetch failed",
+        "category": "process",
+        "priority": "high",
+        "facts": [
+          "6 of 6 runs of REPORT-C failed with the same error",
+          "source sys-c-fetcher",
+          "New today: these succeeded on the previous date they ran."
+        ],
+        "action": "escalate",
+        "steps": [
+          "Check the release history for a recent deploy of this process.",
+          "Escalate to the owning team; re-running will not help."
+        ],
+        "owner": "Reports L2",
+        "runbook": null,
+        "shared": {
+          "source": "sys-c-fetcher",
+          "process": "REPORT-C"
+        },
+        "job_ids": [],
+        "runs": [
+          {
+            "run_id": "rc-20261002-0007",
+            "at": "2026-10-02T04:12:40+00:00"
+          }
+        ],
+        "note": "[Support triage] Business date 2026-10-02: REPORT-C: 6 runs failed — fetch failed\nPriority: high · Action: escalate\n- 6 of 6 runs of REPORT-C failed with the same error\n- Suggested owner: Reports L2",
+        "note_without_error": "[Support triage] Business date 2026-10-02: REPORT-C: 6 runs failed — fetch failed\nPriority: high · Action: escalate\n- 6 of 6 runs of REPORT-C failed with the same error\n- Suggested owner: Reports L2"
+      },
+      "evidence": {
+        "runs": [
+          {
+            "ok": true,
+            "run_id": "rc-20261002-0007",
+            "at": "2026-10-02T04:12:40.000000Z",
+            "lines_read": 7,
+            "errors": 2,
+            "groups": [
+              {
+                "signature": "rc-# fetching landing/sys_c_#.csv",
+                "sample": "rc-20261002-0007 fetching landing/sys_c_20261002.csv",
+                "count": 3,
+                "first_seen": "2026-10-02T04:08:02Z",
+                "last_seen": "2026-10-02T04:10:02Z",
+                "severity": "INFO",
+                "security": false
+              },
+              {
+                "signature": "rc-# landing/sys_c_#.csv not present yet, retry # of #",
+                "sample": "rc-20261002-0007 landing/sys_c_20261002.csv not present yet, retry 2 of 3",
+                "count": 2,
+                "first_seen": "2026-10-02T04:09:02Z",
+                "last_seen": "2026-10-02T04:10:02Z",
+                "severity": "WARNING",
+                "security": false
+              },
+              {
+                "signature": "rc-# giving up: input file not found after # retries",
+                "sample": "rc-20261002-0007 giving up: input file landing/sys_c_20261002.csv not found after 3 retries",
+                "count": 2,
+                "first_seen": "2026-10-02T04:11:03Z",
+                "last_seen": "2026-10-02T04:12:38Z",
+                "severity": "ERROR",
+                "security": false
+              }
+            ],
+            "first_error": {
+              "time": "2026-10-02T04:11:03Z",
+              "component": "k8s_container/sys-c-fetcher",
+              "text": "rc-20261002-0007 giving up: input file landing/sys_c_20261002.csv not found after 3 retries"
+            },
+            "components": [
+              [
+                "k8s_container/sys-c-fetcher",
+                7
+              ]
+            ],
+            "security_lines": 0,
+            "summary": "7 lines name run rc-20261002-0007 (2 error) from 1 component; first error: rc-20261002-0007 giving up: input file landing/sys_c_20261002.csv not found after 3 retries"
+          }
+        ],
+        "metrics": {
+          "ok": true,
+          "source": "sys-c-fetcher",
+          "values": {
+            "restarts": 0,
+            "up": 1,
+            "error_rate": 0.01
+          },
+          "summary": "restarts 0 · up 1 · error_rate 0.01"
+        },
+        "logs": {
+          "ok": true,
+          "security_lines": 12,
+          "lines_read": 12,
+          "groups": [
+            {
+              "signature": "# Forbidden from storage.googleapis.com bucket archive-#",
+              "count": 12,
+              "first_seen": "2026-10-02T16:20:00Z",
+              "last_seen": "2026-10-02T17:05:00Z",
+              "severity": "ERROR",
+              "security": true,
+              "sample": "403 Forbidden from storage.googleapis.com bucket archive-2026 (nightly archive job)"
+            }
+          ],
+          "summary": "12 error lines in 1 group; 1 security group (403 Forbidden from storage.googleapis.com bucket archive-2026 (nightly archive job) × 12)"
+        },
+        "audit": {
+          "ok": true,
+          "denials_total": 0,
+          "denials": [],
+          "iam_changes": [],
+          "summary": "0 permission-denied calls by svc@example.test in 0 groups; 0 IAM policy changes"
+        },
+        "dataflow": [],
+        "changes": {
+          "ok": true,
+          "total_changes": 0,
+          "changes": [],
+          "summary": "No changes in the 7 days up to 2026-10-02 across sys-c-fetcher, REPORT-C"
+        }
+      },
+      "unavailable": [],
+      "timeline": [
+        {
+          "time": "2026-10-01T00:00:00+00:00",
+          "kind": "run",
+          "source": "control_table",
+          "text": "Last successful run of this was on 2026-10-01"
+        },
+        {
+          "time": "2026-10-02T04:08:02+00:00",
+          "kind": "run",
+          "source": "run_logs",
+          "text": "Run rc-20261002-0007 first logged: rc-20261002-0007 fetching landing/sys_c_20261002.csv"
+        },
+        {
+          "time": "2026-10-02T04:11:03+00:00",
+          "kind": "run",
+          "source": "run_logs",
+          "text": "Run rc-20261002-0007 first error (k8s_container/sys-c-fetcher): rc-20261002-0007 giving up: input file landing/sys_c_20261002.csv not found after 3 retries"
+        },
+        {
+          "time": "2026-10-02T04:12:40+00:00",
+          "kind": "run",
+          "source": "control_table",
+          "text": "Run rc-20261002-0007: its control-table row written"
+        },
+        {
+          "time": "2026-10-02T16:20:00+00:00",
+          "kind": "security",
+          "source": "logs",
+          "text": "Source first logged: 403 Forbidden from storage.googleapis.com bucket archive-2026 (nightly archive job) (×12 in all)"
+        },
+        {
+          "time": "2026-10-02T17:05:00+00:00",
+          "kind": "security",
+          "source": "logs",
+          "text": "Source last logged: 403 Forbidden from storage.googleapis.com bucket archive-2026 (nightly archive job)"
+        }
+      ],
+      "checked": [
+        "Control table (BigQuery): REPORT-C: 6 runs failed — fetch failed",
+        "Source metrics (PromQL): restarts 0 · up 1 · error_rate 0.01",
+        "Run logs (Cloud Logging, run rc-20261002-0007): 7 lines name run rc-20261002-0007 (2 error) from 1 component; first error: rc-20261002-0007 giving up: input file landing/sys_c_20261002.csv not found after 3 retries",
+        "Source logs (Cloud Logging, sys-c-fetcher): 12 error lines in 1 group; 1 security group (403 Forbidden from storage.googleapis.com bucket archive-2026 (nightly archive job) × 12)",
+        "Audit logs (Cloud Audit Logs): 0 permission-denied calls by svc@example.test in 0 groups; 0 IAM policy changes",
+        "Dataflow: this incident's runs logged no job id — no job to inspect.",
+        "Release log (BigQuery release_intents): No changes in the 7 days up to 2026-10-02 across sys-c-fetcher, REPORT-C"
+      ],
+      "signals": {
+        "run_kind": "not_found",
+        "run_errors": 1,
+        "security_in_run": 0,
+        "source_healthy": true,
+        "security_in_logs": 12,
+        "denials": 0,
+        "iam_changes": 0,
+        "audit_scope": "service account",
+        "job_kinds": [],
+        "recent_change": null,
+        "streak": 1,
+        "category": "process",
+        "last_success": "2026-10-01",
+        "leads": [
+          "Run rc-20261002-0007 logged its own error at 04:11 in k8s_container/sys-c-fetcher: rc-20261002-0007 giving up: input file landing/sys_c_20261002.csv not found after 3 retri… — start there; it names this run, not just its source.",
+          "The source's own logs show 12 security lines (403 Forbidden from storage.googleapis.com bucket archive-2026 (nightl…) — look at what it was denied."
+        ],
+        "conclusive": true,
+        "action_hint": {
+          "action": "wait",
+          "why": "an input was missing — confirm it has arrived before anything is re-triggered"
+        }
+      },
+      "elapsed_ms": 0
+    },
+    "expect": {
+      "must_mention_any": [
+        [
+          "rc-20261002-0007",
+          "run",
+          "sys_c_20261002",
+          "input file",
+          "landing"
+        ],
+        [
+          "not found",
+          "not present",
+          "missing",
+          "not arrived",
+          "has not arrived",
+          "not delivered",
+          "not landed",
+          "did not arrive",
+          "absent"
+        ]
+      ],
+      "must_not_mention": [
+        "permission",
+        "iam",
+        "out of memory",
+        "quota",
+        "schema"
+      ],
+      "action": "wait",
+      "max_model_calls": 4
+    }
   }
 ]

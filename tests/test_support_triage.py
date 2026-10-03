@@ -428,3 +428,24 @@ def test_an_error_incident_keeps_its_id_when_counts_and_order_change():
     by_text = {i["error_text"][:7]: i["id"] for i in s_incidents.incidents(_with_label(b), labels=LABELS, runbook=[], owners={})}
     assert list(ids_a.values())[0] == by_text["timeout"] and by_text["timeout"].startswith("e-")
     assert by_text["quota e"] != by_text["timeout"]
+
+
+def test_an_error_group_and_its_incident_carry_each_runs_id_and_written_time():
+    """The run id and when its row was written are what find the run's own log
+    lines; a run with no written time has nothing to anchor that search on."""
+    at = NOW - timedelta(minutes=30)
+    rows = [{**fail("r1", "U1", err="no files matched spec"), "updated_at": at},
+            {**fail("r2", "U2", err="no files matched spec"), "updated_at": at.isoformat()},
+            {**fail("r3", "U3", err="no files matched spec"), "updated_at": None}]
+    rep = report(failures=rows)
+    assert rep["errors"][0]["runs"] == [{"run_id": "r1", "at": at.isoformat()},
+                                        {"run_id": "r2", "at": at.isoformat()}]
+    inc = s_incidents.incidents(rep, labels={}, runbook=[], owners={})[0]
+    assert inc["runs"] == rep["errors"][0]["runs"]
+
+
+def test_a_stuck_incident_carries_its_runs_last_written_time():
+    at = NOW - timedelta(hours=5)
+    rep = report(counts={"open": 1}, stuck=[{"run_id": "s1", "status": "RUNNING", "updated_at": at, "total": 1}])
+    inc = next(i for i in s_incidents.incidents(rep, labels={}, runbook=[], owners={}) if i["kind"] == "stuck")
+    assert inc["runs"] == [{"run_id": "s1", "at": at.isoformat()}]

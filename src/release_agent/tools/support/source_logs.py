@@ -12,6 +12,10 @@ and if so, with what. Two questions:
     audit(start, end)         -> Cloud Audit Logs: PERMISSION_DENIED calls,
                                  grouped by method / service / resource, and
                                  the IAM policy changes in the same window
+    for_run(run_id, at)       -> every entry that names ONE failed run's id,
+                                 in any component, from a few minutes before
+                                 its row was written: the run's own story,
+                                 not everything its source said that day
 
 Both use the Cloud Logging REST API (entries:list) through Google credentials
 (roles/logging.viewer on the project; audit logs also need it). Nothing here
@@ -23,7 +27,7 @@ service name typed into chat must never become filter syntax.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ...config import settings
@@ -54,6 +58,9 @@ SECURITY_WORDS = frozenset({
 _SECURITY_PHRASES = (("access", "denied"),)
 
 _NAME_EXTRA = "-_."
+_RUN_ID_EXTRA = "-_.:"
+_RUN_CAP = 300                  # entries read for one run — its window is minutes, not a day
+_RUN_AFTER = timedelta(minutes=1)   # log delivery trails the row a little
 _EMAIL_EXTRA = "-_.+@"
 _PROJECT_EXTRA = "-.:"
 
@@ -319,6 +326,77 @@ def read(source: str, start: datetime, end: datetime, *, min_severity: str = "ER
             "lines_read": len(entries), "truncated": truncated, "groups": groups,
             "security_groups_count": len(sec), "security_lines": sum(g["count"] for g in sec),
             "summary": _read_summary(len(entries), groups, severity, truncated)}
+
+
+# ----- one run's own lines -----------------------------------------------------------
+
+def run_filter(run_id: str, at: datetime, before_minutes: int) -> str:
+    """Entries naming `run_id` as a whole token in ANY field, from
+    `before_minutes` before `at` (when the run's row was written) to just
+    after. SEARCH matches tokens and is the fast form of a free-text search;
+    the backticks keep an id like 2026-10-03-run-7 one phrase. ValueError on
+    any unsafe part."""
+    rid = _clean(run_id, "run id", _RUN_ID_EXTRA)
+    before = timedelta(minutes=max(1, int(before_minutes)))
+    return f'SEARCH("`{rid}`") AND {_window(at - before, at + _RUN_AFTER)}'
+
+
+def _component(entry: dict[str, Any]) -> str:
+    """Which piece of the platform wrote the line: a container, a Dataflow
+    job, a function — the path the run took."""
+    res = entry.get("resource") if isinstance(entry.get("resource"), dict) else {}
+    labels = res.get("labels") if isinstance(res.get("labels"), dict) else {}
+    kind = str(res.get("type") or "unknown")
+    name = (labels.get("container_name") or labels.get("job_name") or labels.get("service_name")
+            or labels.get("function_name") or labels.get("job_id") or "")
+    if not name:
+        # a resource with no name of its own (global, generic_task): the log's
+        # own name is what says which program wrote it
+        name = str(entry.get("logName") or "").rpartition("/logs/")[2].replace("%2F", "/")
+    return f"{kind}/{name}" if name else kind
+
+
+def for_run(run_id: str, at: datetime, *, before_minutes: int | None = None, session=None) -> dict[str, Any]:
+    """Every log entry that names one run, at any severity (the window is a
+    few minutes, so the INFO lines leading up to the failure are affordable
+    and often say what it was doing), from the services project and the data
+    project in one read. Never raises."""
+    project = _project()
+    projects = [p for p in dict.fromkeys([project, data_project()]) if p]
+    minutes = int(before_minutes if before_minutes is not None else settings.support_run_log_minutes)
+    try:
+        if not projects:
+            return {"ok": False, "error": "no project for the logs — set SUPPORT_LOGS_PROJECT or GOOGLE_CLOUD_PROJECT",
+                    "hint": ""}
+        flt = run_filter(run_id, at, minutes)
+        # Oldest first: how the run got into trouble is at the start of its window.
+        entries, truncated = _list_entries(session or _session(), projects, flt, _RUN_CAP, "timestamp asc")
+    except Exception as e:   # noqa: BLE001 — the tool contract is "never raises"
+        return _failure(e, " and ".join(projects))
+    groups = group_entries(entries)
+    errors = [e for e in entries if _rank(str(e.get("severity") or "").upper()) >= _rank("ERROR")]
+    first_error = errors[0] if errors else None
+    components: dict[str, int] = {}
+    for e in entries:
+        components[_component(e)] = components.get(_component(e), 0) + 1
+    sec = [g for g in groups if g["security"]]
+    if not entries:
+        summary = f"no line names run {run_id.strip()} in the {minutes} min before its row was written"
+    else:
+        summary = (f"{len(entries)}{'+' if truncated else ''} lines name run {run_id.strip()} "
+                   f"({len(errors)} error) from {_plural(len(components), 'component')}")
+        if first_error is not None:
+            summary += f"; first error: {_first_line(message_of(first_error))[:110]}"
+    return {"ok": True, "run_id": run_id.strip(), "at": _ts(at), "projects": projects,
+            "window": {"start": _ts(at - timedelta(minutes=max(1, minutes))), "end": _ts(at + _RUN_AFTER)},
+            "lines_read": len(entries), "truncated": truncated, "groups": groups,
+            "errors": len(errors),
+            "first_error": ({"time": str(first_error.get("timestamp") or ""),
+                             "text": message_of(first_error)[:_SAMPLE_CHARS],
+                             "component": _component(first_error)} if first_error is not None else None),
+            "components": sorted(components.items(), key=lambda kv: -kv[1])[:6],
+            "security_groups_count": len(sec), "security_lines": sum(g["count"] for g in sec),
+            "summary": summary}
 
 
 # ----- audit logs --------------------------------------------------------------------

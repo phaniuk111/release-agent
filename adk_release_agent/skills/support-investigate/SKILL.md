@@ -9,6 +9,7 @@ metadata:
     - source_logs
     - source_audit
     - dataflow_job
+    - run_logs
     - release_lookup
     - what_changed
     - consult_advisor
@@ -30,16 +31,17 @@ The routine for a question typed in the chat — one evidence call, then answer:
    source / process names or job ids if the person gave those instead: a
    report such as REPORT-B is the `process`, a service such as sys-b-fetcher
    the `source`). It
-   returns everything: the incident's facts, the source's metrics, logs and
-   audit denials, the Dataflow jobs, what changed before the first failure, a
-   timeline and the leads. If the person gave no incident id and no source,
+   returns everything: the incident's facts, the lines that name the failed
+   runs themselves (by run id, from minutes before each row was written), the
+   source's metrics, logs and audit denials, the Dataflow jobs, what changed
+   before the first failure, a timeline and the leads. If the person gave no incident id and no source,
    call `support_triage` first to find the incident, then `investigate_evidence`.
    Never guess an id, a date or a job id.
 2. Answer from that result. Do not re-read what it already holds.
-3. The single-source tools — `source_metrics`, `source_logs`, `source_audit`,
-   `dataflow_job`, `release_lookup`, `what_changed` — are for a targeted
-   follow-up only ("show the worker log lines", "did 1.4.2 change anything
-   else"), when the evidence is missing a detail the person asks for.
+3. The single-source tools — `run_logs`, `source_metrics`, `source_logs`,
+   `source_audit`, `dataflow_job`, `release_lookup`, `what_changed` — are for a
+   targeted follow-up only ("show run-7's lines", "show the worker log lines",
+   "did 1.4.2 change anything else"), when the evidence is missing a detail the person asks for.
 4. Only if the evidence CONFLICTS or no step produced a cause: `consult_advisor`
    with the facts gathered so far and the specific question. It is capped; do
    not use it for routine cases.

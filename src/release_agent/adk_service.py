@@ -394,6 +394,7 @@ _TOOL_LABELS = {
     "investigate_evidence": "Collecting the evidence",
     "source_metrics": "Checking the source's metrics",
     "source_logs": "Reading the source's logs",
+    "run_logs": "Reading the run's own log lines",
     "source_audit": "Reading the audit logs",
     "dataflow_job": "Reading the Dataflow job",
     "release_lookup": "Looking up the release log",

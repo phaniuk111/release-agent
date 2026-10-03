@@ -295,3 +295,64 @@ def test_denied_bigquery_jobs_group_by_collection_not_job_id():
     groups = S.group_denials(rows)
     assert len(groups) == 1 and groups[0]["resource"] == "projects/proj-x/jobs" and groups[0]["count"] == 3
     assert S._resource_prefix("") == "" and S._resource_prefix("x") == "x"
+
+
+# ----- one run's own lines ------------------------------------------------------------
+
+AT = datetime(2026, 10, 3, 3, 34, 16, tzinfo=timezone.utc)
+
+
+def test_the_run_filter_searches_the_id_as_one_token_minutes_before_its_row():
+    flt = S.run_filter("2026-10-03-run-7", AT, 5)
+    assert flt == ('SEARCH("`2026-10-03-run-7`") AND timestamp>="2026-10-03T03:29:16.000000Z" '
+                   'AND timestamp<="2026-10-03T03:35:16.000000Z"')
+
+
+@pytest.mark.parametrize("bad", ['run"7', "run`7", "run 7", "run)OR(1", "", "rün-7"])
+def test_an_unsafe_run_id_never_reaches_the_filter(bad):
+    with pytest.raises(ValueError):
+        S.run_filter(bad, AT, 5)
+    out = S.for_run(bad, AT, session=_Session())
+    assert out["ok"] is False and out["hint"] == "nothing was queried"
+
+
+def test_for_run_reads_both_projects_oldest_first_at_every_severity(monkeypatch):
+    monkeypatch.setattr(settings, "support_table", "data-proj.ops.control_runs")
+    monkeypatch.setattr(settings, "support_run_log_minutes", 5)
+    k8s = {"type": "k8s_container", "labels": {"container_name": "sys-b-fetcher"}}
+    df = {"type": "dataflow_step", "labels": {"job_name": "report-b-load"}}
+    lines = [entry("run-7 fetching landing/sys_b_20261003.csv", "2026-10-03T03:30:01Z", "INFO", resource=k8s),
+             entry("run-7 attempt 1 failed: 403 Forbidden on landing bucket", "2026-10-03T03:31:00Z", "ERROR",
+                   resource=k8s),
+             entry("run-7 job failed: no files matched spec", "2026-10-03T03:33:05Z", "ERROR", resource=df)]
+    sess = _Session(page(lines))
+    out = S.for_run("run-7", AT, session=sess)
+    body = sess.bodies[0]
+    assert body["resourceNames"] == ["projects/proj-x", "projects/data-proj"]
+    assert body["orderBy"] == "timestamp asc" and "severity" not in body["filter"]
+    assert out["ok"] and out["lines_read"] == 3 and out["errors"] == 2
+    assert out["first_error"] == {"time": "2026-10-03T03:31:00Z", "component": "k8s_container/sys-b-fetcher",
+                                  "text": "run-7 attempt 1 failed: 403 Forbidden on landing bucket"}
+    assert out["components"] == [("k8s_container/sys-b-fetcher", 2), ("dataflow_step/report-b-load", 1)]
+    assert out["security_lines"] == 1
+    assert out["window"] == {"start": "2026-10-03T03:29:16.000000Z", "end": "2026-10-03T03:35:16.000000Z"}
+    assert out["summary"] == ("3 lines name run run-7 (2 error) from 2 components; "
+                              "first error: run-7 attempt 1 failed: 403 Forbidden on landing bucket")
+
+
+def test_a_run_no_line_names_is_said_so():
+    out = S.for_run("run-7", AT, before_minutes=10, session=_Session(page([])))
+    assert out["ok"] and out["first_error"] is None
+    assert out["summary"] == "no line names run run-7 in the 10 min before its row was written"
+
+
+def test_for_run_never_raises():
+    out = S.for_run("run-7", AT, session=_Session(_Resp(403, {"error": {"message": "denied"}})))
+    assert out["ok"] is False and "roles/logging.viewer" in out["hint"]
+
+
+def test_a_component_with_no_name_of_its_own_is_named_by_its_log():
+    e = entry("run-7 load failed", resource={"type": "global", "labels": {"project_id": "p"}},
+              logName="projects/p/logs/report-b-loader")
+    assert S._component(e) == "global/report-b-loader"
+    assert S._component(entry("x", resource={"type": "global"})) == "global"

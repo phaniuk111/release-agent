@@ -53,6 +53,7 @@ _CACHE_TTL = 600.0
 _CACHE_TTL_PARTIAL = 60.0     # a bundle with an unread step is retried sooner
 _CACHE_MAX = 64
 _MAX_JOBS = 3
+_MAX_RUNS = 3
 
 
 # Bounds of what the model sees (for_model).
@@ -135,6 +136,11 @@ def _checked(incident: dict[str, Any] | None, evidence: dict[str, Any], target: 
         lines.append(f"Control table (BigQuery): {incident.get('title')}")
     if (m := _ok(evidence.get("metrics"))):
         lines.append(f"Source metrics (PromQL): {m['summary']}")
+    for run in _list(evidence.get("runs")):
+        if _ok(run):
+            lines.append(f"Run logs (Cloud Logging, run {run.get('run_id')}): {run.get('summary')}")
+    if incident and not target.get("runs"):
+        lines.append("Run logs: no run id with a written time on this incident — nothing to search for.")
     if (g := _ok(evidence.get("logs"))):
         lines.append(f"Source logs (Cloud Logging, {target['source']}): {g.get('summary')}")
     if (a := _ok(evidence.get("audit"))):
@@ -188,9 +194,15 @@ def _resolve_target(incident: dict[str, Any] | None, source: str, process: str,
         j = str(j).strip()
         if j and j not in clean_jobs:
             clean_jobs.append(j)
+    runs = []
+    for r in _list((incident or {}).get("runs")):
+        moment = _parse_time(r.get("at")) if isinstance(r, dict) else None
+        rid = str(r.get("run_id") or "").strip() if isinstance(r, dict) else ""
+        if rid and moment and rid not in [x["run_id"] for x in runs]:
+            runs.append({"run_id": rid, "at": moment})
     return {"source": str(shared.get("source") or source or "").strip(),
             "process": str(shared.get("process") or process or "").strip(),
-            "job_ids": clean_jobs[:_MAX_JOBS]}
+            "job_ids": clean_jobs[:_MAX_JOBS], "runs": runs[:_MAX_RUNS]}
 
 
 def _incident_facts(report: dict[str, Any], incident: dict[str, Any] | None) -> tuple[int | None, str | None]:
@@ -233,7 +245,8 @@ def _gather(business: date, target: dict[str, Any], no_source_reason: str) -> tu
     start, end = cob_window(business)
     day = cache.day(business)
     source, process, jobs = target["source"], target["process"], target["job_ids"]
-    evidence: dict[str, Any] = {"metrics": None, "logs": None, "audit": None, "dataflow": [], "changes": None}
+    evidence: dict[str, Any] = {"metrics": None, "logs": None, "audit": None, "dataflow": [], "changes": None,
+                                "runs": []}
     unavailable: list[dict[str, str]] = []
     steps: dict[str, Callable[[], dict[str, Any]]] = {}
 
@@ -265,6 +278,11 @@ def _gather(business: date, target: dict[str, Any], no_source_reason: str) -> tu
     for job_id in jobs:
         steps[f"dataflow:{job_id}"] = lambda j=job_id: cache.remembered(
             ("dataflow", j, ""), lambda: dataflow_job.inspect(j))
+    # The run's own lines: its id, minutes before its row — the most specific
+    # evidence there is, and cheap (a window of minutes, read once per run).
+    for run in target.get("runs") or []:
+        steps[f"run:{run['run_id']}"] = lambda r=run: cache.remembered(
+            ("runlogs", r["run_id"], _iso(r["at"])), lambda: source_logs.for_run(r["run_id"], r["at"]))
     names = list(dict.fromkeys(n for n in (source, process) if n))
     if names:
         steps["changes"] = lambda: release_lookup.what_changed(names, business, days=_CHANGE_DAYS)
@@ -288,6 +306,12 @@ def _gather(business: date, target: dict[str, Any], no_source_reason: str) -> tu
             evidence["dataflow"].append(res)
         else:
             unavailable.append(_unavailable(f"dataflow {job_id}", res))
+    for run in target.get("runs") or []:
+        res = got[f"run:{run['run_id']}"]
+        if res.get("ok"):
+            evidence["runs"].append(res)
+        else:
+            unavailable.append(_unavailable(f"run logs {run['run_id']}", res))
     return evidence, unavailable
 
 
@@ -438,7 +462,18 @@ def for_model(bundle: dict[str, Any]) -> dict[str, Any]:
                            "note": note}
     else:
         out["incident"] = None
-    out["evidence"] = {"metrics": None, "logs": None, "audit": None, "dataflow": [], "changes": None}
+    out["evidence"] = {"metrics": None, "logs": None, "audit": None, "dataflow": [], "changes": None, "runs": []}
+    for run in _list(ev.get("runs")):
+        if _ok(run):
+            first = run.get("first_error") or {}
+            out["evidence"]["runs"].append({
+                "run_id": run.get("run_id"), "row_written": run.get("at"), "summary": _line(run.get("summary"), 300),
+                "first_error": ({"time": first.get("time"), "component": first.get("component"),
+                                 "text": _line(first.get("text"), _M_SAMPLE)} if first else None),
+                "components": [f"{c} ×{n}" for c, n in _list(run.get("components"))[:4]],
+                "groups": [{"sample": _line(x.get("sample"), _M_SAMPLE), "count": x.get("count"),
+                            "severity": x.get("severity"), "first": _when_of(x, "first_seen"),
+                            "security": bool(x.get("security"))} for x in _list(run.get("groups"))[:_M_JOB_GROUPS]]})
     if m := _ok(ev.get("metrics")):
         out["evidence"]["metrics"] = {"source": m.get("source"), "summary": m.get("summary"), "values": m.get("values")}
     if g := _ok(ev.get("logs")):
@@ -486,6 +521,11 @@ def _size(value: Any) -> int:
     return len(json.dumps(value, default=str, separators=(",", ":")).encode("utf-8"))
 
 
+def _shrink_runs(out: dict[str, Any]) -> None:
+    for run in out["evidence"]["runs"]:
+        run["groups"] = run["groups"][:2]
+
+
 def _shrink_jobs(out: dict[str, Any]) -> None:
     for job in out["evidence"]["dataflow"]:
         job["log_groups"], job["errors"] = job["log_groups"][:2], job["errors"][:2]
@@ -519,7 +559,8 @@ def _fit(out: dict[str, Any]) -> dict[str, Any]:
     """Under about _M_BYTES: the caps above hold the common case; when a case
     is wide on every axis at once, take the detail the timeline and the signals
     already carry, one step at a time, until it fits."""
-    for shrink in (_shrink_jobs, _shrink_audit, _shrink_logs, _shrink_changes, _shrink_timeline):
+    # The run's own lines go last: they are the most specific evidence there is.
+    for shrink in (_shrink_jobs, _shrink_audit, _shrink_logs, _shrink_changes, _shrink_runs, _shrink_timeline):
         if _size(out) <= _M_BYTES:
             break
         shrink(out)

@@ -260,6 +260,7 @@ config:
   # that differs from that.
   SUPPORT_LOGS_PROJECT: ""           # where the sources' logs land; empty = GOOGLE_CLOUD_PROJECT
   SUPPORT_LOGS_MAX_LINES: "500"      # lines read per source per window, grouped before the model sees them
+  SUPPORT_RUN_LOG_MINUTES: "5"       # a failed run's own lines: those naming its run id, from this many minutes before its row was written
   SUPPORT_SERVICE_ACCOUNT: ""        # the pipelines' service account, to narrow audit-log denials
   SUPPORT_DATAFLOW_REGION: ""        # e.g. "europe-west2"
   SUPPORT_DATAFLOW_PROJECT: ""       # empty = the project in SUPPORT_TABLE

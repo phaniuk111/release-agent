@@ -337,6 +337,7 @@ from .support_tools import (  # noqa: E402
     dataflow_job,
     investigate_evidence,
     release_lookup,
+    run_logs,
     source_audit,
     source_logs,
     source_metrics,
@@ -379,6 +380,7 @@ ADK_CHAT_TOOLS = [
     source_logs,
     source_audit,
     dataflow_job,
+    run_logs,
     release_lookup,
     what_changed,
 ]
