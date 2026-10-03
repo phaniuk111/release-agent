@@ -864,6 +864,16 @@ def _note(inc: dict[str, Any], report: dict[str, Any], *, with_error_text: bool)
     return "\n".join(lines)
 
 
+def incident_id(signature: str) -> str:
+    """A stable name for an error incident: the same error keeps its id while
+    counts and ordering change between refreshes — so "Investigate incident
+    e-1a2b3c4d" still means the same thing a minute later, and feedback about
+    it can be found again. A checksum, not the text: an id may travel in a URL."""
+    import zlib
+
+    return f"e-{zlib.crc32(signature.encode('utf-8')) & 0xFFFFFFFF:08x}"
+
+
 def _row_values(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
     vals: dict[str, set[str]] = {}
     for r in rows:
@@ -898,7 +908,7 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
         elif err.get("new") is not None:
             facts.append("New today: these succeeded on the previous date they ran.")
         cause = _named(err.get("cause") or {}, labels)
-        out.append({"id": f"error-{i + 1}", "kind": "error", "error_index": i,
+        out.append({"id": incident_id(err.get("signature") or ""), "kind": "error", "error_index": i,
                     "title": f"{err['count']} failed · {err['category']}" + (f" · {cause}" if cause else ""),
                     "category": err["category"], "count": err["count"], "facts": facts,
                     "error_text": err.get("sample") or err.get("signature"),

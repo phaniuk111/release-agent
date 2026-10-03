@@ -77,8 +77,12 @@ export function askPrompt(incident, report) {
 export function investigatePrompt(incident, report) {
     const inc = incident && typeof incident === 'object' ? incident : {};
     const r = report && typeof report === 'object' ? report : {};
-    const parts = ['Investigate: ' + String(inc.title || '?')];
+    // "Investigate incident <id> · <label> <date> · <title> …" — the id and the
+    // date are what the investigate Workflow routes on (agent/parsing.py); the
+    // rest is for a person reading the thread.
+    const parts = ['Investigate incident ' + String(inc.id || '?')];
     if (r.business_date) parts.push((r.date_label || 'business date') + ' ' + r.business_date);
+    parts.push(String(inc.title || '?'));
     const shared = inc.shared && typeof inc.shared === 'object' ? inc.shared : {};
     const labels = r.labels && typeof r.labels === 'object' ? r.labels : {};
     Object.keys(shared).forEach(role => parts.push(String(labels[role] || role) + ' ' + String(shared[role])));

@@ -416,3 +416,13 @@ def test_a_critical_value_is_always_high_even_for_one_run():
     one = report(failures=[fail("d1", "U1", process="REG-1", err="timeout")])
     assert _prio(one, critical={("process", "REG-1")}) == [("high", "critical: process REG-1")]
     assert st.parse_critical("process:REG-1, scope:E1, colour:red, junk") == {("process", "REG-1"), ("scope", "E1")}
+
+
+def test_an_error_incident_keeps_its_id_when_counts_and_order_change():
+    a = report(failures=[fail("d1", "U1", err="timeout on 2026-10-02")])
+    b = report(failures=[fail(f"x{u}", f"U{u}", err="quota exceeded") for u in range(5)]
+               + [fail("d9", "U9", err="timeout on 2026-10-03")])
+    ids_a = {i["title"].split(" · ")[1]: i["id"] for i in st.incidents(_with_label(a), labels=LABELS, runbook=[], owners={})}
+    by_text = {i["error_text"][:7]: i["id"] for i in st.incidents(_with_label(b), labels=LABELS, runbook=[], owners={})}
+    assert list(ids_a.values())[0] == by_text["timeout"] and by_text["timeout"].startswith("e-")
+    assert by_text["quota e"] != by_text["timeout"]
