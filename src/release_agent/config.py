@@ -701,7 +701,8 @@ class Settings(BaseSettings):
     support_high_count: int = Field(default=10, validation_alias=AliasChoices("SUPPORT_HIGH_COUNT"))
     # Dataflow job lookup (tools/dataflow_job.py, read-only): the region jobs run in
     # (no default — a wrong region reads as "no such job") and the project they
-    # run in ("" = GCP_PROJECT).
+    # run in ("" = the project named in SUPPORT_TABLE — the jobs run where the
+    # data is; a deployment with services and data in two projects sets nothing).
     support_dataflow_region: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DATAFLOW_REGION"))
     support_dataflow_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DATAFLOW_PROJECT"))
     support_medium_count: int = Field(default=3, validation_alias=AliasChoices("SUPPORT_MEDIUM_COUNT"))

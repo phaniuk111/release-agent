@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..config import settings
-from .support_triage import signature
+from .support_triage import data_project, signature
 
 _DATAFLOW = "https://dataflow.googleapis.com/v1b3"
 _LOGGING = "https://logging.googleapis.com/v2/entries:list"
@@ -383,7 +383,9 @@ def inspect(job_id: str, *, region: str = "") -> dict[str, Any]:
     Never raises — a problem comes back as {"ok": False, "error", "hint"}."""
     job_id = (job_id or "").strip()
     region = (region or settings.support_dataflow_region or "").strip()
-    project = (settings.support_dataflow_project or settings.gcp_project or "").strip()
+    # The jobs run where the data is: the control table's own project, unless
+    # SUPPORT_DATAFLOW_PROJECT says otherwise (it rarely needs to).
+    project = (settings.support_dataflow_project or data_project() or "").strip()
     if not _valid(job_id, _ID_CHARS, _JOB_ID_MAX):
         return _failure("job id must be letters, digits, '-' and '_' only.")
     if not region:

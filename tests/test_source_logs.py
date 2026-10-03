@@ -16,6 +16,8 @@ END = START + timedelta(hours=1)
 def configured(monkeypatch):
     for name, value in {"support_cluster": "cluster-a", "support_namespace": "ns-a",
                         "support_source_label": "app", "support_logs_project": "proj-x",
+                        # one project here: the data lives where the services run
+                        "support_table": "proj-x.ops.control_runs",
                         "support_logs_max_lines": 500}.items():
         monkeypatch.setattr(settings, name, value)
 

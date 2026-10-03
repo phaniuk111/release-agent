@@ -146,3 +146,62 @@ def test_the_check_never_raises_and_is_gated(mapped, monkeypatch):
     monkeypatch.setattr(features.settings, "preview_features", "support-triage")
     monkeypatch.setattr(features.settings, "preview_users", "")
     assert TestClient(app_fastapi.app).get("/api/support/config-check").status_code == 403
+
+
+# ----- two projects: services in one, data in the other ---------------------------------
+
+def test_the_data_project_is_read_off_the_table_so_it_is_named_once(monkeypatch):
+    monkeypatch.setattr(st.settings, "support_table", "data-proj.ops.control_runs")
+    monkeypatch.setattr(st.settings, "gcp_project", "services-proj")
+    monkeypatch.setattr(st.settings, "bq_project", "")
+    assert st.data_project() == "data-proj"
+    monkeypatch.setattr(st.settings, "support_table", "")           # no table: BQ_PROJECT, then the main one
+    assert st.data_project() == "services-proj"
+    monkeypatch.setattr(st.settings, "bq_project", "bq-proj")
+    assert st.data_project() == "bq-proj"
+
+
+def test_dataflow_looks_in_the_data_project_and_audit_reads_both(monkeypatch):
+    from datetime import datetime, timezone
+
+    from release_agent.tools import dataflow_job, source_logs
+
+    monkeypatch.setattr(st.settings, "support_table", "data-proj.ops.control_runs")
+    monkeypatch.setattr(st.settings, "gcp_project", "services-proj")
+    monkeypatch.setattr(st.settings, "support_dataflow_project", "")
+    monkeypatch.setattr(st.settings, "support_dataflow_region", "europe-west2")
+    monkeypatch.setattr(st.settings, "support_logs_project", "")
+    urls, bodies = [], []
+
+    class Resp:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {}
+
+    class Session:
+        def request(self, method, url, **kw):
+            urls.append(url)
+            bodies.append(kw.get("json") or {})
+            return Resp()
+
+        def get(self, url, **kw):
+            return self.request("GET", url, **kw)
+
+        def post(self, url, **kw):
+            return self.request("POST", url, **kw)
+
+    monkeypatch.setattr(dataflow_job, "_session", lambda: Session())
+    dataflow_job.inspect("job-1")
+    assert any("/projects/data-proj/locations/europe-west2/jobs/job-1" in u for u in urls)
+    assert not any("/projects/services-proj/" in u for u in urls)
+
+    bodies.clear()
+    start = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    out = source_logs.audit(start, datetime(2026, 10, 3, tzinfo=timezone.utc), session=Session())
+    assert out["ok"] and out["projects"] == ["services-proj", "data-proj"]
+    assert bodies and all(b["resourceNames"] == ["projects/services-proj", "projects/data-proj"] for b in bodies)
+    monkeypatch.setattr(st.settings, "support_table", "services-proj.ops.control_runs")   # one project: read once
+    one = source_logs.audit(start, datetime(2026, 10, 3, tzinfo=timezone.utc), session=Session())
+    assert one["projects"] == ["services-proj"]

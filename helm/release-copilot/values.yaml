@@ -252,11 +252,17 @@ config:
   SUPPORT_CLUSTER: ""                # GKE cluster name the sources run in
   SUPPORT_NAMESPACE: ""              # their namespace
   SUPPORT_SOURCE_LABEL: "app"        # the pod label that names a source
-  SUPPORT_LOGS_PROJECT: ""           # where their logs land; empty = GOOGLE_CLOUD_PROJECT
+  # Two projects (services in one, BigQuery + Dataflow in another) need NO extra
+  # project settings: the source's logs and metrics are read from
+  # GOOGLE_CLOUD_PROJECT (where the services run), the Dataflow jobs from the
+  # project named in SUPPORT_TABLE (where the data is), and audit-log denials
+  # from both. The three *_PROJECT settings here are overrides for a layout
+  # that differs from that.
+  SUPPORT_LOGS_PROJECT: ""           # where the sources' logs land; empty = GOOGLE_CLOUD_PROJECT
   SUPPORT_LOGS_MAX_LINES: "500"      # lines read per source per window, grouped before the model sees them
   SUPPORT_SERVICE_ACCOUNT: ""        # the pipelines' service account, to narrow audit-log denials
   SUPPORT_DATAFLOW_REGION: ""        # e.g. "europe-west2"
-  SUPPORT_DATAFLOW_PROJECT: ""       # empty = GOOGLE_CLOUD_PROJECT
+  SUPPORT_DATAFLOW_PROJECT: ""       # empty = the project in SUPPORT_TABLE
   # name=expr;… PromQL health checks per source; {source} {namespace} {cluster}
   # {window} are filled in. Empty = restarts (kube-state-metrics), up, 5xx rate
   # (http_requests_total) — override for your own exporters. A Cloud Monitoring

@@ -142,6 +142,19 @@ def enabled() -> bool:
     return bool(settings.support_table.strip())
 
 
+def data_project() -> str:
+    """The project the pipelines' DATA lives in — where the control table is,
+    and so where its Dataflow jobs run and where a denial on its tables or
+    buckets is audited. Read off SUPPORT_TABLE itself, so a deployment whose
+    services run in one project and whose data lives in another names the data
+    project once (in the table), not once per tool. Falls back to BQ_PROJECT,
+    then the main project."""
+    try:
+        return parse_table(settings.support_table).strip("`").split(".", 1)[0]
+    except ConfigError:
+        return (settings.bq_project or settings.gcp_project or "").strip()
+
+
 def _disabled() -> dict[str, Any]:
     return {"ok": False, "disabled": True,
             "error": "Support triage is disabled (SUPPORT_TABLE unset)."}

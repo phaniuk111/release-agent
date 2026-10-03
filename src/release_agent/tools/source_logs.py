@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..config import settings
-from .support_triage import signature
+from .support_triage import data_project, signature
 
 _SCOPE = "https://www.googleapis.com/auth/logging.read"
 _ENTRIES_URL = "https://logging.googleapis.com/v2/entries:list"
@@ -155,13 +155,15 @@ def _session():
     return AuthorizedSession(creds)
 
 
-def _list_entries(session, project: str, flt: str, limit: int, order: str) -> tuple[list[dict[str, Any]], bool]:
+def _list_entries(session, project: str | list[str], flt: str, limit: int, order: str) -> tuple[list[dict[str, Any]], bool]:
     """(entries, truncated): up to `limit` entries, paging by token. Truncated
-    means the API still had more when the limit was reached."""
+    means the API still had more when the limit was reached. ``project`` may be
+    several: Cloud Logging reads them in one call."""
     entries: list[dict[str, Any]] = []
     token = ""
+    projects = [project] if isinstance(project, str) else list(project)
     while True:
-        body: dict[str, Any] = {"resourceNames": [f"projects/{_clean(project, 'project', _PROJECT_EXTRA)}"],
+        body: dict[str, Any] = {"resourceNames": [f"projects/{_clean(p, 'project', _PROJECT_EXTRA)}" for p in projects],
                                 "filter": flt, "orderBy": order,
                                 "pageSize": max(1, min(_PAGE_SIZE, limit - len(entries)))}
         if token:
@@ -368,17 +370,22 @@ def audit(start: datetime, end: datetime, *, principal: str = "", session=None) 
     """PERMISSION_DENIED calls (optionally by one principal) and IAM policy
     changes in the window. Reads at most 200 entries of each. Never raises."""
     project = _project()
+    # A denial is audited in the project that OWNS the resource: a service in
+    # the services project refused a bucket or a table in the data project
+    # leaves its entry there, not where the service runs. So both are read
+    # (one call) when a deployment keeps them apart.
+    projects = [p for p in dict.fromkeys([project, data_project()]) if p]
     try:
         if not project:
             return {"ok": False, "error": "no project for the logs — set SUPPORT_LOGS_PROJECT or GOOGLE_CLOUD_PROJECT",
                     "hint": ""}
         sess = session or _session()
-        denied, denied_cut = _list_entries(sess, project, denial_filter(start, end, principal.strip()),
+        denied, denied_cut = _list_entries(sess, projects, denial_filter(start, end, principal.strip()),
                                            _AUDIT_CAP, "timestamp desc")
-        changed, changed_cut = _list_entries(sess, project, iam_change_filter(start, end), _AUDIT_CAP,
+        changed, changed_cut = _list_entries(sess, projects, iam_change_filter(start, end), _AUDIT_CAP,
                                              "timestamp desc")
     except Exception as e:   # noqa: BLE001 — the tool contract is "never raises"
-        return _failure(e, project)
+        return _failure(e, " and ".join(projects))
     denials = group_denials(denied)
     changes = iam_changes(changed)
     who = f" by {principal.strip()}" if principal.strip() else ""
@@ -389,5 +396,5 @@ def audit(start: datetime, end: datetime, *, principal: str = "", session=None) 
         summary += f" (most: {top['method'] or '?'} on {top['resource'] or '?'} × {top['count']})"
     summary += f"; {len(changes)}{'+' if changed_cut else ''} IAM policy {'change' if len(changes) == 1 else 'changes'}"
     return {"ok": True, "window": {"start": _ts(start), "end": _ts(end)}, "project": project,
-            "denials": denials, "denials_total": len(denied), "denials_truncated": denied_cut,
+            "projects": projects, "denials": denials, "denials_total": len(denied), "denials_truncated": denied_cut,
             "iam_changes": changes, "iam_changes_truncated": changed_cut, "summary": summary}
