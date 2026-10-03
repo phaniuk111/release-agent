@@ -276,14 +276,20 @@ def test_logging_failure_is_a_note_not_a_failure(monkeypatch):
 
 # ----- errors → hints --------------------------------------------------------------------
 
-@pytest.mark.parametrize("status, expect", [
-    (403, "needs roles/dataflow.viewer and roles/logging.viewer on demo-project"),
-    (404, f"no job {JOB} in region europe-west2 — check SUPPORT_DATAFLOW_REGION"),
-])
-def test_http_errors_become_hints(monkeypatch, status, expect):
-    _use(monkeypatch, {"JOB_VIEW_SUMMARY": FakeResponse(status, {"error": {"message": "nope"}})})
+def test_a_forbidden_read_names_the_roles(monkeypatch):
+    _use(monkeypatch, {"JOB_VIEW_SUMMARY": FakeResponse(403, {"error": {"message": "nope"}})})
     out = dj.inspect(JOB)
-    assert out == {"ok": False, "error": f"Dataflow {status}: nope", "hint": expect}
+    assert out == {"ok": False, "error": "Dataflow 403: nope",
+                   "hint": "needs roles/dataflow.viewer and roles/logging.viewer on demo-project"}
+
+
+def test_a_job_that_does_not_exist_is_said_plainly_not_as_an_access_problem(monkeypatch):
+    """Found live: Google's long 404 text plus a hint became "the Dataflow API
+    needed to find job …" in the answer — it read as missing access."""
+    _use(monkeypatch, {"JOB_VIEW_SUMMARY": FakeResponse(404, {"error": {"message": "could not be found"}})})
+    out = dj.inspect(JOB)
+    assert out == {"ok": False, "error": f"no Dataflow job {JOB} in demo-project, region europe-west2",
+                   "hint": "if it ran in another region, set SUPPORT_DATAFLOW_REGION"}
 
 
 def test_other_errors_never_raise(monkeypatch):

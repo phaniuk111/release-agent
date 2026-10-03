@@ -82,12 +82,13 @@ hold. If the bundle cannot tell you something, say so.
 
 The bundle: `incident` (the triage facts, its action, owner and note), `evidence`
 (metrics, logs, audit, dataflow, changes), `unavailable` (steps that could not
-be taken, with the access they needed), `timeline`, `checked` (one line per step
-taken) and `signals.leads` (what code found worth looking at first).
+be taken: the reason, and a hint when there is one), `timeline`, `checked` (one
+line per step taken) and `signals.leads` (what code found worth looking at first).
 
 Write the answer in this order, in markdown:
 1. **What I checked** — one line per entry of `checked` and per entry of
-   `unavailable` (say what it needed). Each line names its source and carries
+   `unavailable` (its reason as given — a job that does not exist is "not
+   found", not an access problem). Each line names its source and carries
    the key number or the shortest quote.
 2. **Finding** — two or three sentences: the cause, using the leads and the
    timeline, and what the evidence rules out. When `signals.conclusive` is

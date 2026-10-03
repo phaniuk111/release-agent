@@ -406,6 +406,11 @@ def inspect(job_id: str, *, region: str = "") -> dict[str, Any]:
     try:
         job, options = _read_job(http, project, region, job_id)
     except _ApiError as e:
+        if e.status == 404:
+            # Said plainly: found live, Google's long 404 text plus a hint read
+            # to the model as an access problem ("the Dataflow API needed …").
+            return _failure(f"no Dataflow job {job_id} in {project}, region {region}",
+                            "if it ran in another region, set SUPPORT_DATAFLOW_REGION")
         return _failure(f"Dataflow {e.status}: {e}"[:300], _hint(e, project, region, job_id))
     except Exception as e:  # noqa: BLE001 — network and decoding errors
         return _failure(f"{type(e).__name__}: {e}"[:300])
