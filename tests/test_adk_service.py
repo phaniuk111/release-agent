@@ -252,6 +252,58 @@ def test_a_repeat_of_the_just_approved_operation_is_declined_not_asked_again(mon
     assert "t-rep" not in service._pending_adk_calls
 
 
+def test_an_approved_operation_is_reported_by_its_own_result_not_the_models_reply():
+    """Found live: 'yes' merged the DF PRD promotion and the model answered
+    "Hello! What can I help you with today?" — the person was told nothing."""
+    from types import SimpleNamespace
+
+    from release_agent.adk_service import PendingAdkCall
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(responses=[SimpleNamespace(name="promote_release", response={
+                "ok": True, "note": "Release file-set promoted to RELEASE_PRD via PR #9 (merged)."})])
+            yield _Ev(text="Hello! What can I help you with today?")
+
+    service.chat_runner = _Runner()
+    service._pending_adk_calls[(_user_id(), "t-note")] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
+        args=_confirmation_call("c1").args)
+    events = _collect(service, "yes", thread_id="t-note")
+    text = "".join(e["content"] for e in _token_events(events))
+    assert text == "Release file-set promoted to RELEASE_PRD via PR #9 (merged)."
+    assert events[-1] == {"type": "done", "mutated": True}
+
+
+def test_an_approved_operation_that_failed_is_explained_by_the_model():
+    """A refusal or error carries no note — the model's explanation is the reply."""
+    from types import SimpleNamespace
+
+    from release_agent.adk_service import PendingAdkCall
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(responses=[SimpleNamespace(name="promote_release", response={
+                "ok": False, "error": "Could not determine the release file list."})])
+            yield _Ev(text="The promotion failed: the release file list could not be read.")
+
+    service.chat_runner = _Runner()
+    service._pending_adk_calls[(_user_id(), "t-err")] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
+        args=_confirmation_call("c1").args)
+    events = _collect(service, "yes", thread_id="t-err")
+    text = "".join(e["content"] for e in _token_events(events))
+    assert "promotion failed" in text
+
+
 def test_a_different_operation_after_an_approval_still_asks(monkeypatch):
     from types import SimpleNamespace
 

@@ -1087,12 +1087,19 @@ class AdkChatService:
                     ran = _landed_changes(event)
                     mutated = mutated or bool(ran)
                     landed += ran
+                    if approved and not approved_note:
+                        # Found live: an approved DF promotion merged and the model
+                        # replied "Hello! What can I help you with?" — the change
+                        # landed and the person was told nothing. What an approved
+                        # operation did is the tool's own sentence, not the model's.
+                        approved_note = _result_note(event, approved[0])
+                        if approved_note:
+                            said_anything = True
+                            yield {"type": "token", "content": approved_note}
                     text = _text_from_event(event)
-                    if text:
+                    if text and not approved_note:
                         said_anything = True
                         yield {"type": "token", "content": text}
-                    if approved:
-                        approved_note = _result_note(event, approved[0]) or approved_note
                     pending = _pending_call_from_event(event)
                     if pending is not None and approved and approved_note and _original_call(pending) == approved:
                         # Seen live: after an approved PRD promotion ran, the model asked to
