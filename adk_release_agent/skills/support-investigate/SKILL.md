@@ -37,7 +37,8 @@ The routine for a question typed in the chat — one evidence call, then answer:
    before the first failure, a timeline and the leads. If the person gave no incident id and no source,
    call `support_triage` first to find the incident, then `investigate_evidence`.
    Never guess an id, a date or a job id.
-2. Answer from that result. Do not re-read what it already holds.
+2. Answer from that result. Do not re-read what it already holds. Say how
+   urgent it is by the team's policy — `priority_policy` in the result.
 3. The single-source tools — `run_logs`, `source_metrics`, `source_logs`,
    `source_audit`, `dataflow_job`, `release_lookup`, `what_changed` — are for a
    targeted follow-up only ("show run-7's lines", "show the worker log lines",

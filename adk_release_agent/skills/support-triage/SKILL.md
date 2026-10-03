@@ -17,9 +17,13 @@ How to work:
   result; never guess counts, values, owners or dates.
 - Open with one line: "<date>: N failed, N stuck, N missing of N runs" — or "all
   clear" only when all three are zero.
+- How urgent each incident is comes from the team's policy, `priority_policy`
+  in the result (the support-priority skill's text): judge every incident by it
+  and follow its "How to use the policy" part. The card's `priority` /
+  `priority_reason` is the built-in rule — mention it only when yours differs.
 - Then go through `incidents` IN ORDER (they are already most urgent first). For
   each, in this shape:
-    **<priority> · <title>** — and why, from `priority_reason`
+    **<title>** — Priority: <LEVEL> — <why, by the policy, in plain English>
     What: the incident's `facts`.
     Known issue: its `runbook` title, or "no runbook match".
     Do now: the `action` (wait / re-trigger / check / escalate) and its `steps`.

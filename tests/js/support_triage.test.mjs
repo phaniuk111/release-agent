@@ -42,7 +42,7 @@ test('a job id becomes a link only from an http(s) template', () => {
 test('"Ask why" names the incident and the date', () => {
     assert.equal(askPrompt({ title: '5 failed · upstream' }, { business_date: '2026-10-02' }),
         'Support triage for 2026-10-02: explain incident "5 failed · upstream" — why it most likely happened, ' +
-        'what L1 should do now, and the ticket note.');
+        'how urgent it is by our priority policy, what L1 should do now, and the ticket note.');
     assert.match(askPrompt(null, null), /incident "\?"/);
 });
 

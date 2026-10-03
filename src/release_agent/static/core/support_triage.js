@@ -68,7 +68,8 @@ export function askPrompt(incident, report) {
     const inc = incident && typeof incident === 'object' ? incident : {};
     const date = report && report.business_date ? ' for ' + report.business_date : '';
     return 'Support triage' + date + ': explain incident "' + String(inc.title || '?') +
-        '" — why it most likely happened, what L1 should do now, and the ticket note.';
+        '" — why it most likely happened, how urgent it is by our priority policy, ' +
+        'what L1 should do now, and the ticket note.';
 }
 
 /** What "Investigate" on an incident sends to the chat: the incident, its date,

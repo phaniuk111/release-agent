@@ -7,7 +7,28 @@ preview feature. The docstrings are what the model reads to choose a tool.
 """
 from __future__ import annotations
 
+import pathlib
 from typing import Any
+
+_PRIORITY_SKILL = pathlib.Path(__file__).parent / "skills" / "support-priority" / "SKILL.md"
+
+
+def priority_policy() -> str:
+    """The support-priority skill's text without its frontmatter: the team's
+    plain-English priority policy and how to apply it. ONE file the team edits;
+    the chat gets it inside every support_triage result (so "Ask why" never
+    depends on the model choosing to load a skill) and the Investigate finding
+    step in its instruction. Read on every call: an edit applies at once."""
+    try:
+        text = _PRIORITY_SKILL.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+        if end is not None:
+            lines = lines[end + 1:]
+    return "\n".join(lines).strip()
 
 
 def support_triage(business_date: str = "") -> dict[str, Any]:
@@ -17,13 +38,19 @@ def support_triage(business_date: str = "") -> dict[str, Any]:
     errors (count, category upstream/process/unit/single/spread, which values
     they share, how many are recurring vs new); patterns where one value carries
     most failures; per failure the dates failing in a row and the last success;
-    retries; output volume that collapsed on a successful run. Read-only."""
+    retries; output volume that collapsed on a successful run; and
+    `priority_policy`, the team's own words for how urgent each incident is —
+    judge every incident's priority by it. Read-only."""
     from release_agent import features, identity
     from release_agent.tools.support import triage as _st
 
     if not features.allowed("support-triage", identity.current()):
         return {"ok": False, "error": features.refusal("support-triage")}
-    return _st.for_model(_st.triage(business_date))
+    out = _st.for_model(_st.triage(business_date))
+    if out.get("ok") and (policy := priority_policy()):
+        # how urgent each incident is: judged by the team's policy, not the card's rule
+        out["priority_policy"] = policy
+    return out
 
 
 # ----- support-investigate: read-only evidence about ONE incident -----------------
@@ -211,7 +238,8 @@ def investigate_evidence(
     sys-b-fetcher) in `source`, and job_ids if known — a call with none of
     these has nothing to look at, so find the incident with `support_triage`
     first. One call is the whole routine — answer from it; the single-source
-    tools are for a targeted follow-up only. Read-only."""
+    tools are for a targeted follow-up only. `priority_policy` is the team's
+    own words for how urgent it is — judge its priority by it. Read-only."""
     refused = _support_gate()
     if refused:
         return refused
@@ -228,4 +256,7 @@ def investigate_evidence(
         source=(source or "").strip(), process=(process or "").strip(),
         job_ids=jobs or None,
     )
-    return evidence.for_model(bundle)
+    out = evidence.for_model(bundle)
+    if out.get("ok") and (policy := priority_policy()):
+        out["priority_policy"] = policy
+    return out

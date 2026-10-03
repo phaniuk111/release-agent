@@ -37,5 +37,7 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   collect (code) → finding (one capped model step, no evidence tools). The
   model never decides the action for a failure kind or whether a cause is
   established — `support/signals.with_judgement` does, and a failed run's own
-  log lines (found by its run id) outrank what its source logged that day. Change the instruction or
+  log lines (found by its run id) outrank what its source logged that day.
+  How urgent it is comes from `skills/support-priority/SKILL.md` (plain English,
+  the team's to edit) — never hard-code a priority rule in a prompt. Change the instruction or
   the model only with `scripts/eval_investigate.py` passing before and after.

@@ -522,3 +522,24 @@ def test_a_fallback_answer_is_not_shared_so_the_next_person_gets_a_real_one(evid
     second = _chat(service, BUTTON, "t-fb-2")
     assert _text(second) == finder.reply and _text(first) != finder.reply
     assert next(e["data"] for e in second if e["type"] == "investigation").get("shared") is None
+
+
+def test_the_finding_step_reads_the_teams_priority_policy_from_the_skill(monkeypatch, tmp_path):
+    """One policy, edited in one place: the chat agent loads the support-priority
+    skill for "Ask why"; the finding step (no skill tools) reads the same file."""
+    from adk_release_agent import investigate_workflow as iw
+    from adk_release_agent import support_tools as st
+
+    policy = st.priority_policy()
+    assert policy and not policy.startswith("---") and "name: support-priority" not in policy
+    assert "The team's priority policy" in policy and "Priority: HIGH" in policy
+    assert iw.finding_instruction().endswith(policy)
+    assert "4. **Priority**" in iw.FINDING_INSTRUCTION and 'starts the section with "Do now: "' not in policy
+
+    edited = tmp_path / "SKILL.md"
+    edited.write_text("---\nname: support-priority\ndescription: x\n---\n\nHigh: anything for REG-REPORT.\n")
+    monkeypatch.setattr(st, "_PRIORITY_SKILL", edited)
+    assert st.priority_policy() == "High: anything for REG-REPORT."
+    assert iw.finding_instruction().endswith("High: anything for REG-REPORT.")
+    monkeypatch.setattr(st, "_PRIORITY_SKILL", tmp_path / "missing.md")
+    assert iw.finding_instruction() == iw.FINDING_INSTRUCTION   # no skill: the finding still runs
