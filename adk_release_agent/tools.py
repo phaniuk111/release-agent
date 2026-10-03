@@ -348,6 +348,201 @@ def support_triage(business_date: str = "") -> dict[str, Any]:
     return _st.for_model(_st.triage(business_date))
 
 
+# ----- support-investigate: read-only evidence about ONE incident -----------------
+# Each tool names the access it lacks instead of raising, so the investigation
+# routine (skills/support-investigate) can carry on with the steps it can take.
+
+# Evidence reads are shared across people: ten engineers investigating the same
+# incident should cost one read of the logs, one of the Dataflow job, not ten
+# — and Cloud Logging allows about 60 reads a minute per project. Keyed by the
+# tool's arguments; refreshed after _EVIDENCE_TTL seconds; bounded.
+_log = __import__("logging").getLogger(__name__)
+_EVIDENCE_TTL = 600.0
+_EVIDENCE_MAX = 256
+_evidence: dict[tuple, tuple[float, dict]] = {}
+_evidence_lock = __import__("threading").Lock()
+
+
+def _remembered(key: tuple, compute):
+    import time
+
+    with _evidence_lock:
+        hit = _evidence.get(key)
+        if hit and time.time() - hit[0] < _EVIDENCE_TTL:
+            return hit[1]
+    value = compute()
+    if not value.get("ok"):
+        # The model only sees the dict; the operator needs the reason in the log.
+        _log.warning("Evidence read failed | %s | %s", "/".join(str(k) for k in key[:2]),
+                     str(value.get("error") or "")[:300])
+    if value.get("ok"):   # a refusal or an outage is retried, never remembered
+        with _evidence_lock:
+            if len(_evidence) >= _EVIDENCE_MAX:
+                _evidence.clear()
+            _evidence[key] = (time.time(), value)
+    return value
+
+
+def _support_gate():
+    from release_agent import features, identity
+
+    if not features.allowed("support-triage", identity.current()):
+        return {"ok": False, "error": features.refusal("support-triage")}
+    return None
+
+
+def _cob_window(business_date: str) -> tuple[str, str]:
+    """The window a business date's pipelines run in: from that date's 00:00
+    UTC to noon the day after (overnight batches land after the date they are
+    for). Empty = the last 36 hours."""
+    from datetime import datetime, timedelta, timezone
+
+    from release_agent.tools.support_triage import _to_date
+
+    d = _to_date(business_date.strip()) if business_date.strip() else None
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    if d is None:
+        end = now
+        start = end - timedelta(hours=36)
+    else:
+        start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+        # Today's date is still running: the window ends now, not at a time
+        # that has not happened yet (an instant query there would see nothing).
+        end = min(start + timedelta(hours=36), now)
+    return start.isoformat(), end.isoformat()
+
+
+def source_metrics(source: str, business_date: str = "") -> dict[str, Any]:
+    """The standard health checks of a SOURCE service (the image/workload that
+    produced a pipeline's data) over a business date's window, via PromQL:
+    restarts, whether it was up, its error rate — each as the configured
+    expression (SUPPORT_SOURCE_PROMQL) evaluated at the window's end. A healthy
+    source rules the source out; an unhealthy one is the lead. Read-only."""
+    refused = _support_gate()
+    if refused:
+        return refused
+    from release_agent.config import settings
+    from release_agent.tools import monitoring as _mon
+
+    source = (source or "").strip()
+    if not source or not all(c.isalnum() or c in "-_." for c in source):
+        return {"ok": False, "error": "source must be a service name (letters, digits, '-', '_', '.')."}
+    start, end = _cob_window(business_date)
+    fills = {"source": source, "namespace": getattr(settings, "support_namespace", ""),
+             "cluster": getattr(settings, "support_cluster", ""), "window": "36h"}
+    checks = {}
+    for item in str(getattr(settings, "support_source_promql", "") or _DEFAULT_SOURCE_PROMQL).split(";"):
+        name, sep, expr = item.partition("=")
+        if sep and name.strip() and expr.strip():
+            checks[name.strip()] = expr.strip().format(**fills)
+    results = {name: _remembered(("promql", expr, end), lambda e=expr: _mon.run_query(e, at=end))
+               for name, expr in checks.items()}
+    verdicts = []
+    for name, res in results.items():
+        if not res.get("ok"):
+            verdicts.append(f"{name}: not measured ({res.get('error', '')[:80]})")
+            continue
+        values = [s.get("value") for s in res.get("series") or [] if s.get("value") is not None]
+        verdicts.append(f"{name}: no series" if not values else f"{name}: {max(values):g}")
+    return {"ok": True, "source": source, "window": {"start": start, "end": end},
+            "checks": results, "summary": " · ".join(verdicts)}
+
+
+# name=expr;… with {source} {namespace} {cluster} {window} filled in. The pod
+# label the person's clusters carry is `app` (SUPPORT_SOURCE_LABEL) — these
+# defaults assume kube-state-metrics and an http_requests_total counter;
+# a deployment overrides the string for its own exporters.
+_DEFAULT_SOURCE_PROMQL = (
+    'restarts=sum(increase(kube_pod_container_status_restarts_total{{namespace="{namespace}",pod=~"{source}.*"}}[{window}]));'
+    'up=min(up{{app="{source}",namespace="{namespace}"}});'
+    'error_rate=sum(rate(http_requests_total{{app="{source}",namespace="{namespace}",code=~"5.."}}[{window}]))'
+    ' / sum(rate(http_requests_total{{app="{source}",namespace="{namespace}"}}[{window}]))'
+)
+
+
+def source_logs(source: str, business_date: str = "", min_severity: str = "ERROR") -> dict[str, Any]:
+    """What a SOURCE service logged in a business date's window, grouped: each
+    distinct error with its count, first/last time and a sample line, and
+    whether it is a SECURITY line (permission, 403, token, certificate —
+    decided by code, not by you). Read-only; needs SUPPORT_CLUSTER and
+    SUPPORT_NAMESPACE."""
+    refused = _support_gate()
+    if refused:
+        return refused
+    from datetime import datetime
+
+    from release_agent.tools import source_logs as _logs
+
+    start, end = _cob_window(business_date)
+    return _remembered(("logs", source, start, end, min_severity or "ERROR"),
+                       lambda: _logs.read(source, datetime.fromisoformat(start), datetime.fromisoformat(end),
+                                          min_severity=min_severity or "ERROR"))
+
+
+def source_audit(business_date: str = "", principal: str = "") -> dict[str, Any]:
+    """Cloud Audit Logs for a business date's window: what was PERMISSION_DENIED
+    (grouped by API method and resource, optionally for one service account)
+    and any IAM policy change — the evidence behind a security error in the
+    source's logs. Read-only."""
+    refused = _support_gate()
+    if refused:
+        return refused
+    from datetime import datetime
+
+    from release_agent.config import settings
+    from release_agent.tools import source_logs as _logs
+
+    start, end = _cob_window(business_date)
+    # The pipelines' own service account is the principal that matters by
+    # default: a 30-day project-wide read is dominated by cluster bootstrap noise.
+    who = principal or getattr(settings, "support_service_account", "") or ""
+    return _remembered(("audit", start, end, who),
+                       lambda: _logs.audit(datetime.fromisoformat(start), datetime.fromisoformat(end), principal=who))
+
+
+def dataflow_job(job_id: str, region: str = "") -> dict[str, Any]:
+    """What ONE Dataflow job did: state, timings, the job-level error messages,
+    the worker error groups from its logs, and a `kind` decided by code
+    (out_of_memory / quota / permission / schema / not_found / worker_lost /
+    unknown). region empty = SUPPORT_DATAFLOW_REGION. Read-only."""
+    refused = _support_gate()
+    if refused:
+        return refused
+    from release_agent.tools import dataflow_job as _df
+
+    return _remembered(("dataflow", job_id, region or ""), lambda: _df.inspect(job_id, region=region or ""))
+
+
+def release_lookup(name: str, days: int = 14, as_of: str = "") -> dict[str, Any]:
+    """What is deployed where for a chart/image name (exact, else substring
+    match), and its changes in the last `days` days up to `as_of`
+    (YYYY-MM-DD, empty = today), from the release event log. Read-only."""
+    refused = _support_gate()
+    if refused:
+        return refused
+    from release_agent.tools import release_lookup as _rl
+    from release_agent.tools.support_triage import _to_date
+
+    return _rl.lookup(name, days=int(days or 14), as_of=_to_date(as_of) if as_of.strip() else None)
+
+
+def what_changed(names: list[str], before: str, days: int = 7) -> dict[str, Any]:
+    """Every release-log change to these chart/image names (a source, a
+    report's chart) in the `days` before a business date (YYYY-MM-DD), newest
+    first — a version that moved just before the first failure is the
+    strongest cause of a process failure. Read-only."""
+    refused = _support_gate()
+    if refused:
+        return refused
+    from datetime import date
+
+    from release_agent.tools import release_lookup as _rl
+    from release_agent.tools.support_triage import _to_date
+
+    when = _to_date(before.strip()) if before.strip() else None
+    return _rl.what_changed(list(names or [])[:10], when or date.today(), days=int(days or 7))
+
+
 # Every tool the free-form chat agent can call. The per-domain grouping a skill
 # actually surfaces (status/PR/controls/ops/queue/monitoring) is declared in
 # that skill's own SKILL.md frontmatter (adk_additional_tools) — this flat list
@@ -377,5 +572,11 @@ ADK_CHAT_TOOLS = [
     bq_verify_rewrite,
     bq_findings,
     support_triage,
+    source_metrics,
+    source_logs,
+    source_audit,
+    dataflow_job,
+    release_lookup,
+    what_changed,
 ]
 

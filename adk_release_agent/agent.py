@@ -14,6 +14,7 @@ NOT here — it runs through the deterministic ADK ``Workflow`` graph in
 from __future__ import annotations
 
 import asyncio
+import logging
 import contextlib
 import pathlib
 import sys
@@ -43,6 +44,8 @@ You have exactly these Skills, and no others:
   bq-cost           BigQuery cost: the most expensive queries, why, and rewrites tested by dry run
   support-triage    L1 support: what failed, got stuck or never ran in the pipelines (overnight, on a COB /
                     business date), known issue or not, what to do now and who owns it
+  support-investigate  ONE incident in depth: the source's metrics and logs (security denials),
+                    the Dataflow job, what was released — a finding with evidence
   consumer-onboarding
 When a request matches one, load it with the skill tools and follow its
 instructions; the skill unlocks exactly the tools it needs. Facts must come from
@@ -153,6 +156,41 @@ def _model_slots():
     return slots
 
 
+# Seen live: Vertex closed the connection without a status on the 7th call of
+# an investigation ("Server disconnected without sending a response"). The
+# genai client retries by HTTP status, and a drop has none — so the whole turn
+# failed. These are the transport errors with nothing to interpret: retry them.
+_TRANSPORT_DROP_ATTEMPTS = 3
+logger = logging.getLogger(__name__)
+
+
+def _transport_drop_types() -> tuple[type, ...]:
+    import httpx
+
+    return (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError, httpx.WriteError,
+            httpx.ReadTimeout, httpx.ConnectTimeout)
+
+
+async def _retry_transport_drops(start, attempts: int = _TRANSPORT_DROP_ATTEMPTS):
+    """Re-run ``start()`` (a fresh model-call generator) on a transport drop,
+    but ONLY while nothing has been yielded yet: once a reply has started
+    streaming, a retry would hand the caller the same tokens twice."""
+    drops = _transport_drop_types()
+    for attempt in range(1, attempts + 1):
+        yielded = False
+        try:
+            async for response in start():
+                yielded = True
+                yield response
+            return
+        except drops as e:
+            if yielded or attempt == attempts:
+                raise
+            logger.warning("Model call dropped by the transport (%s) — retry %d of %d",
+                           type(e).__name__, attempt, attempts - 1)
+            await asyncio.sleep(1.5 * attempt)
+
+
 def _model():
     """The chat agent's model, with transport retries on transient failures.
 
@@ -169,7 +207,8 @@ def _model():
     class _BoundedGemini(Gemini):
         async def generate_content_async(self, llm_request, stream: bool = False):
             async with _model_slots():
-                async for response in super().generate_content_async(llm_request, stream):
+                async for response in _retry_transport_drops(
+                        lambda: super(_BoundedGemini, self).generate_content_async(llm_request, stream)):
                     yield response
 
     model_name = settings.gemini_model or "gemini-flash-latest"
@@ -190,8 +229,11 @@ def _chat_additional_tools():
     with ADK tool confirmation: a terminal (PRD/PRL1) release promotion confirms.
     """
     tools = [release_tools.off_event_loop(tool) for tool in release_tools.ADK_CHAT_TOOLS]
+    # The advisor is an ADK BaseTool, not one of our functions: it joins after
+    # the confirmation wrapping below, which looks functions up by __name__.
+    extra = [t for t in [advisor_tool()] if t is not None]
     if not settings.adk_confirm_prod_ops:
-        return tools
+        return tools + extra
 
     from google.adk.tools import FunctionTool
 
@@ -200,7 +242,36 @@ def _chat_additional_tools():
         FunctionTool(tool, require_confirmation=confirm[tool.__name__])
         if tool.__name__ in confirm else tool
         for tool in tools
-    ]
+    ] + extra
+
+
+# Tools that are ADK BaseTool instances rather than our functions: the skill
+# frontmatter and the skill tests know them by these names.
+EXTRA_CHAT_TOOL_NAMES = ("consult_advisor",)
+
+
+def advisor_tool():
+    """ADK's ModelConsultTool as `consult_advisor`: the executor model asks a
+    stronger one mid-investigation, capped per turn and per session so an
+    investigation can never run up an open-ended bill. None when ADVISOR_MODEL
+    is unset — the skill then carries on without it. The advisor gets no tools
+    of its own (ADK invokes it tool-less), so it can only reason over what the
+    executor already read: it never widens the read-only boundary."""
+    if not settings.advisor_model:
+        return None
+    from google.adk.tools.model_consult import ModelConsultTool
+
+    return ModelConsultTool(
+        model=settings.advisor_model,
+        max_uses=max(1, int(settings.advisor_max_uses)),
+        session_max_uses=max(1, int(settings.advisor_session_max_uses)),
+        # Gemini 2.x rejects a thinking level; the tool's default assumes 3.x.
+        thinking_level=None,
+        name="consult_advisor",
+        description=("Ask a stronger advisor model ONE specific question about evidence you "
+                     "have already gathered, when the evidence conflicts or no step produced a "
+                     "cause. Capped per turn and per session; not for routine cases."),
+    )
 
 
 def _skill_toolset():

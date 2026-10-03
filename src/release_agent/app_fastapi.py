@@ -396,7 +396,69 @@ async def chat_endpoint(req: ChatRequest, request: Request):
 
     logger.info(f"Chat request | thread={thread_id} | msg_len={len(req.message)}")
 
-    async def event_generator() -> AsyncGenerator[str, None]:
+    return StreamingResponse(
+        _chat_events(request, req.message, thread_id, caller),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # critical when behind nginx
+        },
+    )
+
+
+# How often a streaming turn asks whether its reader is still there.
+_DISCONNECT_POLL_SECONDS = 0.5
+# Turns whose reader left keep running to their end (see _chat_events); the
+# event loop only holds weak references to tasks, so these hold the strong one.
+_detached_turns: set[asyncio.Task] = set()
+_END_OF_TURN = object()
+
+
+def _abort_turn(abort: asyncio.Event, thread_id: str, how: str) -> None:
+    """Trip the chat lane's abort signal once, saying why."""
+    if abort.is_set():
+        return
+    logger.info(f"Chat client gone ({how}): aborting the chat turn | thread={thread_id}")
+    abort.set()
+
+
+async def _abort_when_disconnected(request: Request, abort: asyncio.Event, thread_id: str) -> None:
+    """Trip ``abort`` as soon as the request reports its client has disconnected."""
+    while not abort.is_set():
+        if await request.is_disconnected():
+            _abort_turn(abort, thread_id, "disconnected")
+            return
+        await asyncio.sleep(_DISCONNECT_POLL_SECONDS)
+
+
+async def _chat_events(
+    request: Request, message: str, thread_id: str, caller: identity.Caller | None,
+) -> AsyncGenerator[str, None]:
+    """The SSE body of one chat turn.
+
+    The turn itself runs in its OWN task and this generator only relays its
+    events. That separation is the point: Starlette cancels the response
+    generator the instant the socket closes, and a cancellation thrown into
+    an ADK run tears it down mid-flight — a deploy or commands Workflow
+    stopped between its gate and apply nodes would re-run the apply on
+    resume, repeating GitHub side effects (AGENTS.md invariant 1), and tool
+    work already handed to a thread would carry on regardless. So a turn is
+    never cancelled. When the reader leaves, the free-form chat agent is
+    told to stop through ADK's ``abort_signal`` (the service hands it to that
+    lane alone, never to a Workflow runner): it finishes at its next event
+    boundary and seals the invocation. A Workflow turn simply runs to its
+    end, and its token or outcome waits in session state for the thread's
+    next message.
+
+    Two things notice the reader leaving: a watcher polling
+    ``request.is_disconnected()``, and this generator's own early close —
+    whichever Starlette delivers first.
+    """
+    abort = asyncio.Event()
+    relay: asyncio.Queue = asyncio.Queue()
+
+    async def run_turn() -> None:
         # Bind this thread's connected repo + PAT (if any) for the whole turn so
         # every GitHub tool call resolves them; falls back to server config when
         # the session isn't connected. contextvars propagate across await/threads.
@@ -406,26 +468,36 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                 # refuses) would otherwise walk away from the turn's stream and
                 # leave it to the garbage collector, which ends its trace span
                 # whenever it gets round to it rather than here.
-                async with aclosing(adk_chat_service.stream_chat(req.message, thread_id)) as events:
+                async with aclosing(adk_chat_service.stream_chat(
+                        message, thread_id, abort_signal=abort)) as events:
                     async for event in events:
                         if event.get("type") == "interrupt":
                             logger.info(f"Interrupt emitted | thread={thread_id}")
-                        yield f"data: {json.dumps(event)}\n\n"
-
+                        relay.put_nowait(f"data: {json.dumps(event)}\n\n")
         except Exception as exc:
             logger.exception(f"Error in chat stream | thread={thread_id}")
             error_payload = json.dumps({"type": "error", "content": _chat_error_message(exc)})
-            yield f"data: {error_payload}\n\n"
+            relay.put_nowait(f"data: {error_payload}\n\n")
+        finally:
+            relay.put_nowait(_END_OF_TURN)
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # critical when behind nginx
-        },
-    )
+    turn = asyncio.create_task(run_turn(), name=f"chat-turn:{thread_id}")
+    _detached_turns.add(turn)
+    turn.add_done_callback(_detached_turns.discard)
+    watcher = asyncio.create_task(_abort_when_disconnected(request, abort, thread_id))
+    try:
+        while True:
+            chunk = await relay.get()
+            if chunk is _END_OF_TURN:
+                return
+            yield chunk
+    finally:
+        # Reached on a finished turn, and on the cancel or close Starlette
+        # delivers when the client has gone: then the turn is still running,
+        # and this is the only word it gets that nobody is reading.
+        watcher.cancel()
+        if not turn.done():
+            _abort_turn(abort, thread_id, "stream closed")
 
 
 @app.post("/api/session/connect")

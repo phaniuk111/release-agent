@@ -350,6 +350,13 @@ _TOOL_LABELS = {
     "bq_verify_rewrite": "Testing the rewrite",
     "bq_findings": "Reading earlier findings",
     "support_triage": "Reading the control table",
+    "source_metrics": "Checking the source's metrics",
+    "source_logs": "Reading the source's logs",
+    "source_audit": "Reading the audit logs",
+    "dataflow_job": "Reading the Dataflow job",
+    "release_lookup": "Looking up the release log",
+    "what_changed": "Checking what was released",
+    "consult_advisor": "Consulting the advisor model",
 }
 
 
@@ -500,8 +507,23 @@ class AdkChatService:
         )
         self._pending_commands: dict[tuple[str, str], str] = {}
 
-    async def stream_chat(self, message: str, thread_id: str) -> AsyncGenerator[dict[str, Any], None]:
-        """Yield UI-compatible SSE event payloads."""
+    async def stream_chat(
+        self, message: str, thread_id: str, abort_signal: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Yield UI-compatible SSE event payloads.
+
+        ``abort_signal`` is tripped by the endpoint when the person's browser
+        has gone. It reaches ONLY the free-form chat agent (the last lane
+        below): a turn nobody will read stops at its next event boundary
+        instead of running the model and its tools to the end. It is NEVER
+        handed to the deploy or commands Workflow runners — their nodes do
+        blocking GitHub work, and a graph stopped between gate and apply
+        would re-run that node on resume, repeating its side effects
+        (AGENTS.md invariant 1). A preview or an approved operation whose
+        reader has left runs to its end; its token or outcome waits in session
+        state for the thread's next message, exactly as it would after a
+        restart.
+        """
         # Something already waiting on this thread — a paused yes/no approval
         # (prod ops) or a pending CONFIRM token — is consumed ONLY by an explicit
         # answer: yes/no for an approval, the exact token or "no" for a preview.
@@ -677,8 +699,10 @@ class AdkChatService:
                     yield event
             return
 
+        # The one lane that may be aborted: an LlmAgent turn with read-only
+        # tools, where stopping early loses nothing but a reply nobody reads.
         async with aclosing(traced_stream(
-                self._run_chat_agent(_content_from_text(message), thread_id),
+                self._run_chat_agent(_content_from_text(message), thread_id, abort_signal=abort_signal),
                 "chat", thread_id=thread_id,
                 user_id=_user_id(), session_id=_session_id(thread_id, "chat"))) as events:
             async for event in events:
@@ -832,6 +856,7 @@ class AdkChatService:
         thread_id: str,
         invocation_id: str | None = None,
         approved: tuple[str, str] | None = None,
+        abort_signal: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat turn, surfacing prod-ops confirmations and persisting memory.
 
@@ -839,6 +864,12 @@ class AdkChatService:
         call is stored and surfaced as a ``confirmation`` interrupt. Otherwise the
         turn completes and — when memory is enabled — the session is saved to the
         memory service so future turns can recall it.
+
+        ``abort_signal`` (set when the person has left) makes ADK stop at the
+        next event boundary and seal the invocation: every function call still
+        waiting for a response, a confirmation pause included, is answered with
+        an ``INVOCATION_ABORTED`` error, so nothing dangles in the session and a
+        resume never re-runs a tool.
         """
         interrupted = False
         mutated = False          # did this turn change release/deploy state?
@@ -847,39 +878,45 @@ class AdkChatService:
         repeat = None            # the model asking to run the approved operation AGAIN
         landed: list[tuple[str, str]] = []   # state-changing tools that returned this turn
         try:
-            async for event in self.chat_runner.run_async(
+            # aclosing: the two breaks below leave the run early, and only a
+            # closed generator seals an aborted invocation NOW rather than
+            # whenever the garbage collector finalises it — the abort check
+            # after this block relies on the sealing having happened.
+            async with aclosing(self.chat_runner.run_async(
                 user_id=_user_id(),
                 session_id=_session_id(thread_id, "chat"),
                 invocation_id=invocation_id,
                 new_message=content,
-            ):
-                for label in _progress_events(event):
-                    yield {"type": "progress", "content": label}
-                # A change is a tool that RAN, not one the model called: a call
-                # that pauses for approval changed nothing (load test: a paused
-                # promotion marked a "deploy status" turn as a change).
-                ran = _landed_changes(event)
-                mutated = mutated or bool(ran)
-                landed += ran
-                text = _text_from_event(event)
-                if text:
-                    said_anything = True
-                    yield {"type": "token", "content": text}
-                if approved:
-                    approved_note = _result_note(event, approved[0]) or approved_note
-                pending = _pending_call_from_event(event)
-                if pending is not None and approved and approved_note and _original_call(pending) == approved:
-                    # Seen live: after an approved PRD promotion ran, the model asked to
-                    # run the SAME promotion again — a second approval for something
-                    # already done. Decline it here instead of asking the person.
-                    repeat = pending
-                    break
-                if pending is not None:
-                    self._pending_adk_calls[(_user_id(), thread_id)] = pending
-                    await self._persist_pending_call(thread_id, pending)
-                    yield {"type": "interrupt", "data": _confirmation_interrupt_payload(pending)}
-                    interrupted = True
-                    break
+                abort_signal=abort_signal,
+            )) as run:
+                async for event in run:
+                    for label in _progress_events(event):
+                        yield {"type": "progress", "content": label}
+                    # A change is a tool that RAN, not one the model called: a call
+                    # that pauses for approval changed nothing (load test: a paused
+                    # promotion marked a "deploy status" turn as a change).
+                    ran = _landed_changes(event)
+                    mutated = mutated or bool(ran)
+                    landed += ran
+                    text = _text_from_event(event)
+                    if text:
+                        said_anything = True
+                        yield {"type": "token", "content": text}
+                    if approved:
+                        approved_note = _result_note(event, approved[0]) or approved_note
+                    pending = _pending_call_from_event(event)
+                    if pending is not None and approved and approved_note and _original_call(pending) == approved:
+                        # Seen live: after an approved PRD promotion ran, the model asked to
+                        # run the SAME promotion again — a second approval for something
+                        # already done. Decline it here instead of asking the person.
+                        repeat = pending
+                        break
+                    if pending is not None:
+                        self._pending_adk_calls[(_user_id(), thread_id)] = pending
+                        await self._persist_pending_call(thread_id, pending)
+                        yield {"type": "interrupt", "data": _confirmation_interrupt_payload(pending)}
+                        interrupted = True
+                        break
         except Exception:
             if not landed:
                 raise           # nothing ran: the endpoint's "nothing was changed" is true
@@ -912,6 +949,21 @@ class AdkChatService:
                 pass
             if not said_anything:
                 yield {"type": "token", "content": approved_note}
+        if abort_signal is not None and abort_signal.is_set():
+            # The person left mid-turn and ADK sealed the invocation. A pause
+            # that arrived in the same breath was sealed with it, so the "yes"
+            # a reminder would invite could answer nothing: drop it from both
+            # stores rather than leave an approval that cannot be acted on. The
+            # tools that ran before the stop are still recorded in the session
+            # and the event log; an aborted turn is not saved to memory because
+            # it is not a turn the model finished.
+            if interrupted:
+                self._pending_adk_calls.pop((_user_id(), thread_id), None)
+                await self._persist_pending_call(thread_id, None)
+            logger.info("Chat turn aborted: the client went away | thread=%s | ran=%s | paused=%s",
+                        thread_id, ", ".join(n for n, _ in landed) or "-", interrupted)
+            yield {"type": "done", "mutated": mutated}
+            return
         if not interrupted and settings.adk_memory_enabled:
             await self._persist_session_to_memory(thread_id)
         yield {"type": "done", "mutated": mutated}

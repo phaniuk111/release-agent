@@ -797,61 +797,17 @@ def parse_critical(raw: str) -> set[tuple[str, str]]:
     return out
 
 
-def cutoff_for(business_date: date | None, hhmm: str, tz: str, days_after: int) -> tuple[datetime | None, str | None]:
-    """The deadline for a business date's work: ``hhmm`` in ``tz``, ``days_after``
-    days after the date (06:00 the next morning, say). (None, problem) when unset
-    or unusable."""
-    if not hhmm.strip() or business_date is None:
-        return None, None
-    h, sep, m = hhmm.strip().partition(":")
-    try:
-        hour, minute = int(h), int(m) if sep else 0
-        day = business_date + timedelta(days=int(days_after))
-        at = datetime(day.year, day.month, day.day, hour, minute)
-    except ValueError:
-        return None, f"SUPPORT_CUTOFF {hhmm!r} is not HH:MM — no cut-off applied."
-    if (tz or "UTC").upper() == "UTC":
-        return at.replace(tzinfo=timezone.utc), None   # needs no time-zone data
-    try:
-        from zoneinfo import ZoneInfo
-
-        return at.replace(tzinfo=ZoneInfo(tz)), None
-    except (ValueError, KeyError, OSError):
-        # an unknown name, or an image without time-zone data (/usr/share/zoneinfo)
-        return None, (f"SUPPORT_TIMEZONE {tz!r} is unknown here (no time-zone data in the image?) — "
-                      "no cut-off applied; give SUPPORT_CUTOFF in UTC with SUPPORT_TIMEZONE=UTC instead.")
-
-
 class PriorityRules:
     """How urgent an incident is. Built-in defaults; a deployment tunes them
-    (SUPPORT_HIGH_COUNT, SUPPORT_MEDIUM_COUNT, SUPPORT_CRITICAL, SUPPORT_CUTOFF…)."""
+    (SUPPORT_HIGH_COUNT, SUPPORT_MEDIUM_COUNT, SUPPORT_CRITICAL). Deliberately no
+    clock: a business date's deadline was tried and dropped — the person
+    working the queue knows the time; the list should not reshuffle by the hour."""
 
     def __init__(self, *, high_count: int = 10, medium_count: int = 3,
-                 critical: set[tuple[str, str]] | None = None, cutoff: datetime | None = None,
-                 warn_minutes: int = 120, now: datetime | None = None):
+                 critical: set[tuple[str, str]] | None = None):
         self.high_count = max(1, int(high_count))
         self.medium_count = max(1, int(medium_count))
         self.critical = critical or set()
-        self.cutoff = cutoff
-        self.warn = timedelta(minutes=max(0, int(warn_minutes)))
-        self.now = now or datetime.now(timezone.utc)
-
-    def cutoff_state(self) -> tuple[bool, str | None]:
-        """(does the cut-off raise priority now, how to say it). It counts from
-        ``warn`` before the deadline until a day after it — an older date is
-        history, not urgency."""
-        if self.cutoff is None:
-            return False, None
-        delta = self.cutoff - self.now
-        mins = int(abs(delta.total_seconds()) // 60)
-        span = f"{mins // 60} h {mins % 60} min" if mins >= 60 else f"{mins} min"
-        when = self.cutoff.strftime("%H:%M")
-        if delta.total_seconds() >= 0:
-            return delta <= self.warn, f"cut-off {when} in {span}"
-        return -delta <= timedelta(hours=24), f"cut-off {when} passed {span} ago"
-
-
-_UP = {"low": "medium", "medium": "high", "high": "high"}
 
 
 def _runs(n: int) -> str:
@@ -869,8 +825,7 @@ def _critical_hits(values: dict[str, Any], rules: PriorityRules) -> list[str]:
 
 def _priority(kind: str, count: int, err: dict[str, Any] | None, rules: PriorityRules,
               values: dict[str, Any]) -> tuple[str, str]:
-    """(priority, why) — the first rule that applies decides; the cut-off then
-    raises an unfinished problem one level as the deadline nears."""
+    """(priority, why) — the first rule that applies decides."""
     hits = _critical_hits(values, rules)
     streak = (err or {}).get("max_streak") or 0
     if hits:
@@ -891,11 +846,6 @@ def _priority(kind: str, count: int, err: dict[str, Any] | None, rules: Priority
         level, why = "medium", f"failing {streak} dates in a row"
     else:
         level, why = "low", "one run, first time" if count == 1 else _runs(count)
-    raise_it, said = rules.cutoff_state()
-    if raise_it and kind in ("error", "stuck", "missing"):
-        if level != "high":
-            level = _UP[level]
-        why += f"; {said}"
     return level, why
 
 
@@ -952,6 +902,7 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
                     "title": f"{err['count']} failed · {err['category']}" + (f" · {cause}" if cause else ""),
                     "category": err["category"], "count": err["count"], "facts": facts,
                     "error_text": err.get("sample") or err.get("signature"),
+                    "shared": dict(err.get("shared") or {}),
                     "job_ids": err.get("job_ids") or [], "runbook": known["title"] if known else None,
                     "action": action, "steps": steps, "owner": owner,
                     "_rank": ("error", err["count"], err, err.get("values") or err.get("shared") or {})})
@@ -1054,17 +1005,8 @@ def triage(business_date: str = "") -> dict[str, Any]:
     if problem:
         out["notes"].append(problem)
     out["runbook_entries"] = len(runbook)
-    cutoff, cut_problem = cutoff_for(got["cob"], settings.support_cutoff, settings.support_timezone,
-                                     settings.support_cutoff_days_after)
-    if cut_problem:
-        out["notes"].append(cut_problem)
     rules = PriorityRules(high_count=settings.support_high_count, medium_count=settings.support_medium_count,
-                          critical=parse_critical(settings.support_critical), cutoff=cutoff,
-                          warn_minutes=settings.support_cutoff_warn_minutes, now=now)
-    if cutoff is not None:
-        out["cutoff"] = {"at": cutoff.isoformat(), "timezone": settings.support_timezone or "UTC",
-                         "minutes_left": int((cutoff - now).total_seconds() // 60),
-                         "said": rules.cutoff_state()[1]}
+                          critical=parse_critical(settings.support_critical))
     out["incidents"] = incidents(out, labels=out["labels"], runbook=runbook,
                                  owners=parse_owners(settings.support_owners), rules=rules)
     return out

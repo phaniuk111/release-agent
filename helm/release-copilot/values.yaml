@@ -242,11 +242,33 @@ config:
   SUPPORT_HIGH_COUNT: "10"
   SUPPORT_MEDIUM_COUNT: "3"
   SUPPORT_CRITICAL: ""               # "role:value,…" always HIGH, e.g. "process:<report>,scope:<entity>"
-  SUPPORT_CUTOFF: ""                 # "HH:MM" deadline for a business date's work; empty = none
-  SUPPORT_TIMEZONE: "UTC"            # e.g. "Europe/London"
-  SUPPORT_CUTOFF_DAYS_AFTER: "1"     # the deadline is this many days after the business date
-  SUPPORT_CUTOFF_WARN_MINUTES: "120" # from this long before it, unfinished problems go up one level
   SUPPORT_ERRORS_TO_MODEL: "false"   # error text is the team's data: off = the chat model never sees it
+  # --- Investigate (the support-investigate skill): where a SOURCE service runs
+  # and what to read about it. The source value in the control table is the
+  # workload's `app` pod label (SUPPORT_SOURCE_LABEL). Read-only; the service
+  # account needs roles/logging.viewer (container + audit logs),
+  # roles/dataflow.viewer, and the PromQL access the Monitoring pill already has.
+  # Investigating REQUIRES the model to read error text and log excerpts.
+  SUPPORT_CLUSTER: ""                # GKE cluster name the sources run in
+  SUPPORT_NAMESPACE: ""              # their namespace
+  SUPPORT_SOURCE_LABEL: "app"        # the pod label that names a source
+  SUPPORT_LOGS_PROJECT: ""           # where their logs land; empty = GOOGLE_CLOUD_PROJECT
+  SUPPORT_LOGS_MAX_LINES: "500"      # lines read per source per window, grouped before the model sees them
+  SUPPORT_SERVICE_ACCOUNT: ""        # the pipelines' service account, to narrow audit-log denials
+  SUPPORT_DATAFLOW_REGION: ""        # e.g. "europe-west2"
+  SUPPORT_DATAFLOW_PROJECT: ""       # empty = GOOGLE_CLOUD_PROJECT
+  # name=expr;… PromQL health checks per source; {source} {namespace} {cluster}
+  # {window} are filled in. Empty = restarts (kube-state-metrics), up, 5xx rate
+  # (http_requests_total) — override for your own exporters. A Cloud Monitoring
+  # metric (kubernetes_io:…, custom_googleapis_com:…) also needs its
+  # monitored_resource="…" matcher, or Managed Prometheus refuses the query.
+  SUPPORT_SOURCE_PROMQL: ""
+  # A second, stronger model the investigation may consult when its evidence
+  # conflicts (ADK ModelConsultTool, tool-less, read-only by construction).
+  # EMPTY DISABLES it; the caps bound the spend per turn and per session.
+  ADVISOR_MODEL: ""                  # e.g. "gemini-3.1-pro-preview"
+  ADVISOR_MAX_USES: "2"
+  ADVISOR_SESSION_MAX_USES: "5"
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token
   # usage, each tool call, the deploy Workflow's nodes — exported as

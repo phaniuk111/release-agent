@@ -52,8 +52,14 @@ test('an empty date and the enable hint say what to do', () => {
     assert.ok(ENABLE_HINT.includes('SUPPORT_TABLE') && ENABLE_HINT.includes('private'));
 });
 
-test('the cut-off, when set, leads the small print', () => {
-    assert.equal(metaLine({ ok: true, runbook_entries: 1,
-        cutoff: { said: 'cut-off 06:00 in 45 min', timezone: 'Europe/London' } }),
-    'cut-off 06:00 in 45 min (Europe/London) · 1 runbook entries');
+import { investigatePrompt } from '../../src/release_agent/static/core/support_triage.js';
+
+test('"Investigate" hands the skill the incident, its date, shared values and jobs', () => {
+    const inc = { title: '4 failed · process · Report REPORT-B', shared: { system: 'SYS-B', source: 'sys-b-fetcher', process: 'REPORT-B' },
+        job_ids: ['j1', 'j2'] };
+    const rep = { business_date: '2026-10-02', date_label: 'COB', labels: { system: 'Feed', source: 'Source', process: 'Report' } };
+    assert.equal(investigatePrompt(inc, rep),
+        'Investigate: 4 failed · process · Report REPORT-B · COB 2026-10-02 · Feed SYS-B · Source sys-b-fetcher · Report REPORT-B · ' +
+        'jobs j1, j2. Why did it fail, and what should L1 do?');
+    assert.equal(investigatePrompt(null, null), 'Investigate: ?. Why did it fail, and what should L1 do?');
 });

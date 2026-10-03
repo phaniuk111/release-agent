@@ -1,6 +1,6 @@
 import { escapeHtml as esc } from '../core/format.js';
 import {
-    ENABLE_HINT, actionLabel, askPrompt, emptyText, jobHref, metaLine, summaryLine,
+    ENABLE_HINT, actionLabel, askPrompt, emptyText, investigatePrompt, jobHref, metaLine, summaryLine,
 } from '../core/support_triage.js';
 import { supportTriage } from '../api.js';
 import { llmEnabled } from '../core/capabilities.js';
@@ -76,8 +76,11 @@ function incidentHtml(inc, i, report) {
         '<span class="flex-1"></span>' +
         '<button type="button" data-copy="' + i + '" class="text-sky-400 hover:underline whitespace-nowrap">' +
         '<i class="fa-solid fa-copy mr-1"></i>Copy ticket note</button>' +
+        // Investigate and Ask why are the model's job: no model (LLM_ENABLED=false), no buttons.
         (llmEnabled(window.PORTAL_UI)
-            ? '<button type="button" data-ask="' + i + '" class="text-sky-400 hover:underline whitespace-nowrap">' +
+            ? '<button type="button" data-investigate="' + i + '" class="text-amber-300 hover:underline whitespace-nowrap font-semibold">' +
+              '<i class="fa-solid fa-magnifying-glass mr-1"></i>Investigate</button>' +
+              '<button type="button" data-ask="' + i + '" class="text-sky-400 hover:underline whitespace-nowrap">' +
               '<i class="fa-solid fa-comment-dots mr-1"></i>Ask why</button>' : '') +
         '</div></div>';
 }
@@ -147,5 +150,8 @@ async function render(wrap, date, fresh) {
     });
     body.querySelectorAll('button[data-ask]').forEach(btn => {
         btn.addEventListener('click', () => sendMessage(askPrompt(incidents[+btn.dataset.ask], res)));
+    });
+    body.querySelectorAll('button[data-investigate]').forEach(btn => {
+        btn.addEventListener('click', () => sendMessage(investigatePrompt(incidents[+btn.dataset.investigate], res)));
     });
 }

@@ -399,7 +399,7 @@ def test_the_chart_mounts_the_runbook_only_when_enabled():
 
 def _prio(rep, **rules):
     return [(i["priority"], i["priority_reason"]) for i in
-            st.incidents(_with_label(rep), labels=LABELS, runbook=[], owners={}, rules=st.PriorityRules(now=NOW, **rules))]
+            st.incidents(_with_label(rep), labels=LABELS, runbook=[], owners={}, rules=st.PriorityRules(**rules))]
 
 
 def test_every_priority_says_which_rule_set_it():
@@ -416,20 +416,3 @@ def test_a_critical_value_is_always_high_even_for_one_run():
     one = report(failures=[fail("d1", "U1", process="REG-1", err="timeout")])
     assert _prio(one, critical={("process", "REG-1")}) == [("high", "critical: process REG-1")]
     assert st.parse_critical("process:REG-1, scope:E1, colour:red, junk") == {("process", "REG-1"), ("scope", "E1")}
-
-
-def test_the_cut_off_raises_unfinished_problems_as_it_nears_and_says_so():
-    one = report(failures=[fail("d1", "U1", err="timeout")])
-    soon = NOW + timedelta(minutes=45)
-    assert _prio(one, cutoff=soon) == [("medium", "one run, first time; cut-off 09:45 in 45 min")]
-    assert _prio(one, cutoff=NOW + timedelta(hours=5)) == [("low", "one run, first time")]   # not yet
-    assert _prio(one, cutoff=NOW - timedelta(minutes=20))[0][1].endswith("passed 20 min ago")
-    assert _prio(one, cutoff=NOW - timedelta(days=3)) == [("low", "one run, first time")]    # history
-
-
-def test_the_cut_off_is_built_from_the_business_date_safely():
-    at, problem = st.cutoff_for(D, "06:00", "UTC", 1)
-    assert at == datetime(2026, 10, 3, 6, 0, tzinfo=timezone.utc) and problem is None
-    assert st.cutoff_for(D, "", "UTC", 1) == (None, None)
-    assert st.cutoff_for(D, "6am", "UTC", 1)[1].startswith("SUPPORT_CUTOFF")
-    assert "unknown" in st.cutoff_for(D, "06:00", "Mars/Olympus", 1)[1]

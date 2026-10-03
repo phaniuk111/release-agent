@@ -193,7 +193,7 @@ Everything specific to your table lives in **your** values and chart files:
 
 | Where | What |
 |---|---|
-| `values.yaml` → `config:` | `SUPPORT_TABLE` (`project.dataset.table`), `SUPPORT_COLUMNS` (your columns → roles: `date`, `run_id`, `status` required; `updated_at`, `event_at`, `event_id`, `job_id`, `error`, `details`, `members`, `system`, `source`, `process`, `unit`, `scope` optional), `SUPPORT_FAILED_STATUSES` / `SUPPORT_DONE_STATUSES` (your status words), `SUPPORT_DATE_LABEL` (e.g. `COB`), `SUPPORT_JOB_URL`, `SUPPORT_OWNERS`, priority (`SUPPORT_HIGH_COUNT`, `SUPPORT_MEDIUM_COUNT`, `SUPPORT_CRITICAL` — always-high values, `SUPPORT_CUTOFF` + `SUPPORT_TIMEZONE` — the deadline that raises unfinished problems as it nears), `SUPPORT_STUCK_MINUTES`, `SUPPORT_DETAIL_KEYS`, `PREVIEW_USERS` (the L1 testers) |
+| `values.yaml` → `config:` | `SUPPORT_TABLE` (`project.dataset.table`), `SUPPORT_COLUMNS` (your columns → roles: `date`, `run_id`, `status` required; `updated_at`, `event_at`, `event_id`, `job_id`, `error`, `details`, `members`, `system`, `source`, `process`, `unit`, `scope` optional), `SUPPORT_FAILED_STATUSES` / `SUPPORT_DONE_STATUSES` (your status words), `SUPPORT_DATE_LABEL` (e.g. `COB`), `SUPPORT_JOB_URL`, `SUPPORT_OWNERS`, priority (`SUPPORT_HIGH_COUNT`, `SUPPORT_MEDIUM_COUNT`, `SUPPORT_CRITICAL` — always-high values), `SUPPORT_STUCK_MINUTES`, `SUPPORT_DETAIL_KEYS`, `PREVIEW_USERS` (the L1 testers) |
 | `files/support_runbook.json` | your known errors: text to match, title, action, steps, owner (the shipped file is a generic example — replace it) |
 | `values.yaml` → `supportRunbook.enabled: true` | renders that file into a ConfigMap, mounts it, sets `SUPPORT_RUNBOOK_FILE` |
 | IAM (service account) | `roles/bigquery.dataViewer` on the control table, `roles/bigquery.jobUser` on `SUPPORT_PROJECT` |
@@ -201,6 +201,17 @@ Everything specific to your table lives in **your** values and chart files:
 Error text is your data: with `SUPPORT_ERRORS_TO_MODEL: "false"` (the default)
 the chat model sees counts, categories and "error #n" only; the card shows the
 text without any model involved.
+
+**Investigate** (a button per incident, and chat questions like "why did
+REPORT-B fail") runs the `support-investigate` skill: the source's PromQL health
+checks, its grouped container-log errors with security denials tagged, the
+Cloud Audit Logs for what was denied, the Dataflow job's errors and `kind`, and
+what the release log says changed before the business date — then a finding
+with its evidence, and the ticket note. It needs `SUPPORT_CLUSTER`,
+`SUPPORT_NAMESPACE`, `SUPPORT_DATAFLOW_REGION`, the access listed in
+`values.yaml`, and — unavoidably — the model reading error text and log
+excerpts, so settle that with your risk people before turning it on. Every
+step is read-only; the skill suggests, it never re-runs or rolls back.
 
 ## Agent observability — Langfuse (optional)
 

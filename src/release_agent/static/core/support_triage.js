@@ -45,7 +45,6 @@ export function metaLine(report) {
     const r = report && typeof report === 'object' ? report : {};
     const parts = [];
     const c = r.counts || {};
-    if (r.cutoff && r.cutoff.said) parts.push(String(r.cutoff.said) + (r.cutoff.timezone ? ' (' + r.cutoff.timezone + ')' : ''));
     if (num(c.recovered)) parts.push(num(c.recovered) + ' recovered after a retry');
     if (r.previous_date) parts.push('compared with ' + r.previous_date);
     if (num(r.runbook_entries)) parts.push(num(r.runbook_entries) + ' runbook entries');
@@ -70,6 +69,22 @@ export function askPrompt(incident, report) {
     const date = report && report.business_date ? ' for ' + report.business_date : '';
     return 'Support triage' + date + ': explain incident "' + String(inc.title || '?') +
         '" — why it most likely happened, what L1 should do now, and the ticket note.';
+}
+
+/** What "Investigate" on an incident sends to the chat: the incident, its date,
+ *  the values its runs share (the source above all), and its job ids — enough
+ *  for the support-investigate skill to start without asking. */
+export function investigatePrompt(incident, report) {
+    const inc = incident && typeof incident === 'object' ? incident : {};
+    const r = report && typeof report === 'object' ? report : {};
+    const parts = ['Investigate: ' + String(inc.title || '?')];
+    if (r.business_date) parts.push((r.date_label || 'business date') + ' ' + r.business_date);
+    const shared = inc.shared && typeof inc.shared === 'object' ? inc.shared : {};
+    const labels = r.labels && typeof r.labels === 'object' ? r.labels : {};
+    Object.keys(shared).forEach(role => parts.push(String(labels[role] || role) + ' ' + String(shared[role])));
+    const jobs = (Array.isArray(inc.job_ids) ? inc.job_ids : []).filter(Boolean).map(String);
+    if (jobs.length) parts.push('jobs ' + jobs.join(', '));
+    return parts.join(' · ') + '. Why did it fail, and what should L1 do?';
 }
 
 /** "Empty" wording when a date has nothing to triage. */

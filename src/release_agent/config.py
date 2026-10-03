@@ -453,6 +453,12 @@ class Settings(BaseSettings):
     )
     # Vertex Gemini model id. Default to a currently-available model
     # (gemini-2.0-flash was retired); override per-project/region if needed.
+    # The support-investigate skill may consult a second, stronger model when its
+    # evidence conflicts (ADK ModelConsultTool). EMPTY DISABLES the tool. The caps
+    # bound the spend: per turn and per session, whichever is hit first.
+    advisor_model: str = Field(default="", validation_alias=AliasChoices("ADVISOR_MODEL"))
+    advisor_max_uses: int = Field(default=2, validation_alias=AliasChoices("ADVISOR_MAX_USES"))
+    advisor_session_max_uses: int = Field(default=5, validation_alias=AliasChoices("ADVISOR_SESSION_MAX_USES"))
     gemini_model: str = Field(
         default="gemini-2.5-flash",
         validation_alias=AliasChoices("GEMINI_MODEL", "VERTEX_MODEL", "RELEASE_GEMINI_MODEL"),
@@ -664,6 +670,16 @@ class Settings(BaseSettings):
     # Error text is the team's data. Off: the chat model sees counts, groupings and
     # "error #n" only — the card (no model) still shows the text.
     support_errors_to_model: bool = Field(default=False, validation_alias=AliasChoices("SUPPORT_ERRORS_TO_MODEL"))
+    # Source-service logs (tools/source_logs.py): the GKE workload the pipelines read
+    # from, found by cluster + namespace + the pod label that names the service.
+    support_cluster: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CLUSTER"))
+    support_namespace: str = Field(default="", validation_alias=AliasChoices("SUPPORT_NAMESPACE"))
+    support_source_label: str = Field(default="app", validation_alias=AliasChoices("SUPPORT_SOURCE_LABEL"))
+    # Project holding those logs (and the audit logs); blank = gcp_project.
+    support_logs_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_LOGS_PROJECT"))
+    support_logs_max_lines: int = Field(default=500, validation_alias=AliasChoices("SUPPORT_LOGS_MAX_LINES"))
+    # The pipelines' service account — what an audit-log question filters on.
+    support_service_account: str = Field(default="", validation_alias=AliasChoices("SUPPORT_SERVICE_ACCOUNT"))
     # The L1 runbook: known errors and what to do about them (JSON; the shape is
     # design/support_runbook.example.json). The team's own procedures, so a file
     # mounted from private config — empty = the built-in actions per category.
@@ -674,15 +690,19 @@ class Settings(BaseSettings):
     # Priority. HIGH: a critical value, collapsed output, >= HIGH_COUNT runs, or
     # >= MEDIUM_COUNT runs with a shared cause; MEDIUM: stuck/missing, >= MEDIUM_COUNT
     # runs, or failing dates in a row; else LOW. CRITICAL ("role:value,…") is always
-    # high. CUTOFF ("HH:MM" in SUPPORT_TIMEZONE, CUTOFF_DAYS_AFTER the business date)
-    # raises an unfinished problem one level from CUTOFF_WARN_MINUTES before it.
+    # high. No clock-based rule: a deadline was tried and dropped.
     support_high_count: int = Field(default=10, validation_alias=AliasChoices("SUPPORT_HIGH_COUNT"))
+    # Dataflow job lookup (tools/dataflow_job.py, read-only): the region jobs run in
+    # (no default — a wrong region reads as "no such job") and the project they
+    # run in ("" = GCP_PROJECT).
+    support_dataflow_region: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DATAFLOW_REGION"))
+    support_dataflow_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DATAFLOW_PROJECT"))
     support_medium_count: int = Field(default=3, validation_alias=AliasChoices("SUPPORT_MEDIUM_COUNT"))
     support_critical: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CRITICAL"))
-    support_cutoff: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CUTOFF"))
-    support_timezone: str = Field(default="UTC", validation_alias=AliasChoices("SUPPORT_TIMEZONE"))
-    support_cutoff_days_after: int = Field(default=1, validation_alias=AliasChoices("SUPPORT_CUTOFF_DAYS_AFTER"))
-    support_cutoff_warn_minutes: int = Field(default=120, validation_alias=AliasChoices("SUPPORT_CUTOFF_WARN_MINUTES"))
+    # name=expr;… PromQL health checks of a SOURCE service for the investigate
+    # skill, with {source} {namespace} {cluster} {window} filled in; empty = the
+    # built-in restarts / up / 5xx-rate set (adk_release_agent/tools.py).
+    support_source_promql: str = Field(default="", validation_alias=AliasChoices("SUPPORT_SOURCE_PROMQL"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every

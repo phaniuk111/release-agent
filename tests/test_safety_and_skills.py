@@ -47,7 +47,7 @@ def test_chat_app_registers_mutation_guard_plugin():
 
 def test_skill_additional_tools_reference_real_chat_tools():
     """Every adk_additional_tools name in a SKILL.md must resolve to a chat tool."""
-    chat_tool_names = {tool.__name__ for tool in tools.ADK_CHAT_TOOLS}
+    chat_tool_names = {tool.__name__ for tool in tools.ADK_CHAT_TOOLS} | set(agent_module.EXTRA_CHAT_TOOL_NAMES)
     skills_dir = pathlib.Path(agent_module.__file__).parent / "skills"
 
     declared_any = False
