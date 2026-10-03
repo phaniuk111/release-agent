@@ -658,6 +658,19 @@ def bq_cost_report(request: Request, fresh: int = 0):
     return _cached(_bq_cost_cache, 300.0, bq_cost.scan, fresh=bool(fresh))
 
 
+@app.get("/api/support/config-check")
+def support_config_check(request: Request):
+    """Does the configured column mapping match the live control table? Metadata
+    only — nothing is queried. For whoever sets the feature up."""
+    from fastapi.responses import JSONResponse
+
+    from .tools import support_triage
+
+    if not features.allowed("support-triage", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
+    return support_triage.check_config()
+
+
 # Support triage reads a real table, so the team opening the card together must
 # not each run the query: one cached answer per business date, for a minute.
 _SUPPORT_TTL_SECONDS = 60.0

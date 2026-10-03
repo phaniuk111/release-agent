@@ -1022,6 +1022,57 @@ def triage(business_date: str = "") -> dict[str, Any]:
     return out
 
 
+def check_config() -> dict[str, Any]:
+    """Compare the configured mapping with the LIVE table — the mistake this
+    feature invites is a mapped column the table does not have (a typo, a
+    rename), and without this it surfaces as a query error on someone's first
+    click. Reads the table's metadata only (free): never a row.
+
+    {"ok", "table", "roles": {role: column}, "problems": [str], "notes": [str],
+     "unmapped": [column names]} — never raises."""
+    if not enabled():
+        return _disabled()
+    try:
+        table_ref = parse_table(settings.support_table)
+        columns, _labels = parse_columns(settings.support_columns)
+    except ConfigError as e:
+        return {"ok": False, "problems": [str(e)], "notes": [], "unmapped": []}
+    out: dict[str, Any] = {"table": table_ref.strip("`"), "roles": dict(columns), "problems": [], "notes": [],
+                           "unmapped": []}
+    try:
+        table = _get_client().get_table(table_ref.strip("`"))
+    except Exception as e:  # BigQuery's own errors carry the useful text
+        msg = f"{type(e).__name__}: {str(e)[:300]}"
+        return {**out, "ok": False, "problems": [f"The table could not be read: {msg}"],
+                "hint": _permission_hint(msg) or ""}
+    import difflib
+
+    fields = {f.name.lower(): f for f in table.schema}
+    for role, column in columns.items():
+        if column.lower() in fields:
+            continue
+        near = difflib.get_close_matches(column.lower(), list(fields), n=1)
+        out["problems"].append(f"role {role} is mapped to column {column!r}, which the table does not have"
+                               + (f" — did you mean {fields[near[0]].name!r}?" if near else "."))
+    date_field = fields.get(columns["date"].lower())
+    if date_field is not None and date_field.field_type != "DATE":
+        out["problems"].append(f"the date column {columns['date']!r} is {date_field.field_type}, not DATE — "
+                               "the queries filter it with DATE values.")
+    partition = getattr(getattr(table, "time_partitioning", None), "field", None)
+    if date_field is not None and (partition or "").lower() != columns["date"].lower():
+        out["notes"].append("the table is not partitioned on the date column: every read scans the whole table "
+                            "instead of a few days.")
+    for role in ("updated_at", "event_id"):
+        if role not in columns:
+            out["notes"].append(f"no {role} column mapped: " + (
+                "every unfinished run is reported as stuck." if role == "updated_at"
+                else "a retry counts as a separate run."))
+    mapped = {c.lower() for c in columns.values()}
+    out["unmapped"] = [f.name for f in table.schema if f.name.lower() not in mapped]
+    out["ok"] = not out["problems"]
+    return out
+
+
 def for_model(report: dict[str, Any]) -> dict[str, Any]:
     """What the chat model may see. Without SUPPORT_ERRORS_TO_MODEL the error
     text is the team's data and stays out: errors become "error #n" with their

@@ -178,6 +178,9 @@ TAILWIND_CLI=/path/to/tailwindcss-v3.4.17 scripts/css/build.sh   # after using a
   (`tools/git_snapshot.py`); deps come from `uv.lock`, NOT requirements.txt.
 - Style: no regex in parsing paths (tokenizers), comments explain constraints not
   mechanics, frontend is plain ES modules (no build step).
+- Support triage's table mapping is written as the chart's `supportTable:` block
+  (drafted by `scripts/support_mapping.py`, checked by `/api/support/config-check`);
+  the chart flattens it into the `SUPPORT_*` env strings the app parses.
 - Public repo: deployment-specific names (the support-triage table, columns,
   status words, owners, runbook entries) never go in tracked files. Locally they
   live in the git-ignored `.private/`; `scripts/private_names_check.py` (hook:

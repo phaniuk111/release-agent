@@ -189,6 +189,15 @@ does the counting — only counts and problem rows come back, so a COB with a
 million runs costs the portal what one with a thousand does; it never re-runs
 or changes a job. Behind the preview gate (`Support` / `support-triage`).
 
+Write the table once, readably, as the chart's `supportTable:` block (one column
+per line; the chart flattens it into the `SUPPORT_*` strings). Draft it from the
+schema — `python scripts/support_mapping.py --table <project>.<dataset>.<table>`
+(or `--schema <schema.json>`) fills in the obvious roles and marks the grouping
+ones (system / source / process / unit / scope) for you to confirm, since they
+decide how a failure is categorised. `GET /api/support/config-check` then
+compares the mapping with the live table and names a column that is missing or
+renamed, with the nearest real one.
+
 Everything specific to your table lives in **your** values and chart files:
 
 | Where | What |
