@@ -8,3 +8,7 @@ data:
   {{- range $key, $val := .Values.config }}
   {{ $key }}: {{ $val | quote }}
   {{- end }}
+  {{- $rb := .Values.supportRunbook | default dict }}
+  {{- if and $rb.enabled (not (hasKey .Values.config "SUPPORT_RUNBOOK_FILE")) }}
+  SUPPORT_RUNBOOK_FILE: {{ printf "%s/runbook.json" $rb.mountPath | quote }}
+  {{- end }}

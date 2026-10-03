@@ -1,0 +1,49 @@
+{
+  "_comment": "L1 runbook for support triage — the known errors and what to do about them. Shipped in the chart and mounted when supportRunbook.enabled (values.yaml). This copy is a generic EXAMPLE: a deployment keeps its team's own entries here. match: text (or a list of texts that must ALL appear) in the error, case-insensitive. action: wait | retrigger | check | escalate. Optional: category (upstream/process/unit/single/spread), when ({role: value}), escalate_to. First match wins.",
+  "entries": [
+    {
+      "match": "not found",
+      "category": "upstream",
+      "title": "Upstream file not delivered",
+      "action": "wait",
+      "steps": [
+        "Confirm with the upstream feed whether today's file was sent.",
+        "Do not re-run until the file has landed.",
+        "Once it lands, re-trigger the failed runs."
+      ],
+      "escalate_to": "Feed team"
+    },
+    {
+      "match": [
+        "quota",
+        "exceeded"
+      ],
+      "title": "Cloud quota exceeded",
+      "action": "retrigger",
+      "steps": [
+        "Re-trigger once after 15 minutes — quota is usually per minute.",
+        "Fails again: escalate with the job ids."
+      ],
+      "escalate_to": "Platform L2"
+    },
+    {
+      "match": "permission",
+      "title": "Access denied",
+      "action": "escalate",
+      "steps": [
+        "Do not re-run: a permission error repeats until access is fixed.",
+        "Escalate with the job ids and the error."
+      ],
+      "escalate_to": "Platform L2"
+    },
+    {
+      "match": "schema",
+      "title": "Schema mismatch after a change",
+      "action": "escalate",
+      "steps": [
+        "Check the release history for a recent deploy of this process.",
+        "Escalate to the owning team; re-running will not help."
+      ]
+    }
+  ]
+}

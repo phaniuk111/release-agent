@@ -78,6 +78,9 @@ export const bqCostReport = (fresh) => get('/api/bq-cost/report?' + query({ fres
 /** The workbook download — a link's href, so the browser saves it (same cache as the JSON). */
 export const bqCostReportXlsx = () => API_BASE + '/api/bq-cost/report.xlsx';
 
+// ---- support triage -----------------------------------------------------------
+export const supportTriage = (date, fresh) => get('/api/support/triage?' + query({ date: date || '', fresh: fresh ? 1 : 0 }));
+
 // ---- release queue ----------------------------------------------------------
 export const QUEUE_PATH = '/api/release-queue';
 export const getQueue = () => get(QUEUE_PATH);

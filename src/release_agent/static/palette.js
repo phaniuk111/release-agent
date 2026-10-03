@@ -20,6 +20,9 @@ export const GROUPS = [
     // Read-only like Check, but a different question: not "is this release
     // safe" but "what is BigQuery costing us, and why".
     {name:'Monitoring', hint:'read-only — what BigQuery is costing, and why'},
+    // L1 support for the pipelines: a different audience again — someone working
+    // a queue of failures, not shipping a release.
+    {name:'Support',  hint:'L1 — what failed in the pipelines, and what to do now'},
     // Its own row because the audience is different: everything above is for
     // the team shipping the release, this is for someone CONSUMING our APIs.
     {name:'Onboarding', hint:'consuming our APIs — guided from the onboarding docs'},
@@ -52,6 +55,7 @@ export const CAPABILITIES = [
     // Still a preview feature (the server refuses it for non-testers), so it stays in the preview row.
     {group:'Check',   icon:'fa-heart-pulse',       label:'PromQL checks',        desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
     {group:'Monitoring', icon:'fa-coins',          label:'BQ cost report',       desc:"the most expensive BigQuery queries this fortnight, why, and what they'd cost after a fix — measured, not guessed", form:'bq-cost'},
+    {group:'Support', icon:'fa-headset',        label:'Support triage',       desc:'L1 view of the pipelines’ control table: what failed, got stuck or never ran, known issue or not, what to do now and who owns it', form:'support-triage'},
     {group:'Onboarding', icon:'fa-plug',           label:'Consumer onboarding',  desc:'how to start using our APIs — access, auth, first call, going live', send:true,  text:'I want to onboard to your APIs — walk me through it step by step'},
 ];
 
@@ -63,6 +67,7 @@ const GROUP_STYLE = {
     Deploy:  {icon:'text-sky-300',     border:'hover:border-sky-400/50',     label:'text-sky-300/70'},
     Check:   {icon:'text-emerald-300', border:'hover:border-emerald-400/50', label:'text-emerald-300/70'},
     Monitoring: {icon:'text-rose-300', border:'hover:border-rose-400/50', label:'text-rose-300/70'},
+    Support: {icon:'text-amber-300', border:'hover:border-amber-400/50', label:'text-amber-300/80'},
     Onboarding: {icon:'text-cyan-300', border:'hover:border-cyan-400/50', label:'text-cyan-300/70'},
 };
 

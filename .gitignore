@@ -62,3 +62,10 @@ practice/
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.*
+
+# Private, per-deployment config: the real support-triage table and columns,
+# the runbook, owners, and the denylist the private-names check reads. Never
+# committed — the repo holds only generic code (scripts/private_names_check.py).
+.private/
+*.private.yaml
+*.private.json

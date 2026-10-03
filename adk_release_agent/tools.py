@@ -332,6 +332,21 @@ def bq_findings(qhash: str = "") -> dict[str, Any]:
 
     return bq_cost.findings(qhash or None)
 
+def support_triage(business_date: str = "") -> dict[str, Any]:
+    """First-line triage of the workflow control table for one business date
+    (YYYY-MM-DD; empty = the latest date in the table): how many runs failed,
+    are stuck, or ran on the previous date but not this one; the distinct
+    errors (count, category upstream/process/unit/single/spread, which values
+    they share, how many are recurring vs new); patterns where one value carries
+    most failures; per failure the dates failing in a row and the last success;
+    retries; output volume that collapsed on a successful run. Read-only."""
+    from release_agent import features, identity
+    from release_agent.tools import support_triage as _st
+
+    if not features.allowed("support-triage", identity.current()):
+        return {"ok": False, "error": features.refusal("support-triage")}
+    return _st.for_model(_st.triage(business_date))
+
 
 # Every tool the free-form chat agent can call. The per-domain grouping a skill
 # actually surfaces (status/PR/controls/ops/queue/monitoring) is declared in
@@ -361,5 +376,6 @@ ADK_CHAT_TOOLS = [
     bq_dry_run,
     bq_verify_rewrite,
     bq_findings,
+    support_triage,
 ]
 

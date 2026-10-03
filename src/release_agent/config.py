@@ -200,8 +200,8 @@ class Settings(BaseSettings):
     # deployment. PREVIEW_GROUPS hides pill groups; PREVIEW_FEATURES gates the
     # server side too (API + chat tools), so a hidden pill is not one question away.
     preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
-    preview_groups: str = Field(default="Check,Monitoring", validation_alias=AliasChoices("PREVIEW_GROUPS"))
-    preview_features: str = Field(default="monitoring,bq-cost", validation_alias=AliasChoices("PREVIEW_FEATURES"))
+    preview_groups: str = Field(default="Check,Monitoring,Support", validation_alias=AliasChoices("PREVIEW_GROUPS"))
+    preview_features: str = Field(default="monitoring,bq-cost,support-triage", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
     identity_required: bool = Field(
@@ -637,6 +637,41 @@ class Settings(BaseSettings):
     # per-statement minimum) one scan will spend, independent of
     # BQ_COST_MAX_QUERIES (which also still applies on top of this).
     bq_cost_max_datasets: int = Field(default=50, validation_alias=AliasChoices("BQ_COST_MAX_DATASETS"))
+
+    # --- Support triage (tools/support_triage.py) --------------------------------
+    # A first look at a workflow control table: what failed for a business date,
+    # how widely, new or recurring, stuck and missing runs. Generic on purpose —
+    # the real table, its column names and its status words are CONFIG, kept in a
+    # private values file / .env, never in this repo. EMPTY TABLE DISABLES it.
+    support_table: str = Field(default="", validation_alias=AliasChoices("SUPPORT_TABLE"))
+    # Where the query job runs (and bills); empty = BQ_PROJECT / GOOGLE_CLOUD_PROJECT.
+    support_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_PROJECT"))
+    # role=column[:Label],... — roles in support_triage.ROLES; date, run_id and
+    # status are required. The label is what the card calls that column.
+    support_columns: str = Field(default="", validation_alias=AliasChoices("SUPPORT_COLUMNS"))
+    support_failed_statuses: str = Field(default="FAILED,ERROR", validation_alias=AliasChoices("SUPPORT_FAILED_STATUSES"))
+    support_done_statuses: str = Field(default="SUCCEEDED,SUCCESS,COMPLETED,COMPLETE,DONE",
+                                       validation_alias=AliasChoices("SUPPORT_DONE_STATUSES"))
+    # A run neither failed nor done whose last row is older than this is stuck.
+    support_stuck_minutes: int = Field(default=120, validation_alias=AliasChoices("SUPPORT_STUCK_MINUTES"))
+    # Earlier dates read for "new or recurring" and "missing since the last date".
+    support_lookback_days: int = Field(default=7, validation_alias=AliasChoices("SUPPORT_LOOKBACK_DAYS"))
+    support_max_rows: int = Field(default=50000, validation_alias=AliasChoices("SUPPORT_MAX_ROWS"))
+    support_date_label: str = Field(default="Business date", validation_alias=AliasChoices("SUPPORT_DATE_LABEL"))
+    # Top-level keys of the error-details JSON worth grouping on (e.g. a component).
+    support_detail_keys: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DETAIL_KEYS"))
+    # Link for a job id; "{job_id}" is replaced. Empty = the id as plain text.
+    support_job_url: str = Field(default="", validation_alias=AliasChoices("SUPPORT_JOB_URL"))
+    # Error text is the team's data. Off: the chat model sees counts, groupings and
+    # "error #n" only — the card (no model) still shows the text.
+    support_errors_to_model: bool = Field(default=False, validation_alias=AliasChoices("SUPPORT_ERRORS_TO_MODEL"))
+    # The L1 runbook: known errors and what to do about them (JSON; the shape is
+    # design/support_runbook.example.json). The team's own procedures, so a file
+    # mounted from private config — empty = the built-in actions per category.
+    support_runbook_file: str = Field(default="", validation_alias=AliasChoices("SUPPORT_RUNBOOK_FILE"))
+    # Who an escalation goes to: "role:value=Team,…,default=Team" (e.g.
+    # "system:SYS-A=Feed team,process:REPORT-B=Reports L2,default=Platform L2").
+    support_owners: str = Field(default="", validation_alias=AliasChoices("SUPPORT_OWNERS"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every

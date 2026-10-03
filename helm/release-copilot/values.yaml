@@ -213,6 +213,30 @@ config:
   BQ_COST_MAX_DATASETS: "50"
   BQ_COST_USD_PER_TIB: "6.25"        # on-demand list price, for the approximate $ column only
   BQ_COST_DATASET: ""                # findings memory across runs; empty = off (set: + dataEditor on THAT dataset only)
+  # ==================== [FEATURE] support triage (L1) =====================
+  # An L1 work list from the pipelines' workflow control table: what failed,
+  # got stuck or never ran for a business date, known issue or not (the runbook
+  # — see `supportRunbook:` below), what to do now and who owns it, with a
+  # ticket note. READ-ONLY: one fixed query, partition-filtered on the date, the
+  # only non-metadata table tools/bq_guard.py lets it read. EMPTY SUPPORT_TABLE
+  # DISABLES it. Service account: roles/bigquery.dataViewer on THAT table +
+  # roles/bigquery.jobUser on SUPPORT_PROJECT.
+  SUPPORT_TABLE: ""                  # "project.dataset.table"
+  SUPPORT_PROJECT: ""                # where the query runs and bills; empty = BQ_PROJECT
+  # role=column[:Label]. Roles: date, run_id, status (required); updated_at,
+  # event_at, event_id, job_id, error, details, members, system, source,
+  # process, unit, scope (optional — each switches on the checks needing it).
+  SUPPORT_COLUMNS: ""                # e.g. "date=biz_date:COB,run_id=run_id,status=state,unit=account:Account"
+  SUPPORT_FAILED_STATUSES: "FAILED,ERROR"
+  SUPPORT_DONE_STATUSES: "SUCCEEDED,SUCCESS,COMPLETED,COMPLETE,DONE"
+  SUPPORT_DATE_LABEL: "Business date"   # what the team calls it, e.g. "COB"
+  SUPPORT_STUCK_MINUTES: "120"       # unfinished and not updated for longer = stuck
+  SUPPORT_LOOKBACK_DAYS: "7"         # earlier dates read for recurring / missing
+  SUPPORT_MAX_ROWS: "50000"
+  SUPPORT_DETAIL_KEYS: ""            # top-level keys of the error-details JSON worth grouping on
+  SUPPORT_JOB_URL: ""                # e.g. "https://console.cloud.google.com/dataflow/jobs/<region>/{job_id}?project=<project>"
+  SUPPORT_OWNERS: ""                 # "role:value=Team,…,default=Team" — who an escalation goes to
+  SUPPORT_ERRORS_TO_MODEL: "false"   # error text is the team's data: off = the chat model never sees it
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token
   # usage, each tool call, the deploy Workflow's nodes — exported as
@@ -269,8 +293,8 @@ config:
   #        --set virtualService.pathPrefix=/dev-portal-preview \
   #        --set-string config.PREVIEW_USERS='*'
   PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
-  PREVIEW_GROUPS: "Check,Monitoring" # comma list of pill groups (palette.js GROUPS); Monitoring = the BQ cost report pill
-  PREVIEW_FEATURES: "monitoring,bq-cost"  # comma list of gated server features; bq-cost = its API + chat tools
+  PREVIEW_GROUPS: "Check,Monitoring,Support"  # comma list of pill groups (palette.js GROUPS); Monitoring = BQ cost, Support = support triage
+  PREVIEW_FEATURES: "monitoring,bq-cost,support-triage"  # gated server features: their API + chat tools refuse non-preview users
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's
@@ -427,6 +451,17 @@ config:
 
 # Extra raw env entries appended to the container (list of {name,value|valueFrom}).
 extraEnv: []
+
+# --- Support triage runbook (the L1 known errors) ---
+# The team's runbook ships IN THE CHART as a file: enabled renders `file` into a
+# ConfigMap, mounts it at mountPath/runbook.json and points SUPPORT_RUNBOOK_FILE
+# at it — so editing the runbook is a chart change (reviewed, rolled out by a
+# helm upgrade), not an image rebuild. Shape: files/support_runbook.json (the
+# generic example in this chart; a real deployment keeps its own there).
+supportRunbook:
+  enabled: false
+  file: files/support_runbook.json
+  mountPath: /etc/release-copilot/support
 
 # --- GitHub token (required; the in-cluster image has no `gh` login fallback) ---
 githubToken:

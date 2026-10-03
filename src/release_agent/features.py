@@ -41,7 +41,7 @@ def allowed(feature: str, caller) -> bool:
 
 # How a gated feature is named to the person refused — a feature key is a
 # config token ("bq-cost"), not a sentence.
-_DISPLAY_NAMES = {"bq-cost": "The BigQuery cost report"}
+_DISPLAY_NAMES = {"bq-cost": "The BigQuery cost report", "support-triage": "Support triage"}
 
 
 def refusal(feature: str) -> str:

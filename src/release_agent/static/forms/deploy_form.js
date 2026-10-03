@@ -2,6 +2,7 @@ import { deployTemplatePath, getContext } from '../api.js';
 import { JIRA_LABEL, JIRA_PLACEHOLDER, cleanJira, jiraError } from '../core/jira.js';
 import { renderMarkdown, sendMessage } from '../chat.js';
 import { showBqCost } from './bq_cost.js';
+import { showSupportTriage } from './support_triage.js';
 import { ctxNote, labeledField, opening, withDismiss } from './common.js';
 import { showDfDeployForm } from './df_deploy_form.js';
 import { showMonitoring } from './monitoring.js';
@@ -31,6 +32,7 @@ export async function showDeployForm(target, name, version) {
     if (target === 'release-history') { showReleaseHistory(); return; }
     if (target === 'monitoring') { showMonitoring(); return; }
     if (target === 'bq-cost') { showBqCost(); return; }
+    if (target === 'support-triage') { showSupportTriage(); return; }
     // The only environment this form can write, whatever was asked for — the
     // payload's environment is fixed here rather than taken from the caller.
     const env = 'uat';

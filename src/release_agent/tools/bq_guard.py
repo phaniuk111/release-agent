@@ -14,7 +14,10 @@ literals are skipped so a quoted 'FROM' cannot fool it.
     tokens(sql) -> the sql's words/punctuation, literals removed, backtick-quoted
                    identifiers (and the dotted chain around them) kept whole so
                    `region-us`.INFORMATION_SCHEMA.JOBS reads as one token.
-    classify(sql) -> "information_schema" | "select" | "refused"
+    classify(sql, allowed_tables=()) -> "information_schema" | "allowed" | "select" | "refused"
+                   "allowed": every target is metadata or one of the caller's
+                   named tables (support triage's ONE configured control
+                   table) — a real run, like a metadata read.
     run(client, sql, *, budget=None, job_config=None) -> the QueryJob (real for
                    an INFORMATION_SCHEMA/__TABLES__-only read, dry for anything
                    else — decided from the EFFECTIVE job_config.dry_run, so a
@@ -228,6 +231,12 @@ def _is_metadata_ref(token: str) -> bool:
     return any(seg.upper() == "INFORMATION_SCHEMA" for seg in segments) or segments[-1].upper() == "__TABLES__"
 
 
+def _table_key(token: str) -> str:
+    """A table reference compared without its quoting or case:
+    `p.d.t`, `p`.`d`.`t` and p.d.t are the same table."""
+    return ".".join(seg for seg in token.replace("`", "").lower().split(".") if seg)
+
+
 def _skip_parens(toks: list[str], open_idx: int) -> int:
     """``toks[open_idx]`` is the ``(`` of a subquery or an UNNEST argument
     list — returns the index just past its matching ``)``, so the
@@ -259,7 +268,7 @@ def _could_be_alias(token: str) -> bool:
     return bool(token) and (token[0] == "`" or _is_word(token[0]))
 
 
-def classify(sql: str) -> str:
+def classify(sql: str, allowed_tables: tuple[str, ...] | list[str] = ()) -> str:
     """'information_schema' when every FROM/JOIN target is an INFORMATION_SCHEMA
     view (or ``__TABLES__``), 'select' for any other single SELECT/WITH, 'refused'
     for anything that is not a read (CREATE/INSERT/UPDATE/DELETE/MERGE/DROP/ALTER/
@@ -277,6 +286,7 @@ def classify(sql: str) -> str:
     keep it that way rather than introducing a CTE that would silently stop
     running for real.
     """
+    allowed = {_table_key(t) for t in allowed_tables if _table_key(t)}
     toks = tokens(sql)
     if not toks:
         return "refused"
@@ -288,6 +298,7 @@ def classify(sql: str) -> str:
         return "refused"  # a second statement follows the first's terminator
     saw_from_or_join = False
     all_metadata = True
+    all_permitted = True   # metadata OR a caller-named table
     n = len(toks)
     for i, t in enumerate(toks):
         if t.upper() not in ("FROM", "JOIN"):
@@ -316,6 +327,8 @@ def classify(sql: str) -> str:
             else:
                 if not _is_metadata_ref(target):
                     all_metadata = False
+                    if _table_key(target) not in allowed:
+                        all_permitted = False
                 j += 1
             # An alias (``AS x`` or a bare ``x``) may sit between a target
             # and the comma that continues this list — skip AT MOST one such
@@ -330,10 +343,15 @@ def classify(sql: str) -> str:
                 j += 1
                 continue
             break
-    return "information_schema" if saw_from_or_join and all_metadata else "select"
+    if saw_from_or_join and all_metadata:
+        return "information_schema"
+    if saw_from_or_join and all_permitted and allowed:
+        return "allowed"
+    return "select"
 
 
-def run(client: Any, sql: str, *, budget: Budget | None = None, job_config: Any = None) -> Any:
+def run(client: Any, sql: str, *, budget: Budget | None = None, job_config: Any = None,
+        allowed_tables: tuple[str, ...] | list[str] = (), label: str = "bq_cost") -> Any:
     """Execute through the gate. Real run only for 'information_schema'; a
     'select' is ALWAYS dry-run (job_config.dry_run forced True); 'refused' raises
     GuardRefused before anything reaches BigQuery. Waits for the job and returns it.
@@ -351,8 +369,12 @@ def run(client: Any, sql: str, *, budget: Budget | None = None, job_config: Any 
     failure. The reserved slot already stands at 0 bytes for a failed
     attempt with no further action needed here, so a caller retrying a
     denied read still cannot run past the scan's own cap.
+
+    ``allowed_tables``: tables (besides metadata) this caller may READ for real
+    — still a single SELECT/WITH, still capped at _MAX_BYTES_BILLED. ``label``
+    names the caller on the job, so each tool's footprint is findable in JOBS.
     """
-    kind = classify(sql)
+    kind = classify(sql, allowed_tables)
     if kind == "refused":
         raise GuardRefused(f"not a read, or more than one statement: {sql[:160]!r}")
     from google.cloud import bigquery
@@ -373,7 +395,7 @@ def run(client: Any, sql: str, *, budget: Budget | None = None, job_config: Any 
     # the scan's own cost-ranking queries can exclude their OWN jobs from the
     # ranking (see bq_cost.py's _shapes_sql/_totals_sql/_table_reads_sql) and
     # so the tool's own footprint is identifiable in JOBS like anyone else's.
-    cfg.labels = {**(cfg.labels or {}), "release_copilot": "bq_cost"}
+    cfg.labels = {**(cfg.labels or {}), "release_copilot": label}
     if budget is not None:
         budget.reserve()
     job = client.query(sql, job_config=cfg)

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuse a commit that adds a name listed in .private/denylist.txt.
+# Install once:  ln -sf ../../scripts/hooks/pre-commit .git/hooks/pre-commit
+exec python3 "$(git rev-parse --show-toplevel)/scripts/private_names_check.py" --staged

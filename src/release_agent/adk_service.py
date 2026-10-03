@@ -349,6 +349,7 @@ _TOOL_LABELS = {
     "bq_dry_run": "Dry-running the query",
     "bq_verify_rewrite": "Testing the rewrite",
     "bq_findings": "Reading earlier findings",
+    "support_triage": "Reading the control table",
 }
 
 

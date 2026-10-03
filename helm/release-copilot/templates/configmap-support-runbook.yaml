@@ -1,0 +1,16 @@
+{{- $rb := .Values.supportRunbook | default dict }}
+{{- if $rb.enabled }}
+{{- $content := .Files.Get $rb.file }}
+{{- if not $content }}
+{{- fail (printf "supportRunbook.enabled but %s is missing or empty in the chart" $rb.file) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "release-copilot.fullname" . }}-support-runbook
+  labels:
+    {{- include "release-copilot.labels" . | nindent 4 }}
+data:
+  runbook.json: |-
+{{ $content | indent 4 }}
+{{- end }}

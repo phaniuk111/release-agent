@@ -177,6 +177,29 @@ everyone but `PREVIEW_USERS`) and `Monitoring` to `PREVIEW_GROUPS` (the pill is
 hidden from them too). Leave `BQ_COST_REGION` empty to disable it cleanly — the
 wrong region would otherwise silently report nothing.
 
+## Support triage — L1 view of a control table (optional, preview)
+
+A **Support triage** pill (and chat skill) reads a pipelines' workflow control
+table — one row per run or per status change — and turns one business date into
+an L1 work list: what failed, got stuck or never ran; the category (upstream /
+process / unit / single / spread); whether it is a known issue; one action
+(wait, re-trigger once, check, escalate) with steps; the owner; and a ticket
+note to copy. Read-only: one fixed, partition-filtered query; it never re-runs
+or changes a job. Behind the preview gate (`Support` / `support-triage`).
+
+Everything specific to your table lives in **your** values and chart files:
+
+| Where | What |
+|---|---|
+| `values.yaml` → `config:` | `SUPPORT_TABLE` (`project.dataset.table`), `SUPPORT_COLUMNS` (your columns → roles: `date`, `run_id`, `status` required; `updated_at`, `event_at`, `event_id`, `job_id`, `error`, `details`, `members`, `system`, `source`, `process`, `unit`, `scope` optional), `SUPPORT_FAILED_STATUSES` / `SUPPORT_DONE_STATUSES` (your status words), `SUPPORT_DATE_LABEL` (e.g. `COB`), `SUPPORT_JOB_URL`, `SUPPORT_OWNERS`, `SUPPORT_STUCK_MINUTES`, `SUPPORT_DETAIL_KEYS`, `PREVIEW_USERS` (the L1 testers) |
+| `files/support_runbook.json` | your known errors: text to match, title, action, steps, owner (the shipped file is a generic example — replace it) |
+| `values.yaml` → `supportRunbook.enabled: true` | renders that file into a ConfigMap, mounts it, sets `SUPPORT_RUNBOOK_FILE` |
+| IAM (service account) | `roles/bigquery.dataViewer` on the control table, `roles/bigquery.jobUser` on `SUPPORT_PROJECT` |
+
+Error text is your data: with `SUPPORT_ERRORS_TO_MODEL: "false"` (the default)
+the chat model sees counts, categories and "error #n" only; the card shows the
+text without any model involved.
+
 ## Agent observability — Langfuse (optional)
 
 ADK traces every chat turn as OpenTelemetry spans — the router's decision,

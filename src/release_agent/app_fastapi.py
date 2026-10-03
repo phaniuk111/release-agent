@@ -586,6 +586,30 @@ def bq_cost_report(request: Request, fresh: int = 0):
     return _cached(_bq_cost_cache, 300.0, bq_cost.scan, fresh=bool(fresh))
 
 
+# Support triage reads a real table, so the team opening the card together must
+# not each run the query: one cached answer per business date, for a minute.
+_SUPPORT_TTL_SECONDS = 60.0
+_support_caches: dict[str, dict] = {}
+
+
+@app.get("/api/support/triage")
+def support_triage_report(request: Request, date: str = "", fresh: int = 0):
+    """First-line triage of the workflow control table for one business date
+    (empty = the latest in the table)."""
+    from fastapi.responses import JSONResponse
+
+    from .tools import support_triage
+
+    if not features.allowed("support-triage", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
+
+    key = date.strip()[:10]
+    if key not in _support_caches and len(_support_caches) >= 32:
+        _support_caches.clear()   # a bounded cache: any date can be asked for
+    cache = _support_caches.setdefault(key, {"at": 0.0, "value": None})
+    return _cached(cache, _SUPPORT_TTL_SECONDS, lambda: support_triage.triage(key), fresh=bool(fresh))
+
+
 @app.get("/api/bq-cost/report.xlsx")
 def bq_cost_report_xlsx(request: Request, fresh: int = 0):
     """The same report as a workbook to download — one sheet per section, from
