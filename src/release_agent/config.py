@@ -671,6 +671,18 @@ class Settings(BaseSettings):
     # Who an escalation goes to: "role:value=Team,…,default=Team" (e.g.
     # "system:SYS-A=Feed team,process:REPORT-B=Reports L2,default=Platform L2").
     support_owners: str = Field(default="", validation_alias=AliasChoices("SUPPORT_OWNERS"))
+    # Priority. HIGH: a critical value, collapsed output, >= HIGH_COUNT runs, or
+    # >= MEDIUM_COUNT runs with a shared cause; MEDIUM: stuck/missing, >= MEDIUM_COUNT
+    # runs, or failing dates in a row; else LOW. CRITICAL ("role:value,…") is always
+    # high. CUTOFF ("HH:MM" in SUPPORT_TIMEZONE, CUTOFF_DAYS_AFTER the business date)
+    # raises an unfinished problem one level from CUTOFF_WARN_MINUTES before it.
+    support_high_count: int = Field(default=10, validation_alias=AliasChoices("SUPPORT_HIGH_COUNT"))
+    support_medium_count: int = Field(default=3, validation_alias=AliasChoices("SUPPORT_MEDIUM_COUNT"))
+    support_critical: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CRITICAL"))
+    support_cutoff: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CUTOFF"))
+    support_timezone: str = Field(default="UTC", validation_alias=AliasChoices("SUPPORT_TIMEZONE"))
+    support_cutoff_days_after: int = Field(default=1, validation_alias=AliasChoices("SUPPORT_CUTOFF_DAYS_AFTER"))
+    support_cutoff_warn_minutes: int = Field(default=120, validation_alias=AliasChoices("SUPPORT_CUTOFF_WARN_MINUTES"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every

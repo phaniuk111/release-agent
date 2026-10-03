@@ -51,3 +51,9 @@ test('an empty date and the enable hint say what to do', () => {
     assert.equal(emptyText({}), 'Nothing for L1 on this date.');
     assert.ok(ENABLE_HINT.includes('SUPPORT_TABLE') && ENABLE_HINT.includes('private'));
 });
+
+test('the cut-off, when set, leads the small print', () => {
+    assert.equal(metaLine({ ok: true, runbook_entries: 1,
+        cutoff: { said: 'cut-off 06:00 in 45 min', timezone: 'Europe/London' } }),
+    'cut-off 06:00 in 45 min (Europe/London) · 1 runbook entries');
+});

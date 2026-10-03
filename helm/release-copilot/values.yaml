@@ -236,6 +236,16 @@ config:
   SUPPORT_DETAIL_KEYS: ""            # top-level keys of the error-details JSON worth grouping on
   SUPPORT_JOB_URL: ""                # e.g. "https://console.cloud.google.com/dataflow/jobs/<region>/{job_id}?project=<project>"
   SUPPORT_OWNERS: ""                 # "role:value=Team,…,default=Team" — who an escalation goes to
+  # Priority: HIGH = a critical value, collapsed output, >= HIGH_COUNT runs, or
+  # >= MEDIUM_COUNT runs with a shared cause; MEDIUM = stuck/missing, >= MEDIUM_COUNT
+  # runs, or failing dates in a row; else LOW. Each incident says which rule applied.
+  SUPPORT_HIGH_COUNT: "10"
+  SUPPORT_MEDIUM_COUNT: "3"
+  SUPPORT_CRITICAL: ""               # "role:value,…" always HIGH, e.g. "process:<report>,scope:<entity>"
+  SUPPORT_CUTOFF: ""                 # "HH:MM" deadline for a business date's work; empty = none
+  SUPPORT_TIMEZONE: "UTC"            # e.g. "Europe/London"
+  SUPPORT_CUTOFF_DAYS_AFTER: "1"     # the deadline is this many days after the business date
+  SUPPORT_CUTOFF_WARN_MINUTES: "120" # from this long before it, unfinished problems go up one level
   SUPPORT_ERRORS_TO_MODEL: "false"   # error text is the team's data: off = the chat model never sees it
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token

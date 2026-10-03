@@ -603,6 +603,7 @@ def build_report(*, roles: list[str], cob: date | None, previous: date | None, d
             "shared": shared,
             "spread": {r: len(c) for r, c in spread.items()},
             "top": {r: c.most_common(3) for r, c in spread.items() if len(c) > 1},
+            "values": {r: sorted(c)[:200] for r, c in spread.items()},
             "details": details.most_common(3),
             "recurring": recurring,
             "new": len(members) - recurring if has_keys else None,
@@ -785,20 +786,123 @@ def _builtin_action(err: dict[str, Any], labels: dict[str, str], owner: str) -> 
                         "(quota, permissions, capacity).", f"Escalate to {owner}."]
 
 
-def _priority(kind: str, count: int, err: dict[str, Any] | None = None) -> str:
-    if kind == "volume" or count >= 10:
-        return "high"
-    if err and err.get("category") in ("process", "spread", "upstream") and count >= 3:
-        return "high"
-    if kind in ("stuck", "missing") or count >= 3 or (err and (err.get("max_streak") or 0) > 1):
-        return "medium"
-    return "low"
+def parse_critical(raw: str) -> set[tuple[str, str]]:
+    """'role:value,…' → {(role, value)} — work that is always high priority
+    (a regulatory report, a key entity). Unknown roles are ignored."""
+    out = set()
+    for item in _names(raw):
+        role, sep, value = item.partition(":")
+        if sep and role.strip() in DIMENSIONS and value.strip():
+            out.add((role.strip(), value.strip()))
+    return out
+
+
+def cutoff_for(business_date: date | None, hhmm: str, tz: str, days_after: int) -> tuple[datetime | None, str | None]:
+    """The deadline for a business date's work: ``hhmm`` in ``tz``, ``days_after``
+    days after the date (06:00 the next morning, say). (None, problem) when unset
+    or unusable."""
+    if not hhmm.strip() or business_date is None:
+        return None, None
+    h, sep, m = hhmm.strip().partition(":")
+    try:
+        hour, minute = int(h), int(m) if sep else 0
+        day = business_date + timedelta(days=int(days_after))
+        at = datetime(day.year, day.month, day.day, hour, minute)
+    except ValueError:
+        return None, f"SUPPORT_CUTOFF {hhmm!r} is not HH:MM — no cut-off applied."
+    if (tz or "UTC").upper() == "UTC":
+        return at.replace(tzinfo=timezone.utc), None   # needs no time-zone data
+    try:
+        from zoneinfo import ZoneInfo
+
+        return at.replace(tzinfo=ZoneInfo(tz)), None
+    except (ValueError, KeyError, OSError):
+        # an unknown name, or an image without time-zone data (/usr/share/zoneinfo)
+        return None, (f"SUPPORT_TIMEZONE {tz!r} is unknown here (no time-zone data in the image?) — "
+                      "no cut-off applied; give SUPPORT_CUTOFF in UTC with SUPPORT_TIMEZONE=UTC instead.")
+
+
+class PriorityRules:
+    """How urgent an incident is. Built-in defaults; a deployment tunes them
+    (SUPPORT_HIGH_COUNT, SUPPORT_MEDIUM_COUNT, SUPPORT_CRITICAL, SUPPORT_CUTOFF…)."""
+
+    def __init__(self, *, high_count: int = 10, medium_count: int = 3,
+                 critical: set[tuple[str, str]] | None = None, cutoff: datetime | None = None,
+                 warn_minutes: int = 120, now: datetime | None = None):
+        self.high_count = max(1, int(high_count))
+        self.medium_count = max(1, int(medium_count))
+        self.critical = critical or set()
+        self.cutoff = cutoff
+        self.warn = timedelta(minutes=max(0, int(warn_minutes)))
+        self.now = now or datetime.now(timezone.utc)
+
+    def cutoff_state(self) -> tuple[bool, str | None]:
+        """(does the cut-off raise priority now, how to say it). It counts from
+        ``warn`` before the deadline until a day after it — an older date is
+        history, not urgency."""
+        if self.cutoff is None:
+            return False, None
+        delta = self.cutoff - self.now
+        mins = int(abs(delta.total_seconds()) // 60)
+        span = f"{mins // 60} h {mins % 60} min" if mins >= 60 else f"{mins} min"
+        when = self.cutoff.strftime("%H:%M")
+        if delta.total_seconds() >= 0:
+            return delta <= self.warn, f"cut-off {when} in {span}"
+        return -delta <= timedelta(hours=24), f"cut-off {when} passed {span} ago"
+
+
+_UP = {"low": "medium", "medium": "high", "high": "high"}
+
+
+def _runs(n: int) -> str:
+    return f"{n} run" if n == 1 else f"{n} runs"
+
+
+def _critical_hits(values: dict[str, Any], rules: PriorityRules) -> list[str]:
+    hits = []
+    for role, value in sorted(rules.critical):
+        have = values.get(role)
+        if have is not None and (value in have if isinstance(have, (list, set, tuple)) else value == have):
+            hits.append(f"{role} {value}")
+    return hits
+
+
+def _priority(kind: str, count: int, err: dict[str, Any] | None, rules: PriorityRules,
+              values: dict[str, Any]) -> tuple[str, str]:
+    """(priority, why) — the first rule that applies decides; the cut-off then
+    raises an unfinished problem one level as the deadline nears."""
+    hits = _critical_hits(values, rules)
+    streak = (err or {}).get("max_streak") or 0
+    if hits:
+        level, why = "high", "critical: " + ", ".join(hits)
+    elif kind == "volume":
+        level, why = "high", "output collapsed on a run that succeeded"
+    elif count >= rules.high_count:
+        level, why = "high", f"{_runs(count)} (≥ {rules.high_count})"
+    elif err and err.get("category") in ("process", "spread", "upstream") and count >= rules.medium_count:
+        cause = {"upstream": "one upstream system", "process": "one process",
+                 "spread": "the same error everywhere (platform)"}[err["category"]]
+        level, why = "high", f"{_runs(count)}, {cause}"
+    elif kind in ("stuck", "missing"):
+        level, why = "medium", f"{kind} work will not finish on its own"
+    elif count >= rules.medium_count:
+        level, why = "medium", f"{_runs(count)} (≥ {rules.medium_count})"
+    elif streak > 1:
+        level, why = "medium", f"failing {streak} dates in a row"
+    else:
+        level, why = "low", "one run, first time" if count == 1 else _runs(count)
+    raise_it, said = rules.cutoff_state()
+    if raise_it and kind in ("error", "stuck", "missing"):
+        if level != "high":
+            level = _UP[level]
+        why += f"; {said}"
+    return level, why
 
 
 def _note(inc: dict[str, Any], report: dict[str, Any], *, with_error_text: bool) -> str:
     """The ticket note: what L1 saw, what it checked, who it goes to."""
     head = f"[Support triage] {report.get('date_label', 'Business date')} {report.get('business_date')}: {inc['title']}"
-    lines = [head, f"Priority: {inc['priority']} · Action: {inc['action']}"]
+    lines = [head, f"Priority: {inc['priority']} ({inc['priority_reason']}) · Action: {inc['action']}"]
     lines += [f"- {fact}" for fact in inc["facts"]]
     if with_error_text and inc.get("error_text"):
         lines.append(f"- Error: {inc['error_text']}")
@@ -810,9 +914,18 @@ def _note(inc: dict[str, Any], report: dict[str, Any], *, with_error_text: bool)
     return "\n".join(lines)
 
 
+def _row_values(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    vals: dict[str, set[str]] = {}
+    for r in rows:
+        for role, v in (r.get("dims") or {}).items():
+            vals.setdefault(role, set()).add(v)
+    return {k: sorted(v) for k, v in vals.items()}
+
+
 def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[dict[str, Any]],
-              owners: dict[str, str]) -> list[dict[str, Any]]:
+              owners: dict[str, str], rules: PriorityRules | None = None) -> list[dict[str, Any]]:
     """PURE. The report's problems as L1 incidents, most urgent first."""
+    rules = rules or PriorityRules()
     out: list[dict[str, Any]] = []
     unit_label = labels.get("unit", "unit")
     for i, err in enumerate(report.get("errors") or []):
@@ -841,7 +954,7 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
                     "error_text": err.get("sample") or err.get("signature"),
                     "job_ids": err.get("job_ids") or [], "runbook": known["title"] if known else None,
                     "action": action, "steps": steps, "owner": owner,
-                    "priority": _priority("error", err["count"], err)})
+                    "_rank": ("error", err["count"], err, err.get("values") or err.get("shared") or {})})
     stuck = report.get("stuck") or []
     if stuck:
         no_job = sum(1 for s in stuck if not s.get("job_id"))
@@ -855,7 +968,7 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
                     "steps": ["Open the job of each stuck run.",
                               "No job id: the job never started — re-trigger once.",
                               f"Still running far beyond normal, or fails again: escalate to {owner}."],
-                    "owner": owner, "priority": _priority("stuck", len(stuck))})
+                    "owner": owner, "_rank": ("stuck", len(stuck), None, _row_values(stuck))})
     missing = report.get("missing") or []
     if missing:
         owner = owners.get("default", _FALLBACK_OWNER)
@@ -867,7 +980,7 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
                     "steps": ["Check that the triggering event arrived (upstream, scheduler).",
                               "Confirm it was expected for this date (holiday, decommissioned).",
                               f"Expected and not triggered: escalate to {owner}."],
-                    "owner": owner, "priority": _priority("missing", len(missing))})
+                    "owner": owner, "_rank": ("missing", len(missing), None, _row_values(missing))})
     volume = report.get("volume") or []
     if volume:
         owner = owners.get("default", _FALLBACK_OWNER)
@@ -878,7 +991,10 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
                     "job_ids": [], "runbook": None, "action": "escalate",
                     "steps": ["Tell the data owner before downstream consumers use it.",
                               "Re-run once the source data is complete.", f"Escalate to {owner}."],
-                    "owner": owner, "priority": _priority("volume", len(volume))})
+                    "owner": owner, "_rank": ("volume", len(volume), None, _row_values(volume))})
+    for inc in out:
+        kind, count, err, values = inc.pop("_rank")
+        inc["priority"], inc["priority_reason"] = _priority(kind, count, err, rules, values)
     out.sort(key=lambda x: (_PRIORITY_ORDER[x["priority"]], -x["count"]))
     for inc in out:
         inc["note"] = _note(inc, report, with_error_text=True)
@@ -938,8 +1054,19 @@ def triage(business_date: str = "") -> dict[str, Any]:
     if problem:
         out["notes"].append(problem)
     out["runbook_entries"] = len(runbook)
+    cutoff, cut_problem = cutoff_for(got["cob"], settings.support_cutoff, settings.support_timezone,
+                                     settings.support_cutoff_days_after)
+    if cut_problem:
+        out["notes"].append(cut_problem)
+    rules = PriorityRules(high_count=settings.support_high_count, medium_count=settings.support_medium_count,
+                          critical=parse_critical(settings.support_critical), cutoff=cutoff,
+                          warn_minutes=settings.support_cutoff_warn_minutes, now=now)
+    if cutoff is not None:
+        out["cutoff"] = {"at": cutoff.isoformat(), "timezone": settings.support_timezone or "UTC",
+                         "minutes_left": int((cutoff - now).total_seconds() // 60),
+                         "said": rules.cutoff_state()[1]}
     out["incidents"] = incidents(out, labels=out["labels"], runbook=runbook,
-                                 owners=parse_owners(settings.support_owners))
+                                 owners=parse_owners(settings.support_owners), rules=rules)
     return out
 
 

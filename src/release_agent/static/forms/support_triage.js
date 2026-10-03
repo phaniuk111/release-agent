@@ -62,6 +62,7 @@ function incidentHtml(inc, i, report) {
         '<div class="flex items-center gap-2 flex-wrap">' +
         '<span class="rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ' + pri + '">' + esc(inc.priority || 'low') + '</span>' +
         '<span class="font-semibold text-slate-100">' + esc(inc.title || '') + '</span>' +
+        (inc.priority_reason ? '<span class="text-[10px] text-slate-500">' + esc(inc.priority_reason) + '</span>' : '') +
         '<span class="flex-1"></span>' +
         '<span class="text-[11px] font-semibold ' + act + '"><i class="fa-solid fa-circle-arrow-right mr-1"></i>' +
         esc(actionLabel(inc.action)) + '</span></div>' +

@@ -45,6 +45,7 @@ export function metaLine(report) {
     const r = report && typeof report === 'object' ? report : {};
     const parts = [];
     const c = r.counts || {};
+    if (r.cutoff && r.cutoff.said) parts.push(String(r.cutoff.said) + (r.cutoff.timezone ? ' (' + r.cutoff.timezone + ')' : ''));
     if (num(c.recovered)) parts.push(num(c.recovered) + ' recovered after a retry');
     if (r.previous_date) parts.push('compared with ' + r.previous_date);
     if (num(r.runbook_entries)) parts.push(num(r.runbook_entries) + ' runbook entries');
