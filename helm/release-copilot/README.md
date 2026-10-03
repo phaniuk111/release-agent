@@ -184,7 +184,9 @@ table — one row per run or per status change — and turns one business date i
 an L1 work list: what failed, got stuck or never ran; the category (upstream /
 process / unit / single / spread); whether it is a known issue; one action
 (wait, re-trigger once, check, escalate) with steps; the owner; and a ticket
-note to copy. Read-only: one fixed, partition-filtered query; it never re-runs
+note to copy. Read-only: a few fixed, partition-filtered queries in which BigQuery
+does the counting — only counts and problem rows come back, so a COB with a
+million runs costs the portal what one with a thousand does; it never re-runs
 or changes a job. Behind the preview gate (`Support` / `support-triage`).
 
 Everything specific to your table lives in **your** values and chart files:

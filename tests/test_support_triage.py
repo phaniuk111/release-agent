@@ -12,22 +12,27 @@ from release_agent.tools import support_triage as st
 
 NOW = datetime(2026, 10, 3, 9, 0, tzinfo=timezone.utc)
 D, P, P2 = date(2026, 10, 2), date(2026, 10, 1), date(2026, 9, 30)
-ROLES = ["date", "run_id", "status", "updated_at", "event_at", "event_id", "job_id", "error",
+ROLES = ["date", "run_id", "status", "updated_at", "event_at", "event_id", "job_id", "error", "details",
          "members", "system", "process", "unit"]
+COLS = ",".join(f"{r}=c_{r}" for r in ROLES)
 
 
-def row(d, run, status, unit, *, system="SYS-A", process="REPORT-1", err="", members=100,
-        event=None, at=None, job=None):
-    at = at or datetime(d.year, d.month, d.day, 22, tzinfo=timezone.utc)
-    return {"date": d, "run_id": run, "status": status, "unit": unit, "system": system,
-            "process": process, "error": err, "members": str(members),
-            "event_id": event or f"{d}-{unit}-{process}", "updated_at": at,
-            "event_at": at - timedelta(minutes=30), "job_id": job}
+def fail(run, unit, *, system="SYS-A", process="REPORT-1", err="boom", job=None, key=None, attempts=1):
+    """A row of the failures statement (role-keyed, as _run returns it)."""
+    return {"run_id": run, "status": "FAILED", "unit": unit, "system": system, "process": process,
+            "error": err, "job_id": job, "key": key or f"{system}|{process}|{unit}", "attempts": attempts}
 
 
-def analyse(rows, **kw):
-    return st.analyse(rows, roles=kw.pop("roles", ROLES), business_date=kw.pop("business_date", None),
-                      now=NOW, failed_statuses=["FAILED", "ERROR"], done_statuses=["SUCCEEDED"], **kw)
+def report(*, failures=(), counts=None, values=None, history=(), dates=(P, D), cob=D, previous=P, roles=ROLES, **rows):
+    """build_report over hand-written statement results."""
+    failures = list(failures)
+    counts = counts if counts is not None else {"failed": len(failures)}
+    count_rows = [{"state": st_, "n": n, "retried_after_failure": rows.pop(f"recovered_{st_}", 0)}
+                  for st_, n in counts.items()]
+    value_rows = [{"role": r, "value": v, "n": n} for (r, v), n in (values or {}).items()]
+    return st.build_report(roles=roles, cob=cob, previous=previous, dates=list(dates), now=NOW,
+                           rows={"counts": count_rows, "failures": failures, "values": value_rows,
+                                 "history": list(history), **rows})
 
 
 # ----- configuration --------------------------------------------------------------
@@ -50,78 +55,122 @@ def test_the_table_reference_is_checked_character_by_character():
             st.parse_table(bad)
 
 
-def test_the_query_is_one_read_of_the_one_table_and_the_guard_runs_it_for_real():
-    cols, _ = st.parse_columns("date=biz_date,run_id=run,status=state,updated_at=written")
-    ref = st.parse_table("p.ops.control_runs")
-    sql = st.build_sql(ref, cols)
-    assert "QUALIFY ROW_NUMBER() OVER (PARTITION BY run ORDER BY written DESC) = 1" in sql
-    assert "@start" in sql and "@end" in sql and "@max_rows" in sql
-    assert bq_guard.classify(sql, (ref,)) == "allowed"
-    # no permission given → a dry run, as for any other table
-    assert bq_guard.classify(sql) == "select"
-    # a second table in the statement is not covered by the permission
-    other = sql.replace(" WHERE", " JOIN `p.ops.other` o ON TRUE WHERE")
-    assert bq_guard.classify(other, (ref,)) == "select"
-    assert bq_guard.classify("DELETE FROM `p.ops.control_runs` WHERE TRUE", (ref,)) == "refused"
+# ----- the statements ---------------------------------------------------------------
+
+REF = "`p.ops.control_runs`"
 
 
-# ----- the analysis ----------------------------------------------------------------
+def test_every_statement_is_a_real_read_of_the_one_table_and_nothing_else():
+    cols, _ = st.parse_columns(COLS + ",source=c_source,scope=c_scope")
+    for name, sql in st.Query(REF, cols).statements().items():
+        assert bq_guard.classify(sql, (REF,)) == "allowed", name
+        assert bq_guard.classify(sql) == "select", name           # no permission → a dry run
+        assert not sql.upper().startswith("WITH"), name           # the guard would dry-run a CTE
+        assert "@" not in sql.replace("@start", "").replace("@end", "").replace("@cob", "").replace(
+            "@prev", "").replace("@failed", "").replace("@done", "").replace("@stuck_before", ""), name
+    other = st.Query(REF, cols).failures().replace(" WHERE TRUE", " JOIN `p.ops.other` o ON TRUE WHERE TRUE", 1)
+    assert bq_guard.classify(other, (REF,)) == "select"
+
+
+def test_only_the_business_date_reads_error_text():
+    cols, _ = st.parse_columns(COLS)
+    for name, sql in st.Query(REF, cols).statements().items():
+        if "c_error" in sql or "c_details" in sql:
+            assert name == "failures" and "BETWEEN" not in sql, name
+
+
+def test_a_map_without_grouping_columns_leaves_out_what_needs_them():
+    cols, _ = st.parse_columns("date=d,run_id=r,status=s")
+    names = set(st.Query(REF, cols).statements())
+    assert names == {"dates", "counts", "failures", "stuck", "retries"}
+    sql = st.Query(REF, cols).items("d = @cob")
+    assert "QUALIFY ROW_NUMBER() OVER (PARTITION BY r_date, r_run_id ORDER BY r_run_id DESC) = 1" in sql
+
+
+def test_a_run_is_its_latest_row_and_retries_of_one_event_are_one_item():
+    cols, _ = st.parse_columns(COLS)
+    sql = st.Query(REF, cols).items("c_date = @cob")
+    assert "PARTITION BY c_date, c_run_id ORDER BY c_updated_at DESC" in sql
+    assert "COALESCE(r_event_id, r_run_id) AS r_item" in sql
+    assert "COUNTIF(UPPER(TRIM(r_status)) IN UNNEST(@failed)) OVER" in sql
+
+
+# ----- the report ---------------------------------------------------------------------
 
 def test_many_units_one_system_is_an_upstream_pattern_and_one_error_group():
-    rows = [row(P, f"p{u}", "SUCCEEDED", f"U{u}") for u in range(1, 6)]
-    rows += [row(D, f"d{u}", "FAILED", f"U{u}", err=f"Source file /in/feed_2026100{u}.csv not found",
-                 job=f"job-{u}") for u in range(1, 6)]
-    rows.append(row(D, "ok1", "SUCCEEDED", "U9", system="SYS-B", process="REPORT-2"))
-    rep = analyse(rows)
+    fails = [fail(f"d{u}", f"U{u}", err=f"Source file /in/feed_2026100{u}.csv not found", job=f"job-{u}")
+             for u in range(1, 6)]
+    rep = report(failures=fails, counts={"failed": 5, "done": 1},
+                 values={("system", "SYS-A"): 5, ("system", "SYS-B"): 1, ("process", "REPORT-1"): 5})
     assert rep["business_date"] == "2026-10-02" and rep["previous_date"] == "2026-10-01"
     assert rep["counts"]["failed"] == 5 and rep["counts"]["items"] == 6
     assert rep["patterns"][0] == {"role": "system", "value": "SYS-A", "failed": 5, "of_failed": 5,
                                   "runs_with_value": 5}
     (err,) = rep["errors"]
     assert err["signature"] == "Source file # not found"     # the dated file names group together
-    assert err["category"] == "upstream" and err["count"] == 5
-    assert err["new"] == 5 and err["recurring"] == 0
+    assert err["category"] == "upstream" and err["count"] == 5 and err["job_ids"] == ["job-1", "job-2", "job-3"]
 
 
-def test_a_failure_fixed_by_a_retry_is_not_a_failure_now():
-    rows = [row(D, "a1", "FAILED", "U1", event="E1", err="boom",
-                at=datetime(2026, 10, 2, 20, tzinfo=timezone.utc)),
-            row(D, "a2", "SUCCEEDED", "U1", event="E1", at=datetime(2026, 10, 2, 21, tzinfo=timezone.utc))]
-    rep = analyse(rows)
+def test_a_failure_fixed_by_a_retry_counts_as_recovered_not_failed():
+    rep = report(counts={"done": 1}, recovered_done=1,
+                 retries=[{"item": "E1", "attempts": 2, "status": "SUCCEEDED", "state": "done",
+                           "unit": "U1", "system": "SYS-A", "process": "REPORT-1"}])
     assert rep["counts"]["failed"] == 0 and rep["counts"]["recovered"] == 1
     assert rep["retries"][0]["attempts"] == 2 and rep["retries"][0]["final_state"] == "done"
 
 
 def test_recurring_failures_count_dates_in_a_row_and_name_the_last_success():
-    rows = [row(P2, "x0", "SUCCEEDED", "U1"), row(P, "x1", "FAILED", "U1", err="schema mismatch"),
-            row(D, "x2", "FAILED", "U1", err="schema mismatch")]
-    rep = analyse(rows)
+    k = "SYS-A|REPORT-1|U1"
+    history = [{"key": k, "date": P2, "state": "done"}, {"key": k, "date": P, "state": "failed"},
+               {"key": k, "date": D, "state": "failed"}]
+    rep = report(failures=[fail("x2", "U1", err="schema mismatch", key=k)], history=history, dates=(P2, P, D))
     (f,) = rep["failures"]
     assert f["streak"] == 2 and f["last_success"] == "2026-09-30"
     assert rep["errors"][0]["category"] == "unit" and rep["errors"][0]["recurring"] == 1
 
 
-def test_stuck_missing_and_collapsed_output_are_found():
-    rows = [row(P, "m1", "SUCCEEDED", "U8"),                       # ran yesterday, nothing today
-            row(P, "v1", "SUCCEEDED", "U9", members=1200),
-            row(D, "v2", "SUCCEEDED", "U9", members=0),            # succeeded with nothing
-            row(D, "s1", "RUNNING", "U7", at=NOW - timedelta(hours=5)),
-            row(D, "s2", "RUNNING", "U6", at=NOW - timedelta(minutes=10))]   # still fresh
-    rep = analyse(rows)
-    assert [s["run_id"] for s in rep["stuck"]] == ["s1"] and rep["stuck"][0]["minutes_since_update"] == 300
+def test_weekends_without_runs_do_not_break_a_streak():
+    k = "SYS-A|REPORT-1|U1"
+    friday, monday = date(2026, 9, 25), date(2026, 9, 28)
+    history = [{"key": k, "date": date(2026, 9, 24), "state": "done"},
+               {"key": k, "date": friday, "state": "failed"}, {"key": k, "date": monday, "state": "failed"}]
+    rep = report(failures=[fail("m", "U1", key=k)], history=history, cob=monday, previous=friday,
+                 dates=(friday, monday))
+    assert rep["failures"][0]["streak"] == 2 and rep["failures"][0]["last_success"] == "2026-09-24"
+
+
+def test_stuck_missing_and_collapsed_output_come_through_with_their_totals():
+    rep = report(counts={"done": 1, "open": 2},
+                 stuck=[{"run_id": "s1", "status": "RUNNING", "unit": "U7", "updated_at": NOW - timedelta(hours=5),
+                         "job_id": None, "total": 3}],
+                 missing=[{"system": "SYS-A", "process": "REPORT-1", "unit": "U8", "status": "SUCCEEDED", "total": 1}],
+                 volume=[{"run_id": "v2", "unit": "U9", "members": "0", "previous_members": "1200"}],
+                 slowest=[{"run_id": "r1", "minutes": 95}])
+    assert rep["stuck"][0]["minutes_since_update"] == 300 and rep["counts"]["stuck"] == 3
     assert rep["missing"] == [{"dims": {"system": "SYS-A", "process": "REPORT-1", "unit": "U8"},
-                               "previous_status": "SUCCEEDED"}]
+                               "previous_status": "SUCCEEDED"}] and rep["counts"]["missing"] == 1
     assert rep["volume"][0]["members"] == 0 and rep["volume"][0]["previous_members"] == 1200
+    assert rep["slowest"][0]["minutes"] == 95
 
 
 def test_a_date_with_no_rows_is_empty_not_an_error():
-    rep = analyse([row(P, "p1", "SUCCEEDED", "U1")], business_date=D)
+    rep = report(dates=(P,), cob=D)
     assert rep["empty"] is True and rep["counts"]["failed"] == 0
 
 
+def test_more_failures_than_read_in_full_keeps_the_exact_count_and_says_so():
+    rep = report(failures=[fail("a", "U1")], counts={"failed": 7000})
+    assert rep["counts"]["failed"] == 7000 and any("first 1 were read" in n for n in rep["notes"])
+
+
+def test_a_check_that_could_not_run_is_a_note_not_a_failure():
+    rep = st.build_report(roles=ROLES, cob=D, previous=P, dates=[P, D], now=NOW,
+                          rows={"counts": [{"state": "done", "n": 3}]}, errors={"volume": "Forbidden: 403"})
+    assert rep["counts"]["done"] == 3 and any("volume check could not run" in n for n in rep["notes"])
+
+
 def test_without_grouping_columns_it_says_what_it_cannot_work_out():
-    rows = [{"date": D, "run_id": "r1", "status": "FAILED"}]
-    rep = analyse(rows, roles=["date", "run_id", "status"])
+    rep = report(failures=[{"run_id": "r1", "status": "FAILED", "key": ""}], roles=["date", "run_id", "status"])
     assert rep["counts"]["failed"] == 1
     assert any("recurrence" in n for n in rep["notes"]) and any("retry" in n for n in rep["notes"])
 
@@ -131,15 +180,15 @@ def test_without_grouping_columns_it_says_what_it_cannot_work_out():
 LABELS = {"system": "System", "process": "Report", "unit": "Book"}
 
 
-def _report(rows):
-    rep = analyse(rows)
+def _with_label(rep):
     rep["date_label"] = "COB"
     return rep
 
 
 def test_each_category_gets_one_l1_action_and_an_owner():
-    up = [row(D, f"d{u}", "FAILED", f"U{u}", err="file not found") for u in range(1, 4)]
-    incs = st.incidents(_report(up), labels=LABELS, runbook=[],
+    up = report(failures=[fail(f"d{u}", f"U{u}", err="file not found") for u in range(1, 4)],
+                values={("system", "SYS-A"): 3})
+    incs = st.incidents(_with_label(up), labels=LABELS, runbook=[],
                         owners={"system:SYS-A": "Feed team", "default": "Platform L2"})
     (inc,) = incs
     assert inc["action"] == "wait" and inc["owner"] == "Feed team" and inc["priority"] == "high"
@@ -148,11 +197,11 @@ def test_each_category_gets_one_l1_action_and_an_owner():
     assert "Suggested owner: Feed team" in inc["note"] and "Error: file not found" in inc["note"]
     assert "Error:" not in inc["note_without_error"]
 
-    proc = [row(D, f"d{u}", "FAILED", f"U{u}", system=f"SYS-{u}", err="null pointer") for u in range(1, 4)]
-    assert st.incidents(_report(proc), labels=LABELS, runbook=[], owners={})[0]["action"] == "escalate"
+    proc = report(failures=[fail(f"d{u}", f"U{u}", system=f"SYS-{u}", err="null pointer") for u in range(1, 4)])
+    assert st.incidents(_with_label(proc), labels=LABELS, runbook=[], owners={})[0]["action"] == "escalate"
 
-    single = [row(D, "d1", "FAILED", "U1", err="timeout")]
-    (one,) = st.incidents(_report(single), labels=LABELS, runbook=[], owners={})
+    single = report(failures=[fail("d1", "U1", err="timeout")])
+    (one,) = st.incidents(_with_label(single), labels=LABELS, runbook=[], owners={})
     assert one["action"] == "check" and one["owner"] == "L2 support"   # one unit: check its data first
 
 
@@ -160,17 +209,17 @@ def test_a_runbook_match_wins_and_names_the_known_issue():
     runbook = [{"match": ["quota", "exceeded"], "title": "Cloud quota exceeded", "action": "retrigger",
                 "steps": ["Re-trigger after 15 minutes."], "escalate_to": "Platform L2",
                 "category": None, "when": {}}]
-    rows = [row(D, "d1", "FAILED", "U1", err="Quota exceeded for workers in region")]
-    (inc,) = st.incidents(_report(rows), labels=LABELS, runbook=runbook, owners={})
+    rep_ = report(failures=[fail("d1", "U1", err="Quota exceeded for workers in region")])
+    (inc,) = st.incidents(_with_label(rep_), labels=LABELS, runbook=runbook, owners={})
     assert inc["runbook"] == "Cloud quota exceeded" and inc["action"] == "retrigger"
     assert inc["owner"] == "Platform L2" and "Known issue: Cloud quota exceeded" in inc["note"]
 
 
 def test_incidents_come_most_urgent_first():
-    rows = [row(D, "s1", "RUNNING", "U7", at=NOW - timedelta(hours=5)),
-            row(P, "v1", "SUCCEEDED", "U9", members=500), row(D, "v2", "SUCCEEDED", "U9", members=0),
-            row(D, "d1", "FAILED", "U1", err="timeout")]
-    kinds = [i["kind"] for i in st.incidents(_report(rows), labels=LABELS, runbook=[], owners={})]
+    rep_ = report(failures=[fail("d1", "U1", err="timeout")], counts={"failed": 1, "done": 1, "open": 1},
+                  stuck=[{"run_id": "s1", "status": "RUNNING", "updated_at": NOW - timedelta(hours=5), "total": 1}],
+                  volume=[{"run_id": "v2", "unit": "U9", "members": "0", "previous_members": "500"}])
+    kinds = [i["kind"] for i in st.incidents(_with_label(rep_), labels=LABELS, runbook=[], owners={})]
     assert kinds[0] == "volume" and kinds.index("stuck") < kinds.index("error")
 
 
@@ -203,8 +252,7 @@ def test_owners_parse_role_value_pairs_and_a_default():
 # ----- what the model may see ----------------------------------------------------------
 
 def test_error_text_stays_out_of_the_model_unless_allowed(monkeypatch):
-    rows = [row(D, "d1", "FAILED", "U1", err="account 12345 balance mismatch")]
-    rep = {"ok": True, **_report(rows)}
+    rep = {"ok": True, **_with_label(report(failures=[fail("d1", "U1", err="account 12345 balance mismatch")]))}
     rep["incidents"] = st.incidents(rep, labels=LABELS, runbook=[], owners={})
     monkeypatch.setattr(st.settings, "support_errors_to_model", False)
     seen = json.dumps(st.for_model(rep))
@@ -214,23 +262,6 @@ def test_error_text_stays_out_of_the_model_unless_allowed(monkeypatch):
 
 
 # ----- the entry point ---------------------------------------------------------------
-
-class _Job:
-    def __init__(self, rows):
-        self._rows, self.total_bytes_processed = rows, 2048
-
-    def result(self):
-        return iter(self._rows)
-
-
-class _Client:
-    def __init__(self, rows):
-        self.rows, self.calls = rows, []
-
-    def query(self, sql, job_config=None):
-        self.calls.append((sql, job_config))
-        return _Job(self.rows)
-
 
 @pytest.fixture
 def configured(monkeypatch):
@@ -243,19 +274,46 @@ def configured(monkeypatch):
     return s
 
 
-def test_triage_reads_once_for_real_and_returns_l1_incidents(monkeypatch, configured):
-    raw = [{"r_date": D, "r_run_id": f"r{u}", "r_status": "FAILED",
-            "r_updated_at": NOW - timedelta(hours=1), "r_unit": f"U{u}", "r_system": "SYS-A",
-            "r_error": "file not found"} for u in range(1, 4)]
-    client = _Client(raw)
-    monkeypatch.setattr(st, "_get_client", lambda: client)
-    out = st.triage("2026-10-02")
-    assert out["ok"] is True and out["counts"]["failed"] == 3 and out["bytes_processed"] == 2048
-    (sql, cfg), = client.calls
-    assert cfg.dry_run is not True                       # a real read of the one table
-    assert cfg.labels == {"release_copilot": "support_triage"}
-    assert {p.name for p in cfg.query_parameters} == {"start", "end", "max_rows"}
+def _fake_statements(monkeypatch, answers, seen):
+    """Stand in for BigQuery: answer each statement by its NAME (the Query
+    method that built it), and record the parameters it was sent."""
+    def fake_run(table_ref, sql, params, budget):
+        cols, _ = st.parse_columns(st.settings.support_columns)
+        name = next(n for n, q in st.Query(table_ref, cols).statements().items() if q == sql)
+        seen[name] = {k for k in params if f"@{k}" in sql}
+        budget.reserve()
+        return answers.get(name, [])
+    monkeypatch.setattr(st, "_run", fake_run)
+
+
+def test_triage_runs_every_statement_and_returns_l1_incidents(monkeypatch, configured):
+    answers = {
+        "dates": [{"d": P}, {"d": D}],
+        "counts": [{"state": "failed", "n": 3, "retried_after_failure": 0},
+                   {"state": "done", "n": 9, "retried_after_failure": 1}],
+        "failures": [{"run_id": f"r{u}", "status": "FAILED", "unit": f"U{u}", "system": "SYS-A",
+                      "error": "file not found", "key": f"SYS-A|U{u}"} for u in range(3)],
+        "values": [{"role": "system", "value": "SYS-A", "n": 3}],
+    }
+    seen: dict = {}
+    _fake_statements(monkeypatch, answers, seen)
+    out = st.triage("")
+    assert out["ok"] is True and out["business_date"] == "2026-10-02" and out["previous_date"] == "2026-10-01"
+    assert out["counts"] == {"items": 12, "failed": 3, "done": 9, "open": 0, "stuck": 0, "missing": 0, "recovered": 1}
+    assert set(seen) == {"dates", "counts", "failures", "values", "stuck", "retries", "missing", "history"}
+    assert seen["counts"] == {"cob", "failed", "done"} and seen["missing"] >= {"prev", "cob"}
     assert out["incidents"][0]["action"] == "wait" and out["labels"] == {"system": "feed", "unit": "acct"}
+    assert out["queries"] == len(seen)
+
+
+def test_an_optional_check_failing_degrades_to_a_note(monkeypatch, configured):
+    def fake_run(table_ref, sql, params, budget):
+        if "NOT IN (SELECT DISTINCT" in sql:
+            raise RuntimeError("403 Forbidden")
+        return [{"d": P}, {"d": D}] if " AS d FROM " in sql else []
+    monkeypatch.setattr(st, "_run", fake_run)
+    out = st.triage("2026-10-02")
+    assert out["ok"] is True and any("could not run" in n for n in out["notes"])
 
 
 def test_triage_disabled_misconfigured_and_denied_answer_instead_of_raising(monkeypatch, configured):
@@ -270,7 +328,7 @@ def test_triage_disabled_misconfigured_and_denied_answer_instead_of_raising(monk
     class Denied:
         def query(self, *a, **k):
             raise RuntimeError("403 Access Denied: User does not have permission bigquery.tables.getData")
-    monkeypatch.setattr(st, "_get_client", lambda: Denied())
+    monkeypatch.setattr(st, "_get_client", lambda: Denied())   # the real _run → the guard → this client
     out = st.triage()
     assert out["ok"] is False and "Data Viewer" in out["hint"]
 
@@ -305,13 +363,13 @@ def test_the_api_answers_disabled_for_a_preview_user(monkeypatch):
 def test_a_few_failures_in_a_healthy_feed_are_not_an_upstream_outage():
     """Found live: 4 accounts of one feed failing one report with a schema error,
     while that feed's other 20 runs succeeded — a process problem, not the feed."""
-    rows = [row(D, f"ok{u}", "SUCCEEDED", f"U{u}", system="SYS-B", process="REPORT-A") for u in range(20)]
-    rows += [row(D, f"bad{u}", "FAILED", f"V{u}", system="SYS-B", process="REPORT-B",
-                 err="Schema mismatch: column x") for u in range(4)]
-    (err,) = analyse(rows)["errors"]
+    fails = [fail(f"bad{u}", f"V{u}", system="SYS-B", process="REPORT-B", err="Schema mismatch: column x")
+             for u in range(4)]
+    rep = report(failures=fails, counts={"failed": 4, "done": 20},
+                 values={("system", "SYS-B"): 24, ("process", "REPORT-B"): 4, ("process", "REPORT-A"): 20})
+    (err,) = rep["errors"]
     assert err["category"] == "process" and err["cause"] == {"process": "REPORT-B"}
-    rep = _report(rows)
-    (inc,) = st.incidents(rep, labels=LABELS, runbook=[],
+    (inc,) = st.incidents(_with_label(rep), labels=LABELS, runbook=[],
                           owners={"system:SYS-B": "Feed team", "process:REPORT-B": "Reports L2"})
     assert inc["owner"] == "Reports L2" and inc["title"] == "4 failed · process · Report REPORT-B"
     assert inc["steps"][0].startswith("4 Book values of Report REPORT-B fail")

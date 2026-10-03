@@ -32,7 +32,8 @@ model only chooses which tool to call.
 - **Support triage** (`support_triage.py`): read-only L1 view of a control
   table. Generic ROLES only — the real table, columns, statuses, owners and
   runbook are config (`SUPPORT_*`, the chart's `files/support_runbook.json`),
-  never code. Its one query passes `bq_guard.run(..., allowed_tables=(table,))`;
+  never code. Its statements (`Query`: BigQuery counts, only problem rows come
+  back) pass `bq_guard.run(..., allowed_tables=(table,))`;
   write it without CTEs (the guard would dry-run them). Error text reaches the
   model only with `SUPPORT_ERRORS_TO_MODEL` (`for_model`). It suggests actions;
   it never re-runs or changes a job.

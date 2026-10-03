@@ -2,7 +2,8 @@
 
 Many pipelines log one row per run (or per status change) in a control table:
 a business date, a run id, a status, often an error message and a job id. This
-reads that table — READ-ONLY, one fixed query through tools/bq_guard.py — and
+reads that table — READ-ONLY, a few fixed statements through tools/bq_guard.py,
+in which BigQuery does the counting and only problems come back — and
 answers what a person on support asks first:
 
     what failed for this business date, and how widely (one upstream system?
@@ -23,7 +24,9 @@ only the generic ROLES below.
                                 and a ticket note
     for_model(report)        -> the same, without error text unless
                                 SUPPORT_ERRORS_TO_MODEL (the team's data)
-    analyse(rows, ...)       -> PURE: the analysis over already-read rows
+    Query(table, columns)    -> the statements (BigQuery counts; problems only
+                                come back), each read through bq_guard
+    build_report(...)        -> PURE: those results → the report
 """
 from __future__ import annotations
 
@@ -144,19 +147,174 @@ def _disabled() -> dict[str, Any]:
             "error": "Support triage is disabled (SUPPORT_TABLE unset)."}
 
 
-# ----- the query ----------------------------------------------------------------
+# ----- the queries ---------------------------------------------------------------
+# BigQuery does the counting; the portal gets back counts and PROBLEM rows only,
+# so a date with a million successful runs costs the portal what one with a
+# thousand does. Every statement reads only the dates and columns it needs —
+# error text and details for the business date alone — and is written WITHOUT
+# a CTE: bq_guard does not resolve CTE names and would dry-run the statement.
+#
+# A run's latest row (by updated_at) is its state; an ITEM is a piece of work —
+# its event (retries share one) or else its run — judged by its latest run.
 
-def build_sql(table_ref: str, columns: dict[str, str]) -> str:
-    """ONE fixed statement: the latest row of every run in the date window.
-    Columns come back under their ROLE names (r_<role>), so nothing downstream
-    knows the table's own names. Dates and the row cap are parameters."""
-    select = ", ".join(f"{col} AS r_{role}" for role, col in columns.items())
-    sql = (f"SELECT {select} FROM {table_ref} "
-           f"WHERE {columns['date']} BETWEEN @start AND @end")
-    if "updated_at" in columns:
-        sql += (f" QUALIFY ROW_NUMBER() OVER (PARTITION BY {columns['run_id']} "
-                f"ORDER BY {columns['updated_at']} DESC) = 1")
-    return sql + " LIMIT @max_rows"
+_FAILURE_CAP = 5000     # failed items read in full; counts stay exact beyond it
+_HISTORY_CAP = 50000
+_SECTIONS_OPTIONAL = ("values", "stuck", "retries", "missing", "volume", "slowest", "history")
+
+
+class Query:
+    """One statement: the SQL plus its parameters, built from the column map."""
+
+    def __init__(self, table_ref: str, columns: dict[str, str]):
+        self.t = table_ref
+        self.c = columns
+
+    # -- building blocks --------------------------------------------------------
+    def _has(self, role: str) -> bool:
+        return role in self.c
+
+    def key_expr(self, prefix: str = "") -> str:
+        """The identity of a piece of work across dates, as one string: the
+        grouping columns joined with a unit separator. Built in SQL every time,
+        so a key read back always matches a key passed in."""
+        parts = [f"IFNULL(CAST({prefix}{self.c[r]} AS STRING), '')" for r in _KEY_ROLES if self._has(r)]
+        return f"CONCAT({', CHR(31), '.join(parts)})" if parts else "''"
+
+    def _runs(self, where: str, roles: tuple[str, ...]) -> str:
+        """Latest row of every run matching ``where``, columns under role names."""
+        base = ("date", "run_id", "status", "updated_at", "event_id")
+        wanted = [r for r in dict.fromkeys(base + roles) if self._has(r)]
+        select = ", ".join(f"{self.c[r]} AS r_{r}" for r in wanted)
+        sql = f"SELECT {select}, {self.key_expr()} AS r_key FROM {self.t} WHERE {where}"
+        if self._has("updated_at"):
+            sql += (f" QUALIFY ROW_NUMBER() OVER (PARTITION BY {self.c['date']}, {self.c['run_id']} "
+                    f"ORDER BY {self.c['updated_at']} DESC) = 1")
+        return sql
+
+    def items(self, where: str, roles: tuple[str, ...] = ()) -> str:
+        """Latest run of every item, with its state, its attempts that day and
+        how many of them failed."""
+        item = "COALESCE(r_event_id, r_run_id)" if self._has("event_id") else "r_run_id"
+        order = "r_updated_at DESC" if self._has("updated_at") else "r_run_id DESC"
+        status = "UPPER(TRIM(r_status))"
+        state = (f"CASE WHEN {status} IN UNNEST(@failed) THEN 'failed' "
+                 f"WHEN {status} IN UNNEST(@done) THEN 'done' ELSE 'open' END")
+        window = f"PARTITION BY r_date, {item}"
+        return (f"SELECT *, {item} AS r_item, {state} AS r_state, COUNT(*) OVER ({window}) AS r_attempts, "
+                f"COUNTIF({status} IN UNNEST(@failed)) OVER ({window}) AS r_failed_attempts "
+                f"FROM ({self._runs(where, roles)}) WHERE TRUE "
+                f"QUALIFY ROW_NUMBER() OVER ({window} ORDER BY {order}) = 1")
+
+    def _on(self, param: str) -> str:
+        return f"{self.c['date']} = @{param}"
+
+    # -- the statements ---------------------------------------------------------
+    def dates(self) -> str:
+        """Which dates in the window have rows at all (the date column only)."""
+        d = self.c["date"]
+        return f"SELECT {d} AS d FROM {self.t} WHERE {d} BETWEEN @start AND @end GROUP BY d ORDER BY d"
+
+    def counts(self) -> str:
+        return (f"SELECT r_state AS state, COUNT(*) AS n, "
+                f"COUNTIF(r_attempts > 1 AND r_failed_attempts > 0) AS retried_after_failure "
+                f"FROM ({self.items(self._on('cob'))}) GROUP BY state")
+
+    def failures(self) -> str:
+        roles = tuple(r for r in ("job_id", "error", "details") + DIMENSIONS if self._has(r))
+        return (f"SELECT * FROM ({self.items(self._on('cob'), roles)}) "
+                f"WHERE r_state = 'failed' LIMIT {_FAILURE_CAP}")
+
+    def values(self) -> str | None:
+        """Items per value of each low-cardinality grouping column: how much of
+        a feed or a process failed, not just how many of its runs."""
+        dims = [r for r in ("system", "source", "process", "scope") if self._has(r)]
+        if not dims:
+            return None
+        pairs = ", ".join(f"STRUCT('{r}' AS role, IFNULL(CAST(r_{r} AS STRING), '') AS value)" for r in dims)
+        return (f"SELECT p.role AS role, p.value AS value, COUNT(*) AS n "
+                f"FROM ({self.items(self._on('cob'), tuple(dims))}), UNNEST([{pairs}]) AS p "
+                f"GROUP BY role, value LIMIT 5000")
+
+    def stuck(self) -> str:
+        roles = tuple(r for r in ("job_id",) + DIMENSIONS if self._has(r))
+        old = " AND (r_updated_at IS NULL OR r_updated_at < @stuck_before)" if self._has("updated_at") else ""
+        order = " ORDER BY r_updated_at" if self._has("updated_at") else ""
+        return (f"SELECT *, COUNT(*) OVER () AS r_total FROM ({self.items(self._on('cob'), roles)}) "
+                f"WHERE r_state = 'open'{old}{order} LIMIT {_MAX_LIST}")
+
+    def retries(self) -> str:
+        roles = tuple(r for r in DIMENSIONS if self._has(r))
+        return (f"SELECT * FROM ({self.items(self._on('cob'), roles)}) "
+                f"WHERE r_attempts > 1 ORDER BY r_attempts DESC LIMIT {_MAX_LIST}")
+
+    def missing(self) -> str | None:
+        """Work on the previous date with no row at all on this one."""
+        if not any(self._has(r) for r in _KEY_ROLES):
+            return None
+        roles = tuple(r for r in _KEY_ROLES if self._has(r))
+        return (f"SELECT *, COUNT(*) OVER () AS r_total FROM ({self.items(self._on('prev'), roles)}) "
+                f"WHERE r_key NOT IN (SELECT DISTINCT {self.key_expr()} FROM {self.t} WHERE {self._on('cob')}) "
+                f"ORDER BY r_key LIMIT {_MAX_LIST}")
+
+    def volume(self) -> str | None:
+        """Succeeded with far less output than the same work on the previous date."""
+        if not self._has("members") or not any(self._has(r) for r in _KEY_ROLES):
+            return None
+        roles = tuple(r for r in ("members",) + DIMENSIONS if self._has(r))
+        now = "SAFE_CAST(d.r_members AS FLOAT64)"
+        before = "SAFE_CAST(p.r_members AS FLOAT64)"
+        order = "p.r_updated_at DESC" if self._has("updated_at") else "p.r_run_id DESC"
+        return (f"SELECT d.*, p.r_members AS r_previous_members "
+                f"FROM ({self.items(self._on('cob'), roles)}) AS d "
+                f"JOIN ({self.items(self._on('prev'), ('members',))}) AS p ON d.r_key = p.r_key "
+                f"WHERE d.r_state = 'done' AND (({now} = 0 AND {before} > 0) OR ({before} >= 10 AND {now} < 0.5 * {before})) "
+                f"QUALIFY ROW_NUMBER() OVER (PARTITION BY d.r_item ORDER BY {order}) = 1 "
+                f"ORDER BY {now} - {before} LIMIT {_MAX_LIST}")
+
+    def slowest(self) -> str | None:
+        if not (self._has("event_at") and self._has("updated_at")):
+            return None
+        roles = tuple(r for r in ("event_at",) + DIMENSIONS if self._has(r))
+        return (f"SELECT *, TIMESTAMP_DIFF(r_updated_at, r_event_at, MINUTE) AS r_minutes "
+                f"FROM ({self.items(self._on('cob'), roles)}) "
+                f"WHERE r_state = 'done' AND r_event_at IS NOT NULL ORDER BY r_minutes DESC, r_run_id LIMIT 5")
+
+    def history(self) -> str | None:
+        """The state of ONLY the work failing on the business date, on every
+        date of the window — BigQuery picks the failing keys itself, so this
+        runs alongside the other statements instead of after them."""
+        if not any(self._has(r) for r in _KEY_ROLES):
+            return None
+        return (f"SELECT r_key, r_date, r_state, r_updated_at FROM "
+                f"({self.items(self.c['date'] + ' BETWEEN @start AND @cob')}) "
+                f"WHERE r_key IN (SELECT r_key FROM ({self.items(self._on('cob'))}) WHERE r_state = 'failed') "
+                f"LIMIT {_HISTORY_CAP}")
+
+    def statements(self) -> dict[str, str]:
+        """Every statement by name; the ones a column map cannot support are left out."""
+        out = {"dates": self.dates(), "counts": self.counts(), "failures": self.failures(),
+               "stuck": self.stuck(), "retries": self.retries()}
+        for name in ("values", "missing", "volume", "slowest", "history"):
+            sql = getattr(self, name)()
+            if sql:
+                out[name] = sql
+        return out
+
+
+class _SharedBudget(bq_guard.Budget):
+    """The guard's per-run cap, safe across the statements running side by side."""
+
+    def __init__(self, max_queries: int) -> None:
+        super().__init__(max_queries)
+        self._lock = threading.Lock()
+
+    def reserve(self) -> None:
+        with self._lock:
+            super().reserve()
+
+    def record(self, bytes_processed: int) -> None:
+        with self._lock:
+            super().record(bytes_processed)
 
 
 _client_lock = threading.Lock()
@@ -178,19 +336,67 @@ def _get_client():
         return _client
 
 
-def _read(table_ref: str, columns: dict[str, str], start: date, end: date) -> tuple[list[dict], int]:
+def _param(name: str, value: Any):
     from google.cloud import bigquery
 
-    sql = build_sql(table_ref, columns)
-    cfg = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("start", "DATE", start),
-        bigquery.ScalarQueryParameter("end", "DATE", end),
-        bigquery.ScalarQueryParameter("max_rows", "INT64", int(settings.support_max_rows)),
-    ])
-    job = bq_guard.run(_get_client(), sql, job_config=cfg, allowed_tables=(table_ref,),
-                       label="support_triage")
-    rows = [{k[2:]: v for k, v in dict(r).items()} for r in job.result()]
-    return rows, int(getattr(job, "total_bytes_processed", 0) or 0)
+    if isinstance(value, list):
+        return bigquery.ArrayQueryParameter(name, "STRING", [str(v) for v in value])
+    if isinstance(value, datetime):
+        return bigquery.ScalarQueryParameter(name, "TIMESTAMP", value)
+    if isinstance(value, date):
+        return bigquery.ScalarQueryParameter(name, "DATE", value)
+    return bigquery.ScalarQueryParameter(name, "STRING", str(value))
+
+
+def _run(table_ref: str, sql: str, params: dict[str, Any], budget: bq_guard.Budget) -> list[dict]:
+    """One statement through the guard → role-keyed rows (r_ prefix dropped).
+    Only the parameters the statement names are sent — BigQuery refuses unused ones."""
+    from google.cloud import bigquery
+
+    used = [_param(k, v) for k, v in params.items() if f"@{k}" in sql]
+    cfg = bigquery.QueryJobConfig(query_parameters=used)
+    job = bq_guard.run(_get_client(), sql, budget=budget, job_config=cfg,
+                       allowed_tables=(table_ref,), label="support_triage")
+    return [{(k[2:] if k.startswith("r_") else k): v for k, v in dict(r).items()} for r in job.result()]
+
+
+def _gather(table_ref: str, columns: dict[str, str], wanted: date | None, now: datetime) -> dict[str, Any]:
+    """Run the statements — all but the first side by side — and return
+    their rows by name, plus the dates, bytes and any section that failed.
+    Raises only when the dates, the counts or the failures cannot be read."""
+    q = Query(table_ref, columns)
+    sql = q.statements()
+    budget = _SharedBudget(max_queries=len(sql) + 1)
+    end = wanted or now.date()
+    start = end - timedelta(days=max(1, int(settings.support_lookback_days)))
+    params: dict[str, Any] = {"start": start, "end": end,
+                              "failed": [s.upper() for s in _names(settings.support_failed_statuses)],
+                              "done": [s.upper() for s in _names(settings.support_done_statuses)],
+                              "stuck_before": now - timedelta(minutes=int(settings.support_stuck_minutes))}
+    dates = sorted(d for d in (_to_date(r.get("d")) for r in _run(table_ref, sql["dates"], params, budget)) if d)
+    cob = wanted or (dates[-1] if dates else None)
+    out: dict[str, Any] = {"dates": dates, "cob": cob, "previous": None, "rows": {}, "errors": {},
+                           "window": (start, end), "budget": budget}
+    if cob is None or cob not in dates:
+        return out
+    earlier = [d for d in dates if d < cob]
+    out["previous"] = earlier[-1] if earlier else None
+    params.update(cob=cob, prev=out["previous"] or cob)
+    names = [n for n in ("counts", "failures", "values", "stuck", "retries", "missing", "volume", "slowest",
+                         "history")
+             if n in sql and not (n in ("missing", "volume") and out["previous"] is None)]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        futures = {n: pool.submit(_run, table_ref, sql[n], params, budget) for n in names}
+        for n, f in futures.items():
+            try:
+                out["rows"][n] = f.result()
+            except Exception as e:  # an optional section degrades to a note
+                if n not in _SECTIONS_OPTIONAL:
+                    raise
+                out["errors"][n] = f"{type(e).__name__}: {str(e)[:200]}"
+    return out
 
 
 # ----- value helpers ------------------------------------------------------------
@@ -260,148 +466,111 @@ def _detail_values(raw: Any, keys: list[str]) -> dict[str, str]:
     return {k: _text(obj.get(k))[:80] for k in keys if _text(obj.get(k))}
 
 
-def _state(status: str, failed: set[str], done: set[str]) -> str:
-    s = status.strip().upper()
-    if s in failed:
-        return "failed"
-    if s in done:
-        return "done"
-    return "open"
+# ----- the report (pure) -------------------------------------------------------------
 
-
-# ----- the analysis (pure) ----------------------------------------------------------
-
-def _normalise(raw: dict[str, Any], dims: list[str], failed: set[str], done: set[str],
-               detail_keys: list[str]) -> dict[str, Any] | None:
-    d = _to_date(raw.get("date"))
-    run_id = _text(raw.get("run_id"))
-    if d is None or not run_id:
-        return None
-    status = _text(raw.get("status"))
-    return {
-        "date": d,
-        "run_id": run_id,
-        "status": status,
-        "state": _state(status, failed, done),
-        "updated_at": _to_dt(raw.get("updated_at")),
-        "event_at": _to_dt(raw.get("event_at")),
-        "event_id": _text(raw.get("event_id")) or None,
-        "job_id": _text(raw.get("job_id")) or None,
-        "error": _text(raw.get("error")),
-        "details": _detail_values(raw.get("details"), detail_keys),
-        "members": _to_int(raw.get("members")),
-        "dims": {r: (_text(raw.get(r)) or "(blank)") for r in dims},
-    }
-
-
-def _latest(runs: list[dict]) -> dict:
-    """The run written last — rows without a timestamp keep their read order."""
-    floor = datetime.min.replace(tzinfo=timezone.utc)
-    return max(enumerate(runs), key=lambda p: (p[1]["updated_at"] or floor, p[0]))[1]
-
-
-def _key(run: dict, key_roles: list[str]) -> tuple:
-    return tuple(run["dims"][r] for r in key_roles)
-
-
-def _key_dict(key: tuple, key_roles: list[str]) -> dict[str, str]:
-    return dict(zip(key_roles, key))
+def _dims_of(row: dict[str, Any], dims: list[str]) -> dict[str, str]:
+    return {r: (_text(row.get(r)) or "(blank)") for r in dims}
 
 
 def _iso(v: date | datetime | None) -> str | None:
     return v.isoformat() if v else None
 
 
-def analyse(rows: list[dict[str, Any]], *, roles: list[str], business_date: date | None,
-            now: datetime, failed_statuses: list[str], done_statuses: list[str],
-            stuck_minutes: int = 120, detail_keys: list[str] | None = None) -> dict[str, Any]:
-    """PURE. ``rows`` are role-keyed (date, run_id, status, …) — already the
-    latest row per run, or several rows per run (the latest is taken here
-    too). Returns the triage report; see triage()."""
-    failed_set = {s.upper() for s in failed_statuses}
-    done_set = {s.upper() for s in done_statuses}
+def _history_by_key(rows: list[dict[str, Any]]) -> dict[str, dict[date, str]]:
+    """{key: {date: state}} — on a date with several items for one key, the
+    one written last decides."""
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    best: dict[tuple[str, date], tuple[datetime, str]] = {}
+    for r in rows:
+        k, d = r.get("key"), _to_date(r.get("date"))
+        if k is None or d is None:
+            continue
+        at = _to_dt(r.get("updated_at")) or floor
+        if (k, d) not in best or at >= best[(k, d)][0]:
+            best[(k, d)] = (at, _text(r.get("state")))
+    out: dict[str, dict[date, str]] = {}
+    for (k, d), (_, state) in best.items():
+        out.setdefault(k, {})[d] = state
+    return out
+
+
+def _streak(seen: dict[date, str], cob: date) -> tuple[int, str | None]:
+    """(dates failing in a row up to and including ``cob``, the last earlier
+    date it succeeded). Dates the work did not run (weekends) are skipped."""
+    streak, last_ok, counting = 0, None, True
+    for d in sorted((d for d in seen if d <= cob), reverse=True):
+        if counting and seen[d] == "failed":
+            streak += 1
+            continue
+        counting = False
+        if seen[d] == "done":
+            last_ok = d
+            break
+    return streak, _iso(last_ok)
+
+
+def build_report(*, roles: list[str], cob: date | None, previous: date | None, dates: list[date],
+                 rows: dict[str, list[dict[str, Any]]], now: datetime,
+                 detail_keys: list[str] | None = None, errors: dict[str, str] | None = None) -> dict[str, Any]:
+    """PURE. The query results (rows by statement name, role-keyed) → the triage
+    report: counts, patterns, error groups with a category, failures with their
+    streaks, stuck, missing, retries, volume drops, slowest. See triage()."""
     dims = [r for r in DIMENSIONS if r in roles]
-    key_roles = [r for r in _KEY_ROLES if r in roles]
+    has_keys = any(r in roles for r in _KEY_ROLES)
     detail_keys = detail_keys or []
-    notes: list[str] = []
-
-    by_run: dict[str, list[dict]] = {}
-    for raw in rows:
-        n = _normalise(raw, dims, failed_set, done_set, detail_keys)
-        if n is not None:
-            by_run.setdefault(f"{n['date'].isoformat()}|{n['run_id']}", []).append(n)
-    runs = [_latest(v) for v in by_run.values()]
-    dates = sorted({r["date"] for r in runs})
-    if business_date is None:
-        business_date = dates[-1] if dates else None
-    base = {"business_date": _iso(business_date), "dates_read": [d.isoformat() for d in dates]}
-    if business_date is None or business_date not in dates:
-        return {**base, "previous_date": None, "empty": True,
-                "counts": {"items": 0, "failed": 0, "done": 0, "open": 0, "stuck": 0,
-                           "missing": 0, "recovered": 0},
-                "patterns": [], "errors": [], "failures": [], "stuck": [], "missing": [],
-                "retries": [], "volume": [], "slowest": [], "notes": notes}
-    earlier = [d for d in dates if d < business_date]
-    previous = earlier[-1] if earlier else None
-
-    # A piece of work on one date: retries of one event are ONE item, judged by
-    # its latest run — a failure that a retry then fixed is not a failure now.
-    def items_on(d: date) -> dict[str, list[dict]]:
-        out: dict[str, list[dict]] = {}
-        for r in runs:
-            if r["date"] == d:
-                out.setdefault(r["event_id"] or r["run_id"], []).append(r)
-        return out
-
-    today_items = items_on(business_date)
-    latest_today = {k: _latest(v) for k, v in today_items.items()}
-    failures = [r for r in latest_today.values() if r["state"] == "failed"]
+    notes: list[str] = [f"The {name} check could not run ({err})." for name, err in (errors or {}).items()]
+    empty_counts = {"items": 0, "failed": 0, "done": 0, "open": 0, "stuck": 0, "missing": 0, "recovered": 0}
+    base = {"business_date": _iso(cob), "dates_read": [d.isoformat() for d in dates],
+            "previous_date": _iso(previous)}
+    if cob is None or cob not in dates:
+        return {**base, "previous_date": None, "empty": True, "counts": empty_counts, "patterns": [],
+                "errors": [], "failures": [], "stuck": [], "missing": [], "retries": [], "volume": [],
+                "slowest": [], "notes": notes}
     if "event_id" not in roles:
         notes.append("No event_id column mapped: a retry counts as a separate run.")
-
-    # Key state per date, for "new or recurring" and "missing".
-    state_by_key: dict[tuple, dict[date, dict]] = {}
-    if key_roles:
-        for d in dates:
-            for runs_of_item in items_on(d).values():
-                last = _latest(runs_of_item)
-                k = _key(last, key_roles)
-                prior = state_by_key.setdefault(k, {}).get(d)
-                if prior is None or _latest([prior, last]) is last:
-                    state_by_key[k][d] = last
-    else:
+    if not has_keys:
         notes.append("No system/source/process/unit/scope column mapped: "
                      "recurrence and missing work cannot be worked out.")
+    if "updated_at" not in roles:
+        notes.append("No updated_at column mapped: every unfinished run is reported as stuck.")
 
-    def history(k: tuple) -> tuple[int, str | None]:
-        """(dates failing in a row up to and including the business date,
-        the last earlier date it succeeded)."""
-        seen = state_by_key.get(k, {})
-        streak, last_ok, counting = 0, None, True
-        # Dates the work did not run at all (weekends, holidays) are skipped.
-        for d in sorted((d for d in seen if d <= business_date), reverse=True):
-            st = seen[d]["state"]
-            if counting and st == "failed":
-                streak += 1
-                continue
-            counting = False
-            if st == "done":
-                last_ok = d
-                break
-        return streak, _iso(last_ok)
+    by_state = {_text(r.get("state")): r for r in rows.get("counts", [])}
+    def n(state: str, field: str = "n") -> int:
+        return int((by_state.get(state) or {}).get(field) or 0)
+    failed_total = n("failed")
 
-    # Errors: one cluster per signature.
-    clusters: dict[str, list[dict]] = {}
-    for r in failures:
-        clusters.setdefault(signature(r["error"]), []).append(r)
-    errors = []
-    runs_with = {r: Counter(x["dims"][r] for x in latest_today.values()) for r in dims}
+    failures = []
+    for r in rows.get("failures", []):
+        failures.append({"run_id": _text(r.get("run_id")), "status": _text(r.get("status")),
+                         "key": r.get("key"), "dims": _dims_of(r, dims), "job_id": _text(r.get("job_id")) or None,
+                         "error": _text(r.get("error")), "details": _detail_values(r.get("details"), detail_keys),
+                         "attempts": int(r.get("attempts") or 1)})
+    if len(failures) < failed_total:
+        notes.append(f"{failed_total} runs failed; the first {len(failures)} were read in full "
+                     "(errors and patterns are worked out from those).")
+
+    history = _history_by_key(rows.get("history", []))
+    def hist(f: dict[str, Any]) -> tuple[int | None, str | None]:
+        if not has_keys or f["key"] not in history:
+            return (None, None) if not has_keys else (1, None)
+        return _streak(history[f["key"]], cob)
+
+    # how much of each feed/process failed: items per value (from BigQuery)
+    runs_with: dict[str, Counter] = {r: Counter() for r in dims}
+    for r in rows.get("values", []):
+        role = _text(r.get("role"))
+        if role in runs_with:
+            runs_with[role][_text(r.get("value")) or "(blank)"] = int(r.get("n") or 0)
     failed_with = {r: Counter(f["dims"][r] for f in failures) for r in dims}
 
     def saturated(role: str, value: str) -> bool:
         total = runs_with[role][value]
         return bool(total) and failed_with[role][value] / total >= _SATURATED
 
+    clusters: dict[str, list[dict]] = {}
+    for f in failures:
+        clusters.setdefault(signature(f["error"]), []).append(f)
+    errs = []
     for sig, members in sorted(clusters.items(), key=lambda kv: -len(kv[1])):
         spread = {r: Counter(m["dims"][r] for m in members) for r in dims}
         shared = {r: next(iter(c)) for r, c in spread.items() if len(c) == 1}
@@ -410,8 +579,8 @@ def analyse(rows: list[dict[str, Any]], *, roles: list[str], business_date: date
         if upstream and units >= 2:
             category, cause = "upstream", upstream
         elif "process" in shared and units >= 2:
-            # every unit of the process, or a subset of it sharing one error:
-            # either way the process (or its input for that subset), not a feed outage
+            # every unit of the process, or a subset sharing one error: either way
+            # the process (or its input for that subset), not a feed outage
             category, cause = "process", "process"
         elif "unit" in spread and units == 1:
             category, cause = "unit", "unit"
@@ -421,11 +590,11 @@ def analyse(rows: list[dict[str, Any]], *, roles: list[str], business_date: date
             category, cause = "upstream", "system" if "system" in shared else "source"
         else:
             category, cause = "spread", None
-        hist = [history(_key(m, key_roles)) for m in members] if key_roles else []
-        recurring = sum(1 for streak, _ in hist if streak > 1)
-        last_oks = [ok for _, ok in hist if ok]
+        hists = [hist(m) for m in members] if has_keys else []
+        recurring = sum(1 for streak, _ in hists if (streak or 0) > 1)
+        last_oks = [ok for _, ok in hists if ok]
         details = Counter(f"{k}={v}" for m in members for k, v in m["details"].items())
-        errors.append({
+        errs.append({
             "signature": sig,
             "sample": (members[0]["error"] or "")[:_ERROR_SAMPLE_CHARS],
             "count": len(members),
@@ -436,106 +605,65 @@ def analyse(rows: list[dict[str, Any]], *, roles: list[str], business_date: date
             "top": {r: c.most_common(3) for r, c in spread.items() if len(c) > 1},
             "details": details.most_common(3),
             "recurring": recurring,
-            "new": len(members) - recurring if key_roles else None,
+            "new": len(members) - recurring if has_keys else None,
             "job_ids": [m["job_id"] for m in members if m["job_id"]][:3],
-            "max_streak": max((streak for streak, _ in hist), default=None),
+            "max_streak": max((s or 0 for s, _ in hists), default=None),
             "last_success": max(last_oks) if last_oks else None,
         })
 
-    # Patterns across all failures: one value carrying most of them.
     patterns = []
     for r in dims:
         if not failures:
             break
-        value, n = Counter(f["dims"][r] for f in failures).most_common(1)[0]
-        if n >= _PATTERN_MIN and n / len(failures) >= _PATTERN_SHARE:
-            runs_with = sum(1 for x in latest_today.values() if x["dims"][r] == value)
-            patterns.append({"role": r, "value": value, "failed": n, "of_failed": len(failures),
-                             "runs_with_value": runs_with})
+        value, count = failed_with[r].most_common(1)[0]
+        if count >= _PATTERN_MIN and count / len(failures) >= _PATTERN_SHARE:
+            patterns.append({"role": r, "value": value, "failed": count, "of_failed": len(failures),
+                             "runs_with_value": runs_with[r][value] or None})
 
-    sig_index = {e["signature"]: i for i, e in enumerate(errors)}
+    sig_index = {e["signature"]: i for i, e in enumerate(errs)}
     failure_rows = []
     for f in failures:
-        streak, last_ok = history(_key(f, key_roles)) if key_roles else (None, None)
+        streak, last_ok = hist(f)
         failure_rows.append({"run_id": f["run_id"], "status": f["status"], "dims": f["dims"],
                              "job_id": f["job_id"], "error_index": sig_index[signature(f["error"])],
-                             "streak": streak, "last_success": last_ok,
-                             "attempts": len(today_items[f["event_id"] or f["run_id"]])})
+                             "streak": streak, "last_success": last_ok, "attempts": f["attempts"]})
     failure_rows.sort(key=lambda x: (-(x["streak"] or 0), x["error_index"]))
 
-    # Stuck: neither failed nor done, and not written to for too long.
-    limit = now - timedelta(minutes=int(stuck_minutes))
+    stuck_rows = rows.get("stuck", [])
     stuck = []
-    for r in latest_today.values():
-        if r["state"] != "open":
-            continue
-        if r["updated_at"] is not None and r["updated_at"] > limit:
-            continue
-        age = int((now - r["updated_at"]).total_seconds() // 60) if r["updated_at"] else None
-        stuck.append({"run_id": r["run_id"], "status": r["status"], "dims": r["dims"],
-                      "job_id": r["job_id"], "minutes_since_update": age})
-    stuck.sort(key=lambda x: -(x["minutes_since_update"] or 0))
-    if "updated_at" not in roles:
-        notes.append("No updated_at column mapped: every unfinished run is reported as stuck.")
+    for r in stuck_rows:
+        at = _to_dt(r.get("updated_at"))
+        stuck.append({"run_id": _text(r.get("run_id")), "status": _text(r.get("status")),
+                      "dims": _dims_of(r, dims), "job_id": _text(r.get("job_id")) or None,
+                      "minutes_since_update": int((now - at).total_seconds() // 60) if at else None})
+    stuck_total = int(stuck_rows[0].get("total") or len(stuck_rows)) if stuck_rows else 0
 
-    # Missing: worked on the previous date, nothing at all on this one.
-    missing = []
-    if key_roles and previous is not None:
-        today_keys = {_key(r, key_roles) for r in latest_today.values()}
-        for k, seen in state_by_key.items():
-            if previous in seen and k not in today_keys:
-                missing.append({"dims": _key_dict(k, key_roles), "previous_status": seen[previous]["status"]})
+    missing_rows = rows.get("missing", [])
+    key_dims = [r for r in _KEY_ROLES if r in roles]
+    missing = [{"dims": {r: (_text(m.get(r)) or "(blank)") for r in key_dims},
+                "previous_status": _text(m.get("status"))} for m in missing_rows]
+    missing_total = int(missing_rows[0].get("total") or len(missing_rows)) if missing_rows else 0
 
-    # Retries: an item with more than one run today.
-    retries = []
-    recovered = 0
-    for item, item_runs in today_items.items():
-        if len(item_runs) < 2:
-            continue
-        last = _latest(item_runs)
-        if last["state"] == "done" and any(x["state"] == "failed" for x in item_runs):
-            recovered += 1
-        retries.append({"item": item, "attempts": len(item_runs), "final_status": last["status"],
-                        "final_state": last["state"], "dims": last["dims"]})
-    retries.sort(key=lambda x: -x["attempts"])
+    retries = [{"item": _text(r.get("item")), "attempts": int(r.get("attempts") or 0),
+                "final_status": _text(r.get("status")), "final_state": _text(r.get("state")),
+                "dims": _dims_of(r, dims)} for r in rows.get("retries", [])]
 
-    # Volume: a "successful" run whose output collapsed against the previous date.
     volume = []
-    if key_roles and previous is not None and "members" in roles:
-        for r in latest_today.values():
-            if r["state"] != "done" or r["members"] is None:
-                continue
-            prev = state_by_key.get(_key(r, key_roles), {}).get(previous)
-            before = prev["members"] if prev else None
-            if before is None:
-                continue
-            if (r["members"] == 0 and before > 0) or (before >= 10 and r["members"] < before * 0.5):
-                volume.append({"run_id": r["run_id"], "dims": r["dims"], "members": r["members"],
-                               "previous_members": before})
-        volume.sort(key=lambda x: x["members"] - x["previous_members"])
+    for r in rows.get("volume", []):
+        cur, before = _to_int(r.get("members")), _to_int(r.get("previous_members"))
+        volume.append({"run_id": _text(r.get("run_id")), "dims": _dims_of(r, dims),
+                       "members": cur, "previous_members": before})
 
-    # Slowest end to end: trigger → last row, for finished runs.
-    slowest = []
-    if "event_at" in roles and "updated_at" in roles:
-        durations = [(int((r["updated_at"] - r["event_at"]).total_seconds() // 60), r)
-                     for r in latest_today.values()
-                     if r["state"] == "done" and r["updated_at"] and r["event_at"]]
-        durations.sort(key=lambda p: -p[0])
-        slowest = [{"run_id": r["run_id"], "dims": r["dims"], "minutes": m} for m, r in durations[:5]]
+    slowest = [{"run_id": _text(r.get("run_id")), "dims": _dims_of(r, dims), "minutes": int(r.get("minutes") or 0)}
+               for r in rows.get("slowest", [])]
 
-    counts = {
-        "items": len(latest_today),
-        "failed": len(failures),
-        "done": sum(1 for r in latest_today.values() if r["state"] == "done"),
-        "open": sum(1 for r in latest_today.values() if r["state"] == "open"),
-        "stuck": len(stuck),
-        "missing": len(missing),
-        "recovered": recovered,
-    }
-    return {**base, "previous_date": _iso(previous), "empty": False, "counts": counts,
-            "patterns": patterns, "errors": errors, "failures": failure_rows[:_MAX_LIST],
-            "stuck": stuck[:_MAX_LIST], "missing": missing[:_MAX_LIST], "retries": retries[:_MAX_LIST],
-            "volume": volume[:_MAX_LIST], "slowest": slowest, "notes": notes}
+    counts = {"items": sum(int(r.get("n") or 0) for r in by_state.values()),
+              "failed": failed_total, "done": n("done"), "open": n("open"),
+              "stuck": stuck_total, "missing": missing_total,
+              "recovered": n("done", "retried_after_failure")}
+    return {**base, "empty": False, "counts": counts, "patterns": patterns, "errors": errs,
+            "failures": failure_rows[:_MAX_LIST], "stuck": stuck, "missing": missing,
+            "retries": retries, "volume": volume, "slowest": slowest, "notes": notes}
 
 
 # ----- the L1 layer: what to DO about each problem ---------------------------------
@@ -785,10 +913,8 @@ def triage(business_date: str = "") -> dict[str, Any]:
         if wanted is None:
             return {"ok": False, "error": f"{business_date!r} is not a date (use YYYY-MM-DD)."}
     now = datetime.now(timezone.utc)
-    end = wanted or now.date()
-    start = end - timedelta(days=max(1, int(settings.support_lookback_days)))
     try:
-        rows, scanned = _read(table_ref, columns, start, end)
+        got = _gather(table_ref, columns, wanted, now)
     except Exception as e:  # BigQuery's own errors carry the useful text
         msg = f"{type(e).__name__}: {str(e)[:300]}"
         out = {"ok": False, "error": msg}
@@ -796,19 +922,16 @@ def triage(business_date: str = "") -> dict[str, Any]:
         if hint:
             out["hint"] = hint
         return out
-    report = analyse(rows, roles=list(columns), business_date=wanted, now=now,
-                     failed_statuses=_names(settings.support_failed_statuses),
-                     done_statuses=_names(settings.support_done_statuses),
-                     stuck_minutes=settings.support_stuck_minutes,
-                     detail_keys=_names(settings.support_detail_keys))
-    truncated = len(rows) >= int(settings.support_max_rows)
-    if truncated:
-        report["notes"].append(f"Read the first {settings.support_max_rows} runs only (SUPPORT_MAX_ROWS).")
+    report = build_report(roles=list(columns), cob=got["cob"], previous=got["previous"], dates=got["dates"],
+                          rows=got["rows"], now=now, detail_keys=_names(settings.support_detail_keys),
+                          errors=got["errors"])
+    start, end = got["window"]
     out = {"ok": True, **report,
            "date_label": settings.support_date_label,
            "labels": {r: labels[r] for r in DIMENSIONS if r in labels},
            "window": {"start": start.isoformat(), "end": end.isoformat()},
-           "bytes_processed": scanned,
+           "bytes_processed": got["budget"].bytes,
+           "queries": got["budget"].queries,
            "scanned_at": now.replace(microsecond=0).isoformat(),
            "job_url": settings.support_job_url}
     runbook, problem = load_runbook(settings.support_runbook_file)

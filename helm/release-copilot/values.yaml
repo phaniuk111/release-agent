@@ -217,7 +217,8 @@ config:
   # An L1 work list from the pipelines' workflow control table: what failed,
   # got stuck or never ran for a business date, known issue or not (the runbook
   # — see `supportRunbook:` below), what to do now and who owns it, with a
-  # ticket note. READ-ONLY: one fixed query, partition-filtered on the date, the
+  # ticket note. READ-ONLY: a few fixed queries (BigQuery counts; only problems
+  # come back), partition-filtered on the date, the
   # only non-metadata table tools/bq_guard.py lets it read. EMPTY SUPPORT_TABLE
   # DISABLES it. Service account: roles/bigquery.dataViewer on THAT table +
   # roles/bigquery.jobUser on SUPPORT_PROJECT.
@@ -232,7 +233,6 @@ config:
   SUPPORT_DATE_LABEL: "Business date"   # what the team calls it, e.g. "COB"
   SUPPORT_STUCK_MINUTES: "120"       # unfinished and not updated for longer = stuck
   SUPPORT_LOOKBACK_DAYS: "7"         # earlier dates read for recurring / missing
-  SUPPORT_MAX_ROWS: "50000"
   SUPPORT_DETAIL_KEYS: ""            # top-level keys of the error-details JSON worth grouping on
   SUPPORT_JOB_URL: ""                # e.g. "https://console.cloud.google.com/dataflow/jobs/<region>/{job_id}?project=<project>"
   SUPPORT_OWNERS: ""                 # "role:value=Team,…,default=Team" — who an escalation goes to

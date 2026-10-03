@@ -656,7 +656,6 @@ class Settings(BaseSettings):
     support_stuck_minutes: int = Field(default=120, validation_alias=AliasChoices("SUPPORT_STUCK_MINUTES"))
     # Earlier dates read for "new or recurring" and "missing since the last date".
     support_lookback_days: int = Field(default=7, validation_alias=AliasChoices("SUPPORT_LOOKBACK_DAYS"))
-    support_max_rows: int = Field(default=50000, validation_alias=AliasChoices("SUPPORT_MAX_ROWS"))
     support_date_label: str = Field(default="Business date", validation_alias=AliasChoices("SUPPORT_DATE_LABEL"))
     # Top-level keys of the error-details JSON worth grouping on (e.g. a component).
     support_detail_keys: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DETAIL_KEYS"))
