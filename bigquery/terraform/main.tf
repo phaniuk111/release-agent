@@ -64,7 +64,7 @@ variable "bq_cost_findings_table" {
 }
 
 variable "support_findings_table" {
-  description = "Optional memory table for 'was the support investigation right?' answers (tools/support_feedback.py) — must match Helm values config.SUPPORT_FEEDBACK_TABLE, with config.SUPPORT_FEEDBACK_DATASET = this dataset (and SUPPORT_PROJECT/BQ_PROJECT = this project). Empty = not created."
+  description = "Optional memory table for 'was the support investigation right?' answers (tools/support/feedback.py) — must match Helm values config.SUPPORT_FEEDBACK_TABLE, with config.SUPPORT_FEEDBACK_DATASET = this dataset (and SUPPORT_PROJECT/BQ_PROJECT = this project). Empty = not created."
   type        = string
   default     = ""
 }

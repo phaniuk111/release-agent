@@ -1,7 +1,7 @@
 // Wording and payload for "Was this right?" under an investigation's answer —
 // shared with the Backstage port, so pure and tested in
 // tests/js/support_feedback.test.mjs. The server decides what is stored
-// (tools/support_feedback.py: validation, caps, who answered — the verified
+// (tools/support/feedback.py: validation, caps, who answered — the verified
 // caller, never a field sent from here); this only builds the request and says
 // the words. Every function takes a payload with fields missing and still answers.
 
@@ -21,7 +21,7 @@ export const VERDICTS = [
     { key: 'wrong', label: 'Wrong' },
 ];
 
-/** The server's cap on the cause (tools/support_feedback.MAX_CAUSE) — the input
+/** The server's cap on the cause (tools/support/feedback.MAX_CAUSE) — the input
  *  stops there so nothing the person typed is silently cut. */
 export const MAX_CAUSE = 500;
 

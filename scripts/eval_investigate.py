@@ -5,7 +5,7 @@
     PYTHONPATH=src .venv/bin/python scripts/eval_investigate.py --model-free  # baseline: the no-model markdown
 
 Each case in tests/eval/investigate_cases.json is an EVIDENCE BUNDLE (the shape
-tools/investigation.collect returns) plus what a good finding must and must not
+tools/support/evidence.collect returns) plus what a good finding must and must not
 say. The cases are hand-written with neutral names; the point is a number that
 moves when the prompt, the model or the tools change, so "did that help?" has
 an answer before people are asked.
@@ -421,14 +421,14 @@ def _paths() -> None:
 
 def model_free_answer_fn() -> AnswerFn:
     """The baseline: the markdown the portal writes with no model at all
-    (tools/investigation.render_markdown). It lists leads, it does not conclude —
+    (tools/support/evidence.render_markdown). It lists leads, it does not conclude —
     so it should miss the cause checks and say nothing it cannot support."""
     _paths()
-    from release_agent.tools import investigation
+    from release_agent.tools.support import evidence as investigation
 
     render = getattr(investigation, "render_markdown", None)
     if render is None:
-        raise SystemExit("release_agent.tools.investigation.render_markdown does not exist yet.")
+        raise SystemExit("release_agent.tools.support.evidence.render_markdown does not exist yet.")
     return lambda bundle: {"text": render(bundle), "model_calls": 0, "seconds": 0.0, "model": ""}
 
 

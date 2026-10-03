@@ -1,4 +1,4 @@
-"""Support feedback memory (tools/support_feedback.py) and its three routes.
+"""Support feedback memory (tools/support/feedback.py) and its three routes.
 
 No BigQuery: a fake client records what would be sent. The "latest verdict per
 person wins" rule is decided by the SQL, so here the SQL's shape is pinned and
@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from release_agent import app_fastapi as APP
 from release_agent import features, identity
 from release_agent.config import settings
-from release_agent.tools import support_feedback as fb
+from release_agent.tools.support import feedback as fb
 
 TESTER = identity.Caller(email="tester@example.com")
 OTHER = identity.Caller(email="someone@example.com")

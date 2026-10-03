@@ -24,8 +24,8 @@ import string
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from ..config import settings
-from . import release_queue
+from ...config import settings
+from .. import release_queue
 
 MAX_MATCHES = 5          # a substring that hits more artifacts is too vague to answer
 MAX_CHANGES = 50

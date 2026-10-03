@@ -29,7 +29,7 @@ model only chooses which tool to call.
 - **BigQuery** (`release_queue.py`, `bq_cost.py`): INSERT only. Every cost
   statement passes `bq_guard.py`. An empty `BQ_DATASET` disables the queue
   cleanly; check `queue_enabled()` before reading.
-- **Support triage** (`support_triage.py`): read-only L1 view of a control
+- **Support** (`tools/support/`): read-only L1 view of a control
   table. Generic ROLES only — the real table, columns, statuses, owners and
   runbook are config (`SUPPORT_*`, the chart's `files/support_runbook.json`),
   never code. Its statements (`Query`: BigQuery counts, only problem rows come
@@ -37,5 +37,9 @@ model only chooses which tool to call.
   write it without CTEs (the guard would dry-run them). Error text reaches the
   model only with `SUPPORT_ERRORS_TO_MODEL` (`for_model`). It suggests actions;
   it never re-runs or changes a job.
+  One module per job: mapping (`config.py`), statements (`queries.py`), the
+  pure report (`report.py`), the L1 layer (`incidents.py`), each evidence reader
+  on its own. An evidence read goes through `cache.remembered` keyed
+  (kind, subject, business date) so the collector and the chat tools share it.
 - **Parsing**: no regex. Split, partition and loop (see `json_splice.py`,
   `release_chain.py`).

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from release_agent.config import settings
-from release_agent.tools import dataflow_job as dj
+from release_agent.tools.support import dataflow_job as dj
 
 JOB = "2026-10-03_03_28_27-1234567890123456789"
 
@@ -312,7 +312,7 @@ def test_no_credentials_never_raises(monkeypatch):
 def test_the_worker_log_read_is_bounded_by_the_jobs_create_time():
     """Measured live: unbounded, Cloud Logging scanned its default range for the
     filter — 13.5 s for one job against 0.6 s with a floor."""
-    from release_agent.tools import dataflow_job as dj
+    from release_agent.tools.support import dataflow_job as dj
 
     assert dj._log_floor("2026-10-03T10:30:02.311626Z") == "2026-10-03T10:29:02Z"
     assert dj._log_floor("") == "" and dj._log_floor("not a time") == ""

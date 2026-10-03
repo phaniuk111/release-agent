@@ -651,7 +651,7 @@ class Settings(BaseSettings):
     # BQ_COST_MAX_QUERIES (which also still applies on top of this).
     bq_cost_max_datasets: int = Field(default=50, validation_alias=AliasChoices("BQ_COST_MAX_DATASETS"))
 
-    # --- Support triage (tools/support_triage.py) --------------------------------
+    # --- Support triage (tools/support/) --------------------------------
     # A first look at a workflow control table: what failed for a business date,
     # how widely, new or recurring, stuck and missing runs. Generic on purpose —
     # the real table, its column names and its status words are CONFIG, kept in a
@@ -677,7 +677,7 @@ class Settings(BaseSettings):
     # Error text is the team's data. Off: the chat model sees counts, groupings and
     # "error #n" only — the card (no model) still shows the text.
     support_errors_to_model: bool = Field(default=False, validation_alias=AliasChoices("SUPPORT_ERRORS_TO_MODEL"))
-    # Source-service logs (tools/source_logs.py): the GKE workload the pipelines read
+    # Source-service logs (tools/support/source_logs.py): the GKE workload the pipelines read
     # from, found by cluster + namespace + the pod label that names the service.
     support_cluster: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CLUSTER"))
     support_namespace: str = Field(default="", validation_alias=AliasChoices("SUPPORT_NAMESPACE"))
@@ -699,7 +699,7 @@ class Settings(BaseSettings):
     # runs, or failing dates in a row; else LOW. CRITICAL ("role:value,…") is always
     # high. No clock-based rule: a deadline was tried and dropped.
     support_high_count: int = Field(default=10, validation_alias=AliasChoices("SUPPORT_HIGH_COUNT"))
-    # Dataflow job lookup (tools/dataflow_job.py, read-only): the region jobs run in
+    # Dataflow job lookup (tools/support/dataflow_job.py, read-only): the region jobs run in
     # (no default — a wrong region reads as "no such job") and the project they
     # run in ("" = the project named in SUPPORT_TABLE — the jobs run where the
     # data is; a deployment with services and data in two projects sets nothing).
@@ -711,7 +711,7 @@ class Settings(BaseSettings):
     # skill, with {source} {namespace} {cluster} {window} filled in; empty = the
     # built-in restarts / up / 5xx-rate set (adk_release_agent/tools.py).
     support_source_promql: str = Field(default="", validation_alias=AliasChoices("SUPPORT_SOURCE_PROMQL"))
-    # Was the investigation right? — the feedback memory (tools/support_feedback.py):
+    # Was the investigation right? — the feedback memory (tools/support/feedback.py):
     # an append-only table in this dataset (bigquery/support_findings.schema.json),
     # in the project the triage reads (SUPPORT_PROJECT, else BQ_PROJECT). EMPTY
     # dataset = no memory: the "Was this right?" buttons say so and nothing is written.

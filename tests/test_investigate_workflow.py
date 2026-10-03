@@ -73,7 +73,7 @@ class _Finder(BaseLlm):
 
 
 class _Evidence:
-    """A stand-in for release_agent.tools.investigation."""
+    """A stand-in for release_agent.tools.support.evidence."""
 
     def __init__(self, bundle=None, boom: Exception | None = None):
         self.bundle = BUNDLE if bundle is None else bundle
@@ -408,7 +408,7 @@ def test_the_chat_tool_returns_the_pruned_bundle_and_is_gated(monkeypatch):
 
     fake = _Evidence()
     monkeypatch.setattr(settings, "preview_users", "*")
-    from release_agent.tools import investigation
+    from release_agent.tools.support import evidence as investigation
 
     monkeypatch.setattr(investigation, "collect", fake.collect)
     monkeypatch.setattr(investigation, "for_model", fake.for_model)
@@ -436,7 +436,7 @@ def test_the_skill_unlocks_the_one_call_tool_first():
 
 def test_the_chat_tool_refuses_a_call_that_names_nothing(monkeypatch):
     from adk_release_agent import tools
-    from release_agent.tools import investigation
+    from release_agent.tools.support import evidence as investigation
 
     monkeypatch.setattr(settings, "preview_users", "*")
     monkeypatch.setattr(investigation, "collect",
@@ -449,7 +449,7 @@ def test_the_chat_tool_refuses_a_call_that_names_nothing(monkeypatch):
 
 def _real_inv(monkeypatch, bundle):
     """The real for_model / render_markdown on a bundle the fake collect returns."""
-    from release_agent.tools import investigation
+    from release_agent.tools.support import evidence as investigation
 
     monkeypatch.setattr(investigation, "collect", lambda *a, **k: bundle)
     monkeypatch.setattr(investigate_workflow, "_inv", lambda: investigation)

@@ -2,7 +2,7 @@
 """Draft the support-triage column mapping from a table's schema.
 
 Support triage reads a workflow control table through ROLES (date, run_id,
-status, …; release_agent.tools.support_triage.ROLES). Writing that mapping by
+status, …; release_agent.tools.support.config.ROLES). Writing that mapping by
 hand for a 17-column table is where typos happen, so this drafts the
 `supportTable:` block of the chart's values.yaml from the schema:
 

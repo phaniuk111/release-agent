@@ -20,8 +20,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from ..config import settings
-from .support_triage import data_project, signature
+from ...config import settings
+from .config import data_project
+from .report import signature
 
 _DATAFLOW = "https://dataflow.googleapis.com/v1b3"
 _LOGGING = "https://logging.googleapis.com/v2/entries:list"

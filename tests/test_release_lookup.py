@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 import pytest
 
 from release_agent.config import settings
-from release_agent.tools import release_lookup as rl
+from release_agent.tools.support import release_lookup as rl
 
 
 def ev(etype, ts, name="svc-a", version="1.0.0", env=None, **extra):

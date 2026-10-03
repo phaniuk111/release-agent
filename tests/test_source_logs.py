@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from release_agent.config import settings
-from release_agent.tools import source_logs as S
+from release_agent.tools.support import source_logs as S
 
 START = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
 END = START + timedelta(hours=1)

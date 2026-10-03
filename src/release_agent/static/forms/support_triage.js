@@ -11,7 +11,7 @@ import { opening, withDismiss } from './common.js';
 // The control table's problems for one business date as an L1 work list, most
 // urgent first: each incident says what happened, whether it is a known issue,
 // what to do now and who owns it, with a ticket note to copy. The server
-// decides all of that (tools/support_triage.py); this renders it.
+// decides all of that (tools/support/); this renders it.
 //
 // Every value comes from the control table — error text, unit names — so all
 // of it goes through esc(), title attributes included.

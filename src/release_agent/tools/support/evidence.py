@@ -30,12 +30,17 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as StepTimeout
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 
-from ..config import settings
-from . import dataflow_job, monitoring, release_lookup, source_logs, support_triage
-from .dataflow_job import _headline
+from ...config import settings
+from .. import monitoring
+from . import cache, dataflow_job, release_lookup, source_logs
+from . import triage as support_triage
+from ._common import _CHANGE_DAYS, _M_GROUPS, _WINDOW_HOURS, _iso, _line, _list, _name_ok, _ok, cob_window
+from .report import _to_date
+from .signals import compute_signals, with_judgement
+from .timeline import _TIMELINE_MAX, _capped, build_timeline
 from .dataflow_job import _when as _parse_time  # RFC 3339 up to nanoseconds, Z or offset
 
 _log = logging.getLogger(__name__)
@@ -48,69 +53,15 @@ _CACHE_TTL = 600.0
 _CACHE_TTL_PARTIAL = 60.0     # a bundle with an unread step is retried sooner
 _CACHE_MAX = 64
 _MAX_JOBS = 3
-_WINDOW_HOURS = 36
-_CHANGE_DAYS = 7
 
-_TIMELINE_MAX = 40
-_TEXT_MAX = 160
-_LEADS_MAX = 4
-_HEALTHY_ERROR_RATE = 0.05    # at or above this a source counts as erroring
-_IAM_BEFORE_DENIAL = timedelta(hours=24)
 
 # Bounds of what the model sees (for_model).
-_M_GROUPS = 8
 _M_JOB_ERRORS = 3
 _M_JOB_GROUPS = 4
 _M_CHANGES = 8
 _M_SAMPLE = 200
 _M_BYTES = 11 * 1024 + 512   # what for_model aims at, so the result stays under 12 KB
 
-_NAME_EXTRA = "-_."
-
-
-# ----- pure helpers ---------------------------------------------------------------
-
-def cob_window(business_date: date, now: datetime | None = None) -> tuple[datetime, datetime]:
-    """The window a business date's pipelines run in: that date's 00:00 UTC for
-    36 hours (overnight batches land after the date they are for). Today's date
-    is still running, so the window ends NOW — an instant query at a time that
-    has not happened yet would see nothing."""
-    now = (now or datetime.now(timezone.utc)).replace(microsecond=0)
-    start = datetime(business_date.year, business_date.month, business_date.day, tzinfo=timezone.utc)
-    return start, min(start + timedelta(hours=_WINDOW_HOURS), now)
-
-
-def _line(text: Any, limit: int = _TEXT_MAX) -> str:
-    """The first line, whitespace folded, cut with an ellipsis — a stack trace
-    never reaches a timeline or a lead."""
-    raw = "" if text is None else str(text).strip()
-    one = " ".join((raw.splitlines() or [""])[0].split())
-    return one if len(one) <= limit else one[: limit - 1].rstrip() + "…"
-
-
-def _iso(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
-
-
-def _hhmm(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).strftime("%H:%M")
-
-
-def _plural(n: int, noun: str) -> str:
-    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
-
-
-def _name_ok(name: str) -> bool:
-    return bool(name) and all(("a" <= c <= "z") or ("A" <= c <= "Z") or ("0" <= c <= "9") or c in _NAME_EXTRA
-                              for c in name)
-
-
-def _ok(step: Any) -> dict[str, Any] | None:
-    return step if isinstance(step, dict) and step.get("ok") else None
-
-
-def _list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
 
 
 # ----- the source's metrics (same expressions as the chat tool's) -----------------
@@ -174,320 +125,6 @@ def assemble_metrics(source: str, start: datetime, end: datetime, results: dict[
                 "hint": str(first.get("hint") or "")}
     return {"ok": True, "source": source, "window": {"start": _iso(start), "end": _iso(end)},
             "checks": results, "values": values, "summary": " · ".join(verdicts)}
-
-
-def source_is_healthy(values: dict[str, float | None]) -> bool | None:
-    """True only when restarts, up and error_rate were ALL measured and fine;
-    False as soon as any measured one is not (an unmeasured check cannot make
-    a failing source look healthy, nor hide that it is failing); else None."""
-    restarts, up, error_rate = values.get("restarts"), values.get("up"), values.get("error_rate")
-    if (restarts is not None and restarts > 0) or (up is not None and up < 1) \
-            or (error_rate is not None and error_rate >= _HEALTHY_ERROR_RATE):
-        return False
-    if restarts is None or up is None or error_rate is None:
-        return None
-    return True
-
-
-# ----- signals and leads -----------------------------------------------------------
-
-def first_failure(business: date, streak: int | None, evidence: dict[str, Any]) -> tuple[datetime, bool]:
-    """(when the failure started, whether that is only a DAY) as well as the
-    evidence says: a run that failed N dates in a row started on the first of
-    them; else the earliest Dataflow job that failed, source error or denial in
-    the window; else the business date itself. A day-only answer means anything
-    released during that day counts as before it."""
-    if streak and streak > 1:
-        d = business - timedelta(days=streak - 1)
-        return datetime(d.year, d.month, d.day, tzinfo=timezone.utc), True
-    seen: list[datetime] = []
-    for job in _list(evidence.get("dataflow")):
-        if _ok(job) and job.get("kind") not in (None, "none") and (when := _parse_time(job.get("created"))):
-            seen.append(when)
-    for group in _list((_ok(evidence.get("logs")) or {}).get("groups")):
-        if when := _parse_time(group.get("first_seen")):
-            seen.append(when)
-    for group in _list((_ok(evidence.get("audit")) or {}).get("denials")):
-        if when := _parse_time(group.get("first_seen")):
-            seen.append(when)
-    if seen:
-        return min(seen), False
-    return datetime(business.year, business.month, business.day, tzinfo=timezone.utc), True
-
-
-def recent_change(changes: dict[str, Any] | None, failed_at: datetime, whole_day: bool = False) -> dict[str, Any] | None:
-    """The newest release-log change at or before the first failure, within the
-    lookback; None when nothing moved."""
-    cutoff = failed_at + timedelta(days=1) if whole_day else failed_at
-    best: tuple[datetime, dict[str, Any]] | None = None
-    for c in _list((_ok(changes) or {}).get("changes")):
-        when = _parse_time(c.get("when"))
-        if when is None or when > cutoff or failed_at - when > timedelta(days=_CHANGE_DAYS):
-            continue
-        if best is None or when > best[0]:
-            best = (when, c)
-    if best is None:
-        return None
-    when, c = best
-    return {"artifact": c.get("artifact"), "to_version": c.get("to_version"), "from_version": c.get("from_version"),
-            "environment": c.get("environment"), "when": _iso(when),
-            "days_before": max(0, (failed_at.date() - when.date()).days)}
-
-
-def _earliest(groups: list[Any]) -> datetime | None:
-    times = [t for g in groups if (t := _parse_time(g.get("first_seen")))]
-    return min(times) if times else None
-
-
-def _lead_unhealthy(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
-    if sig["source_healthy"] is not False:
-        return None
-    return f"The source is unhealthy by its metrics ({_ok(ev.get('metrics'))['summary']}) — start with the source."
-
-
-def _lead_security(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
-    n = sig["security_in_logs"]
-    if not n:
-        return None
-    groups = [g for g in _list((_ok(ev.get("logs")) or {}).get("groups")) if g.get("security")]
-    top = max(groups, key=lambda g: g.get("count") or 0) if groups else {}
-    what = f" ({_line(top['sample'], 70)})" if top.get("sample") else ""
-    return f"The source's own logs show {_plural(n, 'security line')}{what} — look at what it was denied."
-
-
-def _unnarrowed(sig: dict[str, Any]) -> str:
-    # Without the pipelines' service account the audit read is the whole project,
-    # which is mostly cluster bootstrap noise: say so beside the lead it feeds.
-    return "" if sig["audit_scope"] == "service account" else " (project-wide: SUPPORT_SERVICE_ACCOUNT is not set)"
-
-
-def _lead_iam(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
-    audit = _ok(ev.get("audit")) or {}
-    first_denial = _earliest(_list(audit.get("denials")))
-    if first_denial is None:
-        return None
-    before = [t for c in _list(audit.get("iam_changes")) if (t := _parse_time(c.get("time")))
-              and t <= first_denial and first_denial - t <= _IAM_BEFORE_DENIAL]
-    if not before:
-        return None
-    changed = max(before)
-    minutes = int((first_denial - changed).total_seconds() // 60)
-    gap = "just before" if minutes < 1 else f"{_plural(minutes, 'minute')} before"
-    return f"An IAM policy changed at {_hhmm(changed)} UTC, {gap} the first denial.{_unnarrowed(sig)}"
-
-
-def _lead_denials(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
-    audit = _ok(ev.get("audit")) or {}
-    groups = _list(audit.get("denials"))
-    if not sig["denials"] or not groups:
-        return None
-    top = groups[0]
-    return (f"{_plural(sig['denials'], 'permission-denied call')} in the audit log (most: "
-            f"{_line(top.get('method') or '?', 50)} on {_line(top.get('resource') or '?', 60)}) "
-            f"— look at which access was removed or never granted.{_unnarrowed(sig)}")
-
-
-def _lead_change(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
-    change = sig["recent_change"]
-    if not change:
-        return None
-    days = change["days_before"]
-    gap = "on the same day as" if days == 0 else f"{_plural(days, 'day')} before"
-    env = f" on {change['environment']}" if change.get("environment") else ""
-    if not change.get("to_version"):
-        what = f"{change['artifact']} was removed{env}"
-    elif change.get("from_version"):
-        what = f"{change['artifact']} went {change['from_version']} → {change['to_version']}{env}"
-    else:
-        what = f"{change['artifact']} was deployed at {change['to_version']}{env}"
-    return f"{what} {gap} the first failure."
-
-
-def _lead_dataflow(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
-    for job in _list(ev.get("dataflow")):
-        if _ok(job) and job.get("kind") not in (None, "none"):
-            state = str(job.get("state") or "").replace("JOB_STATE_", "").lower() or "failed"
-            first = next(iter(_list(job.get("errors"))), {}).get("text") \
-                or next(iter(_list(job.get("log_groups"))), {}).get("sample") or ""
-            why = f": {_line(_headline(str(first)), 90)}" if first else ""
-            return _line(f"Dataflow job …{str(job.get('job_id') or '')[-8:]} {state}, kind {job['kind']}{why}")
-    return None
-
-
-def _lead_healthy(sig: dict[str, Any], ev: dict[str, Any]) -> str | None:
-    # A source that logs permission errors is not "fine" because its pods are up.
-    if sig["source_healthy"] is not True or sig["security_in_logs"] or sig["denials"]:
-        return None
-    return "The source is healthy by its metrics — the problem is downstream of it."
-
-
-# In the order a person would read them; the first _LEADS_MAX that apply are kept.
-_LEAD_RULES: tuple[Callable[[dict[str, Any], dict[str, Any]], str | None], ...] = (
-    _lead_unhealthy, _lead_security, _lead_iam, _lead_denials, _lead_change, _lead_dataflow, _lead_healthy)
-
-
-def compute_signals(*, business: date, evidence: dict[str, Any], category: str | None,
-                    streak: int | None, last_success: str | None, audit_principal: str = "") -> dict[str, Any]:
-    """PURE. The deterministic leads the model should not have to rediscover."""
-    metrics = _ok(evidence.get("metrics"))
-    logs = _ok(evidence.get("logs"))
-    audit = _ok(evidence.get("audit"))
-    kinds: list[str] = []
-    for job in _list(evidence.get("dataflow")):
-        kind = job.get("kind") if _ok(job) else None
-        if kind and kind != "none" and kind not in kinds:
-            kinds.append(kind)
-    failed_at, whole_day = first_failure(business, streak, evidence)
-    sig: dict[str, Any] = {
-        "source_healthy": source_is_healthy(metrics.get("values") or {}) if metrics else None,
-        "security_in_logs": int((logs or {}).get("security_lines") or 0),
-        "denials": int((audit or {}).get("denials_total") or 0),
-        "iam_changes": len(_list((audit or {}).get("iam_changes"))),
-        "audit_scope": "service account" if audit_principal else "project-wide",
-        "job_kinds": kinds,
-        "recent_change": recent_change(evidence.get("changes"), failed_at, whole_day),
-        "streak": streak,
-        "category": category,
-        "last_success": last_success,
-    }
-    leads = [text for rule in _LEAD_RULES if (text := rule(sig, evidence))]
-    sig["leads"] = leads[:_LEADS_MAX]
-    return with_judgement(sig)
-
-
-# What a failure KIND means for the person on support — decided here, not by the
-# model: the eval showed it copying the triage's generic "re-trigger once" after
-# an out-of-memory failure (which fails again) and guessing a cause when there
-# was none. kind → (action, why).
-_KIND_ACTIONS: dict[str, tuple[str, str]] = {
-    "out_of_memory": ("escalate", "a retry fails the same way until the job gets more memory or its input is split"),
-    "permission": ("escalate", "a permission error repeats until the access is restored — a re-run will not help"),
-    "schema": ("escalate", "the data and the code disagree — a re-run will not help"),
-    "quota": ("retrigger", "a quota failure is usually momentary — re-trigger once after a short wait, escalate if it repeats"),
-    "worker_lost": ("retrigger", "a lost worker is usually transient — re-trigger once, escalate if it repeats"),
-    "not_found": ("wait", "an input was missing — confirm it has arrived before anything is re-triggered"),
-}
-
-
-def with_judgement(signals: dict[str, Any] | None) -> dict[str, Any]:
-    """PURE. ``signals`` plus the two calls code makes for the model:
-
-    conclusive   does ANY piece of evidence establish a cause? False means the
-                 answer must say the cause could not be determined — the model
-                 may not fill the gap with a guess.
-    action_hint  {"action", "why"} when the evidence implies an action (first
-                 rule that applies), else None: keep the triage's own.
-
-    Applied at collect time and again in for_model, so a bundle built without
-    it (an eval case, an older cache entry) is judged the same way."""
-    sig = dict(signals or {})
-    kinds = [k for k in _list(sig.get("job_kinds")) if k and k not in ("unknown", "none")]
-    scoped_denials = int(sig.get("denials") or 0) if sig.get("audit_scope") != "project-wide" else 0
-    security = int(sig.get("security_in_logs") or 0)
-    change = sig.get("recent_change")
-    unhealthy = sig.get("source_healthy") is False
-    sig["conclusive"] = bool(kinds or security or scoped_denials or change or unhealthy)
-    hint: tuple[str, str] | None = None
-    if unhealthy:
-        hint = ("wait", "the source itself is unhealthy — a re-run reads the same broken source; start there")
-    elif security or scoped_denials:
-        hint = _KIND_ACTIONS["permission"]
-    elif change and sig.get("category") in ("process", None):
-        hint = ("escalate", "a release changed this shortly before the first failure — a re-run will not help")
-    else:
-        hint = next((_KIND_ACTIONS[k] for k in kinds if k in _KIND_ACTIONS), None)
-    sig["action_hint"] = {"action": hint[0], "why": hint[1]} if hint else None
-    return sig
-
-
-# ----- the timeline ------------------------------------------------------------------
-
-_Entry = tuple[datetime, str, str, str]   # (time, kind, source, text)
-
-
-def _entries(evidence: dict[str, Any], last_success: str | None) -> list[_Entry]:
-    out: list[_Entry] = []
-
-    def add(when: Any, kind: str, source: str, text: str) -> None:
-        moment = _parse_time(when) if not isinstance(when, datetime) else when
-        if moment is not None and text:
-            out.append((moment.astimezone(timezone.utc).replace(microsecond=0), kind, source, _line(text)))
-
-    if last_success and (day := support_triage._to_date(last_success)):
-        add(datetime(day.year, day.month, day.day, tzinfo=timezone.utc), "run", "control_table",
-            f"Last successful run of this was on {day.isoformat()}")
-    for c in _list((_ok(evidence.get("changes")) or {}).get("changes")):
-        moved = (f"{c.get('from_version') or 'new'} → {c['to_version']}" if c.get("to_version") else "removed")
-        add(c.get("when"), "release", "release_log", f"{c.get('artifact')} {moved} on {c.get('environment') or '?'}")
-    audit = _ok(evidence.get("audit")) or {}
-    for c in _list(audit.get("iam_changes")):
-        add(c.get("time"), "iam", "audit", f"IAM policy changed on {c.get('resource') or '?'} by {c.get('principal') or '?'}")
-    for g in _list(audit.get("denials"))[:_M_GROUPS]:
-        what = f"{g.get('method') or '?'} on {g.get('resource') or '?'}"
-        if g.get("first_seen") == g.get("last_seen"):
-            add(g.get("first_seen"), "denied", "audit", f"Permission denied: {what} (×{g.get('count')})")
-        else:
-            add(g.get("first_seen"), "denied", "audit", f"First permission denied: {what} (×{g.get('count')} in all)")
-            add(g.get("last_seen"), "denied", "audit", f"Last permission denied: {what}")
-    logs = _ok(evidence.get("logs")) or {}
-    for g in _list(logs.get("groups"))[:_M_GROUPS]:
-        kind = "security" if g.get("security") else "log"
-        what = _line(g.get("sample") or g.get("signature"), 110)
-        if g.get("first_seen") == g.get("last_seen"):
-            add(g.get("first_seen"), kind, "logs", f"Source logged: {what} (×{g.get('count')})")
-        else:
-            add(g.get("first_seen"), kind, "logs", f"Source first logged: {what} (×{g.get('count')} in all)")
-            add(g.get("last_seen"), kind, "logs", f"Source last logged: {what}")
-    for job in _list(evidence.get("dataflow")):
-        if not _ok(job):
-            continue
-        tag = f"Dataflow job …{str(job.get('job_id') or '')[-8:]}"
-        add(job.get("created"), "job", "dataflow", f"{tag} created")
-        if job.get("ended"):
-            add(job.get("ended"), "job", "dataflow",
-                f"{tag} ended {str(job.get('state') or '').replace('JOB_STATE_', '').lower()}"
-                + (f" ({job['kind']})" if job.get("kind") not in (None, "none") else ""))
-        timed = [(t, e) for e in _list(job.get("errors")) if (t := _parse_time(e.get("time")))]
-        if timed:
-            _, first = min(timed, key=lambda pair: pair[0])
-            add(first.get("time"), "job", "dataflow", f"{tag} first error: {_line(first.get('text'), 110)}")
-    return out
-
-
-def _dedupe(entries: list[_Entry]) -> list[_Entry]:
-    seen: set[_Entry] = set()
-    out = []
-    for e in sorted(entries, key=lambda e: (e[0], e[1], e[3])):
-        if e not in seen:
-            seen.add(e)
-            out.append(e)
-    return out
-
-
-def _capped(items: list[Any], limit: int, group_of: Callable[[Any], tuple]) -> list[Any]:
-    """At most `limit` of the ascending `items`: the earliest of each group
-    first (how it started), then the latest of the rest (where it ended up)."""
-    if len(items) <= limit:
-        return items
-    keep: dict[int, None] = {}
-    firsts: dict[tuple, int] = {}
-    for i, item in enumerate(items):
-        firsts.setdefault(group_of(item), i)
-    for i in firsts.values():
-        if len(keep) < limit:
-            keep[i] = None
-    for i in range(len(items) - 1, -1, -1):
-        if len(keep) >= limit:
-            break
-        keep.setdefault(i, None)
-    return [items[i] for i in sorted(keep)]
-
-
-def build_timeline(evidence: dict[str, Any], last_success: str | None = None) -> list[dict[str, str]]:
-    """PURE. Everything with a time, ascending, de-duplicated, at most 40."""
-    return [{"time": _iso(t), "kind": kind, "source": source, "text": text}
-            for t, kind, source, text in _capped(_dedupe(_entries(evidence, last_success)), _TIMELINE_MAX,
-                                                 lambda e: (e[1], e[2]))]
 
 
 # ----- the `checked` lines ------------------------------------------------------------
@@ -594,6 +231,7 @@ def _audit_principal() -> str:
 def _gather(business: date, target: dict[str, Any], no_source_reason: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """Every read of one bundle, in parallel → (evidence, unavailable)."""
     start, end = cob_window(business)
+    day = cache.day(business)
     source, process, jobs = target["source"], target["process"], target["job_ids"]
     evidence: dict[str, Any] = {"metrics": None, "logs": None, "audit": None, "dataflow": [], "changes": None}
     unavailable: list[dict[str, str]] = []
@@ -612,13 +250,21 @@ def _gather(business: date, target: dict[str, Any], no_source_reason: str) -> tu
         except ValueError as e:
             checks = {}
             unavailable.append({"step": "metrics", "error": str(e)})
+        # Every read goes through the shared read cache, on the SAME keys the
+        # single-source chat tools use (support_tools.py) — so a follow-up
+        # question after an investigation reuses these reads.
         for name, expr in checks.items():
             metric_names.append(name)
-            steps[f"metric:{name}"] = lambda e=expr: monitoring.run_query(e, at=_iso(end))
-        steps["logs"] = lambda: source_logs.read(source, start, end)
-    steps["audit"] = lambda: source_logs.audit(start, end, principal=_audit_principal())
+            steps[f"metric:{name}"] = lambda e=expr: cache.remembered(
+                ("promql", e, day), lambda: monitoring.run_query(e, at=_iso(end)))
+        steps["logs"] = lambda: cache.remembered(("logs", source, day, "ERROR"),
+                                                 lambda: source_logs.read(source, start, end))
+    principal = _audit_principal()
+    steps["audit"] = lambda: cache.remembered(("audit", day, principal),
+                                              lambda: source_logs.audit(start, end, principal=principal))
     for job_id in jobs:
-        steps[f"dataflow:{job_id}"] = lambda j=job_id: dataflow_job.inspect(j)
+        steps[f"dataflow:{job_id}"] = lambda j=job_id: cache.remembered(
+            ("dataflow", j, ""), lambda: dataflow_job.inspect(j))
     names = list(dict.fromkeys(n for n in (source, process) if n))
     if names:
         steps["changes"] = lambda: release_lookup.what_changed(names, business, days=_CHANGE_DAYS)
@@ -661,7 +307,7 @@ def _collect(business_date: str, incident_id: str, source: str, process: str, jo
             return _failure(day_text, f"no incident {incident_id} on {day_text} — the list may have changed; "
                                       "reopen Support triage", started=started)
     if day_text:
-        business = support_triage._to_date(day_text)
+        business = _to_date(day_text)
         if business is None:
             return _failure(day_text, f"{day_text!r} is not a date (use YYYY-MM-DD).", started=started)
     else:

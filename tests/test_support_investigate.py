@@ -5,13 +5,15 @@ from __future__ import annotations
 import pytest
 
 from adk_release_agent import tools
+from adk_release_agent import support_tools
+from release_agent.tools.support import cache
 from release_agent import features
 
 
 @pytest.fixture(autouse=True)
 def _preview_everyone(monkeypatch):
     monkeypatch.setattr(features.settings, "preview_users", "*")
-    tools._evidence.clear()
+    cache.clear()
 
 
 def test_every_investigate_tool_refuses_a_non_preview_user(monkeypatch):
@@ -24,14 +26,14 @@ def test_every_investigate_tool_refuses_a_non_preview_user(monkeypatch):
 
 
 def test_a_business_date_means_its_overnight_window_clamped_to_now():
-    start, end = tools._cob_window("2026-09-20")
+    start, end = support_tools._cob_window("2026-09-20")
     assert start == "2026-09-20T00:00:00+00:00" and end == "2026-09-21T12:00:00+00:00"
-    start, end = tools._cob_window("")          # no date: the last 36 hours
+    start, end = support_tools._cob_window("")          # no date: the last 36 hours
     assert start < end
     from datetime import date
     today = date.today().isoformat()
-    _, end = tools._cob_window(today)           # today's window has not ended: evaluate now
-    assert end <= tools._cob_window("")[1]
+    _, end = support_tools._cob_window(today)           # today's window has not ended: evaluate now
+    assert end <= support_tools._cob_window("")[1]
 
 
 def test_source_metrics_fills_the_configured_expressions_and_reads_at_the_window_end(monkeypatch):
@@ -72,9 +74,9 @@ def test_evidence_is_shared_for_ten_minutes_but_a_failure_is_retried(monkeypatch
     def compute():
         calls.append(1)
         return {"ok": len(calls) > 1}
-    assert tools._remembered(("k",), compute)["ok"] is False      # first: a failure, not remembered
-    assert tools._remembered(("k",), compute)["ok"] is True       # computed again
-    assert tools._remembered(("k",), compute)["ok"] is True       # now served from memory
+    assert cache.remembered(("k",), compute)["ok"] is False      # first: a failure, not remembered
+    assert cache.remembered(("k",), compute)["ok"] is True       # computed again
+    assert cache.remembered(("k",), compute)["ok"] is True       # now served from memory
     assert len(calls) == 2
 
 
@@ -145,3 +147,39 @@ def test_a_transport_drop_is_retried_only_before_anything_was_yielded(monkeypatc
 
 async def _done():
     return None
+
+
+
+def test_ten_callers_of_one_read_cost_one_read():
+    """Single-flight: the callers that arrive while the read is running wait for it."""
+    import threading
+    import time
+
+    calls = []
+
+    def slow():
+        calls.append(1)
+        time.sleep(0.2)
+        return {"ok": True, "n": len(calls)}
+    threads = [threading.Thread(target=lambda: cache.remembered(("slow",), slow)) for _ in range(10)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(calls) == 1
+
+
+def test_a_follow_up_question_reuses_the_reads_of_the_investigation(monkeypatch):
+    """The collector and the single-source chat tools key the same read the
+    same way: "show the worker log lines" after an investigation reads nothing."""
+    from release_agent.config import settings
+    from release_agent.tools.support import evidence, source_logs
+
+    reads = []
+    monkeypatch.setattr(source_logs, "read", lambda *a, **k: (reads.append(a), {"ok": True, "groups": []})[1])
+    monkeypatch.setattr(source_logs, "audit", lambda *a, **k: {"ok": True, "denials": [], "iam_changes": []})
+    monkeypatch.setattr(settings, "support_source_promql", "", raising=False)
+    from datetime import date
+
+    evidence._gather(date(2026, 9, 20), {"source": "svc-a", "process": "", "job_ids": []}, "")
+    assert len(reads) == 1
+    out = support_tools.source_logs("svc-a", "2026-09-20")
+    assert out["ok"] and len(reads) == 1            # served from the investigation's read

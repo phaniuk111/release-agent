@@ -26,8 +26,9 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from ..config import settings
-from .support_triage import data_project, signature
+from ...config import settings
+from .config import data_project
+from .report import signature
 
 _SCOPE = "https://www.googleapis.com/auth/logging.read"
 _ENTRIES_URL = "https://logging.googleapis.com/v2/entries:list"

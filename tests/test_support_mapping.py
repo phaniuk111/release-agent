@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from release_agent.tools import support_triage as st
+from release_agent.tools.support import config as s_config, queries as s_queries
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("support_mapping", ROOT / "scripts" / "support_mapping.py")
@@ -77,7 +77,7 @@ def test_the_draft_is_the_block_the_chart_reads_and_the_app_parses(tmp_path):
                          capture_output=True, text=True, check=True).stdout
     line = next(x for x in out.splitlines() if x.strip().startswith("SUPPORT_COLUMNS:"))
     rendered = line.split(":", 1)[1].strip().strip('"')
-    columns, _ = st.parse_columns(rendered)
+    columns, _ = s_config.parse_columns(rendered)
     assert columns["date"] == "biz_date" and columns["unit"] == "accountId" and len(columns) == 14
     assert out.count("SUPPORT_TABLE:") == 1 and 'SUPPORT_TABLE: "my-project.ops.control_runs"' in out
     assert 'SUPPORT_FAILED_STATUSES: "FAILED,ERROR"' in out and 'SUPPORT_OWNERS: "default=L2 support"' in out
@@ -102,19 +102,19 @@ def _table(fields, partition="biz_date"):
 
 @pytest.fixture
 def mapped(monkeypatch):
-    monkeypatch.setattr(st.settings, "support_table", "p.ops.control_runs")
-    monkeypatch.setattr(st.settings, "support_columns",
+    monkeypatch.setattr(s_config.settings, "support_table", "p.ops.control_runs")
+    monkeypatch.setattr(s_config.settings, "support_columns",
                         "date=biz_date,run_id=runId,status=state,updated_at=written_at,event_id=event_key,unit=acountId")
 
     def use(table):
-        monkeypatch.setattr(st, "_get_client", lambda: SimpleNamespace(get_table=lambda ref: table))
+        monkeypatch.setattr(s_queries, "_get_client", lambda: SimpleNamespace(get_table=lambda ref: table))
     return use
 
 
 def test_a_mapped_column_the_table_lacks_is_named_with_the_nearest_real_one(mapped):
     mapped(_table([("biz_date", "DATE"), ("runId", "STRING"), ("state", "STRING"), ("written_at", "TIMESTAMP"),
                    ("event_key", "STRING"), ("accountId", "STRING"), ("extra", "STRING")]))
-    out = st.check_config()
+    out = s_queries.check_config()
     assert out["ok"] is False
     assert out["problems"] == ["role unit is mapped to column 'acountId', which the table does not have"
                                " — did you mean 'accountId'?"]
@@ -122,12 +122,12 @@ def test_a_mapped_column_the_table_lacks_is_named_with_the_nearest_real_one(mapp
 
 
 def test_a_good_mapping_is_ok_and_notes_what_costs_or_weakens_it(mapped, monkeypatch):
-    monkeypatch.setattr(st.settings, "support_columns", "date=biz_date,run_id=runId,status=state")
+    monkeypatch.setattr(s_config.settings, "support_columns", "date=biz_date,run_id=runId,status=state")
     mapped(_table([("biz_date", "TIMESTAMP"), ("runId", "STRING"), ("state", "STRING")], partition=None))
-    out = st.check_config()
+    out = s_queries.check_config()
     assert out["ok"] is False and "not DATE" in out["problems"][0]
     mapped(_table([("biz_date", "DATE"), ("runId", "STRING"), ("state", "STRING")], partition=None))
-    out = st.check_config()
+    out = s_queries.check_config()
     assert out["ok"] is True and out["problems"] == []
     assert any("not partitioned" in n for n in out["notes"]) and any("stuck" in n for n in out["notes"])
 
@@ -135,8 +135,8 @@ def test_a_good_mapping_is_ok_and_notes_what_costs_or_weakens_it(mapped, monkeyp
 def test_the_check_never_raises_and_is_gated(mapped, monkeypatch):
     def boom(ref):
         raise RuntimeError("403 Access Denied: permission bigquery.tables.get")
-    monkeypatch.setattr(st, "_get_client", lambda: SimpleNamespace(get_table=boom))
-    out = st.check_config()
+    monkeypatch.setattr(s_queries, "_get_client", lambda: SimpleNamespace(get_table=boom))
+    out = s_queries.check_config()
     assert out["ok"] is False and "could not be read" in out["problems"][0] and "Data Viewer" in out["hint"]
 
     from fastapi.testclient import TestClient
@@ -151,26 +151,26 @@ def test_the_check_never_raises_and_is_gated(mapped, monkeypatch):
 # ----- two projects: services in one, data in the other ---------------------------------
 
 def test_the_data_project_is_read_off_the_table_so_it_is_named_once(monkeypatch):
-    monkeypatch.setattr(st.settings, "support_table", "data-proj.ops.control_runs")
-    monkeypatch.setattr(st.settings, "gcp_project", "services-proj")
-    monkeypatch.setattr(st.settings, "bq_project", "")
-    assert st.data_project() == "data-proj"
-    monkeypatch.setattr(st.settings, "support_table", "")           # no table: BQ_PROJECT, then the main one
-    assert st.data_project() == "services-proj"
-    monkeypatch.setattr(st.settings, "bq_project", "bq-proj")
-    assert st.data_project() == "bq-proj"
+    monkeypatch.setattr(s_config.settings, "support_table", "data-proj.ops.control_runs")
+    monkeypatch.setattr(s_config.settings, "gcp_project", "services-proj")
+    monkeypatch.setattr(s_config.settings, "bq_project", "")
+    assert s_config.data_project() == "data-proj"
+    monkeypatch.setattr(s_config.settings, "support_table", "")           # no table: BQ_PROJECT, then the main one
+    assert s_config.data_project() == "services-proj"
+    monkeypatch.setattr(s_config.settings, "bq_project", "bq-proj")
+    assert s_config.data_project() == "bq-proj"
 
 
 def test_dataflow_looks_in_the_data_project_and_audit_reads_both(monkeypatch):
     from datetime import datetime, timezone
 
-    from release_agent.tools import dataflow_job, source_logs
+    from release_agent.tools.support import dataflow_job, source_logs
 
-    monkeypatch.setattr(st.settings, "support_table", "data-proj.ops.control_runs")
-    monkeypatch.setattr(st.settings, "gcp_project", "services-proj")
-    monkeypatch.setattr(st.settings, "support_dataflow_project", "")
-    monkeypatch.setattr(st.settings, "support_dataflow_region", "europe-west2")
-    monkeypatch.setattr(st.settings, "support_logs_project", "")
+    monkeypatch.setattr(s_config.settings, "support_table", "data-proj.ops.control_runs")
+    monkeypatch.setattr(s_config.settings, "gcp_project", "services-proj")
+    monkeypatch.setattr(s_config.settings, "support_dataflow_project", "")
+    monkeypatch.setattr(s_config.settings, "support_dataflow_region", "europe-west2")
+    monkeypatch.setattr(s_config.settings, "support_logs_project", "")
     urls, bodies = [], []
 
     class Resp:
@@ -202,6 +202,6 @@ def test_dataflow_looks_in_the_data_project_and_audit_reads_both(monkeypatch):
     out = source_logs.audit(start, datetime(2026, 10, 3, tzinfo=timezone.utc), session=Session())
     assert out["ok"] and out["projects"] == ["services-proj", "data-proj"]
     assert bodies and all(b["resourceNames"] == ["projects/services-proj", "projects/data-proj"] for b in bodies)
-    monkeypatch.setattr(st.settings, "support_table", "services-proj.ops.control_runs")   # one project: read once
+    monkeypatch.setattr(s_config.settings, "support_table", "services-proj.ops.control_runs")   # one project: read once
     one = source_logs.audit(start, datetime(2026, 10, 3, tzinfo=timezone.utc), session=Session())
     assert one["projects"] == ["services-proj"]

@@ -219,6 +219,7 @@ adk_release_agent/
   deploy.py                 # deploy preview/token/apply helpers used by the Workflow nodes
   safety.py                 # MutationGuardPlugin — blocks release-defining mutations in free-form chat
   tools.py                  # ADK Function Tool wrappers over the existing GitHub tool layer
+  support_tools.py          # the Support chat tools (triage, evidence readers, investigate_evidence)
   skills/*/SKILL.md         # ADK Skills (status, pr, controls, ops, deploy) with adk_additional_tools
 ```
 

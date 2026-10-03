@@ -10,7 +10,11 @@ from datetime import date, datetime, timezone
 import pytest
 
 from release_agent.config import settings
-from release_agent.tools import dataflow_job, investigation as inv, monitoring, release_lookup, source_logs, support_triage
+from release_agent.tools import monitoring
+from release_agent.tools.support import dataflow_job, release_lookup, source_logs
+from release_agent.tools.support import evidence as inv
+from release_agent.tools.support import signals as inv_signals
+from release_agent.tools.support import triage as support_triage
 
 DAY = "2026-10-03"
 INCIDENT_ID = "e-1a2b3c4d"
@@ -349,7 +353,7 @@ def test_a_placeholder_the_configuration_cannot_fill_is_unavailable(monkeypatch)
     ({}, None),
 ])
 def test_source_health_rule(values, expected):
-    assert inv.source_is_healthy(values) is expected
+    assert inv_signals.source_is_healthy(values) is expected
 
 
 def test_signals_from_the_live_shaped_bundle(fakes):
@@ -435,9 +439,9 @@ def test_a_change_after_the_first_failure_is_not_a_lead():
 
 
 def test_change_wording_for_a_new_deploy_and_a_removal():
-    new = inv._lead_change({"recent_change": {"artifact": "a", "to_version": "2", "from_version": None,
+    new = inv_signals._lead_change({"recent_change": {"artifact": "a", "to_version": "2", "from_version": None,
                                               "environment": None, "days_before": 1}}, {})
-    gone = inv._lead_change({"recent_change": {"artifact": "a", "to_version": None, "from_version": "1",
+    gone = inv_signals._lead_change({"recent_change": {"artifact": "a", "to_version": None, "from_version": "1",
                                                "environment": "uat", "days_before": 2}}, {})
     assert new == "a was deployed at 2 1 day before the first failure."
     assert gone == "a was removed on uat 2 days before the first failure."
@@ -711,7 +715,11 @@ def test_different_incidents_and_free_form_questions_have_their_own_entries(fake
     inv.collect(DAY, source="sys-b-fetcher")
     inv.collect(DAY, source="sys-b-fetcher")
     inv.collect("2026-10-02", INCIDENT_ID)
-    assert calls.count["logs"] == 3
+    # three questions, three bundles (the repeat is the cached one) …
+    assert len(inv._cache) == 3
+    # … but the same source on the same day is READ once, whichever question
+    # asked (the shared read cache, tools/support/cache.py); the other day is new
+    assert calls.count["logs"] == 2
 
 
 def test_a_failure_is_not_cached(monkeypatch, fakes):
@@ -803,7 +811,7 @@ def test_an_incident_with_no_shared_key_still_collects(monkeypatch, fakes):
 # ----- the judgement code makes for the model ------------------------------------------
 
 def test_a_failure_kind_decides_the_action_and_whether_a_cause_is_established():
-    from release_agent.tools import investigation as inv
+    from release_agent.tools.support import evidence as inv
 
     def judged(**sig):
         j = inv.with_judgement({"source_healthy": True, "security_in_logs": 0, "denials": 0, "job_kinds": [],
@@ -825,7 +833,7 @@ def test_a_failure_kind_decides_the_action_and_whether_a_cause_is_established():
 
 
 def test_a_bundle_built_without_the_judgement_gets_it_when_the_model_sees_it():
-    from release_agent.tools import investigation as inv
+    from release_agent.tools.support import evidence as inv
 
     bundle = {"ok": True, "business_date": "2026-10-02", "incident": None, "evidence": {}, "unavailable": [],
               "timeline": [], "checked": [], "signals": {"job_kinds": ["out_of_memory"], "source_healthy": True}}

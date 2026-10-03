@@ -1,6 +1,6 @@
 // Wording for the Support triage pill (L1 view) — shared with the Backstage
 // port, so pure and tested in tests/js/support_triage.test.mjs. The server
-// decides (tools/support_triage.py: what failed, the category, the action, the
+// decides (tools/support/: what failed, the category, the action, the
 // owner, the ticket note); this only says it. Every function takes a payload
 // with fields missing and still answers.
 

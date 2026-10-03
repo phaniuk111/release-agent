@@ -4,7 +4,7 @@ An investigation used to be the chat model walking six evidence tools one model
 round trip at a time — minutes of waiting, seven pro-model calls, and a single
 dropped connection failed the whole run. The evidence does not depend on what
 the model thinks of the previous step, so the portal reads it all itself
-(``release_agent.tools.investigation``: parallel reads, a timeline, the leads)
+(``release_agent.tools.support.evidence``: parallel reads, a timeline, the leads)
 and hands the model one pruned bundle to interpret:
 
     START ─▶ collect ─┬─(model)────▶ finding   (LLM, capped, no evidence tools)
@@ -60,7 +60,7 @@ _MAX_PROGRESS = 12
 
 def _inv():
     """The evidence module, imported on use (it is built apart from this one)."""
-    from release_agent.tools import investigation
+    from release_agent.tools.support import evidence as investigation
 
     return investigation
 
@@ -172,7 +172,7 @@ def _before_tool(tool: Any, args: dict[str, Any], tool_context: Any):
     run = _run_of(tool_context)
     if run is None:
         return None
-    from release_agent.tools import investigation
+    from release_agent.tools.support import evidence as investigation
 
     if not _evidence_conflicts(run.bundle or {}):
         # Seen in the eval: two consults (and 20 s) on an open-and-shut
