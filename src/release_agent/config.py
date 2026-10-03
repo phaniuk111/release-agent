@@ -710,6 +710,10 @@ class Settings(BaseSettings):
     support_dataflow_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DATAFLOW_PROJECT"))
     support_medium_count: int = Field(default=3, validation_alias=AliasChoices("SUPPORT_MEDIUM_COUNT"))
     support_critical: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CRITICAL"))
+    # The whole priority policy as ordered rules (JSON; the chart writes it from
+    # its `supportPriority:` block — shape in tools/support/priority.py). Empty =
+    # the built-in rules above; a rule set with a problem is reported and not used.
+    support_priority: str = Field(default="", validation_alias=AliasChoices("SUPPORT_PRIORITY"))
     # name=expr;… PromQL health checks of a SOURCE service for the investigate
     # skill, with {source} {namespace} {cluster} {window} filled in; empty = the
     # built-in restarts / up / 5xx-rate set (adk_release_agent/tools.py).

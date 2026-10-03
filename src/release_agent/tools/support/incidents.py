@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 from .config import DIMENSIONS, _names
+from .priority import decide, default_rules
 from .report import _text
 
 ACTIONS = ("wait", "retrigger", "check", "escalate")
@@ -139,20 +140,19 @@ def parse_critical(raw: str) -> set[tuple[str, str]]:
 
 
 class PriorityRules:
-    """How urgent an incident is. Built-in defaults; a deployment tunes them
-    (SUPPORT_HIGH_COUNT, SUPPORT_MEDIUM_COUNT, SUPPORT_CRITICAL). Deliberately no
-    clock: a business date's deadline was tried and dropped — the person
-    working the queue knows the time; the list should not reshuffle by the hour."""
+    """How urgent an incident is: the ordered rules (priority.py) plus the
+    values that are always critical. The rules come from SUPPORT_PRIORITY; the
+    built-in list, tuned by SUPPORT_HIGH_COUNT / SUPPORT_MEDIUM_COUNT, applies
+    when it is unset. Deliberately no clock: a business date's deadline was
+    tried and dropped — the person working the queue knows the time; the list
+    should not reshuffle by the hour."""
 
     def __init__(self, *, high_count: int = 10, medium_count: int = 3,
-                 critical: set[tuple[str, str]] | None = None):
+                 critical: set[tuple[str, str]] | None = None, rules: list[dict[str, Any]] | None = None):
         self.high_count = max(1, int(high_count))
         self.medium_count = max(1, int(medium_count))
         self.critical = critical or set()
-
-
-def _runs(n: int) -> str:
-    return f"{n} run" if n == 1 else f"{n} runs"
+        self.rules = rules or default_rules(self.high_count, self.medium_count)
 
 
 def _critical_hits(values: dict[str, Any], rules: PriorityRules) -> list[str]:
@@ -165,29 +165,12 @@ def _critical_hits(values: dict[str, Any], rules: PriorityRules) -> list[str]:
 
 
 def _priority(kind: str, count: int, err: dict[str, Any] | None, rules: PriorityRules,
-              values: dict[str, Any]) -> tuple[str, str]:
-    """(priority, why) — the first rule that applies decides."""
-    hits = _critical_hits(values, rules)
-    streak = (err or {}).get("max_streak") or 0
-    if hits:
-        level, why = "high", "critical: " + ", ".join(hits)
-    elif kind == "volume":
-        level, why = "high", "output collapsed on a run that succeeded"
-    elif count >= rules.high_count:
-        level, why = "high", f"{_runs(count)} (≥ {rules.high_count})"
-    elif err and err.get("category") in ("process", "spread", "upstream") and count >= rules.medium_count:
-        cause = {"upstream": "one upstream system", "process": "one process",
-                 "spread": "the same error everywhere (platform)"}[err["category"]]
-        level, why = "high", f"{_runs(count)}, {cause}"
-    elif kind in ("stuck", "missing"):
-        level, why = "medium", f"{kind} work will not finish on its own"
-    elif count >= rules.medium_count:
-        level, why = "medium", f"{_runs(count)} (≥ {rules.medium_count})"
-    elif streak > 1:
-        level, why = "medium", f"failing {streak} dates in a row"
-    else:
-        level, why = "low", "one run, first time" if count == 1 else _runs(count)
-    return level, why
+              values: dict[str, Any], runbook: str | None = None) -> tuple[str, str]:
+    """(priority, why) — the first configured rule that holds decides."""
+    return decide(rules.rules, {
+        "kind": kind, "category": (err or {}).get("category") or kind, "count": count,
+        "streak": (err or {}).get("max_streak") or 0, "recurring": bool((err or {}).get("recurring")),
+        "critical": _critical_hits(values, rules), "values": values, "runbook": runbook})
 
 
 def _note(inc: dict[str, Any], report: dict[str, Any], *, with_error_text: bool) -> str:
@@ -299,7 +282,7 @@ def incidents(report: dict[str, Any], *, labels: dict[str, str], runbook: list[d
                     "owner": owner, "_rank": ("volume", len(volume), None, _row_values(volume))})
     for inc in out:
         kind, count, err, values = inc.pop("_rank")
-        inc["priority"], inc["priority_reason"] = _priority(kind, count, err, rules, values)
+        inc["priority"], inc["priority_reason"] = _priority(kind, count, err, rules, values, inc.get("runbook"))
     out.sort(key=lambda x: (_PRIORITY_ORDER[x["priority"]], -x["count"]))
     for inc in out:
         inc["note"] = _note(inc, report, with_error_text=True)

@@ -205,3 +205,17 @@ def test_dataflow_looks_in_the_data_project_and_audit_reads_both(monkeypatch):
     monkeypatch.setattr(s_config.settings, "support_table", "services-proj.ops.control_runs")   # one project: read once
     one = source_logs.audit(start, datetime(2026, 10, 3, tzinfo=timezone.utc), session=Session())
     assert one["projects"] == ["services-proj"]
+
+
+def test_the_check_names_bad_priority_rules_and_says_which_rules_apply(mapped, monkeypatch):
+    mapped(_table([("biz_date", "DATE"), ("runId", "STRING"), ("state", "STRING"), ("written_at", "TIMESTAMP"),
+                   ("event_key", "STRING"), ("acountId", "STRING")]))
+    out = s_queries.check_config()
+    assert out["ok"] is True and "priority: 9 rules, built-in" in out["notes"]
+    monkeypatch.setattr(s_config.settings, "support_priority", '[{"level": "urgent", "reason": "x"}]')
+    out = s_queries.check_config()
+    assert out["ok"] is False
+    assert out["problems"] == ["priority rule 1: level must be one of high, medium, low"]
+    monkeypatch.setattr(s_config.settings, "support_priority", '[{"level": "low", "reason": "{runs}"}]')
+    out = s_queries.check_config()
+    assert out["ok"] is True and "priority: 1 rules, configured (SUPPORT_PRIORITY)" in out["notes"]

@@ -236,9 +236,11 @@ config:
   SUPPORT_DETAIL_KEYS: ""            # top-level keys of the error-details JSON worth grouping on
   SUPPORT_JOB_URL: ""                # e.g. "https://console.cloud.google.com/dataflow/jobs/<region>/{job_id}?project=<project>"
   SUPPORT_OWNERS: ""                 # "role:value=Team,…,default=Team" — who an escalation goes to
-  # Priority: HIGH = a critical value, collapsed output, >= HIGH_COUNT runs, or
-  # >= MEDIUM_COUNT runs with a shared cause; MEDIUM = stuck/missing, >= MEDIUM_COUNT
-  # runs, or failing dates in a row; else LOW. Each incident says which rule applied.
+  # Priority — the built-in rules: HIGH = a critical value, collapsed output,
+  # >= HIGH_COUNT runs, or >= MEDIUM_COUNT runs with a shared cause; MEDIUM =
+  # stuck/missing, >= MEDIUM_COUNT runs, or failing dates in a row; else LOW. Each
+  # incident says which rule applied. To write the policy yourself, use the
+  # `supportPriority:` block below — these two numbers then only matter if it is empty.
   SUPPORT_HIGH_COUNT: "10"
   SUPPORT_MEDIUM_COUNT: "3"
   SUPPORT_CRITICAL: ""               # "role:value,…" always HIGH, e.g. "process:<report>,scope:<entity>"
@@ -532,6 +534,30 @@ supportTable: {}
 #    default: Platform L2
 #    system:  { SYS-A: Feed team }
 #    process: { REPORT-B: Reports L2 }
+
+# --- Support triage priority (how urgent each incident is) ---
+# An ORDERED list: the first rule whose conditions all hold decides the level
+# and the reason the card shows. Empty = the built-in rules (above). A list with
+# any problem is not used — the built-in rules apply and /api/support/config-check
+# names the problem. Conditions (all must hold; none = always):
+#   kind       error | stuck | missing | volume            (or a list)
+#   category   upstream | process | unit | single | spread (or a list)
+#   min_runs / max_runs   how many runs      min_streak   failing dates in a row
+#   recurring  true = some failed on earlier dates too; false = all new today
+#   critical   true = a value in SUPPORT_CRITICAL is affected
+#   values     { role: value or [values] } — e.g. { process: [REG-REPORT] }
+#   runbook    a known-issue title (or list), or true / false for any / none
+# reason placeholders: {runs} {count} {streak} {kind} {category} {cause} {critical} {runbook}
+supportPriority: {}
+#  rules:
+#    - { level: high,   when: { critical: true },                       reason: "critical: {critical}" }
+#    - { level: high,   when: { values: { process: [REG-REPORT] } },    reason: regulatory report }
+#    - { level: low,    when: { runbook: Cloud quota exceeded },        reason: "known transient: {runbook}" }
+#    - { level: high,   when: { min_runs: 10 },                         reason: "{runs} (≥ 10)" }
+#    - { level: high,   when: { category: [upstream, process], min_runs: 3 }, reason: "{runs}, {cause}" }
+#    - { level: medium, when: { kind: [stuck, missing] },               reason: "{kind} work will not finish on its own" }
+#    - { level: medium, when: { min_streak: 2 },                        reason: "failing {streak} dates in a row" }
+#    - { level: low,                                                    reason: "{runs}" }
 
 # --- Support triage runbook (the L1 known errors) ---
 # The team's runbook ships IN THE CHART as a file: enabled renders `file` into a
