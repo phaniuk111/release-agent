@@ -216,7 +216,7 @@ config:
   # ==================== [FEATURE] support triage (L1) =====================
   # An L1 work list from the pipelines' workflow control table: what failed,
   # got stuck or never ran for a business date, known issue or not (the runbook
-  # — see `supportRunbook:` below), what to do now and who owns it, with a
+  # skill in the image), what to do now and who owns it, with a
   # ticket note. READ-ONLY: a few fixed queries (BigQuery counts; only problems
   # come back), partition-filtered on the date, the
   # only non-metadata table tools/bq_guard.py lets it read. EMPTY SUPPORT_TABLE
@@ -533,16 +533,10 @@ supportTable: {}
 #    system:  { SYS-A: Feed team }
 #    process: { REPORT-B: Reports L2 }
 
-# --- Support triage runbook (the L1 known errors) ---
-# The team's runbook ships IN THE CHART as a file: enabled renders `file` into a
-# ConfigMap, mounts it at mountPath/runbook.json and points SUPPORT_RUNBOOK_FILE
-# at it — so editing the runbook is a chart change (reviewed, rolled out by a
-# helm upgrade), not an image rebuild. Shape: files/support_runbook.json (the
-# generic example in this chart; a real deployment keeps its own there).
-supportRunbook:
-  enabled: false
-  file: files/support_runbook.json
-  mountPath: /etc/release-copilot/support
+# --- Support triage runbook ---
+# The runbook is NOT chart config: it is a plain-English skill in the image,
+# adk_release_agent/skills/support-runbook/SKILL.md — reviewed and versioned
+# with the code, read by the triage cards and by the AI alike.
 
 # --- GitHub token (required; the in-cluster image has no `gh` login fallback) ---
 githubToken:

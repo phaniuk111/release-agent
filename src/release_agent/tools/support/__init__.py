@@ -1,13 +1,15 @@
 """Support: L1 triage of a workflow control table, and investigating one incident.
 
 Nothing in this package knows a real table — the table, its columns, status
-words, owners and runbook are configuration (SUPPORT_*; the chart's
-`supportTable:` block and `files/support_runbook.json`). Everything is read-only.
+words and owners are configuration (SUPPORT_*; the chart's `supportTable:`
+block). The runbook is a plain-English skill in the image
+(adk_release_agent/skills/support-runbook). Everything is read-only.
 
     config.py        the table and column mapping: roles, parsing, the data project
     queries.py       the statements (BigQuery counts; only problems come back),
                      run through tools/bq_guard.py; the live mapping check
     report.py        PURE: query results → what failed, how widely, new or recurring
+    runbook.py       the runbook skill: its known issues for the cards, its text for the AI
     incidents.py     the L1 layer: runbook match, action, owner, priority, ticket note
     triage.py        the entry points: triage(), for_model()
 

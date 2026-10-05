@@ -14,21 +14,24 @@ _PRIORITY_SKILL = pathlib.Path(__file__).parent / "skills" / "support-priority" 
 
 
 def priority_policy() -> str:
-    """The support-priority skill's text without its frontmatter: the team's
-    plain-English priority policy and how to apply it. ONE file the team edits;
-    the chat gets it inside every support_triage result (so "Ask why" never
-    depends on the model choosing to load a skill) and the Investigate finding
-    step in its instruction. Read on every call: an edit applies at once."""
-    try:
-        text = _PRIORITY_SKILL.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    lines = text.splitlines()
-    if lines and lines[0].strip() == "---":
-        end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
-        if end is not None:
-            lines = lines[end + 1:]
-    return "\n".join(lines).strip()
+    """The support-priority skill's text: the team's plain-English priority
+    policy and how to apply it."""
+    from release_agent.tools.support.runbook import skill_body
+
+    return skill_body(_PRIORITY_SKILL)
+
+
+def team_guidance() -> dict[str, str]:
+    """What the team wrote for the AI, as skills in the image: the runbook (how
+    to read the control table, each known issue) and the priority policy. ONE
+    copy of each; the chat gets them inside every support_triage /
+    investigate_evidence result (so "Ask why" never depends on the model
+    choosing to load a skill) and the Investigate finding step in its
+    instruction. Read on every call."""
+    from release_agent.tools.support import runbook
+
+    out = {"runbook": runbook.text(), "priority_policy": priority_policy()}
+    return {k: v for k, v in out.items() if v}
 
 
 def support_triage(business_date: str = "") -> dict[str, Any]:
@@ -38,18 +41,19 @@ def support_triage(business_date: str = "") -> dict[str, Any]:
     errors (count, category upstream/process/unit/single/spread, which values
     they share, how many are recurring vs new); patterns where one value carries
     most failures; per failure the dates failing in a row and the last success;
-    retries; output volume that collapsed on a successful run; and
-    `priority_policy`, the team's own words for how urgent each incident is —
-    judge every incident's priority by it. Read-only."""
+    retries; output volume that collapsed on a successful run; and the team's
+    own words: `runbook` (how to read the table, each known issue — how to
+    recognise it and what to do) and `priority_policy` (how urgent each incident
+    is). Explain and judge every incident by those. Read-only."""
     from release_agent import features, identity
     from release_agent.tools.support import triage as _st
 
     if not features.allowed("support-triage", identity.current()):
         return {"ok": False, "error": features.refusal("support-triage")}
     out = _st.for_model(_st.triage(business_date))
-    if out.get("ok") and (policy := priority_policy()):
-        # how urgent each incident is: judged by the team's policy, not the card's rule
-        out["priority_policy"] = policy
+    if out.get("ok"):
+        # the team's runbook and priority policy: how to read and judge the result
+        out.update(team_guidance())
     return out
 
 
@@ -238,8 +242,9 @@ def investigate_evidence(
     sys-b-fetcher) in `source`, and job_ids if known — a call with none of
     these has nothing to look at, so find the incident with `support_triage`
     first. One call is the whole routine — answer from it; the single-source
-    tools are for a targeted follow-up only. `priority_policy` is the team's
-    own words for how urgent it is — judge its priority by it. Read-only."""
+    tools are for a targeted follow-up only. `runbook` and `priority_policy`
+    are the team's own words: which known issue it is (or none) and how
+    urgent — judge by them. Read-only."""
     refused = _support_gate()
     if refused:
         return refused
@@ -257,6 +262,6 @@ def investigate_evidence(
         job_ids=jobs or None,
     )
     out = evidence.for_model(bundle)
-    if out.get("ok") and (policy := priority_policy()):
-        out["priority_policy"] = policy
+    if out.get("ok"):
+        out.update(team_guidance())
     return out

@@ -203,8 +203,7 @@ Everything specific to your table lives in **your** values and chart files:
 | Where | What |
 |---|---|
 | `values.yaml` → `config:` | `SUPPORT_TABLE` (`project.dataset.table`), `SUPPORT_COLUMNS` (your columns → roles: `date`, `run_id`, `status` required; `updated_at`, `event_at`, `event_id`, `job_id`, `error`, `details`, `members`, `system`, `source`, `process`, `unit`, `scope` optional), `SUPPORT_FAILED_STATUSES` / `SUPPORT_DONE_STATUSES` (your status words), `SUPPORT_DATE_LABEL` (e.g. `COB`), `SUPPORT_JOB_URL`, `SUPPORT_OWNERS`, priority (`SUPPORT_HIGH_COUNT`, `SUPPORT_MEDIUM_COUNT`, `SUPPORT_CRITICAL` — always-high values), `SUPPORT_STUCK_MINUTES`, `SUPPORT_DETAIL_KEYS`, `PREVIEW_USERS` (the L1 testers) |
-| `files/support_runbook.json` | your known errors: text to match, title, action, steps, owner (the shipped file is a generic example — replace it) |
-| `values.yaml` → `supportRunbook.enabled: true` | renders that file into a ConfigMap, mounts it, sets `SUPPORT_RUNBOOK_FILE` |
+| `adk_release_agent/skills/support-runbook/SKILL.md` (in the image, not the chart) | your runbook in plain English: how to read the control table, and each known issue — `match:`, `action:`, `owner:`, `steps:`, then how to tell it apart (the shipped file is a generic example — replace it) |
 | IAM (service account) | `roles/bigquery.dataViewer` on the control table, `roles/bigquery.jobUser` on `SUPPORT_PROJECT` |
 
 Error text is your data: with `SUPPORT_ERRORS_TO_MODEL: "false"` (the default)

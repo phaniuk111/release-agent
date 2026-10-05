@@ -10,13 +10,11 @@ portal never re-runs, restarts or changes a job.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from .config import DIMENSIONS, _names
-from .report import _text
+from .runbook import matches as runbook_matches
 
-ACTIONS = ("wait", "retrigger", "check", "escalate")
 _FALLBACK_OWNER = "L2 support"
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
@@ -31,38 +29,6 @@ def parse_owners(raw: str) -> dict[str, str]:
     return owners
 
 
-def load_runbook(path: str) -> tuple[list[dict[str, Any]], str | None]:
-    """The runbook file → (entries, problem). Each entry: match (text, or a list
-    of texts that must ALL appear in the error, case-insensitive), title,
-    action (one of ACTIONS), steps (list), optional escalate_to, optional
-    category and when ({role: value}) to narrow it. Bad entries are skipped."""
-    if not path:
-        return [], None
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError) as e:
-        return [], f"The runbook file could not be read ({type(e).__name__})."
-    entries = data.get("entries") if isinstance(data, dict) else data
-    out = []
-    for e in entries if isinstance(entries, list) else []:
-        if not isinstance(e, dict):
-            continue
-        match = e.get("match")
-        texts = [match] if isinstance(match, str) else match if isinstance(match, list) else []
-        texts = [str(t).lower() for t in texts if str(t).strip()]
-        if not texts or not _text(e.get("title")):
-            continue
-        action = _text(e.get("action")).lower()
-        out.append({"match": texts, "title": _text(e.get("title")),
-                    "action": action if action in ACTIONS else "check",
-                    "steps": [_text(x) for x in e.get("steps") or [] if _text(x)],
-                    "escalate_to": _text(e.get("escalate_to")) or None,
-                    "category": _text(e.get("category")) or None,
-                    "when": {str(k): str(v) for k, v in (e.get("when") or {}).items()}})
-    return out, None
-
-
 def _runbook_match(err: dict[str, Any], runbook: list[dict[str, Any]]) -> dict[str, Any] | None:
     haystack = f"{err.get('signature') or ''} {err.get('sample') or ''}".lower()
     for entry in runbook:
@@ -70,7 +36,7 @@ def _runbook_match(err: dict[str, Any], runbook: list[dict[str, Any]]) -> dict[s
             continue
         if any(err.get("shared", {}).get(r) != v for r, v in entry["when"].items()):
             continue
-        if all(t in haystack for t in entry["match"]):
+        if runbook_matches(entry, haystack):
             return entry
     return None
 

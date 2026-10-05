@@ -99,7 +99,11 @@ Write the answer in this order, in markdown:
    evidence does not establish the cause" — then what it rules out and what
    would settle it. Never name a cause (memory, quota, a permission, a schema,
    a release, a network fault) that no piece of the bundle shows; a guess that
-   sounds plausible is the worst answer you can give.
+   sounds plausible is the worst answer you can give. Then name the team's
+   runbook issue it is (its `###` title), using that issue's "It is this issue
+   if / It is not this issue if" against the evidence — or say no runbook issue
+   fits. The incident's `runbook` is only a text match on the error: confirm or
+   overrule it.
 3. **Confidence** — high, medium or low, and why, in a few words. High only
    when independent pieces of evidence agree; when they disagree (a job's own
    error says one thing, the logs another) say so, name both, and do not claim a
@@ -215,15 +219,18 @@ def _evidence_conflicts(bundle: dict[str, Any]) -> bool:
 
 
 def finding_instruction() -> str:
-    # The same policy the chat's support_triage tool hands over (support_tools.py):
-    # this step has no tools of its own, so it gets the text in its instruction.
-    from .support_tools import priority_policy
+    # The team's runbook and priority policy — the same text the chat's tools
+    # hand over (support_tools.team_guidance): this step has no tools of its
+    # own, so it gets them in its instruction.
+    from .support_tools import team_guidance
 
-    policy = priority_policy()
-    if not policy:
-        return FINDING_INSTRUCTION
-    return (f"{FINDING_INSTRUCTION}\n\n--- The team's priority policy (skills/support-priority) ---\n"
-            f"{policy}")
+    guidance = team_guidance()
+    parts = [FINDING_INSTRUCTION]
+    if guidance.get("runbook"):
+        parts.append(f"--- The team's runbook (skills/support-runbook) ---\n{guidance['runbook']}")
+    if guidance.get("priority_policy"):
+        parts.append(f"--- The team's priority policy (skills/support-priority) ---\n{guidance['priority_policy']}")
+    return "\n\n".join(parts)
 
 
 def build_finding_agent():

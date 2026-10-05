@@ -197,7 +197,7 @@ def test_run_logs_reads_the_run_once_and_refuses_a_time_it_cannot_parse(monkeypa
     assert "not a timestamp" in tools.run_logs("run-7", "yesterday")["error"] and len(calls) == 1
 
 
-def test_the_triage_and_the_evidence_hand_the_model_the_teams_priority_policy(monkeypatch):
+def test_the_triage_and_the_evidence_hand_the_model_the_teams_runbook_and_priority_policy(monkeypatch):
     """"Ask why" must not depend on the model choosing to load a skill: the
     policy travels inside the tool results."""
     from release_agent.tools.support import evidence, triage
@@ -208,7 +208,12 @@ def test_the_triage_and_the_evidence_hand_the_model_the_teams_priority_policy(mo
     monkeypatch.setattr(evidence, "for_model", lambda bundle: dict(bundle))
     policy = support_tools.priority_policy()
     assert "The team's priority policy" in policy
-    assert tools.support_triage("2026-10-03")["priority_policy"] == policy
-    assert tools.investigate_evidence("2026-10-03", "e-1")["priority_policy"] == policy
+    from release_agent.tools.support import runbook
+
+    got = tools.support_triage("2026-10-03")
+    assert got["priority_policy"] == policy and got["runbook"] == runbook.text()
+    assert "## Known issues" in got["runbook"]
+    got = tools.investigate_evidence("2026-10-03", "e-1")
+    assert got["priority_policy"] == policy and got["runbook"] == runbook.text()
     monkeypatch.setattr(triage, "triage", lambda day="": {"ok": False, "error": "x"})
     assert "priority_policy" not in tools.support_triage("2026-10-03")

@@ -524,7 +524,7 @@ def test_a_fallback_answer_is_not_shared_so_the_next_person_gets_a_real_one(evid
     assert next(e["data"] for e in second if e["type"] == "investigation").get("shared") is None
 
 
-def test_the_finding_step_reads_the_teams_priority_policy_from_the_skill(monkeypatch, tmp_path):
+def test_the_finding_step_reads_the_teams_runbook_and_priority_policy_from_the_skills(monkeypatch, tmp_path):
     """One policy, edited in one place: the chat agent loads the support-priority
     skill for "Ask why"; the finding step (no skill tools) reads the same file."""
     from adk_release_agent import investigate_workflow as iw
@@ -541,5 +541,9 @@ def test_the_finding_step_reads_the_teams_priority_policy_from_the_skill(monkeyp
     monkeypatch.setattr(st, "_PRIORITY_SKILL", edited)
     assert st.priority_policy() == "High: anything for REG-REPORT."
     assert iw.finding_instruction().endswith("High: anything for REG-REPORT.")
+    from release_agent.tools.support import runbook
+
+    assert "--- The team's runbook (skills/support-runbook) ---" in iw.finding_instruction()
     monkeypatch.setattr(st, "_PRIORITY_SKILL", tmp_path / "missing.md")
-    assert iw.finding_instruction() == iw.FINDING_INSTRUCTION   # no skill: the finding still runs
+    monkeypatch.setattr(runbook, "RUNBOOK_SKILL", tmp_path / "missing-runbook.md")
+    assert iw.finding_instruction() == iw.FINDING_INSTRUCTION   # no skills: the finding still runs

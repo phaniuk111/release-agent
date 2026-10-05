@@ -690,10 +690,6 @@ class Settings(BaseSettings):
     support_run_log_minutes: int = Field(default=5, validation_alias=AliasChoices("SUPPORT_RUN_LOG_MINUTES"))
     # The pipelines' service account — what an audit-log question filters on.
     support_service_account: str = Field(default="", validation_alias=AliasChoices("SUPPORT_SERVICE_ACCOUNT"))
-    # The L1 runbook: known errors and what to do about them (JSON; the shape is
-    # design/support_runbook.example.json). The team's own procedures, so a file
-    # mounted from private config — empty = the built-in actions per category.
-    support_runbook_file: str = Field(default="", validation_alias=AliasChoices("SUPPORT_RUNBOOK_FILE"))
     # Who an escalation goes to: "role:value=Team,…,default=Team" (e.g.
     # "system:SYS-A=Feed team,process:REPORT-B=Reports L2,default=Platform L2").
     support_owners: str = Field(default="", validation_alias=AliasChoices("SUPPORT_OWNERS"))

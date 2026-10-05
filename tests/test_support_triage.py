@@ -206,7 +206,7 @@ def test_each_category_gets_one_l1_action_and_an_owner():
 
 
 def test_a_runbook_match_wins_and_names_the_known_issue():
-    runbook = [{"match": ["quota", "exceeded"], "title": "Cloud quota exceeded", "action": "retrigger",
+    runbook = [{"match": [["quota", "exceeded"]], "title": "Cloud quota exceeded", "action": "retrigger",
                 "steps": ["Re-trigger after 15 minutes."], "escalate_to": "Platform L2",
                 "category": None, "when": {}}]
     rep_ = report(failures=[fail("d1", "U1", err="Quota exceeded for workers in region")])
@@ -221,27 +221,6 @@ def test_incidents_come_most_urgent_first():
                   volume=[{"run_id": "v2", "unit": "U9", "members": "0", "previous_members": "500"}])
     kinds = [i["kind"] for i in s_incidents.incidents(_with_label(rep_), labels=LABELS, runbook=[], owners={})]
     assert kinds[0] == "volume" and kinds.index("stuck") < kinds.index("error")
-
-
-def test_the_runbook_file_is_read_and_bad_entries_skipped(tmp_path):
-    good = tmp_path / "rb.json"
-    good.write_text(json.dumps({"entries": [
-        {"match": "not found", "title": "Feed late", "action": "wait", "steps": ["x"]},
-        {"match": "", "title": "no match text"}, {"title": "no match"}, "not an object",
-        {"match": "y", "title": "Unknown action", "action": "reboot"}]}))
-    entries, problem = s_incidents.load_runbook(str(good))
-    assert problem is None and [e["title"] for e in entries] == ["Feed late", "Unknown action"]
-    assert entries[1]["action"] == "check"
-    assert s_incidents.load_runbook(str(tmp_path / "missing.json"))[1]
-    assert s_incidents.load_runbook("") == ([], None)
-
-
-def test_the_runbook_shipped_in_the_chart_loads():
-    import pathlib
-
-    path = pathlib.Path(__file__).resolve().parent.parent / "helm" / "release-copilot" / "files" / "support_runbook.json"
-    entries, problem = s_incidents.load_runbook(str(path))
-    assert problem is None and len(entries) >= 3
 
 
 def test_owners_parse_role_value_pairs_and_a_default():
@@ -269,7 +248,6 @@ def configured(monkeypatch):
     monkeypatch.setattr(s, "support_table", "p.ops.control_runs")
     monkeypatch.setattr(s, "support_columns",
                         "date=biz_date:COB,run_id=run,status=state,updated_at=written,unit=acct,system=feed,error=msg")
-    monkeypatch.setattr(s, "support_runbook_file", "")
     monkeypatch.setattr(s, "support_owners", "default=Platform L2")
     return s
 
@@ -377,7 +355,7 @@ def test_a_few_failures_in_a_healthy_feed_are_not_an_upstream_outage():
     assert inc["steps"][0].startswith("4 Book values of Report REPORT-B fail")
 
 
-def test_the_chart_mounts_the_runbook_only_when_enabled():
+def test_the_runbook_ships_in_the_image_not_the_chart():
     import pathlib
     import shutil
     import subprocess
@@ -385,11 +363,6 @@ def test_the_chart_mounts_the_runbook_only_when_enabled():
     if shutil.which("helm") is None:
         pytest.skip("helm not installed")
     chart = pathlib.Path(__file__).resolve().parent.parent / "helm" / "release-copilot"
-    on = subprocess.run(["helm", "template", "t", str(chart), "--set", "supportRunbook.enabled=true"],
-                        capture_output=True, text=True, check=True).stdout
-    assert "name: t-release-copilot-support-runbook" in on
-    assert 'SUPPORT_RUNBOOK_FILE: "/etc/release-copilot/support/runbook.json"' in on
-    assert "mountPath: /etc/release-copilot/support" in on and "checksum/support-runbook" in on
     off = subprocess.run(["helm", "template", "t", str(chart)], capture_output=True, text=True, check=True).stdout
     assert "support-runbook" not in off and "SUPPORT_RUNBOOK_FILE" not in off
     # the cluster's preview defaults gate it too (values.yaml overrides s_config.py)

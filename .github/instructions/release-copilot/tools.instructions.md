@@ -30,9 +30,10 @@ model only chooses which tool to call.
   statement passes `bq_guard.py`. An empty `BQ_DATASET` disables the queue
   cleanly; check `queue_enabled()` before reading.
 - **Support** (`tools/support/`): read-only L1 view of a control
-  table. Generic ROLES only — the real table, columns, statuses, owners and
-  runbook are config (`SUPPORT_*`, the chart's `files/support_runbook.json`),
-  never code. Its statements (`Query`: BigQuery counts, only problem rows come
+  table. Generic ROLES only — the real table, columns, statuses and owners are
+  config (`SUPPORT_*`), never code; the runbook is the plain-English skill
+  `adk_release_agent/skills/support-runbook/SKILL.md` (parsed by `runbook.py`
+  for the cards, read whole by the AI) — never a rule in code or a prompt. Its statements (`Query`: BigQuery counts, only problem rows come
   back) pass `bq_guard.run(..., allowed_tables=(table,))`;
   write it without CTEs (the guard would dry-run them). Error text reaches the
   model only with `SUPPORT_ERRORS_TO_MODEL` (`for_model`). It suggests actions;

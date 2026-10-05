@@ -36,8 +36,9 @@ from typing import Any
 from ...config import settings
 from . import queries
 from .config import DIMENSIONS, ConfigError, _disabled, _names, _permission_hint, enabled, parse_columns, parse_table
-from .incidents import PriorityRules, incidents, load_runbook, parse_critical, parse_owners
+from .incidents import PriorityRules, incidents, parse_critical, parse_owners
 from .report import _to_date, build_report
+from .runbook import load as load_runbook
 
 
 def triage(business_date: str = "") -> dict[str, Any]:
@@ -78,9 +79,8 @@ def triage(business_date: str = "") -> dict[str, Any]:
            "queries": got["budget"].queries,
            "scanned_at": now.replace(microsecond=0).isoformat(),
            "job_url": settings.support_job_url}
-    runbook, problem = load_runbook(settings.support_runbook_file)
-    if problem:
-        out["notes"].append(problem)
+    runbook, problems = load_runbook()
+    out["notes"] += problems
     out["runbook_entries"] = len(runbook)
     rules = PriorityRules(high_count=settings.support_high_count, medium_count=settings.support_medium_count,
                           critical=parse_critical(settings.support_critical))

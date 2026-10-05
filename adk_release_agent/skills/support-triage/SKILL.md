@@ -17,6 +17,10 @@ How to work:
   result; never guess counts, values, owners or dates.
 - Open with one line: "<date>: N failed, N stuck, N missing of N runs" — or "all
   clear" only when all three are zero.
+- The team's `runbook` in the result says how to read the table and what each
+  known issue means: explain every incident by it — which issue it is (the
+  incident's `runbook` is a text match; confirm it with the issue's "It is this
+  issue if"), or that none fits.
 - How urgent each incident is comes from the team's policy, `priority_policy`
   in the result (the support-priority skill's text): judge every incident by it
   and follow its "How to use the policy" part. The card's `priority` /
