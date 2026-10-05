@@ -200,8 +200,8 @@ class Settings(BaseSettings):
     # deployment. PREVIEW_GROUPS hides pill groups; PREVIEW_FEATURES gates the
     # server side too (API + chat tools), so a hidden pill is not one question away.
     preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
-    preview_groups: str = Field(default="Check,Monitoring,Support", validation_alias=AliasChoices("PREVIEW_GROUPS"))
-    preview_features: str = Field(default="monitoring,bq-cost,support-triage", validation_alias=AliasChoices("PREVIEW_FEATURES"))
+    preview_groups: str = Field(default="Check,Monitoring", validation_alias=AliasChoices("PREVIEW_GROUPS"))
+    preview_features: str = Field(default="monitoring,bq-cost", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
     identity_required: bool = Field(

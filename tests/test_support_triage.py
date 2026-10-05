@@ -367,8 +367,8 @@ def test_the_runbook_ships_in_the_image_not_the_chart():
     off = subprocess.run(["helm", "template", "t", str(chart)], capture_output=True, text=True, check=True).stdout
     assert "support-runbook" not in off and "SUPPORT_RUNBOOK_FILE" not in off
     # the cluster's preview defaults gate it too (values.yaml overrides s_config.py)
-    assert 'PREVIEW_FEATURES: "monitoring,bq-cost,support-triage"' in off
-    assert 'PREVIEW_GROUPS: "Check,Monitoring,Support"' in off
+    assert 'PREVIEW_FEATURES: "monitoring,bq-cost"' in off   # Support triage is out of preview
+    assert 'PREVIEW_GROUPS: "Check,Monitoring"' in off
 
 
 # ----- priority ---------------------------------------------------------------------

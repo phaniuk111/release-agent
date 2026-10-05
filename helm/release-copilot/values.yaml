@@ -344,8 +344,8 @@ config:
   #        --set virtualService.pathPrefix=/dev-portal-preview \
   #        --set-string config.PREVIEW_USERS='*'
   PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
-  PREVIEW_GROUPS: "Check,Monitoring,Support"  # comma list of pill groups (palette.js GROUPS); Monitoring = BQ cost, Support = support triage
-  PREVIEW_FEATURES: "monitoring,bq-cost,support-triage"  # gated server features: their API + chat tools refuse non-preview users
+  PREVIEW_GROUPS: "Check,Monitoring"  # comma list of pill groups (palette.js GROUPS); Monitoring = BQ cost. Support triage is out of preview: add "Support" here to hide it again
+  PREVIEW_FEATURES: "monitoring,bq-cost"  # gated server features: their API + chat tools refuse non-preview users ("support-triage" to gate Support again)
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's

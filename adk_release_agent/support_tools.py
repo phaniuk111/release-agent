@@ -2,8 +2,9 @@
 
 The free-form chat agent reaches them through the support-triage and
 support-investigate skills; adk_release_agent/tools.py lists them in
-ADK_CHAT_TOOLS with the rest. All read-only, all behind the `support-triage`
-preview feature. The docstrings are what the model reads to choose a tool.
+ADK_CHAT_TOOLS with the rest. All read-only, all checking the `support-triage`
+feature gate (open unless PREVIEW_FEATURES lists it). The docstrings are what
+the model reads to choose a tool.
 """
 from __future__ import annotations
 

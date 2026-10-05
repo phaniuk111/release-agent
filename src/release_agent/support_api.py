@@ -1,6 +1,7 @@
 """The Support routes: triage, the live mapping check, and investigation feedback.
 
-Every route is behind the `support-triage` preview feature. They share the app's
+Every route checks the `support-triage` feature gate — open to everyone unless
+PREVIEW_FEATURES lists it (it is out of preview by default). They share the app's
 helpers (the caller's verified identity, the single-flight cache, who is acting)
 by importing them inside the handler: app_fastapi includes this router, so a
 module-level import back into it would be circular.
