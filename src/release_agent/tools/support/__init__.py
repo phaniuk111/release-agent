@@ -6,6 +6,8 @@ block). The runbook is a plain-English skill in the image
 (adk_release_agent/skills/support-runbook). Everything is read-only.
 
     config.py        the table and column mapping: roles, parsing, the data project
+    discover.py      only SUPPORT_TABLE required: the mapping and status words found
+                     from the table itself when they are not configured
     queries.py       the statements (BigQuery counts; only problems come back),
                      run through tools/bq_guard.py; the live mapping check
     report.py        PURE: query results → what failed, how widely, new or recurring

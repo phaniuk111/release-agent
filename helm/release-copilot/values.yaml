@@ -228,9 +228,9 @@ config:
   # event_at, event_id, job_id, error, details, members, system, source,
   # process, unit, scope (optional — each switches on the checks needing it).
   SUPPORT_COLUMNS: ""                # e.g. "date=biz_date:COB,run_id=run_id,status=state,unit=account:Account"
-  SUPPORT_FAILED_STATUSES: "FAILED,ERROR"
-  SUPPORT_DONE_STATUSES: "SUCCEEDED,SUCCESS,COMPLETED,COMPLETE,DONE"
-  SUPPORT_DATE_LABEL: "Business date"   # what the team calls it, e.g. "COB"
+  SUPPORT_FAILED_STATUSES: ""        # empty = FAILED,ERROR + the failed-looking words the table really uses
+  SUPPORT_DONE_STATUSES: ""          # empty = SUCCEEDED,SUCCESS,COMPLETED,COMPLETE,DONE + the table's own
+  SUPPORT_DATE_LABEL: ""             # empty = from the date column's description (e.g. COB), else "Business date"
   SUPPORT_STUCK_MINUTES: "120"       # unfinished and not updated for longer = stuck
   SUPPORT_LOOKBACK_DAYS: "7"         # earlier dates read for recurring / missing
   SUPPORT_DETAIL_KEYS: ""            # top-level keys of the error-details JSON worth grouping on
@@ -514,7 +514,11 @@ extraEnv: []
 #   python scripts/support_mapping.py --schema <schema.json>
 # GET /api/support/config-check then compares the mapping with the live table.
 supportTable: {}
-#  table: "my-project.ops.control_runs"
+#  table: "my-project.ops.control_runs"   # the ONLY line a proof of concept needs: without
+#                                 # `columns:` the app maps the table from its schema, and
+#                                 # without `statuses:` it reads the status words from the
+#                                 # table (/api/support/config-check shows what it found).
+#                                 # Everything below overrides that, line by line.
 #  dateLabel: COB
 #  columns:                       # role: column   or   role: {column, label}
 #    date:       { column: biz_date,  label: COB }

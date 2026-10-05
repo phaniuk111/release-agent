@@ -22,107 +22,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import sys
 from typing import Any
 
-# role → rules. A rule is (words that must ALL be among the column's NAME
-# words, types allowed or () for any). First column to satisfy a rule takes the
-# role; rules are tried in order, so the stricter ones come first.
-_NAME_RULES: dict[str, list[tuple[tuple[str, ...], tuple[str, ...]]]] = {
-    "run_id": [(("run", "id"), ()), (("execution", "id"), ()), (("workflow", "id"), ())],
-    "status": [(("status",), ()), (("state",), ())],
-    "updated_at": [(("insert",), ("TIMESTAMP", "DATETIME")), (("updated",), ("TIMESTAMP", "DATETIME")),
-                   (("update",), ("TIMESTAMP", "DATETIME")), (("modified",), ("TIMESTAMP", "DATETIME")),
-                   (("written",), ("TIMESTAMP", "DATETIME")), (("created",), ("TIMESTAMP", "DATETIME"))],
-    "event_at": [(("event",), ("TIMESTAMP", "DATETIME")), (("received",), ("TIMESTAMP", "DATETIME"))],
-    "event_id": [(("event", "id"), ()), (("event", "key"), ()), (("trigger", "id"), ())],
-    "job_id": [(("job", "id"), ()), (("job", "ref"), ())],
-    "error": [(("error", "message"), ()), (("error", "msg"), ()), (("err", "msg"), ()), (("error",), ())],
-    "details": [(("error", "details"), ()), (("err", "details"), ()), (("details",), ())],
-    "members": [(("member", "count"), ()), (("row", "count"), ()), (("record", "count"), ()),
-                (("rows",), ()), (("count",), ())],
-}
-# Grouping roles: words looked for in the NAME first, then in the DESCRIPTION.
-# These are proposals — the person confirms each (see the module note).
-_GROUP_RULES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "source": (("source", "fetcher", "producer"), ("source of data", "source of the data", "fetcher")),
-    "process": (("report", "process", "pipeline", "workflow"), ("type of report", "type of process", "process being run")),
-    "unit": (("book", "account", "acct", "portfolio", "unit", "customer", "tenant"), ()),
-    "scope": (("entity", "region", "desk", "division"), ("legal entity",)),
-    "system": (("system", "feed", "upstream"), ("system name", "capture system", "upstream system")),
-}
-_ORDER = ("date", "run_id", "status", "updated_at", "event_at", "event_id", "job_id", "error", "details", "members",
-          "system", "source", "process", "unit", "scope")
-
-
-def name_words(name: str) -> list[str]:
-    """`pipelineJobId` / `pipeline_job_id` → ["pipeline", "job", "id"]."""
-    words: list[str] = []
-    cur = ""
-    for ch in name:
-        if not ch.isalnum():
-            if cur:
-                words.append(cur)
-            cur = ""
-        elif ch.isupper() and cur and not cur[-1].isupper():
-            words.append(cur)
-            cur = ch
-        else:
-            cur += ch
-    if cur:
-        words.append(cur)
-    return [w.lower() for w in words]
-
-
-def _columns(schema: Any) -> list[dict[str, str]]:
-    fields = schema.get("fields") if isinstance(schema, dict) else schema
-    out = []
-    for f in fields if isinstance(fields, list) else []:
-        if isinstance(f, dict) and f.get("name"):
-            out.append({"name": str(f["name"]), "type": str(f.get("type") or "").upper(),
-                        "description": str(f.get("description") or "").strip()})
-    return out
-
-
-def propose(schema: Any) -> dict[str, Any]:
-    """{"roles": {role: {"column", "why", "confirm": bool}}, "unmapped": [columns], "missing": [required roles]}."""
-    cols = _columns(schema)
-    taken: set[str] = set()
-    roles: dict[str, dict[str, Any]] = {}
-
-    def take(role: str, col: dict[str, str], why: str, confirm: bool = False) -> None:
-        roles[role] = {"column": col["name"], "why": why, "confirm": confirm, "description": col["description"]}
-        taken.add(col["name"])
-
-    dates = [c for c in cols if c["type"] == "DATE"]
-    if dates:
-        partition = [c for c in dates if "partition" in c["description"].lower()]
-        best = (partition or dates)[0]
-        take("date", best, "the DATE column" + (" described as the partition key" if partition else ""),
-             confirm=len(dates) > 1 and not partition)
-
-    for role, rules in _NAME_RULES.items():
-        for wanted, types in rules:
-            hit = next((c for c in cols if c["name"] not in taken and all(w in name_words(c["name"]) for w in wanted)
-                        and (not types or c["type"] in types)), None)
-            if hit:
-                take(role, hit, "its name" + (f" and type {hit['type']}" if types else ""))
-                break
-
-    for role, (in_name, in_description) in _GROUP_RULES.items():
-        by_name = next((c for c in cols if c["name"] not in taken
-                        and any(w in name_words(c["name"]) for w in in_name)
-                        and "name" not in name_words(c["name"])[-1:]), None)
-        by_text = next((c for c in cols if c["name"] not in taken
-                        and any(p in c["description"].lower() for p in in_description)), None)
-        hit = by_name or by_text
-        if hit:
-            take(role, hit, "its name" if hit is by_name else "its description", confirm=True)
-
-    return {"roles": {r: roles[r] for r in _ORDER if r in roles},
-            "unmapped": [c for c in cols if c["name"] not in taken],
-            "missing": [r for r in ("date", "run_id", "status") if r not in roles]}
-
+# The matching rules live in the package: the portal maps a table by itself
+# when SUPPORT_COLUMNS is empty, and this script drafts the same proposal for
+# the chart. One implementation.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+from release_agent.tools.support.discover import name_words, propose  # noqa: E402,F401
 
 def render(proposal: dict[str, Any], table: str = "") -> str:
     """The `supportTable:` block for values.yaml, with the review notes as comments."""

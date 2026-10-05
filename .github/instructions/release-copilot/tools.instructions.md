@@ -31,7 +31,8 @@ model only chooses which tool to call.
   cleanly; check `queue_enabled()` before reading.
 - **Support** (`tools/support/`): read-only L1 view of a control
   table. Generic ROLES only — the real table, columns, statuses and owners are
-  config (`SUPPORT_*`), never code; the runbook is the plain-English skill
+  config (`SUPPORT_*`; only `SUPPORT_TABLE` is required — `discover.py` maps the
+  rest from the table's schema and status words), never code; the runbook is the plain-English skill
   `adk_release_agent/skills/support-runbook/SKILL.md` (parsed by `runbook.py`
   for the cards, read whole by the AI) — never a rule in code or a prompt. Its statements (`Query`: BigQuery counts, only problem rows come
   back) pass `bq_guard.run(..., allowed_tables=(table,))`;

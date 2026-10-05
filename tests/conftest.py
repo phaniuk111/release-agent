@@ -52,11 +52,13 @@ def _no_shared_findings_between_tests():
     """The investigate lane shares a finding per incident for ten minutes; a
     test must never be answered by the finding an earlier test produced."""
     from release_agent import adk_service
-    from release_agent.tools.support import cache
+    from release_agent.tools.support import cache, discover
 
     adk_service._findings.clear()
     adk_service._finding_locks.clear()
     cache.clear()       # the shared evidence reads, likewise
+    discover.clear()    # and a table's discovered column map
     yield
     adk_service._findings.clear()
     cache.clear()
+    discover.clear()

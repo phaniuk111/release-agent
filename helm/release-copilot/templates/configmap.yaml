@@ -12,7 +12,8 @@ data:
   {{- $fromTable := dict }}
   {{- if $st.table }}
   {{- $_ := set $fromTable "SUPPORT_TABLE" $st.table }}
-  {{- $_ := set $fromTable "SUPPORT_COLUMNS" (include "release-copilot.supportColumns" $st) }}
+  {{- /* columns are optional: without them the app maps the table from its schema */}}
+  {{- if $st.columns }}{{- $_ := set $fromTable "SUPPORT_COLUMNS" (include "release-copilot.supportColumns" $st) }}{{- end }}
   {{- with $st.dateLabel }}{{- $_ := set $fromTable "SUPPORT_DATE_LABEL" . }}{{- end }}
   {{- with $st.statuses }}
   {{- with .failed }}{{- $_ := set $fromTable "SUPPORT_FAILED_STATUSES" (join "," .) }}{{- end }}

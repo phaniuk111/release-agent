@@ -20,9 +20,9 @@ from .config import (
     _names,
     _permission_hint,
     enabled,
-    parse_columns,
     parse_table,
 )
+from .discover import DEFAULT_DONE, DEFAULT_FAILED
 from .report import _to_date
 
 # ----- the queries ---------------------------------------------------------------
@@ -168,10 +168,16 @@ class Query:
                 f"WHERE r_key IN (SELECT r_key FROM ({self.items(self._on('cob'))}) WHERE r_state = 'failed') "
                 f"LIMIT {_HISTORY_CAP}")
 
+    def status_words(self) -> str:
+        """The distinct status words of the window — read when the failed/done
+        lists are not configured, so they come from the table itself."""
+        return (f"SELECT DISTINCT UPPER(TRIM(CAST({self.c['status']} AS STRING))) AS s FROM {self.t} "
+                f"WHERE {self.c['date']} BETWEEN @start AND @end LIMIT 200")
+
     def statements(self) -> dict[str, str]:
         """Every statement by name; the ones a column map cannot support are left out."""
-        out = {"dates": self.dates(), "counts": self.counts(), "failures": self.failures(),
-               "stuck": self.stuck(), "retries": self.retries()}
+        out = {"dates": self.dates(), "statuses": self.status_words(), "counts": self.counts(),
+               "failures": self.failures(), "stuck": self.stuck(), "retries": self.retries()}
         for name in ("values", "missing", "volume", "slowest", "history"):
             sql = getattr(self, name)()
             if sql:
@@ -238,6 +244,33 @@ def _run(table_ref: str, sql: str, params: dict[str, Any], budget: bq_guard.Budg
     return [{(k[2:] if k.startswith("r_") else k): v for k, v in dict(r).items()} for r in job.result()]
 
 
+def _statuses(table_ref: str, sql: str, params: dict[str, Any], budget: bq_guard.Budget,
+              errors: dict[str, str]) -> dict[str, Any]:
+    """The failed / done words: as configured, or — when neither list was set —
+    the defaults plus every word the table really uses, sorted by
+    discover.classify_status; a word it cannot place counts as still running."""
+    from .discover import classify_status, configured
+
+    failed, done = list(params["failed"]), list(params["done"])
+    if configured("support_failed_statuses", "support_done_statuses"):
+        return {"failed": failed, "done": done, "running": [], "how": "configured"}
+    try:
+        words = [str(r.get("s") or "") for r in _run(table_ref, sql, params, budget)]
+    except Exception as e:  # the defaults still work; say what was not read
+        errors["statuses"] = f"{type(e).__name__}: {str(e)[:200]}"
+        return {"failed": failed, "done": done, "running": [], "how": "defaults"}
+    running = []
+    for w in sorted(w for w in words if w):
+        kind = classify_status(w)
+        if kind == "failed" and w not in failed:
+            failed.append(w)
+        elif kind == "done" and w not in done:
+            done.append(w)
+        elif kind is None and w not in failed and w not in done:
+            running.append(w)
+    return {"failed": failed, "done": done, "running": running, "how": "discovered"}
+
+
 def _gather(table_ref: str, columns: dict[str, str], wanted: date | None, now: datetime) -> dict[str, Any]:
     """Run the statements — all but the first side by side — and return
     their rows by name, plus the dates, bytes and any section that failed.
@@ -248,13 +281,16 @@ def _gather(table_ref: str, columns: dict[str, str], wanted: date | None, now: d
     end = wanted or now.date()
     start = end - timedelta(days=max(1, int(settings.support_lookback_days)))
     params: dict[str, Any] = {"start": start, "end": end,
-                              "failed": [s.upper() for s in _names(settings.support_failed_statuses)],
-                              "done": [s.upper() for s in _names(settings.support_done_statuses)],
+                              "failed": [s.upper() for s in _names(settings.support_failed_statuses)
+                                         or DEFAULT_FAILED],
+                              "done": [s.upper() for s in _names(settings.support_done_statuses) or DEFAULT_DONE],
                               "stuck_before": now - timedelta(minutes=int(settings.support_stuck_minutes))}
     dates = sorted(d for d in (_to_date(r.get("d")) for r in _run(table_ref, sql["dates"], params, budget)) if d)
     cob = wanted or (dates[-1] if dates else None)
     out: dict[str, Any] = {"dates": dates, "cob": cob, "previous": None, "rows": {}, "errors": {},
                            "window": (start, end), "budget": budget}
+    out["statuses"] = _statuses(table_ref, sql["statuses"], params, budget, out["errors"])
+    params.update(failed=out["statuses"]["failed"], done=out["statuses"]["done"])
     if cob is None or cob not in dates:
         return out
     earlier = [d for d in dates if d < cob]
@@ -288,12 +324,21 @@ def check_config() -> dict[str, Any]:
     if not enabled():
         return _disabled()
     try:
+        from .discover import discovered, mapping
+
         table_ref = parse_table(settings.support_table)
-        columns, _labels = parse_columns(settings.support_columns)
+        columns, _labels, how = mapping()
     except ConfigError as e:
         return {"ok": False, "problems": [str(e)], "notes": [], "unmapped": []}
-    out: dict[str, Any] = {"table": table_ref.strip("`"), "roles": dict(columns), "problems": [], "notes": [],
-                           "unmapped": []}
+    out: dict[str, Any] = {"table": table_ref.strip("`"), "roles": dict(columns), "mapping": how,
+                           "problems": [], "notes": [], "unmapped": []}
+    if how == "discovered":
+        found = discovered(table_ref)
+        out["notes"].append("SUPPORT_COLUMNS is empty: the columns were matched from the table's schema "
+                            "— set SUPPORT_COLUMNS (or the chart's supportTable.columns) to change any of them.")
+        if found.get("confirm"):
+            out["notes"].append("check these groupings, they decide each failure's category: " + ", ".join(
+                f"{r} = {columns[r]}" for r in found["confirm"] if r in columns))
     try:
         table = _get_client().get_table(table_ref.strip("`"))
     except Exception as e:  # BigQuery's own errors carry the useful text

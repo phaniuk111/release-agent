@@ -34,8 +34,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ...config import settings
-from . import queries
-from .config import DIMENSIONS, ConfigError, _disabled, _names, _permission_hint, enabled, parse_columns, parse_table
+from . import discover, queries
+from .config import DIMENSIONS, ConfigError, _disabled, _names, _permission_hint, enabled, parse_table
 from .incidents import PriorityRules, incidents, parse_critical, parse_owners
 from .report import _to_date, build_report
 from .runbook import load as load_runbook
@@ -49,7 +49,7 @@ def triage(business_date: str = "") -> dict[str, Any]:
         return _disabled()
     try:
         table_ref = parse_table(settings.support_table)
-        columns, labels = parse_columns(settings.support_columns)
+        columns, labels, mapped = discover.mapping()
     except ConfigError as e:
         return {"ok": False, "error": str(e)}
     wanted = None
@@ -72,7 +72,11 @@ def triage(business_date: str = "") -> dict[str, Any]:
                           errors=got["errors"])
     start, end = got["window"]
     out = {"ok": True, **report,
-           "date_label": settings.support_date_label,
+           "date_label": discover.label_for_date(),
+           # how the table was read: the column map and the status words, configured
+           # or found in the table — what a POC with only SUPPORT_TABLE runs on
+           "mapping": {"how": mapped, "columns": dict(columns),
+                       "statuses": got.get("statuses") or {}},
            "labels": {r: labels[r] for r in DIMENSIONS if r in labels},
            "window": {"start": start.isoformat(), "end": end.isoformat()},
            "bytes_processed": got["budget"].bytes,

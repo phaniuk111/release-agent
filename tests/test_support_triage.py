@@ -82,7 +82,7 @@ def test_only_the_business_date_reads_error_text():
 def test_a_map_without_grouping_columns_leaves_out_what_needs_them():
     cols, _ = s_config.parse_columns("date=d,run_id=r,status=s")
     names = set(s_queries.Query(REF, cols).statements())
-    assert names == {"dates", "counts", "failures", "stuck", "retries"}
+    assert names == {"dates", "statuses", "counts", "failures", "stuck", "retries"}
     sql = s_queries.Query(REF, cols).items("d = @cob")
     assert "QUALIFY ROW_NUMBER() OVER (PARTITION BY r_date, r_run_id ORDER BY r_run_id DESC) = 1" in sql
 
@@ -278,7 +278,8 @@ def test_triage_runs_every_statement_and_returns_l1_incidents(monkeypatch, confi
     out = s_triage.triage("")
     assert out["ok"] is True and out["business_date"] == "2026-10-02" and out["previous_date"] == "2026-10-01"
     assert out["counts"] == {"items": 12, "failed": 3, "done": 9, "open": 0, "stuck": 0, "missing": 0, "recovered": 1}
-    assert set(seen) == {"dates", "counts", "failures", "values", "stuck", "retries", "missing", "history"}
+    assert set(seen) == {"dates", "statuses", "counts", "failures", "values", "stuck", "retries", "missing",
+                         "history"}
     assert seen["counts"] == {"cob", "failed", "done"} and seen["missing"] >= {"prev", "cob"}
     assert out["incidents"][0]["action"] == "wait" and out["labels"] == {"system": "feed", "unit": "acct"}
     assert out["queries"] == len(seen)
