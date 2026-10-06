@@ -172,13 +172,17 @@ _lock = threading.Lock()
 
 
 def _remember(key: str, compute):
+    """compute() once an hour per key — but only a good answer is kept: a
+    schema that could not be read (a missing table, no access yet) is read
+    again on the next call, not repeated for an hour after it is fixed."""
     with _lock:
         hit = _cache.get(key)
         if hit and time.time() - hit[0] < _TTL:
             return hit[1]
     value = compute()
-    with _lock:
-        _cache[key] = (time.time(), value)
+    if not (isinstance(value, dict) and value.get("error")):
+        with _lock:
+            _cache[key] = (time.time(), value)
     return value
 
 
