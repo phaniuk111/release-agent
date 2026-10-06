@@ -103,19 +103,28 @@ export function useAgentChat(scope: string) {
       setProgress(prev => ({ ...prev, [origin]: [] }));
       setInvestigations(prev => ({ ...prev, [origin]: null }));
       let tokenFromAgent: string | null = null;
-      append({ role: 'user', text: opts.display ?? text });
-      append({ role: 'agent', text: '' });
+      let approvalSeen = false;
+      // The Ask chat log holds the conversation only. A form's submission and
+      // its preview stay in the Ship / Queue screen that sent it; a preview the
+      // chat itself raised is confirmed there too, never in Ask.
+      const inLog = origin === 'chat';
+      if (inLog) {
+        append({ role: 'user', text: opts.display ?? text });
+        append({ role: 'agent', text: '' });
+      }
       let reply = '';
       try {
         await streamChat(apiBase, text, threadId, ev => {
           if (ev.type === 'token' && ev.content) {
             reply += ev.content;
             const current = reply;
-            setMessages(prev => {
-              const next = [...prev];
-              next[next.length - 1] = { ...next[next.length - 1], text: current };
-              return next;
-            });
+            if (inLog) {
+              setMessages(prev => {
+                const next = [...prev];
+                next[next.length - 1] = { ...next[next.length - 1], text: current };
+                return next;
+              });
+            }
             setReplies(prev => ({ ...prev, [origin]: current }));
           } else if (ev.type === 'progress' && ev.content) {
             const label = ev.content;
@@ -124,19 +133,15 @@ export function useAgentChat(scope: string) {
             const kind = interruptKind(ev.data);
             if (kind && 'approval' in kind) {
               setApproval({ message: kind.approval, origin });
-              append({ role: 'system', text: `⚠ Approval required — ${kind.approval}` });
-            } else {
-              if (kind && 'token' in kind) tokenFromAgent = kind.token;
-              append({
-                role: 'system',
-                text: '⚠ Confirmation required — reply with the exact CONFIRM token to proceed.',
-              });
+              approvalSeen = true;
+            } else if (kind && 'token' in kind) {
+              tokenFromAgent = kind.token;
             }
           } else if (ev.type === 'investigation' && ev.data && typeof ev.data === 'object') {
             const data = ev.data as Investigation;
             setInvestigations(prev => ({ ...prev, [origin]: data }));
           } else if (ev.type === 'error') {
-            append({ role: 'system', text: `Error: ${ev.content ?? 'unknown'}` });
+            if (inLog) append({ role: 'system', text: `Error: ${ev.content ?? 'unknown'}` });
             toastApi.post({
               title: 'Release Copilot error',
               description: String(ev.content ?? 'unknown error'),
@@ -149,8 +154,19 @@ export function useAgentChat(scope: string) {
         const match = reply.match(CONFIRM_TOKEN_RE);
         const token = tokenFromAgent ?? (match ? match[0].toUpperCase() : null);
         if (token) setPending({ token, origin });
+        if (inLog && (token || approvalSeen)) {
+          // The preview is shown — and answered — in Ship; Ask only says so.
+          const pointer = token
+            ? 'Preview ready — review it and confirm or cancel it in **Ship**.'
+            : 'Approval waiting — answer it in **Ship**.';
+          setMessages(prev => {
+            const next = [...prev];
+            next[next.length - 1] = { role: 'agent', text: pointer };
+            return next;
+          });
+        }
       } catch (e) {
-        append({ role: 'system', text: `Error: ${(e as Error).message}` });
+        if (inLog) append({ role: 'system', text: `Error: ${(e as Error).message}` });
         toastApi.post({
           title: 'Release Copilot request failed',
           description: (e as Error).message,
@@ -177,7 +193,6 @@ export function useAgentChat(scope: string) {
     const origin = pending?.origin ?? 'chat';
     setPending(null);
     void send('no', { origin, display: 'no' });
-    append({ role: 'system', text: '✖ Preview dismissed — nothing was deployed.' });
     toastApi.post({
       title: 'Not confirmed',
       description: 'The preview was dismissed — nothing was deployed.',

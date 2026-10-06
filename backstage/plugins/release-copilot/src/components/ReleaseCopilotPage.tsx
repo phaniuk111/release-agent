@@ -11,6 +11,7 @@ import { ReleasesTab } from './ReleasesTab';
 import { QueueTab } from './QueueTab';
 import { HistoryTab } from './HistoryTab';
 import { useAgentChat } from './useAgentChat';
+import { ActionBanner } from './ActionBanner';
 import { useSignedInAs, useUiConfig } from '../api';
 import { OPS_VIEWS, VIEW_LABEL, View, areaOf, resolve, visibleAreas } from './navigation';
 import { DEV_PORTAL as P } from '../look';
@@ -21,32 +22,24 @@ const useStyles = makeStyles(theme => ({
   tabsBar: { borderBottom: `1px solid ${theme.palette.divider}` },
   // The screens of the chosen area: a quiet row under the area tabs.
   views: { display: 'flex', flexWrap: 'wrap', gap: theme.spacing(1), marginTop: theme.spacing(2) },
-  // The portal's confirmation box: amber, on glass.
-  confirmBar: {
+  pointer: {
     display: 'flex',
     alignItems: 'center',
     gap: theme.spacing(1.5),
-    padding: theme.spacing(1.5, 2),
-    marginBottom: theme.spacing(2),
+    marginTop: theme.spacing(2),
+    padding: theme.spacing(1, 2),
     borderRadius: P.radius.card,
     border: `1px solid ${P.amberBorder}`,
-    background:
-      theme.palette.type === 'light' ? 'rgba(245, 158, 11, 0.08)' : P.amberSurface,
-    backdropFilter: 'blur(10px)',
-  },
-  confirmToken: {
-    fontFamily: P.mono,
-    fontWeight: 700,
-    color: P.amber,
   },
   spacer: { flex: 1 },
 }));
 
-// Screens whose submissions show their own result (and confirm) in place.
-const ORIGIN_OF_VIEW: Partial<Record<View, string>> = {
-  deploy: 'deploy',
-  dataflow: 'dataflow',
-  releases: 'releases',
+// What the banner calls a decision, by the screen (or the chat) that raised it.
+const WHAT_OF_ORIGIN: Record<string, string> = {
+  deploy: 'Deploy to CARE UAT',
+  dataflow: 'Deploy to DF UAT',
+  releases: 'CARE / DF release',
+  chat: 'From the chat',
 };
 
 export function ReleaseCopilotPage() {
@@ -83,14 +76,36 @@ export function ReleaseCopilotPage() {
   };
 
   const chat = useAgentChat('release');
-  const deploy = chat.resultFor('deploy');
-  const dataflow = chat.resultFor('dataflow');
   const sendFrom = (origin: string) => (text: string) => chat.send(text, { origin });
 
   // The page-level bar is for a token the current tab cannot confirm itself:
   // one raised in Chat, or one raised by a form tab you have since left.
-  const showBar =
-    chat.pending && !chat.busy && ORIGIN_OF_VIEW[current] !== chat.pending.origin;
+  // Previews and approvals are answered where the work is — Ship and Queue —
+  // never in Ask. A screen shows its own; one raised elsewhere (typed in Ask,
+  // or from a screen you have since left) waits on every Ship / Queue screen.
+  const actionArea = area.key !== 'ask';
+  // One banner, at the top of Ship and Queue, for every decision: a preview
+  // being built, a CONFIRM token, a yes/no approval — wherever it was raised.
+  const building = (['deploy', 'dataflow', 'releases'] as const).find(o => chat.resultFor(o).streaming);
+  const waitingOrigin = chat.approval?.origin ?? chat.pending?.origin ?? building ?? null;
+  const banner =
+    actionArea && waitingOrigin
+      ? {
+          what: chat.approval
+            ? chat.approval.message.includes('Promote')
+              ? 'Promotion'
+              : 'Approval'
+            : WHAT_OF_ORIGIN[waitingOrigin] ?? 'Preview',
+          token: chat.approval ? null : chat.pending?.token ?? null,
+          detail: chat.approval ? chat.approval.message : chat.resultFor(waitingOrigin).text,
+          building: !chat.approval && !chat.pending && !!building,
+          steps: chat.resultFor(waitingOrigin).progress,
+          onConfirm: chat.approval ? chat.approve : chat.confirm,
+          onCancel: chat.approval ? chat.reject : chat.dismiss,
+        }
+      : null;
+  // The screens show their form and the outcome; the decision is the banner's.
+  const forScreen = (origin: string) => ({ ...chat.resultFor(origin), pendingToken: null });
 
   return (
     <Page themeId="tool">
@@ -101,40 +116,7 @@ export function ReleaseCopilotPage() {
         {signedInAs && <HeaderLabel label="Signed in as" value={signedInAs} />}
       </Header>
       <Content>
-        {showBar && chat.pending && (
-          <Box className={classes.confirmBar} data-testid="confirm-bar">
-            <Typography>
-              Preview ready — confirm to release. Token:{' '}
-              <span className={classes.confirmToken}>{chat.pending.token}</span>
-            </Typography>
-            <span className={classes.spacer} />
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={chat.confirm}
-              startIcon={<span>🚀</span>}
-            >
-              Confirm &amp; release
-            </Button>
-            <Button variant="outlined" onClick={chat.dismiss}>
-              Cancel
-            </Button>
-          </Box>
-        )}
-        {chat.approval && !chat.busy && (
-          <Box className={classes.confirmBar} data-testid="approval-bar">
-            <Typography>
-              <strong>Approval required</strong> — {chat.approval.message.replace(/\*\*/g, '')}
-            </Typography>
-            <span className={classes.spacer} />
-            <Button variant="contained" color="primary" onClick={chat.approve}>
-              Approve
-            </Button>
-            <Button variant="outlined" onClick={chat.reject}>
-              Reject
-            </Button>
-          </Box>
-        )}
+        {banner && <ActionBanner {...banner} />}
         <Tabs
           className={classes.tabsBar}
           value={areas.indexOf(area)}
@@ -161,6 +143,17 @@ export function ReleaseCopilotPage() {
             ))}
           </Box>
         )}
+        {!actionArea && (chat.pending || chat.approval) && !chat.busy && (
+          <Box className={classes.pointer} data-testid="waiting-pointer">
+            <Typography variant="body2">
+              {chat.approval ? 'An approval is waiting for you.' : 'A preview is waiting for your confirmation.'}
+            </Typography>
+            <span className={classes.spacer} />
+            <Button size="small" variant="outlined" onClick={() => go('ship')}>
+              Open Ship
+            </Button>
+          </Box>
+        )}
         <Box mt={3}>
           {current === 'chat' && (
             <ChatGrid messages={chat.messages} busy={chat.busy} onSend={sendFrom('chat')} />
@@ -169,7 +162,7 @@ export function ReleaseCopilotPage() {
             <DeployTab
               onSend={sendFrom('deploy')}
               busy={chat.busy}
-              result={deploy}
+              result={forScreen('deploy')}
               onConfirm={chat.confirm}
               onCancel={chat.dismiss}
             />
@@ -178,7 +171,7 @@ export function ReleaseCopilotPage() {
             <DataflowTab
               onSend={sendFrom('dataflow')}
               busy={chat.busy}
-              result={dataflow}
+              result={forScreen('dataflow')}
               onConfirm={chat.confirm}
               onCancel={chat.dismiss}
             />
@@ -187,7 +180,7 @@ export function ReleaseCopilotPage() {
             <ReleasesTab
               onSend={sendFrom('releases')}
               busy={chat.busy}
-              result={chat.resultFor('releases')}
+              result={forScreen('releases')}
               onConfirm={chat.confirm}
               onCancel={chat.dismiss}
               llm={ui.llm}
