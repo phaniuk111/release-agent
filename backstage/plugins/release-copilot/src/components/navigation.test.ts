@@ -1,12 +1,14 @@
-import { AREAS, OPS_AREAS, OPS_VIEWS, areaOf, resolve, visibleAreas } from './navigation';
+import { AREAS, OPS_AREAS, OPS_VIEWS, areaOf, opsViewFor, resolve, visibleAreas } from './navigation';
 
 describe('navigation', () => {
   it('splits release work and operations into two pages, every screen once', () => {
-    expect(AREAS.map(a => a.label)).toEqual(['Ask', 'Ship', 'Queue']);
+    expect(AREAS.map(a => a.label)).toEqual(['Ship', 'Queue']);
+    expect(AREAS[0].views).toContain('promote');
     expect(OPS_VIEWS).toEqual(['support', 'monitoring', 'insights']);
     const all = [...AREAS, ...OPS_AREAS].flatMap(a => a.views);
     expect(new Set(all).size).toBe(all.length);
     expect(all).toHaveLength(9);
+    expect(all).not.toContain('chat');   // the chat lives in Insights now
   });
 
   it('hides a preview screen from a caller outside the preview, and an emptied area', () => {
@@ -24,11 +26,18 @@ describe('navigation', () => {
     expect(resolve(areas, 'queue', null).view).toBe('queue');
     // ?tab=history was a link to the screen itself
     expect(resolve(areas, 'history', null)).toMatchObject({ area: { key: 'queue' }, view: 'history' });
-    expect(resolve(areas, 'nope', 'nope')).toMatchObject({ area: { key: 'ask' }, view: 'chat' });
+    expect(resolve(areas, 'nope', 'nope')).toMatchObject({ area: { key: 'ship' }, view: 'deploy' });
     const ops = visibleAreas(['Monitoring'], OPS_AREAS);
     expect(resolve(ops, null, 'support').view).toBe('support');
     // a hidden screen falls back to its area's first one
     expect(resolve(ops, 'operate', 'monitoring').view).toBe('support');
+  });
+
+  it('sends old links to Operations: its screens, and the chat to Insights', () => {
+    expect(opsViewFor('support', null)).toBe('support');
+    expect(opsViewFor('ask', null)).toBe('insights');
+    expect(opsViewFor(null, 'chat')).toBe('insights');
+    expect(opsViewFor('ship', 'deploy')).toBeNull();
   });
 
   it('finds the area of a screen', () => {

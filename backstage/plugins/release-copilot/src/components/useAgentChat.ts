@@ -74,7 +74,10 @@ export type SendOptions = {
  * ITS submission — the preview, the CONFIRM token, the outcome — right where
  * the person is, instead of sending them to the Chat tab to find it.
  */
-export function useAgentChat(scope: string) {
+export function useAgentChat(scope: string, opts: { answerIn?: string } = {}) {
+  // Where a preview the chat raises is answered: Ship on Release Copilot, the
+  // banner at the top of the page elsewhere.
+  const answerIn = opts.answerIn ?? '**Ship**';
   const apiBase = useApiBase();
   const toastApi = useApi(toastApiRef);
   const [threadId] = useState(() => threadIdFor(scope));
@@ -161,8 +164,8 @@ export function useAgentChat(scope: string) {
         if (inLog && (token || approvalSeen)) {
           // The preview is shown — and answered — in Ship; Ask only says so.
           const pointer = token
-            ? 'Preview ready — review it and confirm or cancel it in **Ship**.'
-            : 'Approval waiting — answer it in **Ship**.';
+            ? `Preview ready — review it and confirm or cancel it in ${answerIn}.`
+            : `Approval waiting — answer it in ${answerIn}.`;
           setMessages(prev => {
             const next = [...prev];
             next[next.length - 1] = { role: 'agent', text: pointer };
@@ -183,7 +186,7 @@ export function useAgentChat(scope: string) {
         setAnswering(null);
       }
     },
-    [apiBase, threadId, append, toastApi],
+    [apiBase, threadId, append, toastApi, answerIn],
   );
 
   /** Send the pending token; the outcome lands where the preview was. */

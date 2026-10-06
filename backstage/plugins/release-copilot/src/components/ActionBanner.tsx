@@ -125,3 +125,54 @@ export function ActionBanner(props: BannerProps) {
     </Box>
   );
 }
+
+type ChatState = {
+  pending: { token: string; origin: string } | null;
+  approval: { message: string; origin: string } | null;
+  answering: 'go' | 'stop' | null;
+  confirm: () => void;
+  dismiss: () => void;
+  approve: () => void;
+  reject: () => void;
+  resultFor: (origin: string) => { text: string; streaming: boolean; progress: string[] };
+};
+
+/**
+ * What the banner shows for a page's conversation, or null for nothing to decide.
+ *   previewOrigins  screens whose submission BUILDS a preview (deploy, release …):
+ *                   the banner appears while it is built
+ *   what / doing    how to name a decision, and what is happening once answered,
+ *                   by the screen that raised it
+ * Any other origin (a promotion, the chat) shows only once it asks something,
+ * and while its answer is carried out.
+ */
+export function bannerFor(
+  chat: ChatState,
+  opts: { previewOrigins: string[]; answerOrigins: string[]; what: Record<string, string>; doing: Record<string, string> },
+): BannerProps | null {
+  const building =
+    opts.previewOrigins.find(o => chat.resultFor(o).streaming) ??
+    (chat.answering ? opts.answerOrigins.find(o => chat.resultFor(o).streaming) : undefined);
+  const origin = chat.approval?.origin ?? chat.pending?.origin ?? building ?? null;
+  if (!origin) return null;
+  const idle = !chat.approval && !chat.pending;
+  return {
+    what: chat.approval
+      ? chat.approval.message.includes('Promote')
+        ? 'Promotion'
+        : 'Approval'
+      : opts.what[origin] ?? 'Preview',
+    token: chat.approval ? null : chat.pending?.token ?? null,
+    detail: chat.approval ? chat.approval.message : chat.resultFor(origin).text,
+    building: idle && !!building && !chat.answering,
+    applying:
+      idle && building && chat.answering
+        ? chat.answering === 'stop'
+          ? 'Cancelling — nothing will change…'
+          : opts.doing[origin] ?? 'Carrying it out…'
+        : null,
+    steps: chat.resultFor(origin).progress,
+    onConfirm: chat.approval ? chat.approve : chat.confirm,
+    onCancel: chat.approval ? chat.reject : chat.dismiss,
+  };
+}
