@@ -57,6 +57,8 @@ export type BannerProps = {
   detail: string;
   /** Still being built: show the steps, hide the buttons. */
   building?: boolean;
+  /** What is happening after an answer: "Deploying to CARE UAT…", "Cancelling — nothing will change…". */
+  applying?: string | null;
   steps?: string[];
   onConfirm: () => void;
   onCancel: () => void;
@@ -71,7 +73,8 @@ export type BannerProps = {
 export function ActionBanner(props: BannerProps) {
   const classes = useStyles();
   const [open, setOpen] = useState(false);
-  const { what, token, detail, building, steps = [] } = props;
+  const { what, token, detail, applying, steps = [] } = props;
+  const building = props.building || applying;
   const approval = !token;
   return (
     <Box className={classes.banner} data-testid="action-banner" role="region" aria-label={`${what} — waiting for you`}>
@@ -81,7 +84,13 @@ export function ActionBanner(props: BannerProps) {
         </span>
         <Box>
           <Typography className={classes.what}>
-            {building ? `${what} — building the preview…` : approval ? `${what} — approval needed` : `${what} — ready to confirm`}
+            {applying
+              ? applying
+              : building
+                ? `${what} — building the preview…`
+                : approval
+                  ? `${what} — approval needed`
+                  : `${what} — ready to confirm`}
           </Typography>
           {!building && summaryOf(detail) && (
             <Typography className={classes.summary}>{summaryOf(detail)}</Typography>

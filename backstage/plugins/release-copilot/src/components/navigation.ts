@@ -86,9 +86,12 @@ export function resolve(
 ): { area: Area; view: View } {
   const t = (tab ?? '').toLowerCase();
   const v = (view ?? '').toLowerCase();
+  // An area named by its key wins: "queue" is both the Queue area and its
+  // first screen, and ?tab=queue&view=history must open the history.
+  const byKey = areas.find(a => a.key === t);
   // The old links named the screen itself: ?tab=support.
-  const legacy = areas.find(a => (a.views as string[]).includes(t));
-  const area = areas.find(a => a.key === t) ?? legacy ?? areas[0];
+  const legacy = byKey ? undefined : areas.find(a => (a.views as string[]).includes(t));
+  const area = byKey ?? legacy ?? areas[0];
   const wanted = (legacy ? t : v) as View;
   return { area, view: area.views.includes(wanted) ? wanted : area.views[0] };
 }

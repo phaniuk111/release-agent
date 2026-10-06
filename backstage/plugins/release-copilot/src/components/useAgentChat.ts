@@ -64,6 +64,8 @@ export type SendOptions = {
   origin?: string;
   /** What the chat log shows, when it differs from what is sent. */
   display?: string;
+  /** This turn answers a preview or an approval: going ahead, or not. */
+  answer?: 'go' | 'stop';
 };
 
 /**
@@ -82,6 +84,7 @@ export function useAgentChat(scope: string) {
   const [replies, setReplies] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<{ token: string; origin: string } | null>(null);
   const [approval, setApproval] = useState<Approval | null>(null);
+  const [answering, setAnswering] = useState<'go' | 'stop' | null>(null);
   const [progress, setProgress] = useState<Record<string, string[]>>({});
   const [investigations, setInvestigations] = useState<Record<string, Investigation | null>>({});
   const busyRef = useRef(false);
@@ -97,6 +100,7 @@ export function useAgentChat(scope: string) {
       busyRef.current = true;
       setBusy(true);
       setBusyOrigin(origin);
+      setAnswering(opts.answer ?? null);
       setPending(null);
       setApproval(null);
       setReplies(prev => ({ ...prev, [origin]: '' }));
@@ -176,6 +180,7 @@ export function useAgentChat(scope: string) {
         busyRef.current = false;
         setBusy(false);
         setBusyOrigin(null);
+        setAnswering(null);
       }
     },
     [apiBase, threadId, append, toastApi],
@@ -183,7 +188,7 @@ export function useAgentChat(scope: string) {
 
   /** Send the pending token; the outcome lands where the preview was. */
   const confirm = useCallback(() => {
-    if (pending) void send(pending.token, { origin: pending.origin });
+    if (pending) void send(pending.token, { origin: pending.origin, answer: 'go' });
   }, [pending, send]);
 
   // Cancelling a preview answers it: the agent holds a pending token until it
@@ -192,7 +197,7 @@ export function useAgentChat(scope: string) {
   const dismiss = useCallback(() => {
     const origin = pending?.origin ?? 'chat';
     setPending(null);
-    void send('no', { origin, display: 'no' });
+    void send('no', { origin, display: 'no', answer: 'stop' });
     toastApi.post({
       title: 'Not confirmed',
       description: 'The preview was dismissed — nothing was deployed.',
@@ -207,7 +212,7 @@ export function useAgentChat(scope: string) {
       if (!approval) return;
       const { origin } = approval;
       setApproval(null);
-      void send(yes ? 'yes' : 'no', { origin });
+      void send(yes ? 'yes' : 'no', { origin, answer: yes ? 'go' : 'stop' });
     },
     [approval, send],
   );
@@ -220,6 +225,8 @@ export function useAgentChat(scope: string) {
     dismiss,
     pending,
     approval,
+    /** The turn in flight answers a preview or approval: 'go' carries it out, 'stop' cancels it. */
+    answering,
     approve: () => answerApproval(true),
     reject: () => answerApproval(false),
     /** The reply to the latest turn a tab started, and whether it is still streaming. */

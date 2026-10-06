@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useRouteRef } from '@backstage/frontend-plugin-api';
 import { operationsRouteRef } from '../plugin';
@@ -12,6 +12,7 @@ import { QueueTab } from './QueueTab';
 import { HistoryTab } from './HistoryTab';
 import { useAgentChat } from './useAgentChat';
 import { ActionBanner } from './ActionBanner';
+import { AgentMarkdown } from './AgentMarkdown';
 import { useSignedInAs, useUiConfig } from '../api';
 import { OPS_VIEWS, VIEW_LABEL, View, areaOf, resolve, visibleAreas } from './navigation';
 import { DEV_PORTAL as P } from '../look';
@@ -32,7 +33,25 @@ const useStyles = makeStyles(theme => ({
     border: `1px solid ${P.amberBorder}`,
   },
   spacer: { flex: 1 },
+  done: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: theme.spacing(1.5),
+    marginBottom: theme.spacing(2),
+    padding: theme.spacing(1.5, 2),
+    borderRadius: P.radius.card,
+    border: '1px solid rgba(52, 211, 153, 0.45)',
+    background: theme.palette.type === 'light' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(6, 40, 30, 0.85)',
+  },
 }));
+
+// What the banner says while a confirmed decision is carried out.
+const DOING_OF_ORIGIN: Record<string, string> = {
+  deploy: 'Deploying to CARE UAT — merging into SIT…',
+  dataflow: 'Dispatching the Dataflow deploy…',
+  releases: 'Creating the release…',
+  chat: 'Carrying it out…',
+};
 
 // What the banner calls a decision, by the screen (or the chat) that raised it.
 const WHAT_OF_ORIGIN: Record<string, string> = {
@@ -86,7 +105,13 @@ export function ReleaseCopilotPage() {
   const actionArea = area.key !== 'ask';
   // One banner, at the top of Ship and Queue, for every decision: a preview
   // being built, a CONFIRM token, a yes/no approval — wherever it was raised.
-  const building = (['deploy', 'dataflow', 'releases'] as const).find(o => chat.resultFor(o).streaming);
+  const building =
+    (['deploy', 'dataflow', 'releases'] as const).find(o => chat.resultFor(o).streaming) ??
+    // an answer to something the chat raised (a promotion) runs as a chat turn
+    (chat.answering && chat.resultFor('chat').streaming ? 'chat' : undefined);
+  // What the last approval was about, so the banner can say "Promoting…" while it runs.
+  const lastApproval = useRef('');
+  if (chat.approval) lastApproval.current = chat.approval.message;
   const waitingOrigin = chat.approval?.origin ?? chat.pending?.origin ?? building ?? null;
   const banner =
     actionArea && waitingOrigin
@@ -98,12 +123,33 @@ export function ReleaseCopilotPage() {
             : WHAT_OF_ORIGIN[waitingOrigin] ?? 'Preview',
           token: chat.approval ? null : chat.pending?.token ?? null,
           detail: chat.approval ? chat.approval.message : chat.resultFor(waitingOrigin).text,
-          building: !chat.approval && !chat.pending && !!building,
+          building: !chat.approval && !chat.pending && !!building && !chat.answering,
+          applying:
+            !chat.approval && !chat.pending && !!building && chat.answering
+              ? chat.answering === 'stop'
+                ? 'Cancelling — nothing will change…'
+                : waitingOrigin === 'chat' && lastApproval.current.includes('Promote')
+                  ? 'Promoting — copying the release files and merging…'
+                  : DOING_OF_ORIGIN[waitingOrigin] ?? 'Carrying it out…'
+              : null,
           steps: chat.resultFor(waitingOrigin).progress,
           onConfirm: chat.approval ? chat.approve : chat.confirm,
           onCancel: chat.approval ? chat.reject : chat.dismiss,
         }
       : null;
+  // The outcome of something the CHAT raised (a promotion) has no screen of its
+  // own: when its answer finishes, say how it went here, where it was answered.
+  const [done, setDone] = useState<{ what: string; text: string } | null>(null);
+  const answeringChat = useRef<string | null>(null);
+  useEffect(() => {
+    if (chat.answering === 'go' && building === 'chat') {
+      answeringChat.current = banner?.what === 'Promotion' || lastApproval.current.includes('Promote') ? 'Promotion' : 'Done';
+    } else if (!chat.busy && answeringChat.current) {
+      setDone({ what: answeringChat.current, text: chat.resultFor('chat').text });
+      answeringChat.current = null;
+    }
+  }, [chat.answering, chat.busy]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // The screens show their form and the outcome; the decision is the banner's.
   const forScreen = (origin: string) => ({ ...chat.resultFor(origin), pendingToken: null });
 
@@ -117,6 +163,17 @@ export function ReleaseCopilotPage() {
       </Header>
       <Content>
         {banner && <ActionBanner {...banner} />}
+        {!banner && done && actionArea && (
+          <Box className={classes.done} data-testid="done-note">
+            <Box flex={1}>
+              <Typography variant="subtitle2">✓ {done.what} — done</Typography>
+              <AgentMarkdown text={done.text} />
+            </Box>
+            <Button size="small" onClick={() => setDone(null)}>
+              Dismiss
+            </Button>
+          </Box>
+        )}
         <Tabs
           className={classes.tabsBar}
           value={areas.indexOf(area)}

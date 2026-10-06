@@ -19,6 +19,9 @@ describe('navigation', () => {
     const areas = visibleAreas([]);
     expect(resolve(areas, 'ship', 'dataflow')).toMatchObject({ area: { key: 'ship' }, view: 'dataflow' });
     expect(resolve(areas, 'ship', null)).toMatchObject({ view: 'deploy' });
+    // "queue" is an area AND a screen: the area wins, so its view= is honoured
+    expect(resolve(areas, 'queue', 'history')).toMatchObject({ area: { key: 'queue' }, view: 'history' });
+    expect(resolve(areas, 'queue', null).view).toBe('queue');
     // ?tab=history was a link to the screen itself
     expect(resolve(areas, 'history', null)).toMatchObject({ area: { key: 'queue' }, view: 'history' });
     expect(resolve(areas, 'nope', 'nope')).toMatchObject({ area: { key: 'ask' }, view: 'chat' });
