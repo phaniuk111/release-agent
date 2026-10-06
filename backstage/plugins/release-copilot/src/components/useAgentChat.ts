@@ -7,6 +7,37 @@ export type ChatMessage = { role: 'user' | 'agent' | 'system'; text: string };
 
 const CONFIRM_TOKEN_RE = /CONFIRM-[A-F0-9]{4,10}\b/i;
 
+/** A paused yes/no approval (a terminal promotion): the agent's own question. */
+export type Approval = { message: string; origin: string };
+
+/** What an Investigate answer reports when it is complete (feedback needs it). */
+export type Investigation = {
+  business_date: string;
+  incident_id: string;
+  title?: string;
+  model?: string;
+  model_calls?: number;
+  seconds?: number;
+  shared?: boolean;
+};
+
+/**
+ * The agent pauses in two ways, never mixed (as the portal's chat.js tells
+ * them apart): a deploy/release preview carries an exact CONFIRM token; a
+ * high-impact operation asks yes/no — no token, it names the function or says
+ * 'Reply "yes"'. Pasting a token into a yes/no would reject it.
+ */
+export function interruptKind(data: unknown): { token: string } | { approval: string } | null {
+  const d = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const token = typeof d.token === 'string' ? d.token : '';
+  if (token) return { token: token.toUpperCase() };
+  const said = `${d.action ?? ''} ${d.message ?? ''}`.toLowerCase();
+  if (d.type !== 'budget_confirmation' && (d.function || said.includes('"yes"'))) {
+    return { approval: String(d.message || 'Approve this operation?') };
+  }
+  return null;
+}
+
 /**
  * One conversation per page, as in the portal.
  *
@@ -50,6 +81,9 @@ export function useAgentChat(scope: string) {
   const [busyOrigin, setBusyOrigin] = useState<string | null>(null);
   const [replies, setReplies] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<{ token: string; origin: string } | null>(null);
+  const [approval, setApproval] = useState<Approval | null>(null);
+  const [progress, setProgress] = useState<Record<string, string[]>>({});
+  const [investigations, setInvestigations] = useState<Record<string, Investigation | null>>({});
   const busyRef = useRef(false);
 
   const append = useCallback((msg: ChatMessage) => {
@@ -64,7 +98,11 @@ export function useAgentChat(scope: string) {
       setBusy(true);
       setBusyOrigin(origin);
       setPending(null);
+      setApproval(null);
       setReplies(prev => ({ ...prev, [origin]: '' }));
+      setProgress(prev => ({ ...prev, [origin]: [] }));
+      setInvestigations(prev => ({ ...prev, [origin]: null }));
+      let tokenFromAgent: string | null = null;
       append({ role: 'user', text: opts.display ?? text });
       append({ role: 'agent', text: '' });
       let reply = '';
@@ -79,11 +117,24 @@ export function useAgentChat(scope: string) {
               return next;
             });
             setReplies(prev => ({ ...prev, [origin]: current }));
+          } else if (ev.type === 'progress' && ev.content) {
+            const label = ev.content;
+            setProgress(prev => ({ ...prev, [origin]: [...(prev[origin] ?? []), label] }));
           } else if (ev.type === 'interrupt') {
-            append({
-              role: 'system',
-              text: '⚠ Confirmation required — reply with the exact CONFIRM token to proceed.',
-            });
+            const kind = interruptKind(ev.data);
+            if (kind && 'approval' in kind) {
+              setApproval({ message: kind.approval, origin });
+              append({ role: 'system', text: `⚠ Approval required — ${kind.approval}` });
+            } else {
+              if (kind && 'token' in kind) tokenFromAgent = kind.token;
+              append({
+                role: 'system',
+                text: '⚠ Confirmation required — reply with the exact CONFIRM token to proceed.',
+              });
+            }
+          } else if (ev.type === 'investigation' && ev.data && typeof ev.data === 'object') {
+            const data = ev.data as Investigation;
+            setInvestigations(prev => ({ ...prev, [origin]: data }));
           } else if (ev.type === 'error') {
             append({ role: 'system', text: `Error: ${ev.content ?? 'unknown'}` });
             toastApi.post({
@@ -96,7 +147,8 @@ export function useAgentChat(scope: string) {
         // A reply that ends asking for a CONFIRM token can be confirmed from
         // the tab that asked for it.
         const match = reply.match(CONFIRM_TOKEN_RE);
-        if (match) setPending({ token: match[0].toUpperCase(), origin });
+        const token = tokenFromAgent ?? (match ? match[0].toUpperCase() : null);
+        if (token) setPending({ token, origin });
       } catch (e) {
         append({ role: 'system', text: `Error: ${(e as Error).message}` });
         toastApi.post({
@@ -118,8 +170,13 @@ export function useAgentChat(scope: string) {
     if (pending) void send(pending.token, { origin: pending.origin });
   }, [pending, send]);
 
+  // Cancelling a preview answers it: the agent holds a pending token until it
+  // hears the token or "no" — anything else is only a reminder that it waits —
+  // so a cancel that stayed on this page would leave it waiting.
   const dismiss = useCallback(() => {
+    const origin = pending?.origin ?? 'chat';
     setPending(null);
+    void send('no', { origin, display: 'no' });
     append({ role: 'system', text: '✖ Preview dismissed — nothing was deployed.' });
     toastApi.post({
       title: 'Not confirmed',
@@ -127,7 +184,18 @@ export function useAgentChat(scope: string) {
       status: 'info',
       timeout: 5000,
     });
-  }, [append, toastApi]);
+  }, [append, toastApi, pending, send]);
+
+  /** Answer a paused yes/no approval; the outcome lands in the tab that asked. */
+  const answerApproval = useCallback(
+    (yes: boolean) => {
+      if (!approval) return;
+      const { origin } = approval;
+      setApproval(null);
+      void send(yes ? 'yes' : 'no', { origin });
+    },
+    [approval, send],
+  );
 
   return {
     messages,
@@ -136,11 +204,17 @@ export function useAgentChat(scope: string) {
     confirm,
     dismiss,
     pending,
+    approval,
+    approve: () => answerApproval(true),
+    reject: () => answerApproval(false),
     /** The reply to the latest turn a tab started, and whether it is still streaming. */
     resultFor: (origin: string) => ({
       text: replies[origin] ?? '',
       streaming: busyOrigin === origin,
       pendingToken: pending?.origin === origin ? pending.token : null,
+      progress: progress[origin] ?? [],
     }),
+    /** The complete Investigate answer a tab got, for its "Was this right?". */
+    investigationFor: (origin: string) => investigations[origin] ?? null,
   };
 }

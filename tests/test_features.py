@@ -118,3 +118,14 @@ def test_the_bq_cost_report_is_preview_by_default():
 def test_a_refusal_names_the_feature_like_a_person_would():
     assert features.refusal("monitoring") == "Monitoring is not available yet — it is a preview feature."
     assert features.refusal("bq-cost") == "The BigQuery cost report is not available yet — it is a preview feature."
+
+
+def test_a_front_end_not_served_by_the_app_reads_the_same_ui_flags(monkeypatch):
+    """The Backstage plugin has no inline window.PORTAL_UI: /api/ui-config gives
+    it exactly what the portal page is given, for the caller asking."""
+    monkeypatch.setattr(APP, "_caller", lambda request: TESTER)
+    assert APP.ui_config(SimpleNamespace(headers={})) == features.ui_config(TESTER)
+    monkeypatch.setattr(APP, "_caller", lambda request: OTHER)
+    assert APP.ui_config(SimpleNamespace(headers={}))["hiddenGroups"] == ["Check"]
+    monkeypatch.setattr(features.settings, "llm_enabled", False, raising=False)
+    assert APP.ui_config(SimpleNamespace(headers={}))["llm"] is False

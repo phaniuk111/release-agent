@@ -1,5 +1,6 @@
 /** Client helpers for the release-copilot service via the Backstage proxy. */
 
+import { useEffect, useState } from 'react';
 import { useApi, configApiRef } from '@backstage/core-plugin-api';
 
 /**
@@ -12,8 +13,43 @@ export function useApiBase(): string {
   return `${config.getString('backend.baseUrl')}/api/proxy/release-copilot`;
 }
 
+/** What the agent says this caller's view needs — the portal's window.PORTAL_UI. */
+export type UiConfig = {
+  /** A model is on: Investigate, Ask why and drafting are offered. */
+  llm: boolean;
+  /** Pill groups this caller does not see (preview features they are not in). */
+  hiddenGroups: string[];
+  previewGroups: string[];
+  preview: boolean;
+};
+
+const UI_DEFAULTS: UiConfig = { llm: true, hiddenGroups: [], previewGroups: [], preview: false };
+
+/**
+ * /api/ui-config, read once per page. Until it answers (or if it cannot), the
+ * page renders as if a model is on and nothing is preview — the agent refuses a
+ * preview feature server-side anyway, so a wrong guess shows a refusal, never
+ * data the caller may not see.
+ */
+export function useUiConfig(): UiConfig {
+  const base = useApiBase();
+  const [ui, setUi] = useState<UiConfig>(UI_DEFAULTS);
+  useEffect(() => {
+    let live = true;
+    apiGet<Partial<UiConfig>>(base, '/api/ui-config')
+      .then(got => {
+        if (live) setUi({ ...UI_DEFAULTS, ...got });
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [base]);
+  return ui;
+}
+
 export type ChatEvent = {
-  type: 'token' | 'progress' | 'interrupt' | 'confirmation' | 'done' | 'error';
+  type: 'token' | 'progress' | 'interrupt' | 'investigation' | 'confirmation' | 'done' | 'error';
   content?: string;
   data?: unknown;
   mutated?: boolean;

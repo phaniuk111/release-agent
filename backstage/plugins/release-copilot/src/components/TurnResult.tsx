@@ -42,6 +42,7 @@ const useStyles = makeStyles(theme => {
     },
     token: { fontFamily: P.mono, fontWeight: 700, color: dark ? P.amber : '#b45309' },
     spacer: { flex: 1 },
+    steps: { fontSize: '0.75rem', opacity: 0.7, marginBottom: theme.spacing(1), lineHeight: 1.5 },
   };
 });
 
@@ -52,15 +53,28 @@ export function TurnResult(props: {
   onConfirm: () => void;
   onCancel: () => void;
   confirmLabel?: string;
+  /** What the agent is doing, one line per tool call (the portal's step list). */
+  progress?: string[];
 }) {
   const classes = useStyles();
   const { text, streaming, pendingToken, onConfirm, onCancel } = props;
+  const steps = props.progress ?? [];
   if (!text && !streaming) return null;
   return (
     <Box className={classes.panel} data-testid="turn-result">
       <Typography className={classes.label}>
         {streaming ? 'Agent is replying…' : 'Result'}
       </Typography>
+      {streaming && steps.length > 0 && (
+        <div className={classes.steps} data-testid="turn-progress">
+          {steps.map((step, i) => (
+            <div key={`${i}-${step}`}>
+              {i === steps.length - 1 ? '… ' : '✓ '}
+              {step}
+            </div>
+          ))}
+        </div>
+      )}
       <div className={classes.body}>
         {streaming && (
           <span className={classes.streaming}>{text || 'Preparing the preview…'}▌</span>

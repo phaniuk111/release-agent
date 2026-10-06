@@ -162,6 +162,16 @@ def whoami(request: Request):
     return {"signed_in": False}
 
 
+@app.get("/api/ui-config")
+def ui_config(request: Request):
+    """What the page needs to render this caller's view — the same flags the
+    portal's page gets inline as window.PORTAL_UI (whether a model is on, which
+    pill groups are preview, whether this caller sees them). A front end that
+    is not served by this app (the Backstage plugin) has no inline script, so
+    it reads them here. No secrets, no emails."""
+    return features.ui_config(_caller(request))
+
+
 @app.get("/", response_class=HTMLResponse)
 async def chat_page(request: Request):
     """Serve a clean, self-contained chat UI."""
