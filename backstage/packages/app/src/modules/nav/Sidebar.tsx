@@ -33,8 +33,9 @@ export const SidebarContent = NavContentBlueprint.make({
           </SidebarGroup>
           <SidebarDivider />
           <SidebarGroup label="Menu" icon={<MenuIcon />}>
-            {nav.take('page:release-copilot')}
             {nav.take('page:home')}
+            {nav.take('page:release-copilot')}
+            {nav.take('page:release-copilot/operations')}
             {nav.take('page:release-copilot/onboarding')}
             {nav.take('page:catalog')}
             {nav.take('page:scaffolder')}
