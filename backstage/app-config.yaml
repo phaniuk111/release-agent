@@ -266,6 +266,11 @@ proxy:
       # Local PoC only: page calls these endpoints without Backstage tokens.
       credentials: dangerously-allow-unauthenticated
       allowedMethods: ['GET', 'POST']
+      # The mesh's verified identity travels on to the agent, which checks the
+      # same token itself (identity.py) — so a commit names the person who
+      # asked, not the portal. Must match auth.providers.rctoken.header and the
+      # agent's IDENTITY_HEADER; harmless where there is no mesh.
+      allowedHeaders: ['x-rctoken']
       pathRewrite:
         '^/api/proxy/release-copilot': ''
 

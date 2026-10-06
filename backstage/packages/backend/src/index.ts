@@ -7,6 +7,7 @@
  */
 
 import { createBackend } from '@backstage/backend-defaults';
+import { rcTokenAuthModule } from './rctokenAuth';
 
 const backend = createBackend();
 
@@ -27,6 +28,9 @@ backend.add(import('@backstage/plugin-techdocs-backend'));
 backend.add(import('@backstage/plugin-auth-backend'));
 // See https://backstage.io/docs/backend-system/building-backends/migrating#the-auth-plugin
 backend.add(import('@backstage/plugin-auth-backend-module-guest-provider'));
+// Sign-in from the mesh's verified identity (auth.providers.rctoken); inert
+// until that provider is configured.
+backend.add(rcTokenAuthModule);
 // See https://backstage.io/docs/auth/guest/provider
 
 // catalog plugin

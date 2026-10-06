@@ -6,6 +6,7 @@ import githubActionsModule from './modules/githubActions';
 import searchHotkeyModule from './modules/searchHotkey';
 import entityCardsModule from './modules/entityCards';
 import { brandThemeModule } from './modules/theme';
+import { signInModule } from './modules/signIn';
 import releaseCopilotPlugin from '@internal/plugin-release-copilot';
 
 export default createApp({
@@ -18,5 +19,6 @@ export default createApp({
     searchHotkeyModule,
     entityCardsModule,
     brandThemeModule,
+    signInModule,
   ],
 });

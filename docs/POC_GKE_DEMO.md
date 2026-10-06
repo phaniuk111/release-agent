@@ -137,6 +137,32 @@ both sets of IAM grants -> delete the AR repo -> sweep unattached `pvc-*` disks.
       an `istio-proxy` alongside each app container (mesh actually injected;
       `istioctl` is not needed and is not installed by these scripts)
 
+## 5b. Who the user is — sign-in through the mesh
+
+Nobody logs in to Backstage itself. With Anthos Service Mesh **user auth**
+(`authservice`), the person signs in with the company's identity provider at
+the mesh; every request it lets through then carries a signed **RCToken**:
+
+```
+browser ─► ingress + authservice (OIDC login, session) ─► Backstage ─proxy─► agent
+                        │ X-RCToken (signed JWT)              │ verifies     │ verifies
+                        └──────────── JWKS ◄──────────────────┴──────────────┘
+```
+
+- **Backstage** — the `rctoken` auth provider (`backstage/packages/backend/src/rctokenAuth.ts`)
+  verifies the token against authservice's JWKS (signature, issuer, audience,
+  expiry) and signs the person in by email; with `app.meshSignIn: true` the
+  sign-in page uses it instead of Guest (`packages/app/src/modules/signIn.tsx`).
+  The sidebar shows who you are; nobody presses a button.
+- **The agent** — the proxy forwards the same header (`allowedHeaders`), and the
+  agent verifies it again itself (`IDENTITY_HEADER`, `IDENTITY_JWKS_URL`,
+  `IDENTITY_ISSUER`, `IDENTITY_AUDIENCE`): every commit and PR names that
+  verified person. A header is a claim; only a verified token is an identity.
+- **For a PoC without an identity provider**, `scripts/mesh_signin_standin.py`
+  plays authservice (DEMO ONLY): a throwaway key, a JWKS, and every request
+  forwarded with a token for one demo person. Swap it for the real authservice
+  + `UserAuthConfig`; the Backstage and agent settings only change their URLs.
+
 ## 6. Security posture (this repo is PUBLIC)
 
 Every workflow log, step summary and run artifact on `phaniuk111/release-agent`

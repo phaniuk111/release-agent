@@ -103,6 +103,25 @@ config:
       # with a real provider before exposing this to a network.
       guest:
         dangerouslyAllowOutsideDevelopment: true
+      # Sign-in from the service mesh (Anthos Service Mesh user auth): the
+      # person logs in with the company's IdP at the mesh, which puts a signed
+      # RCToken on every request; the `rctoken` provider VERIFIES it (JWKS,
+      # issuer, audience, expiry) — the same token and checks as the agent's
+      # IDENTITY_* settings. Turn it on with app.meshSignIn: true, and point
+      # both at the same header (also the proxy's allowedHeaders in
+      # app-config.yaml) so the agent sees the same person.
+      # rctoken:
+      #   header: x-rctoken
+      #   jwksUrl: http://authservice.asm-user-auth.svc.cluster.local:10004/_gcp_user_auth/jwks
+      #   issuer: authservice.asm-user-auth.svc.cluster.local
+      #   audience: <the UserAuthConfig audience>
+      #   emailClaim: attributes.email,email
+      #   signIn:
+      #     resolvers:
+      #       - resolver: emailLocalPartMatchingUserEntityName
+      #         dangerouslyAllowSignInWithoutUserInCatalog: true
+  # app:
+  #   meshSignIn: true
   catalog:
     rules:
       - allow: [Component, System, API, Resource, Location]
