@@ -114,3 +114,22 @@ def test_the_config_check_says_the_columns_were_discovered(table):
     assert out["ok"] is True and out["mapping"] == "discovered" and out["roles"]["run_id"] == "runId"
     assert any("matched from the table's schema" in n for n in out["notes"])
     assert any(n.startswith("check these groupings") for n in out["notes"])
+
+
+def test_a_failed_schema_read_is_not_remembered(monkeypatch):
+    """Found live: the demo table expired, was reloaded, and the triage kept
+    saying "not found" — the failure had been cached for an hour."""
+    monkeypatch.setattr(s_config.settings, "support_table", "p.ops.flaky")
+    monkeypatch.setattr(s_config.settings, "support_columns", "")
+    schema = [SimpleNamespace(name=n, field_type=t, description=d) for n, t, d in FIELDS]
+    answers = [RuntimeError("404 Not found: Table p:ops.flaky"), SimpleNamespace(schema=schema)]
+
+    def get_table(ref):
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+    monkeypatch.setattr(queries, "_get_client", lambda: SimpleNamespace(get_table=get_table))
+    with pytest.raises(s_config.ConfigError, match="404"):
+        discover.mapping()
+    assert discover.mapping()[2] == "discovered"     # read again, now it is there
