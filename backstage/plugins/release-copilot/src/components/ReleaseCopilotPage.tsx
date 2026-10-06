@@ -62,6 +62,7 @@ const GROUP_OF_TAB: Partial<Record<TabName, string>> = { Monitoring: 'Monitoring
 const ORIGIN_OF_TAB: Partial<Record<TabName, string>> = {
   Deploy: 'deploy',
   Dataflow: 'dataflow',
+  Releases: 'releases',
   Support: 'support',
   Monitoring: 'monitoring',
 };
@@ -179,7 +180,16 @@ export function ReleaseCopilotPage() {
               onCancel={chat.dismiss}
             />
           )}
-          {current === 'Releases' && <ReleasesTab />}
+          {current === 'Releases' && (
+            <ReleasesTab
+              onSend={sendFrom('releases')}
+              busy={chat.busy}
+              result={chat.resultFor('releases')}
+              onConfirm={chat.confirm}
+              onCancel={chat.dismiss}
+              llm={ui.llm}
+            />
+          )}
           {current === 'Queue' && <QueueTab />}
           {current === 'History' && (
             <HistoryTab onOpenQueue={() => selectTab(TABS.indexOf('Queue'))} />
