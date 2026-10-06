@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useRouteRef } from '@backstage/frontend-plugin-api';
 import { operationsRouteRef } from '../plugin';
 import { Box, Button, Chip, makeStyles, Tab, Tabs, Typography } from '@material-ui/core';
-import { Content, Header, Page } from '@backstage/core-components';
+import { Content, Header, HeaderLabel, Page } from '@backstage/core-components';
 import { ChatGrid } from './ChatTab';
 import { DeployTab } from './DeployTab';
 import { DataflowTab } from './DataflowTab';
@@ -11,7 +11,7 @@ import { ReleasesTab } from './ReleasesTab';
 import { QueueTab } from './QueueTab';
 import { HistoryTab } from './HistoryTab';
 import { useAgentChat } from './useAgentChat';
-import { useUiConfig } from '../api';
+import { useSignedInAs, useUiConfig } from '../api';
 import { OPS_VIEWS, VIEW_LABEL, View, areaOf, resolve, visibleAreas } from './navigation';
 import { DEV_PORTAL as P } from '../look';
 
@@ -52,6 +52,7 @@ const ORIGIN_OF_VIEW: Partial<Record<View, string>> = {
 export function ReleaseCopilotPage() {
   const classes = useStyles();
   const ui = useUiConfig();
+  const signedInAs = useSignedInAs();
   const areas = visibleAreas(ui.hiddenGroups);
   const [searchParams, setSearchParams] = useSearchParams();
   const { area, view: current } = resolve(areas, searchParams.get('tab'), searchParams.get('view'));
@@ -95,8 +96,10 @@ export function ReleaseCopilotPage() {
     <Page themeId="tool">
       <Header
         title="Release Copilot"
-        subtitle="ADK release agent, proxied through Backstage (PoC)"
-      />
+        subtitle="Deploy, release and ask the release agent"
+      >
+        {signedInAs && <HeaderLabel label="Signed in as" value={signedInAs} />}
+      </Header>
       <Content>
         {showBar && chat.pending && (
           <Box className={classes.confirmBar} data-testid="confirm-bar">

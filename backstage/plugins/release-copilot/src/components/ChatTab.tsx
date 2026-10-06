@@ -143,7 +143,7 @@ export function ChatTab(props: {
     onSend,
     title = 'Chat',
     subheader = 'Talk to the ADK release agent — deploy previews and CONFIRM tokens appear here',
-    emptyHint = 'Try: "what is the current release status?" — or use the Deploy / Dataflow tabs.',
+    emptyHint = 'Try: "what is the current release status?" — or use Ship to deploy or release.',
     placeholder = 'Message the release agent…',
     quickAsks = QUICK_ASKS,
   } = props;

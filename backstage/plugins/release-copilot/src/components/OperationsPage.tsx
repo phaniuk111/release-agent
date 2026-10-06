@@ -1,12 +1,12 @@
 import { useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Box, Chip, makeStyles } from '@material-ui/core';
-import { Content, Header, Page } from '@backstage/core-components';
+import { Content, Header, HeaderLabel, Page } from '@backstage/core-components';
 import { SupportTab } from './SupportTab';
 import { MonitoringTab } from './MonitoringTab';
 import { InsightsTab } from './InsightsTab';
 import { useAgentChat } from './useAgentChat';
-import { useUiConfig } from '../api';
+import { useSignedInAs, useUiConfig } from '../api';
 import { OPS_AREAS, VIEW_LABEL, View, resolve, visibleAreas } from './navigation';
 
 const useStyles = makeStyles(theme => ({
@@ -22,6 +22,7 @@ const useStyles = makeStyles(theme => ({
 export function OperationsPage() {
   const classes = useStyles();
   const ui = useUiConfig();
+  const signedInAs = useSignedInAs();
   const areas = visibleAreas(ui.hiddenGroups, OPS_AREAS);
   const [searchParams, setSearchParams] = useSearchParams();
   const chat = useAgentChat('operations');
@@ -48,7 +49,9 @@ export function OperationsPage() {
 
   return (
     <Page themeId="tool">
-      <Header title="Operations" subtitle={area.hint} />
+      <Header title="Operations" subtitle={area.hint}>
+        {signedInAs && <HeaderLabel label="Signed in as" value={signedInAs} />}
+      </Header>
       <Content>
         {area.views.length > 1 && (
           <Box className={classes.views} role="tablist" aria-label="Operations screens">

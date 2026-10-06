@@ -1,7 +1,7 @@
 /** Client helpers for the release-copilot service via the Backstage proxy. */
 
 import { useEffect, useState } from 'react';
-import { useApi, configApiRef } from '@backstage/core-plugin-api';
+import { useApi, configApiRef, identityApiRef } from '@backstage/core-plugin-api';
 
 /**
  * The proxy lives on the Backstage BACKEND (dev: :7007, container: :7007), not
@@ -46,6 +46,30 @@ export function useUiConfig(): UiConfig {
     };
   }, [base]);
   return ui;
+}
+
+/**
+ * Who Backstage says is signed in — behind the mesh, the person in the verified
+ * RCToken (the `rctoken` provider); in local development, the guest. Shown in
+ * the page header so nobody has to open Settings to see it.
+ */
+export function useSignedInAs(): string | null {
+  const identityApi = useApi(identityApiRef);
+  const [who, setWho] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    Promise.all([identityApi.getProfileInfo(), identityApi.getBackstageIdentity()])
+      .then(([profile, identity]) => {
+        if (!live) return;
+        const guest = identity.userEntityRef.endsWith('/guest');
+        setWho(guest ? 'Guest' : profile.displayName || profile.email || identity.userEntityRef);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [identityApi]);
+  return who;
 }
 
 export type ChatEvent = {
