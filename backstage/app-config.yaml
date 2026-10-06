@@ -87,32 +87,32 @@ app:
         config:
           links:
             - title: GKE Workloads — PRD
-              url: https://console.cloud.google.com/kubernetes/workload/list?project=flash-keel-412418&namespace=payments
+              url: https://console.cloud.google.com/kubernetes/workload/list?project=YOUR_PROJECT&namespace=payments
               description: All workloads in the PRD namespace
             - title: GKE Cluster — PRD
-              url: https://console.cloud.google.com/kubernetes/clusters/details/asia-south1/YOUR_GKE_CLUSTER/details?project=flash-keel-412418
+              url: https://console.cloud.google.com/kubernetes/clusters/details/asia-south1/YOUR_GKE_CLUSTER/details?project=YOUR_PROJECT
             - title: Logs — PRD
-              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22payments%22;duration=PT1H?project=flash-keel-412418
+              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22payments%22;duration=PT1H?project=YOUR_PROJECT
             - title: Cloud SQL / Databases
-              url: https://console.cloud.google.com/sql/instances?project=flash-keel-412418
+              url: https://console.cloud.google.com/sql/instances?project=YOUR_PROJECT
     - home-page-widget:home/gcp-uat-links:
         config:
           links:
             - title: GKE Workloads — UAT
-              url: https://console.cloud.google.com/kubernetes/workload/list?project=flash-keel-412418&namespace=payments
+              url: https://console.cloud.google.com/kubernetes/workload/list?project=YOUR_PROJECT&namespace=payments
               description: All workloads in the UAT namespace
             - title: GKE Cluster — UAT
-              url: https://console.cloud.google.com/kubernetes/clusters/details/asia-south1/YOUR_GKE_CLUSTER/details?project=flash-keel-412418
+              url: https://console.cloud.google.com/kubernetes/clusters/details/asia-south1/YOUR_GKE_CLUSTER/details?project=YOUR_PROJECT
             - title: Logs — UAT
-              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22payments%22;duration=PT1H?project=flash-keel-412418
+              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22payments%22;duration=PT1H?project=YOUR_PROJECT
     - home-page-widget:home/gcp-prl1-links:
         config:
           links:
             - title: GKE Workloads — PRL1
-              url: https://console.cloud.google.com/kubernetes/workload/list?project=flash-keel-412418
+              url: https://console.cloud.google.com/kubernetes/workload/list?project=YOUR_PROJECT
               description: Pre-release lane workloads
             - title: Logs — PRL1
-              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22;duration=PT1H?project=flash-keel-412418
+              url: https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22;duration=PT1H?project=YOUR_PROJECT
     - home-page-widget:home/world-clock:
         config:
           clockConfigs:
