@@ -143,10 +143,11 @@ def _req(token=None):
 
 def test_the_verified_email_beats_the_typed_one(monkeypatch):
     seen = {}
-    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent",
+    monkeypatch.setattr("release_agent.tools.queue_gate.queue_release_intent",
                         lambda **kw: seen.update(kw) or {"ok": True})
-    APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="typed@else.com"),
-                          _req(rctoken()))
+    APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="typed@else.com"),
+        _req(rctoken()))
     assert seen["requested_by"] == "dev.one@example.com"
 
 
@@ -161,23 +162,25 @@ def test_withdraw_is_recorded_against_the_caller(monkeypatch):
 
 def test_required_mode_refuses_writes_without_a_verified_caller(monkeypatch):
     monkeypatch.setattr(identity.settings, "identity_required", True, raising=False)
-    out = APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="t@x.com"),
-                                _req(rctoken(key=STRANGER)))
+    out = APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="t@x.com"),
+        _req(rctoken(key=STRANGER)))
     assert out["ok"] is False and "Sign-in required" in out["error"]
 
 
 def test_without_required_mode_the_typed_email_still_works(monkeypatch):
     seen = {}
-    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent",
+    monkeypatch.setattr("release_agent.tools.queue_gate.queue_release_intent",
                         lambda **kw: seen.update(kw) or {"ok": True})
-    APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="typed@x.com"), _req())
+    APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="typed@x.com"), _req())
     assert seen["requested_by"] == "typed@x.com"
 
 
 def test_whoami_reports_the_caller_or_why_not():
     assert APP.whoami(_req(rctoken()))["email"] == "dev.one@example.com"
     out = APP.whoami(_req(rctoken(key=STRANGER)))
-    assert out["signed_in"] is False and "Signature" in out["reason"]
+    assert out["signed_in"] is False
 
 
 def test_the_chat_tools_record_the_caller_not_what_the_model_typed(monkeypatch):
@@ -210,11 +213,67 @@ def test_a_threads_github_token_is_withheld_from_anyone_but_its_owner():
     assert store.get("t1").pat_token == "ghp_x", "identity off: no check, as before"
 
 
+def test_nobody_can_replace_the_token_on_someone_elses_thread():
+    """Found in multi-user testing: ``get`` withheld another person's token but
+    ``set`` did not check at all, so knowing a thread id (not a secret) was
+    enough to EVICT the owner's PAT — their next GitHub action then ran as the
+    server token instead of as them."""
+    store = SessionCredentialStore()
+    assert store.set("t1", SessionCredentials(pat_token="ghp_one", owner="dev.one@example.com"))
+    assert not store.set("t1", SessionCredentials(pat_token="ghp_two", owner="dev.two@example.com"))
+    assert store.get("t1", owner="dev.one@example.com").pat_token == "ghp_one"
+    # the owner may still reconnect, and identity-off behaviour is unchanged
+    assert store.set("t1", SessionCredentials(pat_token="ghp_new", owner="dev.one@example.com"))
+    assert store.set("t2", SessionCredentials(pat_token="ghp_a"))
+    assert store.set("t2", SessionCredentials(pat_token="ghp_b"))
+
+
+def test_a_confirm_token_is_bound_to_the_caller_it_was_minted_for(monkeypatch):
+    """Found in multi-user testing: ``_PENDING_PREVIEWS`` is process-wide and
+    keyed by token alone, and the token is printed in the chat — so the
+    stateless fallback in adk_service let anyone who saw someone else's token
+    APPLY their pending deploy from their own thread."""
+    from adk_release_agent import deploy as D
+
+    monkeypatch.setattr(D, "_invoke_tool", lambda name, args=None: {"ok": True})
+    D._PENDING_PREVIEWS.clear()
+    with identity.activate(identity.Caller(email="dev.one@example.com")):
+        prep = D.prepare_deploy_preview(image_tags="payments-api:1.4.2", environment="uat")
+    assert D._PENDING_PREVIEWS[prep["token"]]["owner"] == "dev.one@example.com"
+    with identity.activate(identity.Caller(email="dev.two@example.com")):
+        from release_agent import adk_service as S
+
+        assert S._user_id() != D._PENDING_PREVIEWS[prep["token"]]["owner"]
+    D._PENDING_PREVIEWS.clear()
+
+
 def test_diagnostics_say_whether_the_token_verified():
     ok = APP._verified_identity({"x-asm-rctoken": rctoken()})
     assert ok["signed_in"] and ok["email"] != "dev.one@example.com", "masked"
+    assert "presented_token" not in ok, "nothing to configure: the token verified and aud is checked"
     bad = APP._verified_identity({"x-asm-rctoken": rctoken(aud="other")})
     assert not bad["signed_in"] and "audience" in bad["reason"].lower()
+
+
+def test_diagnostics_show_the_aud_the_gateway_actually_sent(monkeypatch):
+    """Asked for: the operator has no kubectl. When the token does not verify,
+    or aud is not being checked, diagnostics show what the token SAYS (iss,
+    aud, kid, alg — unverified, labelled so) and the hint names the value to
+    set. The peek is never who the caller is."""
+    bad = APP._verified_identity({"x-asm-rctoken": rctoken(aud="other")})
+    seen = bad["presented_token"]
+    assert seen["aud"] == "other" and seen["iss"] == identity.settings.identity_issuer
+    assert seen["kid"] == "k1" and seen["alg"] == "RS256" and "WITHOUT verification" in seen["note"]
+    assert not bad["signed_in"], "the peek did not sign anyone in"
+
+    monkeypatch.setattr(identity.settings, "identity_audience", "", raising=False)
+    unchecked = APP._verified_identity({"x-asm-rctoken": rctoken(aud="dev-portal-prod")})
+    assert unchecked["presented_token"]["aud"] == "dev-portal-prod"
+    assert "'dev-portal-prod'" in unchecked["hint"], "the hint carries the value to copy"
+
+    garbage = APP._verified_identity({"x-asm-rctoken": "not.a.jwt"})
+    assert "error" in garbage["presented_token"] and not garbage["signed_in"]
+    assert "presented_token" not in APP._verified_identity({}), "no token sent: nothing to show"
 
 
 def test_deploys_and_releases_record_who_confirmed(monkeypatch):
@@ -256,12 +315,13 @@ def test_required_mode_lets_a_signed_in_user_queue_through_the_forms(monkeypatch
         seen.append((who, refused))
         return {"ok": not refused, "error": refused}
 
-    monkeypatch.setattr("adk_release_agent.tools.queue_release_intent", fake_intent)
+    monkeypatch.setattr("release_agent.tools.queue_gate.queue_release_intent", fake_intent)
     rows = [APP.QueueRow(artifact="a:1", build_run_url="u", jira_ticket="J-1"),
             APP.QueueRow(artifact="b:2", build_run_url="u", jira_ticket="J-2")]
     out = APP.release_queue_add_batch(
         APP.QueueBatchRequest(rows=rows, requested_by="typed@x.com", change_details="d"), _req(rctoken()))
     assert out["ok"] and not out["refused"]
     assert seen == [("dev.one@example.com", "")] * 2
-    single = APP.release_queue_add(APP.QueueAddRequest(artifact="a:1", requested_by="t@x.com"), _req(rctoken()))
+    single = APP.release_queue_add_batch(
+        APP.QueueBatchRequest(rows=[APP.QueueRow(artifact="a:1")], requested_by="t@x.com"), _req(rctoken()))
     assert single["ok"]

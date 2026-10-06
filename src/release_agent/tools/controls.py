@@ -1,35 +1,21 @@
 """Build-pipeline verification + RLFT/RFTL release-control tools."""
 
+import base64
+import itertools
+import json
 from typing import Any
 from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field
 
 from ._common import (
     settings,
     tool,
-    BaseModel,
-    Field,
-    json,
-    base64,
-    itertools,
     _resolve_github_token,
     _get_github_client,
     active_build_repo,
     CONFIG_PATH,
 )
-
-
-class VerifyImageTagInput(BaseModel):
-    image: str = Field(..., description="Image name (must be in image-workflows.json)")
-    tag: str = Field(..., description="Git tag that was built, e.g. v1.2.3")
-    repo: str = Field(
-        default="", description="owner/repo where the build ran. Defaults to the target repo."
-    )
-    tag_generation_step: str = Field(
-        default="Generate Git tag", description="Step name that generates the git tag"
-    )
-    tag_marker_prefix: str = Field(
-        default="TAG_GENERATED=", description="Log marker prefix emitted by the tag step"
-    )
 
 
 def _image_build_workflow(repo_obj, image: str) -> str | None:
@@ -79,158 +65,6 @@ def _fetch_job_log(repo_full: str, job_id: int) -> str:
         return r.text if r.status_code == 200 else ""
     except Exception:
         return ""
-
-
-@tool(args_schema=VerifyImageTagInput)
-def verify_image_tag_build(
-    image: str,
-    tag: str,
-    repo: str = "",
-    tag_generation_step: str = "Generate Git tag",
-    tag_marker_prefix: str = "TAG_GENERATED=",
-) -> str:
-    """
-    Verify that image:tag was actually built correctly BEFORE promoting it.
-
-    Resolves the git tag -> commit, finds the image's build-workflow run at that commit,
-    confirms the tag-generation step succeeded AND the job log contains the
-    '<tag_marker_prefix><tag>' marker, and reports the run's RLFT release-control steps.
-    verified=true only when a matching successful run is found.
-    """
-    repo_full = repo or active_build_repo()
-    try:
-        g = _get_github_client()
-        repo_obj = g.get_repo(repo_full)
-    except Exception as e:
-        return f"ERROR verifying build: {e}"
-
-    workflow = _image_build_workflow(repo_obj, image)
-    if not workflow:
-        return f"ERROR verifying build: image '{image}' is not configured in {CONFIG_PATH} (repo {repo_full})."
-
-    commit = _resolve_tag_commit(repo_obj, tag)
-    if not commit:
-        return f"ERROR verifying build: tag '{tag}' not found in {repo_full}."
-
-    try:
-        wf = repo_obj.get_workflow(workflow)
-        runs = list(itertools.islice(wf.get_runs(head_sha=commit), 20))
-    except Exception as e:
-        return f"ERROR verifying build: {e}"
-
-    if not runs:
-        return json.dumps(
-            {
-                "verified": False,
-                "image": image,
-                "tag": tag,
-                "tag_commit": commit,
-                "workflow": workflow,
-                "repo": repo_full,
-                "reason": f"No '{workflow}' run found at commit {commit[:7]}.",
-            },
-            indent=2,
-        )
-
-    marker = f"{tag_marker_prefix}{tag}"
-
-    def _inspect(run):
-        tag_step, rlft = None, []
-        try:
-            for job in run.jobs():
-                for step in getattr(job, "steps", None) or []:
-                    name = getattr(step, "name", "") or ""
-                    rec = {
-                        "job": job.name,
-                        "job_id": job.id,
-                        "number": getattr(step, "number", None),
-                        "name": name,
-                        "status": getattr(step, "status", None),
-                        "conclusion": getattr(step, "conclusion", None),
-                    }
-                    if name == tag_generation_step and tag_step is None:
-                        tag_step = rec
-                    if name.startswith("RLFT"):
-                        rlft.append(
-                            {k: rec[k] for k in ("job", "number", "name", "status", "conclusion")}
-                        )
-        except Exception:
-            pass
-        log_found = bool(
-            tag_step
-            and tag_step.get("conclusion") == "success"
-            and tag_step.get("job_id")
-            and marker in _fetch_job_log(repo_full, tag_step["job_id"])
-        )
-        return tag_step, rlft, log_found
-
-    # Pick the newest run whose tag-gen step succeeded AND the log marker is present.
-    selected = None
-    for run in sorted(runs, key=lambda r: r.created_at, reverse=True):
-        tag_step, rlft, log_found = _inspect(run)
-        if tag_step and tag_step.get("conclusion") == "success" and log_found:
-            selected = (run, tag_step, rlft, log_found)
-            break
-        if selected is None:
-            selected = (run, tag_step, rlft, log_found)
-
-    run, tag_step, rlft, log_found = selected
-    verified = bool(tag_step and tag_step.get("conclusion") == "success" and log_found)
-    return json.dumps(
-        {
-            "verified": verified,
-            "image": image,
-            "tag": tag,
-            "tag_commit": commit,
-            "workflow": workflow,
-            "repo": repo_full,
-            "run": {
-                "id": run.id,
-                "name": run.name,
-                "url": run.html_url,
-                "headSha": run.head_sha,
-                "status": run.status,
-                "conclusion": run.conclusion,
-            },
-            "tag_generation": (
-                {
-                    "step": tag_generation_step,
-                    "job": tag_step.get("job"),
-                    "status": tag_step.get("status"),
-                    "conclusion": tag_step.get("conclusion"),
-                    "marker": marker,
-                    "log_marker_found": log_found,
-                }
-                if tag_step
-                else {"step": tag_generation_step, "found": False, "marker": marker}
-            ),
-            "rlft_controls": rlft,
-            "note": "verified=true means the tag was built by a successful run whose tag-gen step logged "
-            "the marker. Check the RLFT control steps before promoting.",
-        },
-        indent=2,
-    )
-
-
-# ============ Build-pipeline release controls (RLFT/RFTL pass/fail) ============
-
-
-class BuildControlsInput(BaseModel):
-    image: str = Field(
-        default="",
-        description="Image name (to find the build workflow + resolve the tag). Optional if run_id is given.",
-    )
-    tag: str = Field(
-        default="", description="Git tag that was built, e.g. v1.2.3. Optional if run_id is given."
-    )
-    repo: str = Field(
-        default="",
-        description="owner/repo where the build ran. Defaults to the configured build repo / target repo.",
-    )
-    run_id: int = Field(
-        default=0,
-        description="GitHub Actions run id that generated the tag. Pass it to skip tag->run discovery, or when discovery can't find the run.",
-    )
 
 
 # Step conclusions that count as a failed control gate.
@@ -390,7 +224,7 @@ def _strip_ansi(line: str) -> str:
 def _tags_from_log(text: str, marker: str) -> list[str]:
     """Every tag logged after ``marker`` (one per built image in a matrix).
 
-    GitHub's log also echoes the step's own script — `echo "TAG_GENERATED=
+    GitHub's log also echoes the step's own script — `echo "New tag is:
     ${GITHUB_REF_NAME}"` — so only a value made of tag characters counts; an
     unexpanded variable or a quoted command fragment is not a tag.
     """
@@ -409,29 +243,84 @@ def _tags_from_log(text: str, marker: str) -> list[str]:
     return found
 
 
+def tag_name_matches(configured: str, name: str) -> bool:
+    """Does a job or step name answer to BUILD_TAG_STEP? Pure.
+
+    A job that comes from a REUSABLE workflow is named "<caller job> / <job>" in
+    the API ("build-deploy-publish / Create new tag"), while the run page shows
+    only the last part — so the segment after the final " / " counts too.
+    Compared case-insensitively and stripped: a trailing space in the workflow
+    YAML must not silently unverify every build.
+    """
+    want = (configured or "").strip().lower()
+    got = (name or "").strip().lower()
+    if not want or not got:
+        return False
+    return got == want or got.rsplit(" / ", 1)[-1].strip() == want
+
+
 def run_built_tags(repo_obj, repo_full: str, run) -> dict[str, Any]:
-    """What ``run`` says it built: {"tags": [...], "source": "trigger"|"log"|None}."""
+    """What ``run`` says it built: {"tags": [...], "source": "trigger"|"log"|None,
+    "detail": why nothing was found}.
+
+    BUILD_TAG_STEP may name either a STEP inside a job or a whole JOB — the same
+    two shapes a control takes (_collect_controls). A pipeline that generates the
+    tag in a reusable-workflow job ("Create new tag") names that job for the tag
+    and its steps for the actions they run ("Tag this new commit"), so matching
+    step names alone finds nothing and every build reads as unverifiable.
+    """
     head = str(getattr(run, "head_branch", "") or "")
     if head and getattr(run, "event", "") == "push":
         try:
             repo_obj.get_git_ref(f"tags/{head}")          # a tag push, not a branch push
-            return {"tags": [head], "source": "trigger"}
+            return {"tags": [head], "source": "trigger", "detail": ""}
         except Exception:
             pass
     step_name = settings.build_tag_step
     marker = settings.build_tag_marker
     tags: list[str] = []
+    unfinished: list[str] = []
+    found = unreadable = False
     try:
         for job in run.jobs():
-            steps = getattr(job, "steps", None) or []
-            if any((getattr(st, "name", "") or "") == step_name
-                   and getattr(st, "conclusion", None) == "success" for st in steps):
-                for tag in _tags_from_log(_fetch_job_log(repo_full, job.id), marker):
-                    if tag not in tags:
-                        tags.append(tag)
-    except Exception:
-        pass
-    return {"tags": tags, "source": "log" if tags else None}
+            job_name = str(getattr(job, "name", "") or "")
+            hits = [st for st in (getattr(job, "steps", None) or [])
+                    if tag_name_matches(step_name, str(getattr(st, "name", "") or ""))]
+            as_job = not hits and tag_name_matches(step_name, job_name)
+            if not hits and not as_job:
+                continue
+            found = True
+            succeeded = (any(getattr(st, "conclusion", None) == "success" for st in hits) if hits
+                         else getattr(job, "conclusion", None) == "success")
+            if not succeeded:
+                unfinished.append(job_name or step_name)
+                continue
+            log = _fetch_job_log(repo_full, job.id)
+            if not log:
+                # Distinct from "no marker in the log": a token without
+                # actions:read, or a blocked log download, reads the same as a
+                # pipeline that never logged a tag unless we say so.
+                unreadable = True
+                continue
+            for tag in _tags_from_log(log, marker):
+                if tag not in tags:
+                    tags.append(tag)
+    except Exception as e:
+        return {"tags": [], "source": None,
+                "detail": f"the run's jobs could not be read: {e}"[:200]}
+    if tags:
+        return {"tags": tags, "source": "log", "detail": ""}
+    if not found:
+        detail = (f"no step or job in that run is named '{step_name}' (BUILD_TAG_STEP) — "
+                  "check the name on the run page, including the job it sits in")
+    elif unfinished:
+        detail = f"'{unfinished[0]}' did not succeed, so it vouches for nothing"
+    elif unreadable:
+        detail = (f"'{step_name}' succeeded but its log could not be read — the token needs "
+                  "actions:read and the log download has to be reachable from here")
+    else:
+        detail = f"'{step_name}' succeeded but its log has no '{marker}<tag>' line"
+    return {"tags": [], "source": None, "detail": detail}
 
 
 def match_run_to_artifact(repo_full: str, run_id: int, image: str, version: str) -> dict[str, Any]:
@@ -448,10 +337,12 @@ def match_run_to_artifact(repo_full: str, run_id: int, image: str, version: str)
     built = run_built_tags(repo_obj, repo_full, run)
     tags = built["tags"]
     if not tags:
+        # Say WHICH of the ways it fell short (built["detail"]) — "the step
+        # logged nothing" sends people to the log of a step that never ran.
         return {"ok": False, "built": [], "reason": (
             f"Can't tell which image and tag that run built: it was not started by a tag push, "
-            f"and no '{settings.build_tag_step}' step logged a {settings.build_tag_marker}<tag> "
-            f"line. Use the run that built {label}.")}
+            f"and {built.get('detail') or 'no tag was found in its logs'}. "
+            f"Use the run that built {label}.")}
 
     run_workflow = str(getattr(run, "path", "") or "").split("/")[-1]
     image_workflow = _image_build_workflow(repo_obj, image)
@@ -461,14 +352,26 @@ def match_run_to_artifact(repo_full: str, run_id: int, image: str, version: str)
             continue
         if names_image:
             return {"ok": True, "built": tag, "source": built["source"]}
-        # A bare version: only the image's own build workflow ties it to the image.
+        # A BARE version ("5.0.445") names no image, so image-workflows.json is
+        # the only thing that can tie it to one. Three cases:
         if image_workflow and run_workflow == image_workflow:
             return {"ok": True, "built": tag, "source": built["source"], "via_workflow": run_workflow}
-        why = (f"{image}'s build workflow is {image_workflow}, but this run is {run_workflow}"
-               if image_workflow else f"{image} has no build workflow in {CONFIG_PATH}")
+        if image_workflow:
+            # The catalogue CONTRADICTS the run — positive evidence that this is
+            # another service's build. Refused whatever the setting says.
+            return {"ok": False, "built": tags, "reason": (
+                f"That run built tag {tag}, but it is not {image}'s build: the tag carries no "
+                f"image name and {CONFIG_PATH} says {image} is built by {image_workflow}, "
+                f"while this run is {run_workflow}. Use the run of {image}'s own build.")}
+        # Not in the catalogue at all. A monorepo tags per service and listing
+        # every one goes stale, so by default the matching version is enough;
+        # QUEUE_REQUIRE_IMAGE_WORKFLOW=true demands the mapping instead.
+        if not settings.queue_require_image_workflow:
+            return {"ok": True, "built": tag, "source": built["source"], "via_version_only": True}
         return {"ok": False, "built": tags, "reason": (
             f"That run built tag {tag}, but nothing ties it to {image}: the tag carries no image "
-            f"name and {why}. Use the run of {image}'s own build.")}
+            f"name and {image} has no build workflow in {CONFIG_PATH}. "
+            f"Use the run of {image}'s own build.")}
     shown = ", ".join(tags[:5]) + (f" (+{len(tags) - 5} more)" if len(tags) > 5 else "")
     return {"ok": False, "built": tags, "reason": (
         f"That run built {shown}, not {label}. Use the run that built {label} — "
@@ -495,92 +398,6 @@ def _find_build_run(repo_obj, image: str, tag: str):
     # Tag-triggered runs carry the tag name in head_branch — prefer an exact match.
     exact = [r for r in runs if (getattr(r, "head_branch", "") or "") == tag]
     return sorted(exact or runs, key=lambda r: r.created_at, reverse=True)[0], None
-
-
-def _controls_report(repo_full, image, tag, run) -> dict:
-    controls = _collect_controls(run)
-    passed = [c["control"] for c in controls if c["passed"]]
-    failed = [c["control"] for c in controls if c["failed"]]
-    other = [c["control"] for c in controls if not c["passed"] and not c["failed"]]
-    gate_pass = bool(controls) and not failed and not other
-    return {
-        "image": image,
-        "tag": tag,
-        "repo": repo_full,
-        "run": {
-            "id": run.id,
-            "name": run.name,
-            "url": run.html_url,
-            "head_sha": run.head_sha,
-            "conclusion": run.conclusion,
-            "created_at": str(run.created_at),
-        },
-        "controls": controls,
-        "summary": {"total": len(controls), "passed": passed, "failed": failed, "other": other},
-        "gate": "PASS" if gate_pass else ("FAIL" if failed else "UNKNOWN"),
-        "all_controls_passed": gate_pass,
-    }
-
-
-@tool(args_schema=BuildControlsInput)
-def get_build_controls(image: str = "", tag: str = "", repo: str = "", run_id: int = 0) -> str:
-    """
-    Fetch the release CONTROLS (RLFT/RFTL gates) recorded in the build pipeline for
-    an image:tag and report which PASSED and which FAILED — run this BEFORE a PRD
-    release. Either pass run_id (the GitHub Actions run that generated the tag), OR
-    pass image+tag and it locates the run from the tag's commit automatically. If it
-    can't find the run from image+tag, it returns need_run_id and you must ask the
-    developer for the run id that generated the tag.
-    """
-    repo_full = _build_repo_full(repo)
-    try:
-        g = _get_github_client()
-        repo_obj = g.get_repo(repo_full)
-    except Exception as e:
-        return f"ERROR fetching controls: {e}"
-
-    if run_id:
-        try:
-            run = repo_obj.get_workflow_run(int(run_id))
-        except Exception:
-            return (
-                f"ERROR fetching controls: run id {run_id} not found in {repo_full}. "
-                "Check the run id and that the repo is the build-pipeline repo."
-            )
-    else:
-        if not (image and tag):
-            return (
-                "NEED_INPUT: provide a run_id, or both image and tag, so I can locate the "
-                "build-pipeline run that generated the tag."
-            )
-        run, err = _find_build_run(repo_obj, image, tag)
-        if run is None:
-            return json.dumps(
-                {
-                    "need_run_id": True,
-                    "image": image,
-                    "tag": tag,
-                    "repo": repo_full,
-                    "reason": err,
-                    "ask": (
-                        f"I couldn't locate the build run for {image}:{tag} in {repo_full} ({err}). "
-                        "Please provide the GitHub Actions run id that generated this tag."
-                    ),
-                },
-                indent=2,
-            )
-
-    report = _controls_report(repo_full, image, tag, run)
-    if not report["controls"]:
-        report["note"] = (
-            f"No control steps matched prefixes {settings.control_prefixes} in this run — "
-            "verify the run id / build pipeline."
-        )
-    else:
-        report["note"] = (
-            "gate=PASS only when every control passed. Do NOT promote to PRD with any FAILED control."
-        )
-    return json.dumps(report, indent=2)
 
 
 # ============ Build report: step failures + built-from-main (live, PyGithub) ============
@@ -654,27 +471,44 @@ class BuildReportInput(BaseModel):
         default="",
         description="owner/repo where the build ran. Defaults to the build repo; auto-derived from workflow_url.",
     )
+    run_id: int = Field(
+        default=0,
+        description="GitHub Actions run id that generated the tag. Pass it (with repo, if not the "
+        "default build repo) to inspect a run directly by id, instead of workflow_url or image+tag.",
+    )
 
 
 @tool(args_schema=BuildReportInput)
-def get_build_report(image: str = "", tag: str = "", workflow_url: str = "", repo: str = "") -> str:
-    """Report a build's outcome for an image:tag (or a GitHub Actions run URL): which STEPS failed,
-    which RLFT/RFTL controls passed/failed, and whether the tag was built from the build repo's
-    main/default branch. Read-only, resolved live from GitHub (tag -> commit -> run -> steps).
+def get_build_report(
+    image: str = "", tag: str = "", workflow_url: str = "", repo: str = "", run_id: int = 0
+) -> str:
+    """Report a build's outcome for an image:tag, a bare run_id, or a GitHub Actions run URL: which
+    STEPS failed, which RLFT/RFTL controls passed/failed, and whether the tag was built from the
+    build repo's main/default branch. Read-only, resolved live from GitHub (tag -> commit -> run ->
+    steps, or the run id directly).
 
     PRESENT THE RESULT TO THE USER AS A MARKDOWN TABLE — a summary line with the clickable run URL
     + conclusion + built-from-main verdict, then a table of Step/Control | Job | Result rows with
     ✅/❌ markers. Do NOT show the raw JSON to the user."""
     repo_full = _build_repo_full(repo)
 
-    # 1) Resolve the run — directly from a URL, or by image+tag -> commit -> run.
+    # 1) Resolve the run — directly from a URL, from a bare run id, or by image+tag -> commit -> run.
     if workflow_url.strip():
-        url_repo, run_id = _parse_run_url(workflow_url)
+        url_repo, url_run_id = _parse_run_url(workflow_url)
         repo_full = repo or url_repo or repo_full
-        if not run_id:
+        if not url_run_id:
             return json.dumps(
                 {"found": False, "reason": f"could not parse a run id from '{workflow_url}'."}, indent=2
             )
+        try:
+            repo_obj = _get_github_client().get_repo(repo_full)
+            run = repo_obj.get_workflow_run(int(url_run_id))
+        except Exception as e:
+            return json.dumps(
+                {"found": False, "repo": repo_full, "reason": f"run {url_run_id} not found in {repo_full}: {e}"},
+                indent=2,
+            )
+    elif run_id:
         try:
             repo_obj = _get_github_client().get_repo(repo_full)
             run = repo_obj.get_workflow_run(int(run_id))
@@ -686,7 +520,8 @@ def get_build_report(image: str = "", tag: str = "", workflow_url: str = "", rep
     else:
         if not (image and tag):
             return json.dumps(
-                {"found": False, "reason": "provide a workflow_url, or both image and tag."}, indent=2
+                {"found": False, "reason": "provide a workflow_url, a run_id, or both image and tag."},
+                indent=2,
             )
         try:
             repo_obj = _get_github_client().get_repo(repo_full)
@@ -701,7 +536,7 @@ def get_build_report(image: str = "", tag: str = "", workflow_url: str = "", rep
                     "tag": tag,
                     "repo": repo_full,
                     "reason": err,
-                    "hint": "If you have the build's workflow run URL, pass it as workflow_url.",
+                    "hint": "If you have the build's workflow run URL or id, pass it as workflow_url or run_id.",
                 },
                 indent=2,
             )

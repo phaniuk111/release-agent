@@ -22,6 +22,10 @@ The agent orchestrates the script rather than reimplementing it:
             promotion, but raw file contents (workflow YAMLs are not JSON).
 
 release_details.json is never committed anywhere, matching the live process.
+
+The exception is CARE with CARE_RELEASE_MODE=mono: the release is then ONE
+committed file edited through a PR a person merges — care_release.py. DF
+releases always take the file-set path here.
 """
 from __future__ import annotations
 
@@ -34,20 +38,24 @@ import sys
 import tempfile
 import uuid
 
+from pydantic import BaseModel, Field
+
 from ._common import (
     settings,
     tool,
-    BaseModel,
-    Field,
     _get_github_client,
     _resolve_github_token,
     active_deploy_repo,
 )
 from . import git_snapshot, release_chain
+from . import attribution
 from .promotion import _merge_pr
 from .release_window import _open_prd_pr_blocker
 
 _FILES_MARKER = "RELEASE-FILES-JSON:"
+# The release manager's JIRA, kept in the release PR so its promotions — the
+# Promote pill has no form — start their commits with the same key.
+_JIRA_MARKER = "RELEASE-JIRA:"
 
 
 # --- payload validation ------------------------------------------------------
@@ -97,6 +105,10 @@ def validate_release(payload: dict) -> tuple[dict | None, list[str]]:
     for key in required:
         if not str(payload.get(key) or "").strip():
             errors.append(f"'{key}' is required.")
+    # Kept OUT of the details dict, like deployment_repo below: it leads the
+    # release's commit messages and never reaches release_details.json.
+    if not str(payload.get("jira") or "").strip():
+        errors.append("'jira' is required — every commit of the release starts with it.")
 
     for key in ("start_date", "end_date"):
         v = str(payload.get(key) or "")
@@ -188,6 +200,10 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         return {"ok": False, "errors": errors}
 
     kind = release_chain.kind_of(details, str(payload.get("release_kind") or "").strip().lower())
+    if kind == "care" and settings.care_release_mode == "mono":
+        from . import care_release
+
+        return care_release.prepare(payload, details)
     # Form-supplied target repo wins; empty falls back to this kind's repo.
     repo_full = str(payload.get("deployment_repo") or "").strip() or (
         (settings.df_release_repo if kind == "df" else "") or active_deploy_repo())
@@ -223,7 +239,25 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
 
         script = os.path.join(repo_dir, settings.release_updater_script)
         if not os.path.isfile(script):
-            raise RuntimeError(f"updater script not found at {settings.release_updater_script}")
+            # Three settings decide this — the repo, the branch it landed on, and
+            # the path — so naming only the path sends people to the wrong one.
+            # Say which repo and branch were actually searched, and show what IS
+            # in the directory (or that the directory is missing), because the
+            # usual causes are a DF repo that keeps the script elsewhere and a
+            # landing branch that simply does not carry it.
+            where = os.path.dirname(script) or repo_dir
+            if os.path.isdir(where):
+                names = sorted(os.listdir(where))[:12]
+                found = ("directory holds: " + ", ".join(names)) if names else "that directory is empty"
+            else:
+                rel = os.path.relpath(where, repo_dir)
+                found = f"there is no {rel}/ directory on this branch"
+            raise RuntimeError(
+                f"updater script not found at {settings.release_updater_script} "
+                f"in {repo_full} on branch {landing} — {found}. "
+                f"Point RELEASE_UPDATER_SCRIPT at the real path, or land the release "
+                f"on a branch that carries the script (DF_RELEASE_BRANCHES)."
+            )
         rc, script_output = _run(
             [sys.executable, script, "--release-details-file", details_path],
             cwd=repo_dir, timeout=180,
@@ -276,6 +310,7 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         "details": details,             # the inputs apply regenerates from
         "fileset_hash": fileset_hash,
         "deployment_repo": repo_full,
+        "jira": str(payload.get("jira") or "").strip(),
         "kind": kind,
         "landing_branch": landing,
         "artifacts": artifact_pairs,
@@ -319,6 +354,10 @@ def apply_release_fileset(prep: dict) -> dict:
     fingerprint taken at preview time — what gets pushed is then exactly what
     was approved, or nothing is pushed at all.
     """
+    if prep.get("mode") == "mono":
+        from . import care_release
+
+        return care_release.apply(prep)
     workdir = prep.get("workdir")
     branch = prep.get("branch")
     if not workdir or not os.path.isdir(os.path.join(workdir, "repo")):
@@ -330,7 +369,7 @@ def apply_release_fileset(prep: dict) -> dict:
         # in its own repo regenerated against the CARE repo.
         regenerated = prepare_release_fileset(
             {**details, "deployment_repo": prep.get("deployment_repo") or "",
-             "release_kind": prep.get("kind") or ""},
+             "release_kind": prep.get("kind") or "", "jira": prep.get("jira") or ""},
             _keep_workdir=True,
         )
         if not regenerated.get("ok"):
@@ -355,11 +394,16 @@ def apply_release_fileset(prep: dict) -> dict:
         repo_full = prep.get("deployment_repo") or active_deploy_repo()
         gh_repo = _get_github_client().get_repo(repo_full)
         initiator = (prep.get("details") or {}).get("change_initiator") or ""
+        # The verified caller authors the commit; the typed initiator is the
+        # fallback when identity is off (a claim, so never over a verified name).
+        author_name, author_email = attribution.author() or (
+            initiator.split("@")[0] or "release-copilot", initiator or "release-copilot@localhost")
         try:
             sha = git_snapshot.commit_via_api(
                 gh_repo, repo_dir, git_snapshot.stage_all(repo_dir),
-                git_snapshot.base_commit(repo_dir), prep.get("release_name") or branch,
-                initiator.split("@")[0] or "release-copilot", initiator or "release-copilot@localhost",
+                git_snapshot.base_commit(repo_dir),
+                attribution.commit_message(prep.get("release_name") or branch),
+                author_name, author_email,
             )
             gh_repo.create_git_ref(f"refs/heads/{branch}", sha)
         except Exception as e:  # noqa: BLE001 — nothing was pushed; say why
@@ -373,11 +417,12 @@ def apply_release_fileset(prep: dict) -> dict:
             f"`{settings.release_updater_script}` from a transient release_details.json.\n\n"
             f"Window: {preview.get('window')}\nInitiator: {preview.get('initiator')}\n\n"
             f"{_FILES_MARKER} {json.dumps(preview.get('changed_files', []))}\n"
+            + (f"{_JIRA_MARKER} {attribution.current_jira()}\n" if attribution.current_jira() else "")
         )
         kind = prep.get("kind") or "care"
         landing = prep.get("landing_branch") or release_chain.landing(kind)
         pr = gh_repo.create_pull(
-            title=prep.get("release_name"), body=body,
+            title=attribution.titled(prep.get("release_name") or branch), body=attribution.with_trailer(body),
             head=branch, base=landing,
         )
         merged, detail = _merge_pr(pr, "merge")
@@ -385,18 +430,26 @@ def apply_release_fileset(prep: dict) -> dict:
             f"Release PR #{pr.number} ({pr.html_url}) {'merged into' if merged else 'opened against'} "
             f"{landing}{'' if merged else f' — {detail}'}. {release_chain.next_steps(kind)}"
         )
-        if merged:
-            # Drain the intake queue: shipped charts get 'released' events so next
-            # week starts clean. Best-effort — never fails the release.
-            try:
-                from . import release_queue as _rq
+        # Raising the release PR is the release as far as the queue is concerned,
+        # merged by us or held for review: its charts leave the queue for Release
+        # history now, and are put back from there if the release does not go
+        # through — the same rule as CARE mono mode. Best-effort — never fails
+        # the release.
+        try:
+            from . import release_queue as _rq
 
-                _rq.mark_released(
-                    prep.get("release_name") or "", pr.number, prep.get("artifacts") or [],
-                    deployment_repo=repo_full,
-                )
-            except Exception:
-                pass
+            out = _rq.mark_released(
+                prep.get("release_name") or "", pr.number, prep.get("artifacts") or [],
+                deployment_repo=repo_full,
+            )
+        except Exception as e:  # noqa: BLE001 — never fails the release
+            out = {"ok": False, "error": str(e)}
+        if out.get("ok"):
+            note += (" Its charts have moved from the release queue to Release history; if this "
+                     "release does not go through, put them back from there.")
+        elif not out.get("disabled"):     # no queue configured: nothing to say
+            note += (" (The release queue could not be updated just now — its charts still show "
+                     "there; remove them by hand.)")
         return {
             "ok": True,
             "action": "release_created",
@@ -527,12 +580,27 @@ class PromoteReleaseInput(BaseModel):
     )
 
 
+def _release_jira_from_pr(pr) -> str:
+    body = (pr.body or "") if pr is not None else ""
+    idx = body.find(_JIRA_MARKER)
+    if idx == -1:
+        return ""
+    rest = body[idx + len(_JIRA_MARKER):].strip().splitlines()
+    return rest[0].strip() if rest else ""
+
+
 @tool(args_schema=PromoteReleaseInput)
 def promote_release(target: str, release_branch: str = "", deployment_repo: str = "", kind: str = "") -> str:
     """Promote the current release's FILE-SET to the next environment branch of its
     chain (CARE: SIT -> UAT -> PRD/PRL1; DF: DF_RELEASE_BRANCHES, e.g. RELEASE_UAT ->
     RELEASE_PRD): copies the release's changed files verbatim onto the target via
-    a short-lived change branch + PR (auto-merged when allowed)."""
+    a short-lived change branch + PR (auto-merged when allowed). Its commits start
+    with the JIRA the release was raised with (RELEASE-JIRA: in the release PR)."""
+    with attribution.jira(""):      # the scope _promote fills once it finds the release
+        return _promote(target, release_branch, deployment_repo, kind)
+
+
+def _promote(target: str, release_branch: str, deployment_repo: str, kind: str) -> str:
     t = target.strip().lower()
     kind = kind.strip().lower()
     if kind and kind not in release_chain.KINDS:
@@ -573,6 +641,7 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
         files = _release_files_from_pr(pr) if pr and pr.head.ref == release_branch else []
     if not files:
         return json.dumps({"ok": False, "error": f"Could not determine the release file list for {release_branch}."})
+    attribution.use_jira(_release_jira_from_pr(pr) if pr is not None and pr.head.ref == release_branch else "")
 
     # Copy the file-set verbatim from the release branch onto a change branch of target.
     work = f"change/release/{uuid.uuid4().hex[:8]}"
@@ -587,12 +656,13 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             current = _read_raw(gh_repo, path, work)
             if current == content:
                 continue
-            message = f"Promote release file {path} -> {target_branch}"
+            message = attribution.commit_message(f"Promote release file {path} -> {target_branch}")
+            who = attribution.author_kwargs()
             try:
                 existing = gh_repo.get_contents(path, ref=work)
-                gh_repo.update_file(path, message, content, existing.sha, branch=work)
+                gh_repo.update_file(path, message, content, existing.sha, branch=work, **who)
             except Exception:
-                gh_repo.create_file(path, message, content, branch=work)
+                gh_repo.create_file(path, message, content, branch=work, **who)
             changed.append(path)
         if not changed:
             try:
@@ -605,8 +675,8 @@ def promote_release(target: str, release_branch: str = "", deployment_repo: str 
             })
         release_name = (pr.title if pr else release_branch)
         promo_pr = gh_repo.create_pull(
-            title=f"{release_name} (→ {target_branch})",
-            body=f"Promotes the release file-set from {release_branch}.",
+            title=attribution.titled(f"{release_name} (→ {target_branch})"),
+            body=attribution.with_trailer(f"Promotes the release file-set from {release_branch}."),
             head=work, base=target_branch,
         )
         merged, detail = _merge_pr(promo_pr, "squash")

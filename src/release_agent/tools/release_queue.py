@@ -60,8 +60,6 @@ _SCHEMA = [
 _lock = threading.Lock()
 _client = None
 _table_ready = False
-# The banner polls every turn; don't hit BQ more than once a minute for a count.
-_count_cache: dict[str, Any] = {"at": 0.0, "count": None}
 # Every form open reads the queue (a BQ query job ~2-3s). Cache the reduced
 # queue briefly so opening a form twice, or two users at once, is instant.
 # Short TTL: the queue changes only when someone queues/withdraws, and both
@@ -169,9 +167,9 @@ def _insert(rows: list[dict[str, Any]]) -> dict[str, Any]:
             errors = client.insert_rows_json(_table_id(), rows, row_ids=[r["event_id"] for r in rows])
         if errors:
             return {"ok": False, "error": f"BigQuery insert failed: {errors}"}
-        # state changed — drop the derived caches
-        _count_cache["at"] = 0.0
+        # state changed — drop the derived cache
         _queue_cache["at"] = 0.0
+        _history_cache["at"] = 0.0     # a chart queued again must show as such at once
         return {"ok": True}
     except Exception as e:  # never let queue telemetry break a release path
         return {"ok": False, "error": f"BigQuery unavailable: {e}"}
@@ -272,6 +270,12 @@ def withdraw_intent(artifact_name: str, actor: str, expected_version: str = "") 
     name = name.strip()
     if not name:
         return {"ok": False, "error": "artifact_name is required."}
+    # Removing a chart from the release is an AUDIT event in an append-only log:
+    # it has to be recorded against someone. The UI asks; the REST endpoint did
+    # not, so a withdrawal could be written against nobody (found live).
+    if not str(actor or "").strip():
+        return {"ok": False, "error": (
+            "Your email is needed — the removal is recorded against it.")}
     expected = str(expected_version or version_in_name or "").strip()
     if expected:
         live = current_queue(use_cache=False)
@@ -512,18 +516,6 @@ def history_stats(
     return out
 
 
-def recent_deployments(days: int = 30) -> dict[str, Any]:
-    """Deployment history from the event log — newest first, per chart per env."""
-    if not queue_enabled():
-        return _disabled()
-    try:
-        events = _fetch_events(days)
-    except Exception as e:
-        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
-    deploys = [e for e in reversed(events) if e.get("event_type") == "deployed"]
-    return {"ok": True, "deployments": deploys, "count": len(deploys)}
-
-
 # --- reads -------------------------------------------------------------------
 def _fetch_events(days: int = 120) -> list[dict[str, Any]]:
     client = _get_client()
@@ -634,16 +626,153 @@ def current_queue(use_cache: bool = True) -> dict[str, Any]:
     return result
 
 
-def cached_queue_count() -> int | None:
-    """Banner-friendly count: at most one BQ query per minute; None on any issue."""
+_history_cache: dict[str, Any] = {"at": 0.0, "days": 0, "value": None}
+
+
+def _origin_event(events: list[dict[str, Any]], name: str, version: str | None,
+                  before: int | None = None) -> dict[str, Any]:
+    """The chart's most recent 'queued' event (before index ``before``) — the
+    one at this version when there is one, else the last one queued. {} when
+    the chart never went through the queue."""
+    origin: dict[str, Any] = {}
+    stop = len(events) if before is None else before
+    for j in range(stop - 1, -1, -1):
+        prev = events[j]
+        if prev.get("event_type") != "queued" or prev.get("artifact_name") != name:
+            continue
+        if not origin:
+            origin = prev
+        if prev.get("artifact_version") == version:
+            origin = prev
+            break
+    return origin
+
+
+def requeue_from_history(artifact_name: str, artifact_version: str, actor: str) -> dict[str, Any]:
+    """Put a chart back into the next release WITHOUT the build/controls gate.
+
+    The gate ran when the chart first qualified — a 'queued' event exists only
+    for a chart that passed it — and the run it verified has not changed since,
+    so re-verifying adds nothing and can fail for reasons that are not the
+    chart's (a tag deleted after the run). The new 'queued' event copies what
+    the original recorded: the run, the ticket, the routing, the verification
+    result, the change details. Refused for a chart that never went through
+    the gate (no 'queued' event — it never qualified) or is queued already.
+    """
+    name, version = str(artifact_name or "").strip(), str(artifact_version or "").strip()
+    if not name or not version:
+        return {"ok": False, "error": "chart and version are required"}
+    if not str(actor or "").strip():
+        return {"ok": False, "error": "requested_by (your email) is required."}
+    if not queue_enabled():
+        return _disabled()
+    try:
+        events = _fetch_events(_HISTORY_LOOKBACK_DAYS)
+    except Exception as e:
+        return {"ok": False, "error": f"BigQuery unavailable: {e}"}
+    if any(q["artifact_name"] == name and q.get("artifact_version") == version for q in reduce_queue(events)):
+        return {"ok": False, "error": f"{name}:{version} is already queued for the next release."}
+    origin = _origin_event(events, name, version)
+    if not origin or origin.get("artifact_version") != version:
+        return {"ok": False, "error": (
+            f"{name}:{version} never went through the release queue, so it never qualified — "
+            "queue it with the run that built it and its ticket.")}
+    allowed, note = _allowed_and_note(origin)
+    allowed_list = [a.strip() for a in str(allowed or "").split(",") if a.strip()] if not isinstance(allowed, list) else list(allowed)
+    result = add_intent(
+        f"{name}:{version}", actor.strip(),
+        prl1_only=bool(origin.get("prl1_only")), df_only=bool(origin.get("df_only")),
+        note=note, deployment_repo=origin.get("deployment_repo") or "",
+        build_verified=origin.get("build_verified"), jira_ticket=origin.get("jira_ticket") or "",
+        change_details=origin.get("change_details") or "", build_run_url=origin.get("build_run_url") or "",
+        target_envs=origin.get("target_envs") or "", allowed_failures=allowed_list or None,
+    )
+    if result.get("ok"):
+        result["artifact"] = f"{name}:{version}"
+        result["note"] = "back in the next release with the run, ticket and details it first qualified with"
+    return result
+
+
+_HISTORY_LOOKBACK_DAYS = 365
+
+
+def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[str, Any]]:
+    """PURE: past releases, newest first, each with the charts it shipped and —
+    joined from the chart's own 'queued' event — what is needed to queue it
+    again: the build run that built it, the ticket, the routing. A release is
+    the group of 'released' events the drain wrote together (release name + PR).
+
+    Why the join: a 'released' event records only what shipped. Queueing again
+    goes through the same gate as the first time, and the gate needs the run
+    that built that version — so a chart whose queue event carried no run is
+    shown but cannot be ticked (``requeueable`` false, and the table says why).
+    ``in_queue`` marks a chart:version already queued again, so a second tick
+    cannot write a duplicate intent.
+    """
+    queued_now = {(q["artifact_name"], q.get("artifact_version")) for q in reduce_queue(events)}
+    groups: dict[tuple, dict[str, Any]] = {}
+    for i, ev in enumerate(events):
+        if ev.get("event_type") != "released" or not ev.get("artifact_name"):
+            continue
+        name, version = ev["artifact_name"], ev.get("artifact_version")
+        origin = _origin_event(events, name, version, before=i)
+        key = (ev.get("release_name") or "", ev.get("pr_number"), ev.get("deployment_repo") or "")
+        group = groups.setdefault(key, {
+            "release_name": ev.get("release_name") or "(unnamed release)",
+            "pr_number": ev.get("pr_number"),
+            "deployment_repo": ev.get("deployment_repo") or "",
+            "released_at": ev.get("event_ts") or "",
+            "released_by": ev.get("requested_by") or "",
+            "items": [],
+        })
+        group["released_at"] = max(group["released_at"], ev.get("event_ts") or "")
+        already = (name, version) in queued_now
+        group["items"].append({
+            "artifact_name": name,
+            "artifact_version": version,
+            "jira_ticket": origin.get("jira_ticket") or "",
+            "build_run_url": origin.get("build_run_url") or "",
+            "prl1_only": bool(origin.get("prl1_only")),
+            "df_only": bool(origin.get("df_only")),
+            "target_envs": origin.get("target_envs") or "",
+            "change_details": origin.get("change_details") or "",
+            "note": _allowed_and_note(origin)[1] if origin else "",
+            "queued_by": origin.get("requested_by") or "",
+            "in_queue": already,
+            # It went through the gate once (at this version): it can go back
+            # directly. Otherwise the gate must run, with a run and a ticket.
+            "from_queue": bool(origin) and origin.get("artifact_version") == version,
+            "requeueable": bool(origin.get("build_run_url")) and not already,
+        })
+    releases = sorted(groups.values(), key=lambda g: g["released_at"], reverse=True)
+    return releases[:limit]
+
+
+def history(days: int = 21, limit: int = 25, use_cache: bool = True) -> dict[str, Any]:
+    """Past releases for the history table — cached like the queue, and
+    cleared by every write, so a chart just queued again shows as such."""
     import time
 
     if not queue_enabled():
+        return _disabled()
+    cached = _history_cache
+    if use_cache and cached["value"] is not None and cached["days"] == days \
+            and time.time() - cached["at"] < _QUEUE_TTL_SECONDS:
+        return cached["value"]
+    try:
+        events = _fetch_events(days)
+        result = {"ok": True, "days": days, "events_considered": len(events),
+                  "releases": release_history(events, limit)}
+    except Exception as e:
+        result = {"ok": False, "error": f"BigQuery unavailable: {e}"}
+    cached.update(at=time.time(), days=days, value=result)
+    return result
+
+
+def cached_queue_count() -> int | None:
+    """Banner-friendly count: current_queue() already caches for 30s and is
+    invalidated on every write, so this is a plain projection over it."""
+    if not queue_enabled():
         return None
-    now = time.time()
-    if now - _count_cache["at"] < 60:
-        return _count_cache["count"]
     result = current_queue()
-    _count_cache["at"] = now
-    _count_cache["count"] = result.get("count") if result.get("ok") else None
-    return _count_cache["count"]
+    return result.get("count") if result.get("ok") else None

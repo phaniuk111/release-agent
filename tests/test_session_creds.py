@@ -127,3 +127,56 @@ def test_repo_resolvers_prefer_session_repo(monkeypatch):
     with store.activate("t1"):
         assert _common.active_build_repo() == "user/repo"
         assert _common.active_deploy_repo() == "user/repo"
+
+
+# --- connecting checks the token before storing it -------------------------------
+# Found live: POST /api/session/connect stored whatever was pasted, so a bogus
+# PAT answered "connected: true" and every GitHub action afterwards failed
+# somewhere else entirely, with an error that named neither the token nor the
+# connect step.
+
+def test_a_token_github_rejects_does_not_connect(monkeypatch):
+    from release_agent import session_creds as SC
+
+    class _Resp:
+        status_code = 401
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: _Resp())
+    ok, why = SC.verify_token("ghp_" + "x" * 36)
+    assert ok is False and "rejected" in why.lower()
+
+
+def test_a_good_token_reports_its_login(monkeypatch):
+    from release_agent import session_creds as SC
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"login": "dev"}
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: _Resp())
+    assert SC.verify_token("ghp_good") == (True, "dev")
+
+
+def test_github_being_unreachable_is_not_reported_as_a_bad_token(monkeypatch):
+    """Behind the proxy this is the common failure, and blaming the token sends
+    the person to regenerate a PAT that was fine."""
+    from release_agent import session_creds as SC
+
+    def _boom(*a, **k):
+        raise RuntimeError("proxy timed out")
+
+    monkeypatch.setattr("requests.get", _boom)
+    ok, why = SC.verify_token("ghp_good")
+    assert ok is False and "Could not reach GitHub" in why
+
+
+def test_an_empty_token_is_refused_without_a_call(monkeypatch):
+    from release_agent import session_creds as SC
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")))
+    assert SC.verify_token("  ")[0] is False

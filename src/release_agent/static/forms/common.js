@@ -63,6 +63,70 @@ export function opening(label) {
     return ph;
 }
 
+// ---- the labelled field every form card is built from ----------------------
+// One builder, one class string. Four forms used to carry their own copy of
+// this (plus two inline ones), and the copies had already drifted apart — the
+// queue rows were rendered a padding step smaller than every other field.
+//
+// spec: {label?, id?, type?, tag?, placeholder?, value?, default?, options?,
+//        rows?, list?, title?, className?, boxClass?}
+//   options  -> a <select>: a workflow `choice` input, where GitHub refuses any
+//               value outside its options:, so free text there only earns a
+//               refusal after the developer has already confirmed.
+//   tag      -> 'textarea'; anything else is an <input> of `type` (default text).
+//   className REPLACES the default 'w-full' sizing — row fields size themselves
+//               (flex-1 / w-24) and would fight a full-width rule.
+export const FIELD_CLASS = 'bg-slate-900 border border-slate-700 rounded-lg ' +
+    'px-3 py-1.5 text-xs text-white focus:outline-none';
+
+/** The control alone, for rows that carry their own header instead of a label. */
+export function fieldControl(spec) {
+    const opts = spec.options || [];
+    const el = document.createElement(opts.length ? 'select' : (spec.tag || 'input'));
+    if (spec.id) el.id = spec.id;
+    el.className = FIELD_CLASS + ' ' + (spec.className == null ? 'w-full' : spec.className);
+    if (opts.length) {
+        // A blank first entry, so the field starts on nothing rather than on a
+        // value nobody picked.
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = 'select ' + String(spec.label || '').toLowerCase() + '…';
+        el.appendChild(blank);
+        opts.forEach(o => {
+            const opt = document.createElement('option');
+            opt.value = o; opt.textContent = o;
+            el.appendChild(opt);
+        });
+        if (spec.default != null && opts.indexOf(spec.default) !== -1) el.value = spec.default;
+    } else {
+        if (el.tagName === 'INPUT') el.type = spec.type || 'text';
+        if (spec.rows) el.rows = spec.rows;
+        if (spec.placeholder) el.placeholder = spec.placeholder;
+        if (spec.default != null) el.value = spec.default;
+    }
+    if (spec.value != null) el.value = spec.value;
+    if (spec.list) el.setAttribute('list', spec.list);
+    if (spec.title) el.title = spec.title;
+    if (spec.spellcheck === false) el.spellcheck = false;
+    return el;
+}
+
+/** A <label> above its control, boxed, appended to the caller's grid. */
+export function labeledField(parent, spec) {
+    const el = fieldControl(spec);
+    const box = document.createElement('div');
+    if (spec.boxClass) box.className = spec.boxClass;
+    if (spec.label) {
+        const l = document.createElement('label');
+        l.className = 'text-[11px] text-slate-400 block mb-0.5';
+        l.textContent = spec.label;
+        box.appendChild(l);
+    }
+    box.appendChild(el);
+    if (parent) parent.appendChild(box);
+    return el;
+}
+
 // Small inline warning appended to a form when its context couldn't load.
 export function ctxNote(ctx, what) {
     if (!ctx._ctxError) return null;

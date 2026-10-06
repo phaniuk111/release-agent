@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 dependencies = [
     # Core agent framework. 2.9+: failed workflow nodes rerun on resume (apply_deploy
     # is written to be idempotent for it), plus the resume and Vertex-session fixes.
-    "google-adk>=2.9",
+    "google-adk>=2.11",
     # Vertex AI Gemini
     "google-genai>=1.0",
     # Web server (production UI)
@@ -33,6 +33,12 @@ dependencies = [
     "google-cloud-aiplatform>=1.71",
     "dulwich>=1.2.15",
     "pyjwt[crypto]>=2.8",
+    # Agent observability (adk_release_agent/telemetry.py): OTLP export of ADK's
+    # own spans — to Langfuse — plus the OpenInference instrumentors Langfuse
+    # documents for ADK and google-genai. Off unless LANGFUSE_HOST is set.
+    "opentelemetry-exporter-otlp-proto-http>=1.42.1",
+    "openinference-instrumentation-google-adk>=0.1.28",
+    "openinference-instrumentation-google-genai>=1.4.7",
 ]
 
 [project.optional-dependencies]

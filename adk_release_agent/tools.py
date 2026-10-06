@@ -8,31 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 from typing import Any
 
-from release_agent.tools import gh_tools
 
 
-def _coerce_tool_result(result: Any) -> dict[str, Any]:
-    """Return a dictionary for ADK, preserving structured JSON tool results."""
-    if isinstance(result, dict):
-        return result
-    if isinstance(result, str):
-        try:
-            parsed = json.loads(result)
-        except json.JSONDecodeError:
-            return {"result": result}
-        return parsed if isinstance(parsed, dict) else {"result": parsed}
-    return {"result": result}
-
-
-def _invoke_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
-    tool = getattr(gh_tools, tool_name)
-    payload = args or {}
-    if hasattr(tool, "invoke"):
-        return _coerce_tool_result(tool.invoke(payload))
-    return _coerce_tool_result(tool(**payload))
+# The dispatch + JSON coercion live in the tool facade itself (gh_tools), so the
+# queue gate and these wrappers share one implementation. Kept under the old
+# private names: deploy.py imports _invoke_tool, and tests rebind it.
+from release_agent.tools.gh_tools import (  # noqa: E402
+    invoke as _invoke_tool,
+)
 
 
 def off_event_loop(fn):
@@ -86,11 +71,6 @@ def get_pr_comments(pr_number: int, limit: int = 30) -> dict[str, Any]:
     return _invoke_tool("get_pr_comments", {"pr_number": pr_number, "limit": limit})
 
 
-def summarize_pr_controls(pr_number: int) -> dict[str, Any]:
-    """Summarize CHG/RMG tickets and RLFT/RFTL control status from PR comments."""
-    return _invoke_tool("summarize_pr_controls", {"pr_number": pr_number})
-
-
 def _build_repo_for(repo: str, dataflow: bool) -> str:
     """Explicit repo wins; else Dataflow images resolve to DF_BUILD_REPO (their
     builds live in a separate repo from the GKE services'); else config default."""
@@ -103,65 +83,20 @@ def _build_repo_for(repo: str, dataflow: bool) -> str:
     return ""
 
 
-def verify_image_tag_build(
-    image: str, tag: str, repo: str = "", dataflow: bool = False
-) -> dict[str, Any]:
-    """Verify whether an image tag can be traced to a build workflow run.
-    Set dataflow=true for Dataflow images — they are built in a different repo
-    (DF_BUILD_REPO) than the GKE services."""
-    return _invoke_tool(
-        "verify_image_tag_build",
-        {"image": image, "tag": tag, "repo": _build_repo_for(repo, dataflow)},
-    )
-
-
-def get_build_controls(
-    image: str = "", tag: str = "", repo: str = "", run_id: int = 0, dataflow: bool = False
-) -> dict[str, Any]:
-    """Read release build controls for an image tag or explicit workflow run id.
-    Set dataflow=true for Dataflow images (built in DF_BUILD_REPO)."""
-    return _invoke_tool(
-        "get_build_controls",
-        {"image": image, "tag": tag, "repo": _build_repo_for(repo, dataflow), "run_id": run_id},
-    )
-
-
 def get_build_report(
-    image: str = "", tag: str = "", workflow_url: str = "", repo: str = "", dataflow: bool = False
+    image: str = "", tag: str = "", workflow_url: str = "", repo: str = "",
+    run_id: int = 0, dataflow: bool = False,
 ) -> dict[str, Any]:
-    """Full build diagnosis for an image:tag OR a GitHub Actions run URL: which
-    STEPS failed, which controls (RCTLDEF…/RLFT) passed or
+    """Full build diagnosis for an image:tag, a GitHub Actions run URL, or a bare
+    run id: which STEPS failed, which controls (RCTLDEF…/RLFT) passed or
     failed (gate verdict), and whether the tag was built from the default
     branch. Use when a developer asks WHAT failed in their build/run and what
-    to fix. A workflow_url carries its own repo; for image+tag lookups of
-    Dataflow images set dataflow=true (they build in DF_BUILD_REPO)."""
+    to fix. A workflow_url carries its own repo; for image+tag or run_id
+    lookups of Dataflow images set dataflow=true (they build in DF_BUILD_REPO)."""
     return _invoke_tool(
         "get_build_report",
         {"image": image, "tag": tag, "workflow_url": workflow_url,
-         "repo": _build_repo_for(repo, dataflow)},
-    )
-
-
-def remove_from_release(
-    image_names: str, environment: str = "staging", deployment_repo: str = ""
-) -> dict[str, Any]:
-    """Unstage chart names from today's PRD release PR (environment='staging', the
-    default) or remove them from a live environment ('uat' or 'prod' — only when the
-    user explicitly names it). deployment_repo (owner/repo) targets a non-default
-    deployment repo — pass it only when the user names one."""
-    return _invoke_tool(
-        "remove_from_release",
-        {"image_names": image_names, "environment": environment, "deployment_repo": deployment_repo},
-    )
-
-
-def retrigger_deployment_workflow(
-    pr_number: int, simulate_closed_controls: str = ""
-) -> dict[str, Any]:
-    """Retrigger deployment workflow for an existing deployment PR."""
-    return _invoke_tool(
-        "retrigger_deployment_workflow",
-        {"pr_number": pr_number, "simulate_closed_controls": simulate_closed_controls},
+         "repo": _build_repo_for(repo, dataflow), "run_id": run_id},
     )
 
 
@@ -206,280 +141,21 @@ def queue_release_intent(
     build_run_url: str = "",
     target_envs: str = "",
 ) -> dict[str, Any]:
-    """Register an artifact for the NEXT release (the intake queue): chart:version,
-    the requester's email, PRL1-only / Dataflow-only routing, target_envs (which
-    environments the developer picked, e.g. "prd" or "prd,prl1" — recorded intent,
-    since a Dataflow entry may name both pipelines and which one is triggered is
-    decided at deploy time), optional note for
-    DevOps, the change context — jira_ticket (e.g. REL-1234) and change_details
-    (what changed and why) — and build_run_url, the GitHub Actions run that
-    built the tag. build_run_url is REQUIRED: nothing is queued without it —
-    the run is checked NOW: it must be the run that built exactly this
-    chart:version (the tag that triggered it, or the tag its tag step logged),
-    and only a run whose build succeeded and whose controls ALL passed is
-    queued (build_verified=true). A failed build or
-    control, a control that has not passed yet, or a run with no controls at
-    all makes the chart INELIGIBLE (eligible=false, with failed_controls /
-    failed_steps / open_controls listed) so the dev fixes and re-runs first.
-    Re-queuing a chart replaces its version. When the portal knows who is
-    signed in, that verified email is recorded and requested_by is ignored."""
-    from release_agent import identity
-    from release_agent.tools import release_queue as _rq
+    """Queue a chart:version for the next release, after checking it is eligible.
 
-    requested_by, refused = identity.actor(requested_by, identity.current())
-    if refused:
-        return {"ok": False, "eligible": False, "error": refused}
-    name, version = _rq._split_artifact(artifact)
-    verified: bool | None = None
-    warnings: list[str] = []
-    run_url = str(build_run_url or "").strip()
-    if not run_url:
-        return {
-            "ok": False,
-            "error": (
-                "The GitHub Actions run URL that built this tag is required — "
-                "I check the build and RLFT/RFTL controls before anything is "
-                "queued. Ask the developer for the run URL (…/actions/runs/<id>)."
-            ),
-        }
-    # Every field is required, in BOTH lanes — the form enforcing it while the
-    # chat tool did not would just move the gap. Asked for by name so the agent
-    # can prompt for exactly what is missing.
-    missing = [
-        label for value, label in (
-            (jira_ticket, "the JIRA ticket"),
-        ) if not str(value or "").strip()
-    ]
-    if missing:
-        return {
-            "ok": False,
-            "error": (
-                f"Still needed before this can be queued: {', '.join(missing)}. "
-                "Ask the developer for it — nothing was queued."
-            ),
-        }
+    Requires the GitHub Actions run URL that built exactly this chart:version, and
+    a JIRA ticket. Refuses when a release control failed on that run. The rules
+    live in release_agent.tools.queue_gate so the queue FORM applies exactly the
+    same ones — this is the model's door to them, not a second implementation.
+    """
+    from release_agent.tools.queue_gate import queue_release_intent as _gate
 
-    # Resolve the JIRA key before anything is written. A typo'd key would
-    # otherwise be copied verbatim into the change record and only be noticed by
-    # whoever audits it — so a key that does not exist is refused, while an
-    # unreachable JIRA is only a warning (an outage must not stop a release).
-    jira_issue = None
-    ticket = str(jira_ticket or "").strip()
-    if ticket:
-        from release_agent.tools import jira as _jira
-
-        if _jira.jira_configured():
-            try:
-                jira_issue = _jira.get_issue(ticket)
-            except _jira.JiraIssueNotFound as e:
-                return {
-                    "ok": False,
-                    "error": (
-                        f"JIRA ticket {ticket} could not be found ({e}). Check the key — "
-                        "it goes into the change record. Nothing was queued."
-                    ),
-                }
-            except _jira.JiraUnavailable as e:
-                warnings.append(f"Could not verify {ticket} against JIRA ({e}) — queued unverified.")
-            else:
-                # The developer already told JIRA what changed; don't make them
-                # type it twice.
-                if not str(change_details or "").strip() and jira_issue.get("summary"):
-                    change_details = jira_issue["summary"]
-
-    # Checked AFTER the JIRA lookup, so a resolvable ticket satisfies it: the
-    # developer already described the change once, in JIRA.
-    if not str(change_details or "").strip():
-        return {
-            "ok": False,
-            "error": (
-                "Still needed before this can be queued: what changed and why. "
-                "It drafts the change request on release day, so DevOps is not "
-                "guessing. Nothing was queued."
-            ),
-        }
-
-    # Eligibility gate: the dev pointed at the exact run — judge it.
-    try:
-        report = _invoke_tool("get_build_report", {"workflow_url": run_url})
-    except Exception as e:
-        report = {"found": False, "reason": str(e)}
-    if not report.get("found"):
-        return {
-            "ok": False,
-            "error": (
-                f"Could not inspect that run ({report.get('reason')}). "
-                "Check the URL — it must be a GitHub Actions run "
-                "(…/actions/runs/<id>) in the build repo. Nothing was queued."
-            ),
-        }
-    # One run, one artifact: the run's controls vouch only for what it built.
-    from release_agent.config import settings as _settings
-
-    run_id = (report.get("run") or {}).get("id")
-    if _settings.queue_require_run_match and run_id and report.get("repo"):
-        from release_agent.tools.controls import match_run_to_artifact
-
-        match = match_run_to_artifact(report["repo"], run_id, name, version)
-        if not match.get("ok"):
-            return {
-                "ok": False,
-                "eligible": False,
-                "artifact": f"{name}:{version}",
-                "run_url": (report.get("run") or {}).get("url") or run_url,
-                "built_tags": match.get("built") or [],
-                "error": match.get("reason") + " Nothing was queued.",
-                "reason": match.get("reason"),
-            }
-    # `controls` is the source of truth for the VERDICT — deriving from it means a
-    # report without the convenience keys still refuses an ineligible build,
-    # rather than reading as "no failures" and queueing it.
-    controls = report.get("controls") or []
-    failed_detail = report.get("failed_controls") or [
-        {"control": c.get("control"), "job": c.get("job"), "conclusion": c.get("conclusion")}
-        for c in controls if c.get("failed")
-    ]
-    open_detail = report.get("open_controls") or [
-        {"control": c.get("control"), "job": c.get("job"),
-         "status": c.get("status"), "conclusion": c.get("conclusion")}
-        for c in controls if not c.get("passed") and not c.get("failed")
-    ]
-    # QUEUE_ALLOWED_FAILING_CONTROLS: some controls may fail without stopping the
-    # chart — it is queued, but recorded and shown as failed. Everything else
-    # still refuses, and a control implemented as a whole JOB takes its own
-    # failed steps with it (they are that control's failure, not a second one).
-    from release_agent.tools.controls import allowed_to_fail
-
-    allowed_detail = [c for c in failed_detail if allowed_to_fail(str(c.get("control") or ""))]
-    failed_detail = [c for c in failed_detail if c not in allowed_detail]
-    allowed_jobs = {c.get("job") for c in allowed_detail if c.get("job") == c.get("control")}
-    failed_controls = [c.get("control") for c in failed_detail]
-    failed_steps = [s for s in (report.get("failed_steps") or [])
-                    if not (isinstance(s, dict) and s.get("job") in allowed_jobs)]
-    # The run failing is explained by the allowed controls only when nothing
-    # else failed; a run that failed with no step or control detail still refuses.
-    run_ok = report.get("run_succeeded") or (bool(allowed_detail) and not failed_steps)
-    if failed_controls or failed_steps or not run_ok:
-        return {
-            "ok": False,
-            "eligible": False,
-            "artifact": f"{name}:{version}",
-            "run_url": (report.get("run") or {}).get("url") or run_url,
-            "run_conclusion": (report.get("run") or {}).get("conclusion"),
-            "failed_controls": failed_controls,
-            "failed_controls_detail": failed_detail,   # name + job, for "which one, where"
-            "failed_steps": failed_steps,
-            "gate": report.get("gate"),
-            "reason": (
-                "This build is NOT eligible for the release — fix the failures, "
-                "re-run the build, then queue again with the new run."
-            ),
-        }
-    # PASS = every control passed; with allowed failures, every OTHER one did.
-    allowed_failures = [
-        f"{c.get('control')}{' in job ' + c['job'] if c.get('job') and c.get('job') != c.get('control') else ''}"
-        for c in allowed_detail
-    ]
-    verified = report.get("gate") == "PASS" or (bool(allowed_detail) and not open_detail)
-    if not verified and _settings.queue_require_controls_pass:
-        # Only a PASS queues. "Nothing failed" is not "passed": a control still
-        # running (or skipped) has proven nothing yet, and a run where no step
-        # or job matched the control prefixes has no controls at all — both
-        # used to queue with a warning, which let an unchecked build into the
-        # release. Say which of the two it is; the fix differs.
-        if open_detail:
-            named = ", ".join(
-                f"{c['control']}{' in job ' + c['job'] if c.get('job') else ''} "
-                f"({c.get('status') or c.get('conclusion') or 'not run'})"
-                for c in open_detail
-            )
-            reason = (f"{len(open_detail)} control(s) had not passed in that run: {named}. "
-                      "Every control must pass before a chart can be queued — let the run "
-                      "finish (or re-run it), then queue with a run where they all pass.")
-        else:
-            prefixes = ", ".join(_settings.control_prefixes)
-            reason = (f"No step or job in that run matched the control prefixes ({prefixes}), "
-                      "so nothing shows the controls ran — it cannot be queued. Use the run of "
-                      "the build workflow that carries the controls, or ask DevOps to check "
-                      "CONTROL_PREFIXES.")
-        return {
-            "ok": False,
-            "eligible": False,
-            "artifact": f"{name}:{version}",
-            "run_url": (report.get("run") or {}).get("url") or run_url,
-            "gate": report.get("gate"),
-            "open_controls": open_detail,
-            "error": reason,
-            "reason": reason,
-        }
-    if report.get("gate") == "UNKNOWN":
-        # UNKNOWN has two very different causes and the developer's next step
-        # differs, so never report them with one message. Saying "no controls
-        # found" when controls exist but are open reads as the opposite of the
-        # truth; saying "still running" when NOTHING matched hides a naming
-        # mismatch that makes an ungated build look clean.
-        if open_detail:
-            named = ", ".join(
-                f"{c['control']} ({c.get('status') or c.get('conclusion') or 'not run'})"
-                for c in open_detail
-            )
-            warnings.append(
-                f"Queued, but {len(open_detail)} control(s) had not passed in that run: "
-                f"{named}. Re-queue with a run where they pass before release day."
-            )
-        elif not controls:
-            prefixes = ", ".join(_settings.control_prefixes)
-            warnings.append(
-                f"Run succeeded but NO step or job matched the control prefixes "
-                f"({prefixes}) — this build is queued ungated. Check the control "
-                f"names in that workflow."
-            )
-    run_tag = str(report.get("tag") or "")
-    if (not _settings.queue_require_run_match and version and run_tag
-            and version not in run_tag and name not in run_tag):
-        warnings.append(
-            f"The run built '{run_tag}', which doesn't obviously match {name}:{version} — double-check the URL."
-        )
-    result = _rq.add_intent(
-        artifact=artifact,
-        requested_by=requested_by,
-        prl1_only=prl1_only,
-        df_only=df_only,
-        note=note,
-        build_verified=verified,
-        jira_ticket=jira_ticket,
-        change_details=change_details,
-        build_run_url=run_url,
+    return _gate(
+        artifact=artifact, requested_by=requested_by, prl1_only=prl1_only,
+        df_only=df_only, note=note, jira_ticket=jira_ticket,
+        change_details=change_details, build_run_url=build_run_url,
         target_envs=target_envs,
-        allowed_failures=allowed_failures,
     )
-    if result.get("ok"):
-        result["eligible"] = True if verified else None
-        if allowed_failures:
-            result["allowed_failures"] = allowed_failures
-            warnings.insert(0, (
-                f"Queued. {', '.join(allowed_failures)} is OPEN — it failed on the build run "
-                "and may be a false positive, so it is allowed (QUEUE_ALLOWED_FAILING_CONTROLS) "
-                "and shown as open in the release queue until someone closes it manually. "
-                "The release is not stopped by it."))
-        if warnings:
-            result["warnings"] = warnings
-        # The UI lists these by name; the sentence in warnings is the chat lane's
-        # rendering of the same fact.
-        if open_detail:
-            result["open_controls"] = open_detail
-        result["run_url"] = (report.get("run") or {}).get("url") or run_url
-        if jira_issue:
-            result["jira"] = jira_issue
-    if result.get("ok"):
-        result["build_verified"] = verified
-        try:
-            events = _rq._fetch_events()
-            result["last_shipped"] = _rq.last_shipped(events, name)
-            result["last_time_flags"] = _rq.last_queued_flags(events, name)
-        except Exception:
-            pass
-    return result
 
 
 def withdraw_release_intent(artifact_name: str, requested_by: str = "") -> dict[str, Any]:
@@ -550,73 +226,162 @@ def release_stats(pattern: str = "", days: int = 90, event_type: str = "released
     return _rq.history_stats(pattern=pattern, days=days, event_type=event_type)
 
 
-def merge_prod_release(deployment_repo: str = "") -> dict[str, Any]:
-    """Release today's staged PRD release now (any time). Releasing finalizes it —
-    no new charts can be added afterwards; later prod deploys start a new release.
-    deployment_repo (owner/repo) targets a non-default deployment repo — pass it
-    only when the user names one (e.g. the repo their deploy was staged in)."""
-    return _invoke_tool("merge_prod_release", {"deployment_repo": deployment_repo})
+def bq_cost_scan(days: int = 0, top: int = 0) -> dict[str, Any]:
+    """The ranked BigQuery cost report for the team's dedicated project: top
+    query SHAPES — grouped, so 96 runs of one query are one row — ranked by
+    slot-hours or bytes billed, plus storage findings (no expiry, unread, large
+    unpartitioned tables) and write findings (unbatched writes, ingestion
+    errors). Every number is MEASURED from INFORMATION_SCHEMA, never
+    estimated, and the report states what running the scan itself cost.
+    days/top: 0 uses the configured default (BQ_COST_DAYS / BQ_COST_TOP)."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.scan(days or None, top or None)
 
 
-STATUS_TOOLS = [
+def bq_query_detail(qhash: str) -> dict[str, Any]:
+    """One query shape in depth, from a bq_cost_scan row's qhash: the full
+    sample SQL, run count, byte and slot-ms percentiles, execution stages,
+    BigQuery's own performance insights, and the layout of every table it
+    references. Call this before proposing a rewrite for a top-ranked shape."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.query_detail(qhash)
+
+
+def bq_table_layout(table: str) -> dict[str, Any]:
+    """A table's layout: partitioning, clustering, size, physical size, row
+    count, expiry and last-modified time. Use to see whether a costly query's
+    filter column is already the partition column, or whether the table is
+    clustered."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.table_layout(table)
+
+
+def bq_prune_estimate(table: str, column: str) -> dict[str, Any]:
+    """ESTIMATED, never measured: what partitioning or clustering ``table`` on
+    ``column`` would have pruned for the runs seen in the scan window. Table
+    changes cannot be dry-run and Google's recommender is not available here,
+    so this is inferred from INFORMATION_SCHEMA access patterns alone —
+    always report it as an estimate, never as a measured saving."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.prune_estimate(table, column)
+
+
+def bq_dry_run(sql: str) -> dict[str, Any]:
+    """Dry-run ``sql`` — this NEVER executes the query. Returns the bytes it
+    would process, the result schema, and the tables it references. Use to
+    price a candidate rewrite, or to inspect any query with no shape yet."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.dry_run(sql)
+
+
+def bq_verify_rewrite(
+    before_sql: str, after_sql: str, declared_schema_change: bool = False
+) -> dict[str, Any]:
+    """The test a proposed rewrite MUST pass before it is shown as advice: two
+    dry runs and a verdict. Accepted only if the rewrite is cheaper, references
+    no table the original did not, and keeps an identical result schema —
+    unless declared_schema_change=True for a deliberate, disclosed change (e.g.
+    SELECT * to named columns). Never proves row-level equivalence: say so
+    whenever reporting an accepted rewrite."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.verify_rewrite(
+        before_sql, after_sql, declared_schema_change=declared_schema_change
+    )
+
+
+def bq_findings(qhash: str = "") -> dict[str, Any]:
+    """What was suggested in earlier cost-scan runs and whether the cost
+    actually fell afterwards: adopted (cost dropped and stayed down), still
+    open (unchanged after repeated reports), or new. Empty qhash returns
+    recent history across every shape."""
+    from release_agent import features, identity
+
+    if not features.allowed("bq-cost", identity.current()):
+        return {"ok": False, "error": features.refusal("bq-cost")}
+    from release_agent.tools import bq_cost
+
+    return bq_cost.findings(qhash or None)
+
+# The Support chat tools (triage, investigate) live in support_tools.py.
+from .support_tools import (  # noqa: E402
+    dataflow_job,
+    investigate_evidence,
+    release_lookup,
+    run_logs,
+    source_audit,
+    source_logs,
+    source_metrics,
+    support_triage,
+    what_changed,
+)
+
+
+# Every tool the free-form chat agent can call. The per-domain grouping a skill
+# actually surfaces (status/PR/controls/ops/queue/monitoring) is declared in
+# that skill's own SKILL.md frontmatter (adk_additional_tools) — this flat list
+# is only the full universe those frontmatter lists are checked against.
+ADK_CHAT_TOOLS = [
     check_release_window,
     list_allowed_images,
     get_recent_runs,
     get_workflow_status,
-]
-
-PR_TOOLS = [
     find_prs,
     get_pr_details,
     get_pr_comments,
-    summarize_pr_controls,
-    get_recent_runs,
-    get_workflow_status,
-]
-
-CONTROLS_TOOLS = [
-    verify_image_tag_build,
-    get_build_controls,
     get_build_report,
-    get_recent_runs,
-]
-
-OPS_TOOLS = [
-    remove_from_release,
-    retrigger_deployment_workflow,
-    merge_prod_release,
     promote_release,
     promote_df_release,
-    find_prs,
-    get_pr_details,
-]
-
-# Next-release intake queue (BigQuery-backed) — conversational adds/withdraws/list,
-# plus stats over the release/deploy history event log.
-QUEUE_TOOLS = [
     queue_release_intent,
     withdraw_release_intent,
     list_release_queue,
     release_stats,
-    verify_image_tag_build,
-    list_allowed_images,
+    monitoring_checks,
+    query_metrics,
+    bq_cost_scan,
+    bq_query_detail,
+    bq_table_layout,
+    bq_prune_estimate,
+    bq_dry_run,
+    bq_verify_rewrite,
+    bq_findings,
+    support_triage,
+    investigate_evidence,
+    source_metrics,
+    source_logs,
+    source_audit,
+    dataflow_job,
+    run_logs,
+    release_lookup,
+    what_changed,
 ]
-
-# Monitoring: PromQL checks and ad-hoc metric questions. PromQL cannot write.
-MONITORING_TOOLS = [monitoring_checks, query_metrics]
-
-ADK_CHAT_TOOLS = list(
-    {
-        id(tool): tool
-        for tool in (STATUS_TOOLS + PR_TOOLS + CONTROLS_TOOLS + OPS_TOOLS + QUEUE_TOOLS
-                     + MONITORING_TOOLS)
-    }.values()
-)
-
-# These remain in the deterministic confirmed path, not the ADK free-form toolset.
-RELEASE_DEFINING_MUTATIONS = {
-    "apply_json_update",
-    "dispatch_workflow",
-    "open_release_pr",
-}
 

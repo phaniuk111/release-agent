@@ -2,6 +2,7 @@ import { escapeHtml as esc } from '../core/format.js';
 import { explainPrompt, formatValue, monitoringSummary, orderChecks, seriesLabel, watchingText }
     from '../core/monitoring.js';
 import { monitoring, monitoringAlertPolicy } from '../api.js';
+import { llmEnabled } from '../core/capabilities.js';
 import { sendMessage } from '../chat.js';
 import { opening, withDismiss } from './common.js';
 
@@ -39,7 +40,7 @@ function checkHtml(c, i) {
         (c.severity === 'warn' ? '<span class="text-[10px] text-amber-300">warn</span>' : '') +
         (watch ? '<span class="text-[11px] text-slate-500">' + esc(watch) + '</span>' : '') +
         '<span class="flex-1"></span>' +
-        (c.state === 'firing' || c.state === 'unknown'
+        ((c.state === 'firing' || c.state === 'unknown') && llmEnabled(window.PORTAL_UI)
             ? '<button type="button" data-ask="' + i + '" class="text-[11px] text-sky-400 hover:underline ' +
               'whitespace-nowrap"><i class="fa-solid fa-comment-dots mr-1"></i>Ask why</button>' : '') +
         (c.state !== 'no_data'

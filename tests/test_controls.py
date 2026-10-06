@@ -173,6 +173,25 @@ def test_get_build_report_needs_input():
     assert "workflow_url" in out["reason"] or "image" in out["reason"]
 
 
+# --- get_build_report via a bare run_id (get_build_controls's one extra capability) ---
+def test_get_build_report_via_bare_run_id(monkeypatch):
+    repo = _Repo(run=_run_with_a_failed_step(), compare_status="behind")
+    monkeypatch.setattr(C, "_get_github_client", lambda: _Client(repo))
+
+    out = json.loads(C.get_build_report.invoke({"run_id": 123, "repo": "org/build-repo"}))
+    assert out["found"] is True
+    assert out["repo"] == "org/build-repo"
+    assert out["run"]["id"] == 123
+    assert {s["name"] for s in out["failed_steps"]} == {"Run tests"}
+
+
+def test_get_build_report_bare_run_id_not_found(monkeypatch):
+    monkeypatch.setattr(C, "_get_github_client", lambda: _Client(_Repo(run=None)))
+    out = json.loads(C.get_build_report.invoke({"run_id": 999, "repo": "org/build-repo"}))
+    assert out["found"] is False
+    assert "999" in out["reason"]
+
+
 def test_get_build_report_bad_url(monkeypatch):
     monkeypatch.setattr(C, "_get_github_client", lambda: _Client(_Repo()))
     out = json.loads(C.get_build_report.invoke({"workflow_url": "https://github.com/org/repo/tree/main"}))

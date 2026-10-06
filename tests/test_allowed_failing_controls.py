@@ -5,6 +5,7 @@ refuses, and a run where everything passed queues exactly as before."""
 import pytest
 
 from adk_release_agent import tools as T
+from release_agent.tools import queue_gate as QG
 from release_agent.tools import chg_defaults as CHG
 from release_agent.tools import controls as C
 from release_agent.tools import release_queue as RQ
@@ -35,7 +36,7 @@ def queue(monkeypatch):
     writes = []
 
     def run(rep):
-        monkeypatch.setattr(T, "_invoke_tool", lambda name, args=None: rep)
+        monkeypatch.setattr(QG, "_invoke_tool", lambda name, args=None: rep)
         monkeypatch.setattr(RQ, "add_intent", lambda **kw: writes.append(kw) or {"ok": True, "intent": kw})
         return T.queue_release_intent(
             artifact="payments-api:1.4.2", requested_by="dev@example.com",
@@ -108,16 +109,22 @@ def test_another_control_failing_is_refused_even_when_1691_failed_too(queue):
     assert not out["ok"] and out["failed_controls"] == ["RCTLDEF0000104"] and not queue.writes
 
 
-def test_a_failed_build_step_is_refused_even_when_only_1691_failed(queue):
+def test_a_failed_build_step_no_longer_refuses_but_is_reported(queue):
+    """Changed 2026-09-18 on the owner's instruction: only RCTLDEF controls decide
+    eligibility. A failed ordinary step is said out loud, not made a blocker."""
     rep = report([ctl("RCTLDEF0001691", ok=False)], run_ok=False,
                  failed_steps=[{"job": "build", "name": "Unit tests"}])
     out = queue(rep)
-    assert not out["ok"] and out["failed_steps"] and not queue.writes
+    assert out["ok"] and out["failed_steps"]
+    assert any("Unit tests" in w for w in out["warnings"])
 
 
-def test_a_run_that_failed_with_no_detail_is_refused(queue):
+def test_a_run_that_failed_with_no_detail_queues_but_says_so(queue):
+    """Every control passed and nothing else is recorded as failed, so the controls
+    say ship it — but a red run is never queued silently."""
     out = queue(report([ctl("RCTLDEF0000104")], run_ok=False))
-    assert not out["ok"] and not queue.writes
+    assert out["ok"] and queue.writes
+    assert any("conclusion" in w for w in out["warnings"])
 
 
 def test_with_nothing_allowed_1691_refuses_as_it_always_did(queue, monkeypatch):
@@ -171,7 +178,7 @@ def test_the_change_request_does_not_mention_it():
 def test_a_dataflow_chart_follows_the_same_rule(queue, monkeypatch):
     monkeypatch.setattr(RQ, "add_intent", lambda **kw: queue.writes.append(kw) or {"ok": True, "intent": kw})
     rep = report([ctl("RCTLDEF0000104"), ctl("RCTLDEF0001691", ok=False)], run_ok=False)
-    monkeypatch.setattr(T, "_invoke_tool", lambda name, args=None: rep)
+    monkeypatch.setattr(QG, "_invoke_tool", lambda name, args=None: rep)
     out = T.queue_release_intent(artifact="df-orders:2.1.0", requested_by="d@x", df_only=True,
                                  build_run_url=RUN["url"], jira_ticket="ABC-1", change_details="d")
     assert out["ok"] and queue.writes[-1]["df_only"] is True
@@ -185,3 +192,54 @@ def test_a_failure_kept_in_the_note_still_reads_back():
           "note": "[control failed, allowed: RCTLDEF0001691 in job build] ship after 5pm"}
     [q] = RQ.reduce_queue([ev])
     assert q["allowed_failures"] == "RCTLDEF0001691 in job build" and q["note"] == "ship after 5pm"
+
+
+# --- only RELEASE CONTROLS decide eligibility --------------------------------------
+# Reported from the enterprise (2026-09-18): "Generate HCC Report" failing blocked
+# queueing, and it also defeated the 1691 allowance, because the gate refused on any
+# failed step and on the run's own red conclusion. Steps the release process does not
+# govern must not hold the release.
+
+def test_a_failed_non_control_step_does_not_block_the_queue(queue):
+    rep = report([ctl("RCTLDEF0000104"), ctl("RCTLDEF0001691")], run_ok=False,
+                 failed_steps=[{"job": "build-deploy-publish", "name": "Generate HCC Report"}])
+    out = queue(rep)
+    assert out["ok"] and out["eligible"] is True, "a non-control step must not refuse"
+    assert queue.writes[0]["build_verified"] is True
+    assert any("Generate HCC Report" in w for w in out["warnings"]), "but it must be SAID"
+
+
+def test_1691_may_fail_alongside_a_failed_non_control_step(queue):
+    """Both of the reported problems at once — this is the combination that was
+    blocking: the HCC step turns the run red, which used to defeat the allowance."""
+    rep = report([ctl("RCTLDEF0000104"), ctl("RCTLDEF0001691", ok=False)], run_ok=False,
+                 failed_steps=[{"job": "build-deploy-publish", "name": "Generate HCC Report"}])
+    out = queue(rep)
+    assert out["ok"] and out["eligible"] is True
+    assert queue.writes[0]["allowed_failures"] == ["RCTLDEF0001691 in job build"]
+    assert any("OPEN" in w for w in out["warnings"])
+
+
+def test_a_red_run_with_no_failed_control_still_queues(queue):
+    """A run can be red for reasons that are not controls at all."""
+    out = queue(report([ctl("RCTLDEF0000104"), ctl("RCTLDEF0001691")], run_ok=False))
+    assert out["ok"] and out["eligible"] is True
+
+
+def test_a_real_control_failure_still_refuses(queue):
+    """The rule narrowed to controls — it did not go away."""
+    rep = report([ctl("RCTLDEF0000043", ok=False)], run_ok=False,
+                 failed_steps=[{"job": "build", "name": "Generate HCC Report"}])
+    out = queue(rep)
+    assert not out["ok"] and out["failed_controls"] == ["RCTLDEF0000043"]
+    assert "RCTLDEF0000043" in out["reason"], "the refusal names the control, not the step"
+    assert not queue.writes
+
+
+def test_queueing_with_no_queue_configured_never_reads_bigquery(queue, monkeypatch):
+    """The hint read after a queue write ('last shipped', 'last time flags') ran
+    even with no queue configured and reached real BigQuery."""
+    reads = []
+    monkeypatch.setattr(RQ, "_fetch_events", lambda *a, **k: reads.append(1) or [])
+    out = queue(report([ctl("RCTLDEF0000104")]))
+    assert out["ok"] and reads == [], "no dataset, no BigQuery read"

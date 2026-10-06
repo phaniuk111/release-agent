@@ -24,23 +24,16 @@ try:
     from google.adk.plugins.base_plugin import BasePlugin
     from google.adk.tools.base_tool import BaseTool
     from google.adk.tools.tool_context import ToolContext
-
-    _ADK_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - exercised only without google-adk
     BasePlugin = object  # type: ignore[assignment,misc]
-    BaseTool = Any  # type: ignore[assignment,misc]
-    ToolContext = Any  # type: ignore[assignment,misc]
-    _ADK_AVAILABLE = False
 
 
-# Release-defining mutations that must never run from the free-form chat path.
-# Kept in sync with ``adk_release_agent.tools.RELEASE_DEFINING_MUTATIONS`` plus the
-# confirmed-apply entrypoint, which belongs to the deterministic deploy Workflow.
+# Release-defining mutations that must never run from the free-form chat path:
+# opening a release PR, and the deterministic deploy Workflow's own confirmed-
+# apply entrypoints.
 BLOCKED_FREEFORM_TOOLS = frozenset(
     {
         "open_release_pr",
-        "apply_json_update",
-        "dispatch_workflow",
         "apply_confirmed_deploy",
         "deploy_dataflow",
     }
@@ -100,7 +93,8 @@ _SCOPE_WORDS = frozenset(
     staging environment env manifest artifact artifactory dataflow df composer
     dag dags rollback pipeline workflow run runs onboard onboarding api apis
     endpoint credentials auth cutoff window monitoring monitor metric metrics promql
-    prometheus alert alerts firing""".split()
+    prometheus alert alerts firing bigquery bq slot slots partition partitioned
+    partitioning clustered clustering""".split()
 )
 # Environments and other bare tokens that carry meaning on their own.
 _SCOPE_PREFIXES = ("confirm-",)
@@ -134,7 +128,9 @@ _CLASSIFY_PROMPT = """You screen ONE chat message for a software RELEASE portal.
 The portal covers: releases, deploys and promotions between environments; the
 next-release intake queue; build verification and release controls; deployment
 pull requests; release history and what is deployed where; monitoring — the
-team's PromQL checks, metrics and alerts; and guiding API CONSUMERS through
+team's PromQL checks, metrics and alerts; BigQuery cost — the team's most
+expensive queries, why they cost what they do, cheaper rewrites, and table
+partitioning, clustering and expiry; and guiding API CONSUMERS through
 onboarding. It also covers BACKGROUND questions about any of
 that ("what is a helm chart?", "how does the queue work?", "what can you do?").
 
@@ -189,8 +185,9 @@ class ScopeGuardPlugin(BasePlugin):
     #: Kept as an attribute so tests can assert on it without matching prose.
     REFUSAL = (
         "That's outside what this portal does. I cover releases and deploys, the "
-        "next-release queue, build controls, deployment PRs, what's deployed where "
-        "— and onboarding consumers to our APIs. Ask me one of those and I'm useful."
+        "next-release queue, build controls, deployment PRs, what's deployed where, "
+        "monitoring and BigQuery cost — and onboarding consumers to our APIs. Ask me "
+        "one of those and I'm useful."
     )
 
     def __init__(self, name: str = "scope_guard", mode: str | None = None) -> None:

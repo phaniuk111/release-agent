@@ -22,7 +22,6 @@ Never raises; errors are reported with the most likely fix.
 from __future__ import annotations
 
 import os
-import time
 from typing import Any
 
 from ._common import settings
@@ -134,27 +133,23 @@ def _session(target: dict, session=None, credentials=None) -> tuple[Any, str]:
 
 
 def _query(session, base: str, promql: str) -> dict[str, Any]:
-    t0 = time.monotonic()
-    try:
-        r = session.get(f"{base}/api/v1/query", params={"query": promql}, timeout=_TIMEOUT)
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "query": promql, "error": f"{type(e).__name__}: {e}"[:300]}
-    ms = int((time.monotonic() - t0) * 1000)
-    out: dict[str, Any] = {"query": promql, "status": r.status_code, "ms": ms}
-    try:
-        body = r.json()
-    except ValueError:
-        out.update(ok=False, error="answer is not JSON — likely a proxy or login page")
-        return out
-    body = body if isinstance(body, dict) else {}
-    if r.status_code != 200 or body.get("status") != "success":
-        err = body.get("error")        # a string from Prometheus, an object from Google APIs
-        message = err.get("message") if isinstance(err, dict) else err
-        out.update(ok=False, error=str(message or body or getattr(r, "reason", ""))[:300])
-        return out
-    result = (body.get("data") or {}).get("result")
+    """One instant query, reporting only a count and a sample metric name —
+    never parsed series values (see the module docstring).
+
+    The HTTP call and the Prometheus-vs-Google error/non-JSON normalisation are
+    identical to monitoring.run_query, so this delegates to it (lazily imported:
+    monitoring already imports this module at load time) for that part, asking
+    for the untouched result via its private ``_raw`` flag — monitoring's own
+    float-cast, capped rows would lose the raw count value this module reports.
+    """
+    from .monitoring import run_query as _run_query
+
+    res = _run_query(promql, session=session, target={"configured": True, "base_url": base}, _raw=True)
+    if not res.get("ok"):
+        return {k: v for k, v in res.items() if k != "hint"}
+    result = res.get("result")
     rows = result if isinstance(result, list) else []
-    out.update(ok=True, series=len(rows))
+    out: dict[str, Any] = {"query": promql, "status": 200, "ms": res.get("ms", 0), "ok": True, "series": len(rows)}
     if rows and isinstance(rows[0], dict):
         name = (rows[0].get("metric") or {}).get("__name__")
         if name:

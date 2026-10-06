@@ -26,7 +26,7 @@ def _before_tool(plugin, tool_name):
 
 def test_mutation_guard_blocks_release_defining_mutations():
     plugin = MutationGuardPlugin()
-    for name in ("open_release_pr", "apply_json_update", "dispatch_workflow", "apply_confirmed_deploy"):
+    for name in ("open_release_pr", "apply_confirmed_deploy", "deploy_dataflow"):
         result = _before_tool(plugin, name)
         assert result is not None
         assert result["error_code"] == "MUTATION_BLOCKED"
@@ -36,15 +36,8 @@ def test_mutation_guard_blocks_release_defining_mutations():
 def test_mutation_guard_allows_read_and_scoped_ops_tools():
     plugin = MutationGuardPlugin()
     # Read tools and the allowed scoped-ops mutations must pass through untouched.
-    for name in ("check_release_window", "find_prs", "remove_from_release", "merge_prod_release"):
+    for name in ("check_release_window", "find_prs", "promote_release", "merge_prod_release"):
         assert _before_tool(plugin, name) is None
-
-
-def test_blocked_set_matches_release_defining_mutations():
-    # The plugin's blocked set must cover every release-defining mutation plus the
-    # confirmed-apply entrypoint (which belongs to the deploy Workflow).
-    assert tools.RELEASE_DEFINING_MUTATIONS <= BLOCKED_FREEFORM_TOOLS
-    assert "apply_confirmed_deploy" in BLOCKED_FREEFORM_TOOLS
 
 
 def test_chat_app_registers_mutation_guard_plugin():
@@ -54,7 +47,7 @@ def test_chat_app_registers_mutation_guard_plugin():
 
 def test_skill_additional_tools_reference_real_chat_tools():
     """Every adk_additional_tools name in a SKILL.md must resolve to a chat tool."""
-    chat_tool_names = {tool.__name__ for tool in tools.ADK_CHAT_TOOLS}
+    chat_tool_names = {tool.__name__ for tool in tools.ADK_CHAT_TOOLS} | set(agent_module.EXTRA_CHAT_TOOL_NAMES)
     skills_dir = pathlib.Path(agent_module.__file__).parent / "skills"
 
     declared_any = False
@@ -70,6 +63,27 @@ def test_skill_additional_tools_reference_real_chat_tools():
             # The deploy skill is tool-less: deploys run the deterministic Workflow.
             assert not names
     assert declared_any
+
+
+def test_every_chat_tool_is_unlocked_by_some_skill():
+    """The mirror of test_skill_additional_tools_reference_real_chat_tools.
+
+    A tool registered in ADK_CHAT_TOOLS but named by no skill's
+    adk_additional_tools is permanently unreachable: no skill activation ever
+    surfaces it to the model, and nothing else notices — until now.
+    """
+    chat_tool_names = {tool.__name__ for tool in tools.ADK_CHAT_TOOLS}
+    skills_dir = pathlib.Path(agent_module.__file__).parent / "skills"
+
+    unlocked: set[str] = set()
+    for path in sorted(skills_dir.iterdir()):
+        if not path.is_dir():
+            continue
+        skill = load_skill_from_dir(path)
+        unlocked.update(skill.frontmatter.metadata.get("adk_additional_tools") or [])
+
+    unreachable = chat_tool_names - unlocked
+    assert not unreachable, f"registered but unlocked by no skill: {sorted(unreachable)}"
 
 
 def test_free_form_toolset_excludes_release_defining_mutations():
@@ -260,3 +274,37 @@ def test_email_mapped_into_rctoken_attributes_is_found():
     assert "attributes.email" in found["claim_names"]
     assert found["identity"]["attributes.email"] == "c***@example.com"
     assert found["identity"]["sub"] == "0a***"
+
+
+def test_scope_guard_counts_bigquery_cost_as_ours_without_a_model_call():
+    """The BQ cost skill's questions must never be screened out as 'general
+    knowledge': a BigQuery word is a domain signal, and the refusal names the
+    domain so someone refused knows it exists."""
+    from adk_release_agent.safety import ScopeGuardPlugin, _looks_in_scope
+
+    for text in ("what is costing us most in BigQuery?",
+                 "which bq tables should be partitioned or clustered?",
+                 "why does this query burn so many slots?"):
+        assert _looks_in_scope(text), text
+    assert "BigQuery cost" in ScopeGuardPlugin.REFUSAL
+
+
+def test_memory_recall_is_refused_when_identity_is_off(monkeypatch):
+    """Memory is keyed by the ADK user id, which is the verified email only
+    while identity is on. With it off every visitor shares one fixed id, so
+    recall hands one person another person's conversation — proven live: a
+    brand-new thread, no tool calls, answered with a chart version only ever
+    typed on a different thread. ADK_MEMORY_ENABLED alone must not switch it on."""
+    from adk_release_agent.agent import memory_recall_enabled, settings
+    from release_agent import identity
+
+    monkeypatch.setattr(settings, "adk_memory_enabled", True, raising=False)
+    monkeypatch.setattr(identity.settings, "identity_header", "", raising=False)
+    assert identity.enabled() is False
+    assert memory_recall_enabled() is False, "one shared user id means recall crosses people"
+
+    monkeypatch.setattr(identity.settings, "identity_header", "x-asm-rctoken", raising=False)
+    assert memory_recall_enabled() is True, "with a verified caller, recall is per person"
+
+    monkeypatch.setattr(settings, "adk_memory_enabled", False, raising=False)
+    assert memory_recall_enabled() is False, "the feature switch still wins"

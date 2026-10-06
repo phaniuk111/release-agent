@@ -1,5 +1,6 @@
 // Chat-box parsing that pops a form instead of sending a deploy command
 // straight to the agent. Pure: no DOM, no fetch.
+import { deployRoute } from '../core/deploy_routing.js';
 
 // Detect a deploy command typed in the chat box so we can pop the editable
 // JSON instead of sending it straight to the agent. Needs a deploy verb, a
@@ -28,6 +29,9 @@ function _wsTokens(text) {           // whitespace-separated raw tokens
     if (cur) out.push(cur);
     return out;
 }
+// Returns null when this is not a deploy command, otherwise
+// {env, name, version} plus the route from core/deploy_routing.js: `form` to
+// open, or `releaseOnly` with the `message` to show instead (PROD).
 export function parseDeployIntent(text) {
     const w = _wordSet(text);
     const hasVerb = w.has('deploy') || w.has('promote') || w.has('ship') ||
@@ -36,6 +40,8 @@ export function parseDeployIntent(text) {
     const env = (w.has('prod') || w.has('prd') || w.has('production')) ? 'prod'
               : (w.has('uat') ? 'uat' : null);
     if (!env) return null;
+    const route = deployRoute(env);
+    if (!route) return null;
     // Find a <name>:<version> (or name=version) token without regex.
     for (const tok of _wsTokens(text)) {
         let i = tok.indexOf(':');
@@ -46,7 +52,10 @@ export function parseDeployIntent(text) {
         while (version && '.,;:)'.indexOf(version[version.length - 1]) !== -1) version = version.slice(0, -1);
         const c = name[0];
         if (((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) && version) {
-            return { env: env, name: name, version: version };
+            return {
+                env: env, name: name, version: version,
+                form: route.form, releaseOnly: route.releaseOnly, message: route.message,
+            };
         }
     }
     return null;

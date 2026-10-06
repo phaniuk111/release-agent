@@ -5,6 +5,27 @@ metadata:
   labels:
     {{- include "release-copilot.labels" . | nindent 4 }}
 data:
+  {{- /* supportTable: the readable form of the support-triage mapping. What it
+         sets replaces the matching SUPPORT_* strings under config:, so a key is
+         never rendered twice. */}}
+  {{- $st := .Values.supportTable | default dict }}
+  {{- $fromTable := dict }}
+  {{- if $st.table }}
+  {{- $_ := set $fromTable "SUPPORT_TABLE" $st.table }}
+  {{- /* columns are optional: without them the app maps the table from its schema */}}
+  {{- if $st.columns }}{{- $_ := set $fromTable "SUPPORT_COLUMNS" (include "release-copilot.supportColumns" $st) }}{{- end }}
+  {{- with $st.dateLabel }}{{- $_ := set $fromTable "SUPPORT_DATE_LABEL" . }}{{- end }}
+  {{- with $st.statuses }}
+  {{- with .failed }}{{- $_ := set $fromTable "SUPPORT_FAILED_STATUSES" (join "," .) }}{{- end }}
+  {{- with .done }}{{- $_ := set $fromTable "SUPPORT_DONE_STATUSES" (join "," .) }}{{- end }}
+  {{- end }}
+  {{- with $st.owners }}{{- $_ := set $fromTable "SUPPORT_OWNERS" (include "release-copilot.supportOwners" $st) }}{{- end }}
+  {{- end }}
   {{- range $key, $val := .Values.config }}
+  {{- if not (hasKey $fromTable $key) }}
+  {{ $key }}: {{ $val | quote }}
+  {{- end }}
+  {{- end }}
+  {{- range $key, $val := $fromTable }}
   {{ $key }}: {{ $val | quote }}
   {{- end }}

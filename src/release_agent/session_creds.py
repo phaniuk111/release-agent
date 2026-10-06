@@ -129,8 +129,22 @@ class SessionCredentialStore:
     def __init__(self) -> None:
         self._by_thread: dict[str, SessionCredentials] = {}
 
-    def set(self, thread_id: str, creds: SessionCredentials) -> None:
+    def set(self, thread_id: str, creds: SessionCredentials) -> bool:
+        """Store this thread's creds. False (and nothing stored) when the thread
+        already holds SOMEONE ELSE's token.
+
+        ``get`` already withholds another person's token, but a write had no
+        such check: knowing a thread id (it is not a secret — see ``get``) was
+        enough to REPLACE the owner's stored PAT with your own. They were never
+        shown your token, but theirs was gone, and their next GitHub action
+        silently fell back to the server-wide one instead of running as them.
+        """
+        existing = self._by_thread.get(thread_id)
+        if existing is not None and existing.owner is not None \
+                and creds.owner is not None and existing.owner != creds.owner:
+            return False
         self._by_thread[thread_id] = creds
+        return True
 
     def get(self, thread_id: str, owner: str | None = None) -> SessionCredentials | None:
         """The thread's creds — withheld from anyone but their owner.
@@ -173,3 +187,38 @@ def get_store() -> SessionCredentialStore:
 def active_credentials() -> SessionCredentials | None:
     """The credentials bound to the current request, if any."""
     return _active.get()
+
+
+def verify_token(token: str) -> tuple[bool, str]:
+    """Is this PAT usable? Returns (ok, login-or-reason). Never raises.
+
+    Connecting used to store whatever was pasted, so a typo'd or expired token
+    reported "Connected" and every GitHub action afterwards failed with a
+    confusing error somewhere else entirely. One call to /user turns that into
+    an immediate, accurate answer at the point the person can fix it.
+    """
+    token = str(token or "").strip()
+    if not token:
+        return False, "A PAT token is required to connect."
+    try:
+        import requests
+
+        from .config import settings
+
+        api = (settings.github_base_url or "https://api.github.com").rstrip("/")
+        r = requests.get(
+            f"{api}/user",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            timeout=15,
+        )
+    except Exception as e:                      # network/proxy trouble, not a bad token
+        return False, f"Could not reach GitHub to check the token: {e}"[:200]
+    if r.status_code == 200:
+        try:
+            return True, str((r.json() or {}).get("login") or "")
+        except Exception:
+            return True, ""
+    if r.status_code in (401, 403):
+        return False, ("GitHub rejected that token (401/403). Check it has not expired and "
+                       "that it carries the scopes this portal needs.")
+    return False, f"GitHub answered {r.status_code} when checking the token."

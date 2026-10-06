@@ -39,8 +39,14 @@ def allowed(feature: str, caller) -> bool:
     return feature not in _names(settings.preview_features) or is_preview_user(caller)
 
 
+# How a gated feature is named to the person refused — a feature key is a
+# config token ("bq-cost"), not a sentence.
+_DISPLAY_NAMES = {"bq-cost": "The BigQuery cost report", "support-triage": "Support triage"}
+
+
 def refusal(feature: str) -> str:
-    return f"{feature.capitalize()} is not available yet — it is a preview feature."
+    name = _DISPLAY_NAMES.get(feature, feature.capitalize())
+    return f"{name} is not available yet — it is a preview feature."
 
 
 def ui_config(caller) -> dict[str, Any]:
@@ -51,4 +57,6 @@ def ui_config(caller) -> dict[str, Any]:
         # Shown to testers as a "preview" tag, so nobody mistakes it for released.
         "previewGroups": _names(settings.preview_groups) if preview else [],
         "preview": preview,
+        # LLM_ENABLED=false: the page hides what needs the AI assistant.
+        "llm": bool(settings.llm_enabled),
     }

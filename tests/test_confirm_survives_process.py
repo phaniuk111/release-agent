@@ -52,7 +52,7 @@ def test_a_wrong_token_is_refused_even_with_a_payload(monkeypatch):
 
 def test_prepare_returns_the_payload_the_workflow_persists():
     prep = D.prepare_deploy_preview(image_tags="a:1", environment="uat")
-    assert set(prep["pending"]) == {"token", "request", "preview", "created_at"}
+    assert set(prep["pending"]) == {"token", "request", "preview", "created_at", "owner"}
     assert prep["pending"]["token"] == prep["token"]      # the gate's anchor
     # and it is plain data — it has to survive a JSON round trip through the
     # session service

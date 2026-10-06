@@ -130,6 +130,30 @@ function controlNumber(entry) {
 }
 
 /**
+ * Was this version traced back to the run that BUILT it, when it was queued —
+ * the queue table's Build column and the release form's tick-list badge, which
+ * used to say three different things about the same field.
+ * Three states, because "not checked" and "checked, nothing found" are not the
+ * same answer: a screen may show nothing for the first and must not claim the
+ * build failed verification when it was never looked at.
+ * @param {{build_verified?: boolean|null}} q
+ * @returns {{state: 'verified'|'unverified'|'unknown', label: string, title: string}}
+ */
+export function buildSummary(q) {
+    const v = q ? q.build_verified : null;
+    if (v === true) {
+        return { state: 'verified', label: 'verified',
+                 title: 'traced to the GitHub Actions run that built this version, at queue time' };
+    }
+    if (v === false) {
+        return { state: 'unverified', label: 'not verified',
+                 title: 'no build run could be traced to this version at queue time' };
+    }
+    return { state: 'unknown', label: 'not checked',
+             title: 'the build was not checked when this was queued' };
+}
+
+/**
  * The release queue's Controls column — the ONE place an allowed control shows.
  * It failed on the build run but may be a false positive, so it reads "open"
  * (to close by hand), never "failed"; the release itself is not stopped.
@@ -147,4 +171,40 @@ export function controlsSummary(q) {
         return { state: 'passed', label: 'all passed', title: 'every release control passed on the build run' };
     }
     return { state: 'unknown', label: 'not checked', title: 'no verified build run at queue time' };
+}
+
+/**
+ * What to do with the charts ticked in the release history. A chart that went
+ * through the gate once (at that version) goes back DIRECTLY — the run it was
+ * verified against has not changed, so `direct` names it for
+ * /api/release-queue/requeue. A chart that never went through the queue never
+ * qualified: it must take the gate like a first submission, so `gated` is its
+ * /api/release-queue/batch row — and only once it has a run and a ticket.
+ * Whatever cannot go either way is in `skipped` with the reason, never dropped
+ * in silence.
+ * @param {{artifact_name: string, artifact_version?: string, from_queue?: boolean, in_queue?: boolean,
+ *          build_run_url?: string, jira_ticket?: string, prl1_only?: boolean, df_only?: boolean,
+ *          target_envs?: string, change_details?: string, note?: string}[]} items
+ * @returns {{direct: {artifact_name: string, artifact_version: string}[], gated: object[],
+ *            skipped: {artifact: string, reason: string}[]}}
+ */
+export function requeuePlan(items) {
+    const direct = [], gated = [], skipped = [];
+    for (const it of items || []) {
+        const artifact = it.artifact_name + ':' + (it.artifact_version || '');
+        if (it.in_queue) { skipped.push({ artifact, reason: 'already queued for the next release' }); continue; }
+        if (it.from_queue) { direct.push({ artifact_name: it.artifact_name, artifact_version: it.artifact_version || '' }); continue; }
+        if (!it.build_run_url) {
+            skipped.push({ artifact, reason: 'never went through the queue — paste the run that built it in its row, then tick' });
+            continue;
+        }
+        if (!it.jira_ticket) {
+            skipped.push({ artifact, reason: 'never went through the queue — the gate needs a JIRA ticket; add it in its row, then tick' });
+            continue;
+        }
+        gated.push({ artifact, build_run_url: it.build_run_url, jira_ticket: it.jira_ticket || '',
+                     prl1_only: !!it.prl1_only, df_only: !!it.df_only, target_envs: it.target_envs || '',
+                     change_details: it.change_details || '', note: it.note || '' });
+    }
+    return { direct, gated, skipped };
 }

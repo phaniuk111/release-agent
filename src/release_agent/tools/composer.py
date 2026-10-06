@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import attribution
 from ._common import settings, _get_github_client
 
 # The expression that identifies OUR version fallback. Both quote styles occur
@@ -70,11 +71,6 @@ def _find_version_spans(text: str) -> list[tuple[int, int, str]]:
             continue
         spans.append((value_at + 1, value_end, text[value_at + 1:value_end]))
         cursor = value_end
-
-
-def current_versions(text: str) -> list[str]:
-    """Every version fallback currently in this DAG, in file order."""
-    return [version for _, _, version in _find_version_spans(text)]
 
 
 def set_default_version(text: str, new_version: str) -> tuple[str, list[str]]:
@@ -203,10 +199,11 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
             try:
                 gh_repo.update_file(
                     path,
-                    f"Bump {name} DF template version to {version}",
+                    attribution.commit_message(f"Bump {name} DF template version to {version}"),
                     desired,
                     branch_blob.sha,
                     branch=branch,
+                    **attribution.author_kwargs(),
                 )
             except Exception as e:
                 problems.append({"file": path, "error": str(e)})
@@ -252,8 +249,8 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
     )
     try:
         pr = gh_repo.create_pull(
-            title=f"Bump {environment.upper()} DAG DF template version to {version}",
-            body=body, head=branch, base=settings.composer_branch,
+            title=attribution.titled(f"Bump {environment.upper()} DAG DF template version to {version}"),
+            body=attribution.with_trailer(body), head=branch, base=settings.composer_branch,
         )
     except Exception as e:
         # Lost a race with another attempt opening the same PR: that is success.

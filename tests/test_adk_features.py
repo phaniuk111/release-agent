@@ -2,6 +2,7 @@
 memory tool, conditional prod-ops confirmation, and the deploy output_schema."""
 import pytest
 
+
 pytest.importorskip("google.adk")
 
 from adk_release_agent import agent as agent_module  # noqa: E402
@@ -32,8 +33,13 @@ def test_context_cache_can_be_disabled(monkeypatch):
 # --- memory tool ----------------------------------------------------------------
 
 def test_memory_tool_present_when_enabled_and_absent_when_disabled(monkeypatch):
+    """Recall also needs identity on — see
+    test_memory_recall_is_refused_when_identity_is_off for why."""
     from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 
+    from release_agent import identity
+
+    monkeypatch.setattr(identity.settings, "identity_header", "x-asm-rctoken", raising=False)
     enabled = agent_module.build_root_agent()
     assert any(isinstance(t, PreloadMemoryTool) for t in enabled.tools)
 
@@ -44,25 +50,19 @@ def test_memory_tool_present_when_enabled_and_absent_when_disabled(monkeypatch):
 
 # --- conditional prod-ops confirmation ------------------------------------------
 
-def test_remove_confirmation_predicate_only_fires_for_prod():
-    assert agent_module._remove_needs_confirmation(environment="prod") is True
-    assert agent_module._remove_needs_confirmation(environment="prd") is True
-    assert agent_module._remove_needs_confirmation(environment="production") is True
-    assert agent_module._remove_needs_confirmation(environment="uat") is False
-    assert agent_module._remove_needs_confirmation() is False
-
-
 def test_high_impact_ops_tools_are_confirmation_wrapped():
     from google.adk.tools import FunctionTool
 
     toolset = agent_module.build_root_agent().tools[0]
     provided = toolset._provided_tools_by_name
 
-    merge = provided["merge_prod_release"]
-    remove = provided["remove_from_release"]
-    assert isinstance(merge, FunctionTool) and merge._require_confirmation is True
-    # remove uses the prod-only predicate
-    assert isinstance(remove, FunctionTool) and callable(remove._require_confirmation)
+    promote = provided["promote_release"]
+    promote_df = provided["promote_df_release"]
+    # The promotions use the terminal-env (PRD/PRL1) predicate — nothing here
+    # confirms unconditionally. There is no removal tool to wrap.
+    assert "remove_from_release" not in provided
+    assert isinstance(promote, FunctionTool) and callable(promote._require_confirmation)
+    assert isinstance(promote_df, FunctionTool) and callable(promote_df._require_confirmation)
 
     # A read tool is not gated.
     check = provided["check_release_window"]
@@ -97,8 +97,8 @@ class _FakeConfirmationEvent:
                 id="call-1",
                 name=adk_service._REQUEST_CONFIRMATION,
                 args={
-                    "toolConfirmation": {"hint": "Confirm merge_prod_release?"},
-                    "originalFunctionCall": {"name": "merge_prod_release", "args": {}},
+                    "toolConfirmation": {"hint": "Confirm promote_release?"},
+                    "originalFunctionCall": {"name": "promote_release", "args": {"target": "prd"}},
                 },
             )
         ]
@@ -113,9 +113,9 @@ def test_pending_call_and_interrupt_payload_from_confirmation_event():
 
     payload = adk_service._confirmation_interrupt_payload(pending)
     assert payload["type"] == "confirmation"
-    # merge_prod_release gets the release-finality warning, overriding the hint.
-    assert "no new charts can be added" in payload["message"]
-    assert payload["function"] == "merge_prod_release"
+    # promote_release gets its own hint naming the target env, overriding ADK's.
+    assert "PRD" in payload["message"]
+    assert payload["function"] == "promote_release"
 
 
 def test_confirmation_reply_maps_yes_and_no_to_function_response():
@@ -143,3 +143,41 @@ def test_deploy_outcome_schema_is_workflow_output_schema_and_allows_extra():
     assert dumped["ok"] is True
     assert dumped["pr_url"] == "http://x"
     assert dumped["pr_number"] == 7
+
+
+def test_the_chat_model_caps_its_calls_in_flight(monkeypatch):
+    """Load test, 2026-09-29: ten developers at once fired more model calls than
+    the shared Vertex pool would take and most turns failed 429. Above the cap
+    a call waits for a slot instead of failing."""
+    import asyncio
+
+    from google.adk.models.google_llm import Gemini
+
+    from adk_release_agent import agent as A
+
+    monkeypatch.setattr(A.settings, "gemini_max_concurrency", 3)
+    in_flight, peak = 0, 0
+
+    async def fake(self, llm_request, stream=False):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        yield "response"
+
+    monkeypatch.setattr(Gemini, "generate_content_async", fake)
+    model = A._model()
+
+    async def call():
+        return [r async for r in model.generate_content_async(None)]
+
+    async def burst():
+        return await asyncio.gather(*(call() for _ in range(12)))
+
+    assert asyncio.run(burst()) == [["response"]] * 12
+    assert peak == 3
+    monkeypatch.setattr(A.settings, "gemini_max_concurrency", 0)
+    peak = 0
+    asyncio.run(burst())
+    assert peak == 12, "0 = no cap"

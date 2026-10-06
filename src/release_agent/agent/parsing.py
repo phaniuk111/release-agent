@@ -327,6 +327,8 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
                 str(f).strip() for f in (data.get("dag_files") or []) if str(f).strip()
             ],
             "composer_repo": str(data.get("composer_repo") or "").strip(),
+            # The form's JIRA: leads every commit and PR title of this deploy.
+            "jira": str(data.get("jira") or "").strip(),
             "raw": "json-paste",
         }
 
@@ -383,6 +385,64 @@ def _try_parse_json_payload(text: str) -> Optional[dict]:
         "change_request": data.get("change_request"),
         # Deploy form: target deployment repo (owner/repo) for this deploy.
         "deployment_repo": str(data.get("deployment_repo") or data.get("deploy_repo") or ""),
+        # The form's JIRA: leads every commit and PR title of this deploy.
+        "jira": str(data.get("jira") or "").strip(),
         "raw": "json-paste",
     }
 
+
+
+# ----- the Investigate button's message -----------------------------------------
+
+_INVESTIGATE_PREFIX = "investigate incident "
+
+
+def _iso_date(token: str) -> str:
+    """``token`` when it is exactly YYYY-MM-DD and a real date, else "" —
+    checked by hand: date.fromisoformat also takes other spellings (2026
+    W40, 20261003) that a person's sentence must not be mistaken for."""
+    from datetime import date
+
+    if len(token) != 10 or token[4] != "-" or token[7] != "-":
+        return ""
+    year, month, day = token[:4], token[5:7], token[8:]
+    if not (year.isdigit() and month.isdigit() and day.isdigit()):
+        return ""
+    try:
+        date(int(year), int(month), int(day))
+    except ValueError:
+        return ""
+    return token
+
+
+def investigate_request(message: str) -> Optional[dict[str, str]]:
+    """The Investigate button's message → ``{"incident_id", "business_date"}``.
+
+    The button sends "Investigate incident <id> · COB <date> · <title> …"
+    (static/core/support_triage.js investigatePrompt), and only that shape is
+    recognised: a sentence like "why did REPORT-B fail" is a question for the
+    chat agent, which has the evidence tool for it. The id is the token right
+    after the prefix (letters, digits, '-'); the business date is the first
+    token after it that is a real YYYY-MM-DD, "" when the message carries none
+    (the report's latest date is then read). No model decides this."""
+    text = (message or "").lstrip()
+    if not text.lower().startswith(_INVESTIGATE_PREFIX):
+        return None
+    rest = text[len(_INVESTIGATE_PREFIX):].lstrip()
+    end = 0
+    while end < len(rest) and (rest[end].isalnum() or rest[end] == "-") and rest[end].isascii():
+        end += 1
+    incident_id = rest[:end].strip("-")
+    if not incident_id:
+        return None
+    business_date = ""
+    token = ""
+    for ch in rest[end:] + " ":
+        if ch.isascii() and (ch.isalnum() or ch == "-"):
+            token += ch
+            continue
+        business_date = _iso_date(token)
+        if business_date:
+            break
+        token = ""
+    return {"incident_id": incident_id, "business_date": business_date}

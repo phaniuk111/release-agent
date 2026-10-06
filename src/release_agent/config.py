@@ -2,7 +2,7 @@
 
 import os
 import subprocess
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -200,8 +200,8 @@ class Settings(BaseSettings):
     # deployment. PREVIEW_GROUPS hides pill groups; PREVIEW_FEATURES gates the
     # server side too (API + chat tools), so a hidden pill is not one question away.
     preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
-    preview_groups: str = Field(default="Check", validation_alias=AliasChoices("PREVIEW_GROUPS"))
-    preview_features: str = Field(default="monitoring", validation_alias=AliasChoices("PREVIEW_FEATURES"))
+    preview_groups: str = Field(default="Check,Monitoring", validation_alias=AliasChoices("PREVIEW_GROUPS"))
+    preview_features: str = Field(default="monitoring,bq-cost", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
     identity_required: bool = Field(
@@ -272,14 +272,10 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("GITHUB_BASE_URL", "GH_BASE_URL"),
     )
-    # Workflow dispatched in DEPLOY_REPO to (re)run the deployment simulation.
-    on_merge_workflow: str = Field(
-        default="on-merge-deploy.yml",
-        validation_alias=AliasChoices("ON_MERGE_WORKFLOW", "RELEASE_ON_MERGE_WORKFLOW"),
-    )
     # --- Branch-based promotion in DEPLOY_REPO (SIT -> UAT -> PRD) ---
-    # During the day, images accumulate on UAT. Only AFTER the daily cutoff is a
-    # single UAT -> PRD PR raised (that PR locks the day's release).
+    # Images accumulate on UAT through the day; the UAT -> PRD PR locks the day's
+    # release. There is NO time-of-day gate — a release can ship at any hour
+    # (release_window.can_merge_now); the old cutoff setting is gone.
     sit_branch: str = Field(
         default="SIT",
         validation_alias=AliasChoices("SIT_BRANCH", "RELEASE_SIT_BRANCH"),
@@ -288,6 +284,11 @@ class Settings(BaseSettings):
         default="UAT",
         validation_alias=AliasChoices("UAT_BRANCH", "RELEASE_UAT_BRANCH"),
     )
+    # UAT changes flow via SIT: a UAT deploy/removal merges its PR into SIT only;
+    # the deployment repo's OWN workflow raises SIT -> UAT, and the developer
+    # merges that. How long the portal waits for that PR to appear before saying
+    # where to find it:
+    uat_pr_wait_seconds: float = Field(default=90.0, validation_alias=AliasChoices("UAT_PR_WAIT_SECONDS"))
     prd_branch: str = Field(
         default="PRD",
         validation_alias=AliasChoices("PRD_BRANCH", "PROD_BRANCH", "RELEASE_PRD_BRANCH"),
@@ -308,16 +309,49 @@ class Settings(BaseSettings):
         default="scripts/release/update_release_files.py",
         validation_alias=AliasChoices("RELEASE_UPDATER_SCRIPT"),
     )
+    # --- CARE release as ONE committed file in a mono repo -----------------------
+    # "mono": a CARE release edits CARE_RELEASE_FILE in CARE_RELEASE_REPO and
+    # raises a PR against CARE_RELEASE_BASE_BRANCH for a person to review and
+    # merge — the portal never merges it; the repo's own Action takes it from
+    # there. "fileset" (default) keeps the clone + updater-script model above.
+    # DF releases always use the file-set model.
+    care_release_mode: Literal["fileset", "mono"] = Field(
+        default="fileset", validation_alias=AliasChoices("CARE_RELEASE_MODE"),
+    )
+    care_release_repo: str = Field(default="", validation_alias=AliasChoices("CARE_RELEASE_REPO"))
+    care_release_base_branch: str = Field(
+        default="main", validation_alias=AliasChoices("CARE_RELEASE_BASE_BRANCH"),
+    )
+    care_release_file: str = Field(
+        default=".github/release/release_details.json", validation_alias=AliasChoices("CARE_RELEASE_FILE"),
+    )
+    # Names the PR's branch, and is what the one-release-at-a-time guard looks
+    # for — other PRs into the base branch of a busy mono repo are not releases.
+    care_release_branch_prefix: str = Field(
+        default="release/", validation_alias=AliasChoices("CARE_RELEASE_BRANCH_PREFIX"),
+    )
+    # strftime pattern for a mono-mode release name, e.g. "Team CARE Release - %Y.%m.%d"
+    # (dated by the release's start). Empty keeps the file-set naming.
+    care_release_name_format: str = Field(
+        default="", validation_alias=AliasChoices("CARE_RELEASE_NAME_FORMAT"),
+    )
+    # The model that drafts change-request prose, and where Vertex serves it.
+    # Empty = GEMINI_MODEL / GOOGLE_CLOUD_LOCATION. A draft summarises what
+    # developers wrote, so a fast model with thinking off is enough; newer
+    # models (gemini-3.5-flash) answer only at the "global" endpoint, which does
+    # not pin processing to one region — set a region here if policy requires it.
+    # False runs the portal with no model at all: forms, the CONFIRM-token
+    # deploy/release path, the queue and the reports work as always; the chat
+    # answers a fixed set of commands (src/release_agent/commands.py) and says
+    # "enable LLM access" for anything that needs the AI assistant.
+    llm_enabled: bool = Field(default=True, validation_alias=AliasChoices("LLM_ENABLED"))
+    chg_draft_model: str = Field(default="", validation_alias=AliasChoices("CHG_DRAFT_MODEL"))
+    chg_draft_location: str = Field(default="", validation_alias=AliasChoices("CHG_DRAFT_LOCATION"))
     # Base path prepended when a developer supplies bare name:version instead of a
     # full artifactory URL (e.g. https://artifactory.../com/db/acme-ds/).
     artifactory_base_url: str = Field(
         default="",
         validation_alias=AliasChoices("ARTIFACTORY_BASE_URL"),
-    )
-    # JSON config the promotion updates (same path on each env branch). [legacy]
-    env_config_path: str = Field(
-        default="configs/images.json",
-        validation_alias=AliasChoices("ENV_CONFIG_PATH", "RELEASE_ENV_CONFIG_PATH"),
     )
     # --- Helm-chart deployment model -------------------------------------------
     # The deploy repo carries an env-pathed deployment JSON per environment, shaped
@@ -347,39 +381,12 @@ class Settings(BaseSettings):
         default="default",
         validation_alias=AliasChoices("PRD_NAMESPACE", "PROD_NAMESPACE", "RELEASE_PRD_NAMESPACE"),
     )
-    # Change-request template the pasted JSON updates; the CHG is created from it
-    # when the UAT->PRD PR is raised.
-    change_request_path: str = Field(
-        default="change-request.json",
-        validation_alias=AliasChoices("CHANGE_REQUEST_PATH", "RELEASE_CHANGE_REQUEST_PATH"),
-    )
-    # PRD release policy: at most one PRD PR per day, created before this UTC hour.
-    prd_cutoff_hour_utc: int = Field(
-        default=16,
-        validation_alias=AliasChoices("PRD_CUTOFF_HOUR_UTC", "RELEASE_PRD_CUTOFF_HOUR_UTC"),
-    )
     # Branches that count as "a release in flight": while any OPEN PR targets one
     # of these, add-to-release is blocked (one release at a time). Empty = just
     # the PRD branch. Comma-separated in env, e.g. RELEASE_GUARD_BRANCHES="PRD,PRL1".
     release_guard_branches: Annotated[list[str], NoDecode] = Field(
         default=[],
         validation_alias=AliasChoices("RELEASE_GUARD_BRANCHES", "PRD_GUARD_BRANCHES"),
-    )
-    prd_once_per_day: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("PRD_ONCE_PER_DAY", "RELEASE_PRD_ONCE_PER_DAY"),
-    )
-    # Minimum lead time (days) between raising the UAT->PRD release PR and the
-    # change's start_date. 1 = the start date must be tomorrow or later.
-    prd_lead_time_days: int = Field(
-        default=1,
-        validation_alias=AliasChoices("PRD_LEAD_TIME_DAYS", "RELEASE_PRD_LEAD_TIME_DAYS"),
-    )
-    # Max tool-call turns in the free-form ReAct lane before stopping gracefully
-    # (guards against runaway llm<->tools loops, well under recursion_limit=25).
-    react_max_tool_turns: int = Field(
-        default=8,
-        validation_alias=AliasChoices("REACT_MAX_TOOL_TURNS", "RELEASE_REACT_MAX_TOOL_TURNS"),
     )
     # Step/job-name prefixes that mark release controls in the build pipeline —
     # matched case-insensitively against step AND job names. The live gate is
@@ -412,23 +419,21 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("QUEUE_REQUIRE_RUN_MATCH"),
     )
+    # A run whose tag is a BARE version ("5.0.445") names no image. On by default
+    # the matching version is accepted on its own; set this to demand that the
+    # image be listed in image-workflows.json and the run come from that
+    # workflow. A catalogue entry naming a DIFFERENT workflow always refuses.
+    queue_require_image_workflow: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("QUEUE_REQUIRE_IMAGE_WORKFLOW"),
+    )
     # How a build run records the tag it created: the step's name and the log
-    # line prefix it prints, e.g. "TAG_GENERATED=orders-api-1.2.3".
+    # line prefix it prints, e.g. "New tag is: orders-api-1.2.3".
     build_tag_step: str = Field(
-        default="Generate Git tag", validation_alias=AliasChoices("BUILD_TAG_STEP"),
+        default="Create new tag", validation_alias=AliasChoices("BUILD_TAG_STEP"),
     )
     build_tag_marker: str = Field(
-        default="TAG_GENERATED=", validation_alias=AliasChoices("BUILD_TAG_MARKER"),
-    )
-    # Block a PRD release when any build control failed (fail-closed). When a build
-    # run can't be located we don't hard-block; the agent asks for the run id.
-    prd_require_controls: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("PRD_REQUIRE_CONTROLS", "RELEASE_PRD_REQUIRE_CONTROLS"),
-    )
-    manifest_path: str = Field(
-        default="release-manifest.json",
-        validation_alias=AliasChoices("MANIFEST_PATH", "RELEASE_MANIFEST_PATH"),
+        default="New tag is:", validation_alias=AliasChoices("BUILD_TAG_MARKER"),
     )
     config_path: str = Field(
         default="image-workflows.json",
@@ -448,6 +453,19 @@ class Settings(BaseSettings):
     )
     # Vertex Gemini model id. Default to a currently-available model
     # (gemini-2.0-flash was retired); override per-project/region if needed.
+    # The support-investigate skill may consult a second, stronger model when its
+    # evidence conflicts (ADK ModelConsultTool). EMPTY DISABLES the tool. The caps
+    # bound the spend: per turn and per session, whichever is hit first.
+    advisor_model: str = Field(default="", validation_alias=AliasChoices("ADVISOR_MODEL"))
+    advisor_max_uses: int = Field(default=2, validation_alias=AliasChoices("ADVISOR_MAX_USES"))
+    advisor_session_max_uses: int = Field(default=5, validation_alias=AliasChoices("ADVISOR_SESSION_MAX_USES"))
+    # The Investigate button's one model step (adk_release_agent/investigate_workflow):
+    # evidence is collected in code, then the model writes the finding ONCE.
+    # Empty = GEMINI_MODEL. The cap counts every model call of one investigation
+    # (the finding model and any advisor consult); past it the answer is the
+    # model-free evidence summary, never an error.
+    investigate_model: str = Field(default="", validation_alias=AliasChoices("INVESTIGATE_MODEL"))
+    investigate_max_model_calls: int = Field(default=4, validation_alias=AliasChoices("INVESTIGATE_MAX_MODEL_CALLS"))
     gemini_model: str = Field(
         default="gemini-2.5-flash",
         validation_alias=AliasChoices("GEMINI_MODEL", "VERTEX_MODEL", "RELEASE_GEMINI_MODEL"),
@@ -548,8 +566,16 @@ class Settings(BaseSettings):
     # the shared pool was busy, not a quota you exceeded) or 503. Backoff with
     # jitter; the last failure surfaces to the user as "model busy, try again".
     gemini_retry_attempts: int = Field(
-        default=4,
+        default=6,
         validation_alias=AliasChoices("GEMINI_RETRY_ATTEMPTS"),
+    )
+    # The chat agent's model calls in flight at once, per process (0 = no cap).
+    # Every user shares one event loop, so a burst of ten people fires ten-plus
+    # calls together and the shared pool answers most of them 429; above the cap
+    # a call waits its turn instead of failing (load test, 2026-09-29).
+    gemini_max_concurrency: int = Field(
+        default=8,
+        validation_alias=AliasChoices("GEMINI_MAX_CONCURRENCY"),
     )
     scope_guard: str = Field(
         default="log",
@@ -593,6 +619,117 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("BQ_AUTO_CREATE", "RELEASE_BQ_AUTO_CREATE"),
     )
+    # --- BigQuery cost report (design/BQ_COST.md) ------------------------------
+    # Read-only: INFORMATION_SCHEMA reads and dry runs, nothing else (tools/bq_guard.py
+    # forces it). The project is the team's own (BQ_PROJECT / GOOGLE_CLOUD_PROJECT
+    # unless BQ_COST_PROJECT names another). The REGION is the INFORMATION_SCHEMA
+    # prefix ("region-us", "region-europe-west3") — EMPTY DISABLES the feature,
+    # because the wrong region silently reports nothing.
+    bq_cost_project: str = Field(default="", validation_alias=AliasChoices("BQ_COST_PROJECT"))
+    bq_cost_region: str = Field(default="", validation_alias=AliasChoices("BQ_COST_REGION"))
+    # "on-demand" ranks by bytes billed; "reservations" by slot-hours.
+    bq_cost_billing: str = Field(default="on-demand", validation_alias=AliasChoices("BQ_COST_BILLING"))
+    bq_cost_days: int = Field(default=14, validation_alias=AliasChoices("BQ_COST_DAYS"))
+    bq_cost_top: int = Field(default=10, validation_alias=AliasChoices("BQ_COST_TOP"))
+    # INFORMATION_SCHEMA reads bill a 10 MB minimum each; this caps a scan's own cost.
+    bq_cost_max_queries: int = Field(default=40, validation_alias=AliasChoices("BQ_COST_MAX_QUERIES"))
+    # On-demand list price per TiB, for the approximate $ column only.
+    bq_cost_usd_per_tib: float = Field(default=6.25, validation_alias=AliasChoices("BQ_COST_USD_PER_TIB"))
+    # Where findings are remembered across runs (append-only); empty = no memory.
+    bq_cost_dataset: str = Field(default="", validation_alias=AliasChoices("BQ_COST_DATASET"))
+    bq_cost_findings_table: str = Field(default="bq_cost_findings", validation_alias=AliasChoices("BQ_COST_FINDINGS_TABLE"))
+    # The region-wide storage/write INFORMATION_SCHEMA views need tables.list on
+    # EVERY dataset in the region — including BigQuery's own hidden anonymous
+    # cached-result datasets ("_...") that belong to OTHER users, which this
+    # account can never read. That denies the region view for everyone but that
+    # dataset's owner, in any project more than one person has queried — the
+    # normal case, not an edge case. The storage scan then falls back to reading
+    # each visible dataset one at a time (skipping "_"-prefixed ones): one
+    # INFORMATION_SCHEMA statement per dataset, each billing the usual 10 MB
+    # minimum, so this caps how many datasets (and therefore how much of that
+    # per-statement minimum) one scan will spend, independent of
+    # BQ_COST_MAX_QUERIES (which also still applies on top of this).
+    bq_cost_max_datasets: int = Field(default=50, validation_alias=AliasChoices("BQ_COST_MAX_DATASETS"))
+
+    # --- Support triage (tools/support/) --------------------------------
+    # A first look at a workflow control table: what failed for a business date,
+    # how widely, new or recurring, stuck and missing runs. Generic on purpose —
+    # the real table, its column names and its status words are CONFIG, kept in a
+    # private values file / .env, never in this repo. EMPTY TABLE DISABLES it.
+    support_table: str = Field(default="", validation_alias=AliasChoices("SUPPORT_TABLE"))
+    # Where the query job runs (and bills); empty = BQ_PROJECT / GOOGLE_CLOUD_PROJECT.
+    support_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_PROJECT"))
+    # role=column[:Label],... — roles in support_triage.ROLES; date, run_id and
+    # status are required. The label is what the card calls that column.
+    support_columns: str = Field(default="", validation_alias=AliasChoices("SUPPORT_COLUMNS"))
+    support_failed_statuses: str = Field(default="FAILED,ERROR", validation_alias=AliasChoices("SUPPORT_FAILED_STATUSES"))
+    support_done_statuses: str = Field(default="SUCCEEDED,SUCCESS,COMPLETED,COMPLETE,DONE",
+                                       validation_alias=AliasChoices("SUPPORT_DONE_STATUSES"))
+    # A run neither failed nor done whose last row is older than this is stuck.
+    support_stuck_minutes: int = Field(default=120, validation_alias=AliasChoices("SUPPORT_STUCK_MINUTES"))
+    # Earlier dates read for "new or recurring" and "missing since the last date".
+    support_lookback_days: int = Field(default=7, validation_alias=AliasChoices("SUPPORT_LOOKBACK_DAYS"))
+    support_date_label: str = Field(default="Business date", validation_alias=AliasChoices("SUPPORT_DATE_LABEL"))
+    # Top-level keys of the error-details JSON worth grouping on (e.g. a component).
+    support_detail_keys: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DETAIL_KEYS"))
+    # Link for a job id; "{job_id}" is replaced. Empty = the id as plain text.
+    support_job_url: str = Field(default="", validation_alias=AliasChoices("SUPPORT_JOB_URL"))
+    # Error text is the team's data. Off: the chat model sees counts, groupings and
+    # "error #n" only — the card (no model) still shows the text.
+    support_errors_to_model: bool = Field(default=False, validation_alias=AliasChoices("SUPPORT_ERRORS_TO_MODEL"))
+    # Source-service logs (tools/support/source_logs.py): the GKE workload the pipelines read
+    # from, found by cluster + namespace + the pod label that names the service.
+    support_cluster: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CLUSTER"))
+    support_namespace: str = Field(default="", validation_alias=AliasChoices("SUPPORT_NAMESPACE"))
+    support_source_label: str = Field(default="app", validation_alias=AliasChoices("SUPPORT_SOURCE_LABEL"))
+    # Project holding those logs (and the audit logs); blank = gcp_project.
+    support_logs_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_LOGS_PROJECT"))
+    support_logs_max_lines: int = Field(default=500, validation_alias=AliasChoices("SUPPORT_LOGS_MAX_LINES"))
+    # A failed run's own log lines: every entry naming its run id, from this many
+    # minutes before the row was written (the failure is logged before the row).
+    support_run_log_minutes: int = Field(default=5, validation_alias=AliasChoices("SUPPORT_RUN_LOG_MINUTES"))
+    # The pipelines' service account — what an audit-log question filters on.
+    support_service_account: str = Field(default="", validation_alias=AliasChoices("SUPPORT_SERVICE_ACCOUNT"))
+    # Who an escalation goes to: "role:value=Team,…,default=Team" (e.g.
+    # "system:SYS-A=Feed team,process:REPORT-B=Reports L2,default=Platform L2").
+    support_owners: str = Field(default="", validation_alias=AliasChoices("SUPPORT_OWNERS"))
+    # Priority. HIGH: a critical value, collapsed output, >= HIGH_COUNT runs, or
+    # >= MEDIUM_COUNT runs with a shared cause; MEDIUM: stuck/missing, >= MEDIUM_COUNT
+    # runs, or failing dates in a row; else LOW. CRITICAL ("role:value,…") is always
+    # high. No clock-based rule: a deadline was tried and dropped.
+    support_high_count: int = Field(default=10, validation_alias=AliasChoices("SUPPORT_HIGH_COUNT"))
+    # Dataflow job lookup (tools/support/dataflow_job.py, read-only): the region jobs run in
+    # (no default — a wrong region reads as "no such job") and the project they
+    # run in ("" = the project named in SUPPORT_TABLE — the jobs run where the
+    # data is; a deployment with services and data in two projects sets nothing).
+    support_dataflow_region: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DATAFLOW_REGION"))
+    support_dataflow_project: str = Field(default="", validation_alias=AliasChoices("SUPPORT_DATAFLOW_PROJECT"))
+    support_medium_count: int = Field(default=3, validation_alias=AliasChoices("SUPPORT_MEDIUM_COUNT"))
+    support_critical: str = Field(default="", validation_alias=AliasChoices("SUPPORT_CRITICAL"))
+    # name=expr;… PromQL health checks of a SOURCE service for the investigate
+    # skill, with {source} {namespace} {cluster} {window} filled in; empty = the
+    # built-in restarts / up / 5xx-rate set (adk_release_agent/tools.py).
+    support_source_promql: str = Field(default="", validation_alias=AliasChoices("SUPPORT_SOURCE_PROMQL"))
+    # Was the investigation right? — the feedback memory (tools/support/feedback.py):
+    # an append-only table in this dataset (bigquery/support_findings.schema.json),
+    # in the project the triage reads (SUPPORT_PROJECT, else BQ_PROJECT). EMPTY
+    # dataset = no memory: the "Was this right?" buttons say so and nothing is written.
+    support_feedback_dataset: str = Field(default="", validation_alias=AliasChoices("SUPPORT_FEEDBACK_DATASET"))
+    support_feedback_table: str = Field(default="support_findings", validation_alias=AliasChoices("SUPPORT_FEEDBACK_TABLE"))
+
+    # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
+    # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every
+    # turn, model call and tool call — are exported to Langfuse; EMPTY = OFF, and
+    # nothing is written locally either. Any other OTLP sink: set the standard
+    # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / _HEADERS instead and leave this empty.
+    langfuse_host: str = Field(default="", validation_alias=AliasChoices("LANGFUSE_HOST"))
+    langfuse_public_key: str = Field(default="", validation_alias=AliasChoices("LANGFUSE_PUBLIC_KEY"))
+    langfuse_secret_key: str = Field(default="", validation_alias=AliasChoices("LANGFUSE_SECRET_KEY"))
+    otel_service_name: str = Field(default="release-copilot", validation_alias=AliasChoices("OTEL_SERVICE_NAME"))
+    # Prompts, tool arguments and results in the spans. Keep false unless the
+    # sink runs inside the bank: with it on, PR/JIRA text, requester emails and
+    # SQL previews leave the pod with every trace.
+    trace_content: bool = Field(default=False, validation_alias=AliasChoices("TRACE_CONTENT"))
 
     # --- Console links (read-only deep links shown in the UI) --------------------
     # Where a human goes to LOOK at what a release produced: the GKE workload view

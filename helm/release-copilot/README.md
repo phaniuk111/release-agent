@@ -130,6 +130,172 @@ never appears in a log or an error message — including the 401/403 path, which
 is pinned by a test. Leave `JIRA_BASE_URL` empty to disable the lookup entirely;
 the ticket is then stored exactly as typed.
 
+## BigQuery cost report
+
+`design/BQ_COST.md`. A read-only agentic loop over the team's **dedicated**
+BigQuery project: ranks the most expensive query shapes and flags storage/write
+findings, then — for a top item — investigates, proposes a rewrite and proves
+it with a dry run before it is ever shown. Every statement the tool issues is
+either a dry run or an `INFORMATION_SCHEMA` read; no table data is ever read.
+
+The service account needs exactly three roles, on the project named by
+`BQ_COST_PROJECT` (empty = `BQ_PROJECT` / `GOOGLE_CLOUD_PROJECT`):
+
+- `roles/bigquery.resourceViewer` — every principal's jobs, no table data
+- `roles/bigquery.metadataViewer` — schemas, partitioning, clustering
+- `roles/bigquery.jobUser` — run `INFORMATION_SCHEMA` queries and dry runs
+
+**No `roles/bigquery.dataViewer`** — the tool, and therefore the model, never
+reads a row of any table. The storage/write sections read region-wide
+`INFORMATION_SCHEMA` views that need `tables.list` on every dataset in the
+region; if one dataset denies it (e.g. one of BigQuery's own hidden anonymous
+cached-result datasets — the normal case in any shared project), storage
+falls back to reading each visible dataset one at a time, capped by
+`BQ_COST_MAX_DATASETS`. The optional memory across runs (`BQ_COST_DATASET`)
+is the one exception: the tool appends to, and reads back, its own
+`bq_cost_findings` table there (`bigquery/bq_cost_findings.schema.json`), so
+with it set the service account also needs `roles/bigquery.dataEditor` on
+that ONE dataset — nothing wider.
+
+```yaml
+config:
+  BQ_COST_REGION: "region-europe-west3"   # EMPTY DISABLES the feature
+  BQ_COST_PROJECT: ""                     # empty = BQ_PROJECT
+  BQ_COST_BILLING: "on-demand"            # or "reservations" (ranks by slot-hours)
+  BQ_COST_DAYS: "14"
+  BQ_COST_TOP: "10"
+  BQ_COST_MAX_QUERIES: "40"               # INFORMATION_SCHEMA reads per scan
+  BQ_COST_MAX_DATASETS: "50"              # per-dataset storage fallback cap (see values.yaml)
+  BQ_COST_USD_PER_TIB: "6.25"
+  BQ_COST_DATASET: ""                     # findings memory across runs; empty = off
+```
+
+Released to everyone by default — its pill sits in the *Monitoring* group and
+nothing gates the routes or the chat tools. To restrict it to testers during a
+rollout, add `bq-cost` to `PREVIEW_FEATURES` (API and chat tools then refuse
+everyone but `PREVIEW_USERS`) and `Monitoring` to `PREVIEW_GROUPS` (the pill is
+hidden from them too). Leave `BQ_COST_REGION` empty to disable it cleanly — the
+wrong region would otherwise silently report nothing.
+
+## Support triage — L1 view of a control table (optional, preview)
+
+A **Support triage** pill (and chat skill) reads a pipelines' workflow control
+table — one row per run or per status change — and turns one business date into
+an L1 work list: what failed, got stuck or never ran; the category (upstream /
+process / unit / single / spread); whether it is a known issue; one action
+(wait, re-trigger once, check, escalate) with steps; the owner; and a ticket
+note to copy. Read-only: a few fixed, partition-filtered queries in which BigQuery
+does the counting — only counts and problem rows come back, so a COB with a
+million runs costs the portal what one with a thousand does; it never re-runs
+or changes a job. Behind the preview gate (`Support` / `support-triage`).
+
+Write the table once, readably, as the chart's `supportTable:` block (one column
+per line; the chart flattens it into the `SUPPORT_*` strings). Draft it from the
+schema — `python scripts/support_mapping.py --table <project>.<dataset>.<table>`
+(or `--schema <schema.json>`) fills in the obvious roles and marks the grouping
+ones (system / source / process / unit / scope) for you to confirm, since they
+decide how a failure is categorised. `GET /api/support/config-check` then
+compares the mapping with the live table and names a column that is missing or
+renamed, with the nearest real one.
+
+Everything specific to your table lives in **your** values and chart files:
+
+| Where | What |
+|---|---|
+| `values.yaml` → `config:` | `SUPPORT_TABLE` (`project.dataset.table`) — **the only required one**: without the rest the app maps the columns from the table's schema and reads its status words from the table, `SUPPORT_COLUMNS` (your columns → roles: `date`, `run_id`, `status` required; `updated_at`, `event_at`, `event_id`, `job_id`, `error`, `details`, `members`, `system`, `source`, `process`, `unit`, `scope` optional), `SUPPORT_FAILED_STATUSES` / `SUPPORT_DONE_STATUSES` (your status words), `SUPPORT_DATE_LABEL` (e.g. `COB`), `SUPPORT_JOB_URL`, `SUPPORT_OWNERS`, priority (`SUPPORT_HIGH_COUNT`, `SUPPORT_MEDIUM_COUNT`, `SUPPORT_CRITICAL` — always-high values), `SUPPORT_STUCK_MINUTES`, `SUPPORT_DETAIL_KEYS`, `PREVIEW_USERS` (the L1 testers) |
+| `adk_release_agent/skills/support-runbook/SKILL.md` (in the image, not the chart) | your runbook in plain English: how to read the control table, and each known issue — `match:`, `action:`, `owner:`, `steps:`, then how to tell it apart (the shipped file is a generic example — replace it) |
+| IAM (service account) | `roles/bigquery.dataViewer` on the control table, `roles/bigquery.jobUser` on `SUPPORT_PROJECT` |
+
+Error text is your data: with `SUPPORT_ERRORS_TO_MODEL: "false"` (the default)
+the chat model sees counts, categories and "error #n" only; the card shows the
+text without any model involved.
+
+**Investigate** (a button per incident, and chat questions like "why did
+REPORT-B fail") runs the `support-investigate` skill: the source's PromQL health
+checks, its grouped container-log errors with security denials tagged, the
+Cloud Audit Logs for what was denied, the Dataflow job's errors and `kind`, and
+what the release log says changed before the business date — then a finding
+with its evidence, and the ticket note. It needs `SUPPORT_CLUSTER`,
+`SUPPORT_NAMESPACE`, `SUPPORT_DATAFLOW_REGION`, the access listed in
+`values.yaml`, and — unavoidably — the model reading error text and log
+excerpts, so settle that with your risk people before turning it on. Every
+step is read-only; the skill suggests, it never re-runs or rolls back.
+
+The button runs a fixed pipeline rather than a free-roaming agent: the evidence
+is collected in code, in parallel (about 5 s), merged into a time-ordered
+timeline with rule-based leads, and the model is called on that once
+(`INVESTIGATE_MODEL`, capped by `INVESTIGATE_MAX_MODEL_CALLS`). With
+`LLM_ENABLED=false`, or if the model fails, the answer is the evidence itself.
+Under every finding a "Was this right?" row (right / right direction / wrong,
+plus the actual cause) is stored append-only when `SUPPORT_FEEDBACK_DATASET` is
+set (`bigquery/support_findings.schema.json`; `GET /api/support/feedback/stats`
+gives the accuracy). `scripts/eval_investigate.py` scores the model step
+against `tests/eval/investigate_cases.json` — run it before changing the
+model or the instruction. One finding per incident is shared for ten minutes:
+ten people clicking the same incident cost one model call and read the same
+answer (measured: 18 s for all ten, against 59 s for the slowest without it).
+
+## Agent observability — Langfuse (optional)
+
+ADK traces every chat turn as OpenTelemetry spans — the router's decision,
+each Gemini call with its token usage, each tool call, the deploy Workflow's
+nodes. Point them at Langfuse and they show up as traces per turn, grouped by
+session (thread) and user. Nothing is written locally; with `LANGFUSE_HOST`
+empty the feature is off and costs nothing.
+
+With `TRACE_CONTENT: "false"` (the default) that user is a stable digest
+(`u:<12 hex>`), not the email: grouping and per-user cost still work, but the
+address never leaves the pod. Set it to `"true"` — for a Langfuse inside the
+bank, where the prompts are already going — and the spans carry the email and
+the message content instead.
+
+```yaml
+config:
+  LANGFUSE_HOST: "https://langfuse.internal.example.com"
+  TRACE_CONTENT: "false"      # true only for a Langfuse inside the bank
+langfuse:
+  existingSecret: "release-copilot-langfuse"   # keys public-key / secret-key
+```
+
+Any other OTLP sink works the same way: leave `LANGFUSE_HOST` empty and set the
+standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_HEADERS`
+through `extraEnv`. Export is batched on a background thread and goes through
+the same proxy and CA bundle as everything else; a sink that is down drops
+spans and never delays a turn. `/api/diagnostics` reports the endpoint and
+the content switch under `tracing` — never a key.
+
+## GKE Autopilot + managed Cloud Service Mesh — measured, not assumed
+
+All of this was found by deploying this chart to a real Autopilot cluster with
+managed CSM (`asm-managed`, `implementation: TRAFFIC_DIRECTOR`). None of it is
+visible from `helm template` or a local run.
+
+- **Autopilot bills `max(requests, limits)`, and raises requests to match
+  limits.** The defaults here (`requests 250m/512Mi`, `limits 1/1Gi`) therefore
+  reserve and bill a whole vCPU and 1 GiB per pod on Autopilot — four times the
+  request. On Autopilot, set `resources.limits` equal to `resources.requests`.
+  On Standard the defaults are fine: there, limits are a burst ceiling.
+- **The injected Envoy is a second container** with its own request (a further
+  250m/512Mi at the Autopilot floor). Budget per pod accordingly.
+- **A sidecar that never gets its config breaks OUTBOUND traffic, not just
+  ingress.** If Traffic Director has no configuration for the mesh, the proxy
+  stays `1/2` forever AND still intercepts egress — so the app cannot reach
+  `metadata.google.internal`, Workload Identity cannot mint a token, and every
+  Vertex call fails ~60-90s later with a generic application error. Debugging
+  that from the app logs leads nowhere: check `kubectl get pods` for `1/2` and
+  the proxy's log for "Traffic Director configuration was not found" first.
+  `kubectl rollout restart` sometimes clears it; see design/TODO.md.
+- **Deploy order**: label the namespace `istio.io/rev=asm-managed` BEFORE
+  installing, or the first pod comes up with no sidecar at all.
+- **Managed CSM does not give you an ingress gateway** — deploy your own
+  (an injected Deployment with `inject.istio.io/templates: gateway` and
+  `image: auto`; `istioctl install` is not supported on Autopilot).
+- **The image must be pullable without a secret**, or set `imagePullSecrets`.
+  A private ghcr package fails with 401; Artifact Registry in the same project
+  is pulled by the node with no secret at all. Also set `image.tag`
+  explicitly — it defaults to `.Chart.AppVersion`, which may not be a tag that
+  exists.
+
 ## Surviving restarts
 
 Two different mechanisms, often confused:
@@ -241,7 +407,7 @@ that has not seen that thread.
 | `jiraToken.existingSecret` / `.existingSecretKey` | `""` / `jira-api-token` | Secret holding the technical-account API token |
 | `config.DF_DEPLOY_REPO` / `.DF_DEPLOY_WORKFLOW` | `""` / `df-deploy.yml` | Dataflow workflow-dispatch deploys |
 | `config.DF_DEPLOY_REF` | `""` | Branch to dispatch on; empty = repo default branch |
-| `config.DF_DISPATCH_INPUTS` | `{"image","tag","environment"}` | Maps our values onto the DF workflow's declared input names |
+| `config.DF_DISPATCH_INPUTS` | `{"image","tag","environment"}` | Maps our values onto the DF workflow's declared input names; `{requested_by}` = the verified caller, for the run name |
 | `config.COMPOSER_REPO` | `""` | Composer DAGs repo; empty = no DAG version bump offered |
 | `config.COMPOSER_BRANCH` / `.COMPOSER_DAG_DIR_PATTERN` | `main` / `{env}` | branch the bump PR targets, and the per-env DAG folder |
 
@@ -269,6 +435,45 @@ config:
   DF_DEPLOY_REF: "main"              # branch holding that file
   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
 ```
+
+### Who asked: the person in GitHub's history and in the run name
+
+Every commit and PR the portal makes carries the **verified** caller
+(`IDENTITY_HEADER` on): a `Requested-by: <email>` trailer on the commit message
+and the PR body, and the commit *author* set to the person (the committer stays
+the token's owner, so GitHub shows "alice authored, bot committed"). The prod
+merge commit carries the trailer too. With identity off nothing is invented —
+a typed email is a claim, not an identity. Find them with
+`git log --format='%(trailers:key=Requested-by)'`.
+
+A DF deploy is a `workflow_dispatch`, which has no commit — so the person goes
+into the **run name** instead. Map the `{requested_by}` placeholder onto an
+input your workflow declares, and use it in `run-name:`:
+
+```yaml
+config:
+  DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}", "requested_by": "{requested_by}"}'
+```
+
+```yaml
+# in the DF repo's workflow
+run-name: "Deploy ${{ inputs.module }}:${{ inputs.binary_version }} — requested by ${{ inputs.requested_by || github.actor }}"
+on:
+  workflow_dispatch:
+    inputs:
+      module: { type: choice, options: [...] }
+      binary_version: { type: string, required: true }
+      requested_by:
+        type: string
+        required: false
+        description: Verified email of the person who asked the portal to deploy
+```
+
+Order of rollout does not matter: GitHub refuses a dispatch carrying an input
+the workflow does not declare, so if the ConfigMap maps `requested_by` before
+the workflow declares it, the portal drops **that one input** and dispatches
+the rest (logged as a warning). A mismapped `module`/`binary_version` still
+fails loudly, as it should.
 
 The **Deploy to DF UAT** form then labels itself from the workflow: the fields
 read *Module* and *Binary version*, and a `choice` input renders as a dropdown of

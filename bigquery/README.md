@@ -50,6 +50,48 @@ config:
 Empty `BQ_DATASET` disables the whole feature (queue endpoints report disabled;
 releases/deploys are unaffected — capture is best-effort by design).
 
+## Optional — the BQ cost report's memory table
+
+The BigQuery cost report (`design/BQ_COST.md`, `helm/release-copilot/README.md`
+§ "BigQuery cost report") can remember what it suggested and whether the cost
+fell afterwards. That is a second append-only table,
+[bq_cost_findings.schema.json](bq_cost_findings.schema.json), created in the
+SAME dataset so the runtime SA's existing `dataEditor` binding covers it:
+
+```hcl
+module "release_events" {
+  # ...as above...
+  bq_cost_findings_table = "bq_cost_findings"   # empty (default) = not created
+}
+```
+
+or `bq mk --table --time_partitioning_field run_ts --time_partitioning_type DAY
+PROJECT:release_agent.bq_cost_findings bigquery/bq_cost_findings.schema.json`,
+then in Helm values `BQ_COST_DATASET: "release_agent"` and
+`BQ_COST_FINDINGS_TABLE: "bq_cost_findings"`. Leave `BQ_COST_DATASET` empty
+and the report still works — it just cannot say "adopted" or "still open".
+
+## Optional — the support investigations' feedback table
+
+Every investigation asks "was this right?" (right / right direction / wrong,
+plus the actual cause). The answers are a third append-only table,
+[support_findings.schema.json](support_findings.schema.json): one INSERT per
+answer, never an update — a person correcting themselves adds a row, and the
+latest per person wins at read time. Same dataset, same bindings:
+
+```hcl
+module "release_events" {
+  # ...as above...
+  support_findings_table = "support_findings"   # empty (default) = not created
+}
+```
+
+or `bq mk --table --time_partitioning_field created_at --time_partitioning_type DAY
+PROJECT:release_agent.support_findings bigquery/support_findings.schema.json`,
+then in Helm values `SUPPORT_FEEDBACK_DATASET: "release_agent"`. Leave it empty
+and investigations still work — the "Was this right?" row is simply not shown
+and no accuracy is measured.
+
 ## Rules of the road
 
 - **Append-only.** The app only ever INSERTs; queue state and per-environment

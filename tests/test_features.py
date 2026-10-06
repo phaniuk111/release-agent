@@ -1,6 +1,7 @@
 """Preview features: hidden from everyone but the people testing them — in the
 page, the API and the chat alike."""
 import json
+import pathlib
 from types import SimpleNamespace
 
 import pytest
@@ -31,8 +32,8 @@ def test_only_listed_verified_users_are_testers(monkeypatch):
 def test_the_check_group_is_hidden_by_default_for_everyone_else():
     assert features.hidden_groups(OTHER) == ["Check"]
     assert features.hidden_groups(TESTER) == []
-    assert features.ui_config(TESTER) == {"hiddenGroups": [], "previewGroups": ["Check"], "preview": True}
-    assert features.ui_config(None) == {"hiddenGroups": ["Check"], "previewGroups": [], "preview": False}
+    assert features.ui_config(TESTER) == {"hiddenGroups": [], "previewGroups": ["Check"], "preview": True, "llm": True}
+    assert features.ui_config(None) == {"hiddenGroups": ["Check"], "previewGroups": [], "preview": False, "llm": True}
 
 
 def test_monitoring_is_refused_server_side_not_just_hidden(monkeypatch):
@@ -63,7 +64,7 @@ def test_the_page_is_rendered_with_this_callers_view(monkeypatch):
 
     monkeypatch.setattr(APP, "_caller", lambda request: None)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
-    assert 'window.PORTAL_UI = {"hiddenGroups": ["Check"], "previewGroups": [], "preview": false};' in html
+    assert 'window.PORTAL_UI = {"hiddenGroups": ["Check"], "previewGroups": [], "preview": false, "llm": true};' in html
     monkeypatch.setattr(APP, "_caller", lambda request: TESTER)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
     assert '"preview": true' in html and "{PORTAL_UI}" not in html
@@ -76,3 +77,44 @@ def test_the_injected_config_cannot_close_the_script_tag(monkeypatch):
     monkeypatch.setattr(APP, "_caller", lambda request: None)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
     assert "</script><b>" not in html and "\\u003c/script>" in html
+
+
+def test_every_server_gated_pill_sits_in_a_preview_group_by_default():
+    """A pill whose feature the server refuses by default (PREVIEW_FEATURES)
+    must live in a group PREVIEW_GROUPS hides by default — otherwise everyone
+    sees a pill that only ever answers 403. A pill's form key is its feature key."""
+    from release_agent.config import Settings
+
+    fields = Settings.model_fields
+    default_groups = {g.strip() for g in fields["preview_groups"].default.split(",") if g.strip()}
+    gated = {f.strip() for f in fields["preview_features"].default.split(",") if f.strip()}
+    assert gated, "nothing is gated by default — the test would be vacuous"
+    palette = (pathlib.Path(APP.__file__).parent / "static" / "palette.js").read_text()
+    for feature in gated:
+        lines = [line for line in palette.splitlines() if f"form:'{feature}'" in line and "group:'" in line]
+        # A gated feature with no pill of its own is fine (it may be chat-only);
+        # what must never happen is a pill sitting in a group everyone can see.
+        for line in lines:
+            group = line.split("group:'", 1)[1].split("'", 1)[0]
+            assert group in default_groups, (feature, group)
+    # Known limit: this reads `form:` pills only. A `send:true` pill whose chat
+    # text reaches a gated TOOL is invisible here — the refusal still comes from
+    # the server, so the worst case is a visible pill that answers "not yet".
+
+
+def test_the_bq_cost_report_is_preview_by_default():
+    """Hidden for now: its routes and tools refuse anyone but PREVIEW_USERS and
+    its Monitoring group is not rendered for them — config, not code, releases it."""
+    from release_agent.config import Settings
+
+    fields = Settings.model_fields
+    assert "bq-cost" in fields["preview_features"].default
+    assert "Monitoring" in fields["preview_groups"].default
+    palette = (pathlib.Path(APP.__file__).parent / "static" / "palette.js").read_text()
+    line = next(line for line in palette.splitlines() if "form:'bq-cost'" in line)
+    assert "group:'Monitoring'" in line
+
+
+def test_a_refusal_names_the_feature_like_a_person_would():
+    assert features.refusal("monitoring") == "Monitoring is not available yet — it is a preview feature."
+    assert features.refusal("bq-cost") == "The BigQuery cost report is not available yet — it is a preview feature."

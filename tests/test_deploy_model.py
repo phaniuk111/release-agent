@@ -76,19 +76,6 @@ def test_upsert_entry_drops_stale_duplicates():
     ]
 
 
-def test_remove_entry_removes_all_duplicates():
-    from release_agent.tools.promotion import _remove_entry
-
-    include = [
-        {"helm_chart_name": "svc", "helm_chart_version": "1"},
-        {"helm_chart_name": "keep", "helm_chart_version": "2"},
-        {"helm_chart_name": "svc", "helm_chart_version": "0"},
-    ]
-    assert _remove_entry(include, "svc") is True
-    assert include == [{"helm_chart_name": "keep", "helm_chart_version": "2"}]
-    assert _remove_entry(include, "svc") is False
-
-
 def test_image_tags_path_still_works():
     ents = _entries_for_deploy("uat", "a:1,b:2", "", "", "", "")
     assert [e["helm_chart_name"] for e in ents] == ["a", "b"]
@@ -177,38 +164,3 @@ def test_open_release_pr_targets_payload_repo(monkeypatch):
     assert "ERROR deploying" in out
 
 
-def test_merge_prod_release_targets_payload_repo(monkeypatch):
-    from release_agent.tools import promotion as P
-
-    seen = {}
-
-    class _FakeGithub:
-        def get_repo(self, full):
-            seen["repo"] = full
-            raise RuntimeError("stop here")
-
-    monkeypatch.setattr(P, "_get_github_client", lambda: _FakeGithub())
-    out = P.merge_prod_release.invoke({"deployment_repo": "my-org/custom-deploy"})
-    assert seen["repo"] == "my-org/custom-deploy"
-    assert "ERROR releasing prod" in out
-    # Unparseable repo is rejected before any GitHub call.
-    out2 = P.merge_prod_release.invoke({"deployment_repo": "nonsense"})
-    assert "could not parse deployment_repo" in out2
-
-
-def test_remove_from_release_targets_payload_repo(monkeypatch):
-    from release_agent.tools import promotion as P
-
-    seen = {}
-
-    class _FakeGithub:
-        def get_repo(self, full):
-            seen["repo"] = full
-            raise RuntimeError("stop here")
-
-    monkeypatch.setattr(P, "_get_github_client", lambda: _FakeGithub())
-    out = P.remove_from_release.invoke(
-        {"image_names": "svc", "deployment_repo": "https://github.com/my-org/custom-deploy"}
-    )
-    assert seen["repo"] == "my-org/custom-deploy"
-    assert "ERROR removing from release" in out

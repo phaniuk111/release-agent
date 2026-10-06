@@ -73,15 +73,45 @@ export function whoami() {
 export const monitoring = (fresh) => get('/api/monitoring' + (fresh ? '?fresh=1' : ''));
 export const monitoringAlertPolicy = (name) => get('/api/monitoring/alert-policy?' + query({ name }));
 
+// ---- BigQuery cost ------------------------------------------------------------
+export const bqCostReport = (fresh) => get('/api/bq-cost/report?' + query({ fresh: fresh ? 1 : 0 }));
+/** The workbook download — a link's href, so the browser saves it (same cache as the JSON). */
+export const bqCostReportXlsx = () => API_BASE + '/api/bq-cost/report.xlsx';
+
+// ---- support triage -----------------------------------------------------------
+export const supportTriage = (date, fresh) => get('/api/support/triage?' + query({ date: date || '', fresh: fresh ? 1 : 0 }));
+
+// ---- support feedback ---------------------------------------------------------
+/** One "was this right?" answer. Who answered is the verified caller, decided server-side.
+ * @param {{business_date: string, incident_id: string, title?: string, verdict: 'right'|'direction'|'wrong',
+ *          actual_cause?: string, category?: string, action?: string, model?: string,
+ *          model_calls?: number, seconds?: number}} payload
+ * @returns {ok, recorded} or {ok: false, error, hint?, disabled?} */
+export const supportFeedback = (payload) => post('/api/support/feedback', payload);
+/** How the investigations were rated: totals, accuracy, by category/model, the newest wrong answers. */
+export const supportFeedbackStats = (days) => get('/api/support/feedback/stats?' + query({ days: days || 30 }));
+
 // ---- release queue ----------------------------------------------------------
 export const QUEUE_PATH = '/api/release-queue';
 export const getQueue = () => get(QUEUE_PATH);
 export const queueBatch = (body) => post('/api/release-queue/batch', body);
 /** @param {{artifact_name: string, artifact_version?: string, requested_by: string}} body */
 export const withdrawFromQueue = (body) => post('/api/release-queue/withdraw', body);
+export const HISTORY_PATH = '/api/release-history';
+/** @param {{items: {artifact_name: string, artifact_version: string}[], requested_by: string}} body */
+export const requeueFromHistory = (body) => post('/api/release-queue/requeue', body);
+export const releaseHistory = (params) => get(HISTORY_PATH + (params ? '?' + query(params) : ''));
 
 // ---- releases -----------------------------------------------------------------
 export const releaseDefaults = (body) => post('/api/release-defaults', body);
+/**
+ * The change-request prose drafted from the queued items' own details.
+ * @param {{artifacts: string[], kind: 'care'|'df'}} body  artifact lines as the form holds them (full URL or name:version)
+ * @returns answer — CARE in mono mode: {ok, draft: {change_description, change_reason, associated_risk,
+ *          consequence, user_service_impact}, sources: {<field>: 'ai'|'team'|'fallback'}, grounded_on};
+ *          DF and fileset CARE, as always: {ok, draft: {change_summary, change_description, change_reason,
+ *          associated_risk, consequence, user_impact}, grounded_on}; either may be {ok: false, error}
+ */
 export const releaseDraft = (body) => post('/api/release-draft', body);
 export const releaseStatus = (fresh) => get('/api/release-status' + (fresh ? '?fresh=1' : ''));
 export const releaseInsights = (params) => get('/api/release-insights?' + query(params));

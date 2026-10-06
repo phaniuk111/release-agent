@@ -1,6 +1,10 @@
-// One-line release status strip — reads the PRD-release-PR API shape:
-// { date_utc, now_utc, uat_charts, prd_charts,
-//   prd_release_pr: {number,url,charts,can_merge_now}, pending_to_prod, reason }
+// One-line release status strip — reads /api/release-status:
+// { date_utc, now_utc, uat_charts, prd_charts, queued_next, reason,
+//   blocking_pr: {number,url,head,base}, df: {...} }
+// There is no staged-PRD-batch slot any more: PROD is reached only by promoting
+// a release, so the PR open against a guarded branch (blocking_pr) IS the CARE
+// release in flight — the same reading the DF slot has always used. Every field
+// is optional; the strip must render whatever is missing.
 import { releaseStatus } from './api.js';
 import { escapeHtml as esc } from './core/format.js';
 
@@ -62,7 +66,9 @@ function _dfSummary(s) {
                 esc(df.error) + ')</span>',
         };
     }
-    const pr = df.prd_release_pr;
+    // A PR open on the DF chain IS the DF release in flight; the server may name
+    // that slot either way, so read both rather than blanking the DF summary.
+    const pr = df.release_pr || df.prd_release_pr || df.blocking_pr;
     if (pr) {
         return {
             title: ' · DF: PR #' + pr.number + ' open',
@@ -100,7 +106,12 @@ export async function loadReleaseStatus(fresh) {
         // A PR into a release-guard branch (PRD/PRL1/...) blocks adds — surface it
         // in the strip so users learn BEFORE filling a deploy form.
         const blk = s.blocking_pr;
-        const blkTitle = blk ? ' · ⚠ adds blocked by PR #' + blk.number : '';
+        // One PR, one mention: an open PR on a guarded branch is BOTH the CARE
+        // release in flight and the reason adds are blocked, so the title says it
+        // once instead of naming the same number twice.
+        const careTitle = blk
+            ? 'CARE: PR #' + blk.number + ' open · adds blocked'
+            : 'CARE: no release PR open';
         // Intake-queue awareness: how many charts devs have registered for the
         // NEXT release (absent when the BQ queue is disabled).
         const qTitle = (typeof s.queued_next === 'number' && s.queued_next > 0)
@@ -111,29 +122,13 @@ export async function loadReleaseStatus(fresh) {
               '</a> (' + esc(blk.head) + ' → ' + esc(blk.base) + ') is open — merge or close it first.</span>'
             : '';
         const df = _dfSummary(s);
-        const pr = s.prd_release_pr;
-        if (pr) {
-            const n = (s.pending_to_prod || []).length;
-            dot.className = 'w-2 h-2 rounded-full bg-amber-400 inline-block';
-            title.textContent = 'CARE: PR #' + pr.number + ' open · ' + n + ' change' + (n === 1 ? '' : 's') + ' staged' + df.title + blkTitle + qTitle;
-            let html = (s.reason ? esc(s.reason) + ' · ' : '') + foot;
-            if ((pr.charts || []).length) {
-                html += '<br><span>staged: ' + _chartList(pr.charts) + '</span>';
-            }
-            html += ' &nbsp;<a href="' + esc(pr.url) + '" target="_blank" class="underline text-emerald-400">open PR #' + esc(pr.number) + '</a>';
-            html += _envLists(s);
-            html += df.detail;
-            html += blkDetail;
-            detail.innerHTML = html;
-            return;
-        }
         dot.className = blk
             ? 'w-2 h-2 rounded-full bg-amber-400 inline-block'
             : 'w-2 h-2 rounded-full bg-emerald-500 inline-block';
         // No installed-chart count in the title: it is the size of the deployed
         // SET, which barely moves release to release, so it read as activity while
         // reporting none. The full PRD list is still one click away under details.
-        title.textContent = 'CARE: no release open' + df.title + blkTitle + qTitle;
+        title.textContent = careTitle + df.title + qTitle;
         detail.innerHTML = (s.reason ? esc(s.reason) + ' · ' : '') + foot + _envLists(s) + df.detail + blkDetail;
     } catch (e) {
         banner.classList.remove('hidden');

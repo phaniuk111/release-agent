@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { visibleCapabilities } from '../../src/release_agent/static/core/capabilities.js';
+import { llmEnabled, visibleCapabilities } from '../../src/release_agent/static/core/capabilities.js';
 
 const GROUPS = [{ name: 'Release' }, { name: 'Check' }];
 const CAPS = [{ group: 'Release', label: 'Queue' }, { group: 'Check', label: 'Monitoring' }];
@@ -21,4 +21,11 @@ test('a tester sees the preview group, tagged as preview', () => {
 
 test('no config shows everything untagged', () => {
     assert.equal(visibleCapabilities(GROUPS, CAPS, undefined).capabilities.length, 2);
+});
+
+test('only an explicit llm: false switches the model-only controls off', () => {
+    assert.equal(llmEnabled({ llm: false }), false);
+    assert.equal(llmEnabled({ llm: true }), true);
+    assert.equal(llmEnabled({}), true);          // a page from before the flag
+    assert.equal(llmEnabled(undefined), true);
 });

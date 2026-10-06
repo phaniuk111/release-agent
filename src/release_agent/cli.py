@@ -25,13 +25,11 @@ def run_cli(thread_id: str | None = None, repo: str | None = None):
     from .config import settings
 
     if repo:
-        # settings and gh_tools module globals were resolved at import time, so
-        # updating only the env var here would be ignored — patch the live values.
+        # settings was resolved at import time, so updating only the env var here
+        # would be ignored — patch the live value the tools actually read
+        # (active_build_repo() -> settings.build_repo).
         os.environ["BUILD_REPO"] = repo
-        from .tools import gh_tools as _gh
-
         settings.build_repo = repo
-        _gh.BUILD_REPO = repo
 
     from .adk_service import get_adk_chat_service
 

@@ -1,22 +1,30 @@
-# Keeps the agent image's build context small on CI runners. Dockerfile.agent
-# copies only pyproject/uv.lock/src/adk_release_agent, so everything else here
-# is upload weight and cache-busting noise.
-.git
-.venv
-backstage
-deployment-repo
-traces
-evals
-practice
-docs
-design
-examples
-tests
-k8s
-helm
+# The images are built from the source tree; everything below is either rebuilt
+# inside the image, irrelevant to it, or must never reach it. Without this file
+# the build context is ~2.6 GB (the local .venv alone is most of it) — slow for
+# a local `docker build`, and slow AND billable for a remote builder or a CI
+# runner. Dockerfile.agent copies only pyproject/uv.lock/src/adk_release_agent.
+.venv/
+.git/
+node_modules/
+backstage/
+deployment-repo/
+traces/
+.claude/
+.codex/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
 **/__pycache__
-**/*.pyc
+*.pyc
+*.egg-info/
 .env
-.claude
-.codex
-node_modules
+.DS_Store
+# Tests, design notes, docs and deploy manifests are not part of the runtime image.
+tests/
+evals/
+design/
+practice/
+docs/
+examples/
+k8s/
+helm/

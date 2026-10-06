@@ -1,0 +1,11 @@
+[
+  {"name": "report_id", "type": "STRING", "mode": "NULLABLE", "description": "UUID per row; used as insertId for best-effort dedup on retries"},
+  {"name": "run_ts", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "UTC time this scan ran"},
+  {"name": "qhash", "type": "STRING", "mode": "NULLABLE", "description": "query_info.query_hashes.normalized_literals for a query finding; the 'project.dataset.table' string for a storage/write finding"},
+  {"name": "kind", "type": "STRING", "mode": "NULLABLE", "description": "query | table | storage | write"},
+  {"name": "cost_before_bytes", "type": "INT64", "mode": "NULLABLE", "description": "bytes billed (query) or logical/input bytes (storage/write) at the time of this report"},
+  {"name": "cost_before_slot_ms", "type": "INT64", "mode": "NULLABLE", "description": "total slot-ms over the window; null for storage/write findings"},
+  {"name": "proposal", "type": "STRING", "mode": "NULLABLE", "description": "JSON-encoded structured proposal (bq_propose output), when the model made one; null otherwise"},
+  {"name": "verdict", "type": "STRING", "mode": "NULLABLE", "description": "accept | reject (from verify_rewrite/verdict) for a query proposal; the storage/write finding's own kind (no_expiration/unread/large_unpartitioned/unbatched/errors) otherwise"},
+  {"name": "bytes_after", "type": "INT64", "mode": "NULLABLE", "description": "bytes a verified rewrite's dry run reported; null when there is no accepted proposal"}
+]

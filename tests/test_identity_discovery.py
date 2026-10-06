@@ -5,6 +5,8 @@ header carries it in, and the app reads no headers today. This block reports
 what actually arrives so the header can be identified BEFORE any code depends on
 it. Nothing consumes it yet, which is the point: it is safe to deploy.
 """
+import pytest
+
 from release_agent.app_fastapi import _identity_report, _mask_identity
 
 
@@ -26,11 +28,22 @@ def test_an_unknown_header_name_is_still_surfaced():
     assert "x-corp-staff-identity" in r["other_candidate_headers"]
 
 
-def test_a_token_shaped_value_is_never_echoed():
-    """/api/diagnostics gets screenshotted into tickets — a JWT must not ride along."""
-    jwt = "eyJ" + "x" * 400
-    out = _mask_identity(jwt)
-    assert jwt not in out and out == f"<{len(jwt)} chars>"
+_JWT = "eyJ" + "x" * 400
+
+
+@pytest.mark.parametrize("value, expected", [
+    (_JWT, f"<{len(_JWT)} chars>"),
+    ("alice@corp.com", "a***@corp.com"),
+    ("abc", "***"),
+    ("", ""),
+])
+def test_mask_identity_reduces_tokens_addresses_and_short_values(value, expected):
+    """/api/diagnostics gets screenshotted into tickets — a JWT must not ride
+    along; plain addresses and short values are both reduced the same way."""
+    out = _mask_identity(value)
+    assert out == expected
+    if value:
+        assert value not in out
 
 
 def test_the_authorization_header_is_reported_as_presence_only():
@@ -52,9 +65,3 @@ def test_every_header_name_is_listed_even_when_nothing_matches():
     r = _identity_report(_Req({"x-weird-thing": "1", "accept": "*/*"}))
     assert r["identity_headers"] == {}
     assert r["all_header_names"] == ["accept", "x-weird-thing"]
-
-
-def test_plain_addresses_and_short_values_are_both_reduced():
-    assert _mask_identity("alice@corp.com") == "a***@corp.com"
-    assert _mask_identity("abc") == "***"
-    assert _mask_identity("") == ""

@@ -1,8 +1,8 @@
-import { escapeHtml as esc } from '../core/format.js';
+import { escapeHtml as esc, shortName } from '../core/format.js';
 import { batchRow, queueSubmissionProblems, tickHint } from '../core/queue.js';
 import { getContext, QUEUE_PATH, queueBatch } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
-import { ctxNote, lockToSignedIn, opening, withDismiss } from './common.js';
+import { ctxNote, fieldControl, labeledField, lockToSignedIn, opening, withDismiss } from './common.js';
 
 // ---- Add to next release (intake queue) ----------------------------------
 // A dev ready on Monday registers chart:version + routing here; DevOps sees
@@ -37,7 +37,7 @@ export async function showQueueForm() {
             row.innerHTML = '<span class="truncate">' + esc(q.artifact_name) + ':' + esc(q.artifact_version) +
                 (q.prl1_only ? ' <span class="text-violet-400">PRL1</span>' : '') +
                 (q.df_only ? ' <span class="text-sky-400">DF</span>' : '') + '</span>' +
-                '<span class="text-slate-600 truncate">' + esc((q.requested_by || '').split('@')[0]) + '</span>';
+                '<span class="text-slate-600 truncate">' + esc(shortName(q.requested_by)) + '</span>';
             list.appendChild(row);
         });
         wrap.appendChild(list);
@@ -66,14 +66,9 @@ export async function showQueueForm() {
     wrap.appendChild(rowsBox);
 
     const rows = [];
-    const fld = (ph, cls, listId) => {
-        const el = document.createElement('input');
-        el.type = 'text'; el.placeholder = ph;
-        if (listId) el.setAttribute('list', listId);
-        el.className = 'bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 ' +
-            'text-xs text-white focus:outline-none ' + cls;
-        return el;
-    };
+    // A row field sizes itself inside the flex row, so it passes its own width
+    // class instead of the default w-full (forms/common.js).
+    const fld = (ph, cls, listId) => fieldControl({ placeholder: ph, className: cls, list: listId });
     const addRow = (focus) => {
         const row = document.createElement('div');
         row.className = 'flex gap-1.5 mb-1 items-center';
@@ -119,19 +114,8 @@ export async function showQueueForm() {
 
     const grid = document.createElement('div');
     grid.className = 'grid grid-cols-2 gap-2 mb-2';
-    const mk = (labelText, id, placeholder) => {
-        const l = document.createElement('label');
-        l.className = 'text-[11px] text-slate-400 block mb-0.5';
-        l.textContent = labelText;
-        const el = document.createElement('input');
-        el.id = id; el.type = 'text'; if (placeholder) el.placeholder = placeholder;
-        el.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none';
-        const box = document.createElement('div');
-        box.appendChild(l); box.appendChild(el);
-        grid.appendChild(box);
-        return el;
-    };
-    const emailEl = mk('Your email *', 'q-email', 'you@company.com');
+    const emailEl = labeledField(grid,
+        { label: 'Your email *', id: 'q-email', placeholder: 'you@company.com' });
     emailEl.value = localStorage.getItem('queue_email') || '';
     lockToSignedIn(emailEl);
     wrap.appendChild(grid);
@@ -139,23 +123,19 @@ export async function showQueueForm() {
     // Change context: the dev's what-and-why becomes the CHG description draft
     // when DevOps opens Create release — the dev knows this better on Monday
     // than anyone reconstructing it on Thursday. Shared: it is ONE change.
-    const detailsLabel = document.createElement('label');
-    detailsLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
-    detailsLabel.textContent = 'Change details * — what changed & why; pre-drafts the CHG for DevOps';
-    const detailsEl = document.createElement('textarea');
-    detailsEl.id = 'q-details'; detailsEl.rows = 2;
-    detailsEl.placeholder = 'e.g. fixes schema drift in position feed after upstream v4 migration';
-    detailsEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none mb-2';
-    wrap.appendChild(detailsLabel); wrap.appendChild(detailsEl);
+    const detailsEl = labeledField(wrap, {
+        label: 'Change details * — what changed & why; pre-drafts the CHG for DevOps',
+        id: 'q-details', tag: 'textarea', rows: 2,
+        placeholder: 'e.g. fixes schema drift in position feed after upstream v4 migration',
+        className: 'w-full mb-2',
+    });
 
-    const noteLabel = document.createElement('label');
-    noteLabel.className = 'text-[11px] text-slate-400 block mb-0.5';
-    noteLabel.textContent = 'Note for DevOps (optional)';
-    const noteEl = document.createElement('input');
-    noteEl.id = 'q-note'; noteEl.type = 'text';
-    noteEl.placeholder = 'e.g. ship together with workflow-service';
-    noteEl.className = 'w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none mb-2';
-    wrap.appendChild(noteLabel); wrap.appendChild(noteEl);
+    const noteEl = labeledField(wrap, {
+        label: 'Note for DevOps (optional)',
+        id: 'q-note',
+        placeholder: 'e.g. ship together with workflow-service',
+        className: 'w-full mb-2',
+    });
 
     // Re-queueing a chart REPLACES its queue entry — the queue is keyed by chart
     // name and the latest event wins. Silently swapping someone's 1.4.2 for a
@@ -184,7 +164,7 @@ export async function showQueueForm() {
                   esc(h.existing.artifact_version) + '</b> — submitting again just refreshes it.'
                 : 'This <b>replaces</b> the queued <b>' + esc(h.existing.artifact_name) + ':' +
                   esc(h.existing.artifact_version) + '</b>' +
-                  (h.existing.requested_by ? ' (queued by ' + esc(h.existing.requested_by.split('@')[0]) + ')' : '') +
+                  (h.existing.requested_by ? ' (queued by ' + esc(shortName(h.existing.requested_by)) + ')' : '') +
                   '. To take it out of the release instead, withdraw it.')
         ).join('<br>');
     };
@@ -322,25 +302,31 @@ export async function showQueueForm() {
                 '</div>';
         };
 
+        // The red block, rendered by BOTH paths below — once beside the still-open
+        // form, then again inside the success card that replaces it. Same markup,
+        // different heading and closing line.
+        const refusedBlock = (heading, footer, cls) =>
+            '<div class="' + (cls ? cls + ' ' : '') +
+            'border border-red-500/40 bg-red-500/10 rounded-lg px-3 py-2 text-[11px] text-red-300 mt-2">' +
+            heading + refused.map(refusedRow).join('') + footer + '</div>';
+
         // PARTIAL SUCCESS: eligible rows are queued even when a sibling fails.
         // Losing good work because one control failed is the worse outcome — but
         // it does split one change across releases, so say so plainly.
         if (refused.length) {
             const box = document.createElement('div');
-            box.className = 'batch-result w-full border border-red-500/40 bg-red-500/10 ' +
-                'rounded-lg px-3 py-2 text-[11px] text-red-300 mt-2';
-            box.innerHTML =
-                (queued.length
+            box.innerHTML = refusedBlock(
+                queued.length
                     ? '<b>Queued ' + queued.length + ', refused ' + refused.length + '.</b><br>'
-                    : '<b>Not eligible for the release — nothing queued.</b><br>') +
-                refused.map(refusedRow).join('') +
-                (queued.length
+                    : '<b>Not eligible for the release — nothing queued.</b><br>',
+                queued.length
                     ? '<div class="mt-1 text-amber-300">⚠ This splits your change — ' +
                       queued.map(q => esc(q.artifact)).join(', ') +
                       ' will ship without the above unless you fix and re-queue before release day.</div>'
                     : '<div class="mt-1">Every control must pass to queue — fix these (or let the run ' +
-                      'finish), then queue again with a run where they all pass.</div>');
-            row.parentNode.insertBefore(box, row);
+                      'finish), then queue again with a run where they all pass.</div>',
+                'batch-result w-full');
+            row.parentNode.insertBefore(box.firstChild, row);
             if (!queued.length) return;
         }
 
@@ -366,11 +352,9 @@ export async function showQueueForm() {
             // was rendered into `wrap`, which this innerHTML replaces, and
             // "not queued" without the control name sends nobody anywhere.
             (refused.length
-                ? '<div class="border border-red-500/40 bg-red-500/10 rounded-lg px-3 py-2 ' +
-                  'text-[11px] text-red-300 mt-2"><b>Not queued (' + refused.length + ')</b>' +
-                  refused.map(refusedRow).join('') +
-                  '<div class="mt-1 text-amber-300">⚠ Your change is split — fix these and ' +
-                  're-queue before release day.</div></div>'
+                ? refusedBlock('<b>Not queued (' + refused.length + ')</b>',
+                    '<div class="mt-1 text-amber-300">⚠ Your change is split — fix these and ' +
+                    're-queue before release day.</div>')
                 : '') +
             '<div class="text-[11px] text-slate-500 mt-2">You\'re done — they will be in the ' +
             '<b>' + (dfF.cb.checked ? 'DF' : 'CARE') + ' Release</b> form automatically. ' +

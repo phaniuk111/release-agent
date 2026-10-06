@@ -3,9 +3,10 @@
 // all decisions live server-side.
 import { getThreadId, rotateThreadId } from './state.js';
 import { openChat, sessionDisconnect } from './api.js';
-import { escapeHtml } from './core/format.js';
+import { escapeHtml, splitUrl } from './core/format.js';
 import { liftFences } from './core/fences.js';
-import { parseDeployIntent, showDeployForm } from './forms.js';
+import { showDeployForm } from './forms/deploy_form.js';
+import { parseDeployIntent } from './forms/parse.js';
 import { renderConnectionStatus } from './connect.js';
 import { showCapabilities } from './palette.js';
 import { loadReleaseStatus } from './status.js';
@@ -129,9 +130,6 @@ function _renderTables(t) {
     return out.join('\n');
 }
 
-// HTML escaping lives in core/format.js; re-exported for existing importers.
-export { escapeHtml };
-
 // Minimal, safe markdown -> HTML for streamed assistant text.
 export function renderMarkdown(t) {
     t = _extractChartBlocks(t);
@@ -146,7 +144,11 @@ export function renderMarkdown(t) {
         _links.push('<a href="' + url + '" target="_blank" class="underline text-emerald-400">' + txt + '</a>');
         return 'LINKTOKEN' + (_links.length - 1) + 'ENDTOKEN';
     });
-    t = t.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" class="underline text-emerald-400">$1</a>');
+    // Only the URL is the link: a ")" or "." after it closes the sentence (core/format.js).
+    t = t.replace(/(https?:\/\/[^\s<]+)/g, function(m) {
+        const { url, rest } = splitUrl(m);
+        return '<a href="' + url + '" target="_blank" class="underline text-emerald-400">' + url + '</a>' + rest;
+    });
     t = t.replace(/LINKTOKEN(\d+)ENDTOKEN/g, function(m, i) { return _links[+i]; });
     t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     t = t.replace(/`([^`]+)`/g, '<code class="bg-slate-800 px-1 rounded text-emerald-300">$1</code>');
@@ -176,7 +178,7 @@ export function addMessage(role, content, isStreaming = false) {
         // content may be the full interrupt object (preferred) or a bare string.
         const intr = (content && typeof content === 'object') ? content : { message: content };
         const isBudget = intr.type === 'budget_confirmation';
-        // A yes/no tool-approval (e.g. merge_prod_release): no CONFIRM token —
+        // A yes/no tool-approval (a terminal promotion, a prod removal): no CONFIRM token —
         // identified by the function name / the 'Reply "yes"' instruction. Render
         // Approve/Reject buttons; a pasted token here would otherwise reject it.
         const isApproval = !intr.token && !isBudget &&
@@ -207,6 +209,14 @@ export function addMessage(role, content, isStreaming = false) {
                         class="bg-amber-600 hover:bg-amber-500 px-4 rounded-lg text-sm font-medium">
                     Confirm
                 </button>
+                <button onclick="sendApproval('no')"
+                        class="bg-slate-700 hover:bg-slate-600 px-4 rounded-lg text-sm font-medium">
+                    <i class="fa-solid fa-xmark mr-1"></i>Reject
+                </button>
+            </div>
+            <div class="mt-2 text-xs text-slate-400">
+                Paste the token to apply, or Reject to cancel. Submitting a new deploy or
+                release replaces this one; anything else just reminds you it is waiting.
             </div>
         `;
         div.className = 'message mx-auto interrupt-box rounded-2xl p-4 text-sm';
@@ -229,31 +239,25 @@ export function addMessage(role, content, isStreaming = false) {
     return div;
 }
 
-export function updateLastMessage(content) {
-    const chat = document.getElementById('chat');
-    const last = chat.lastElementChild;
-    if (last) {
-        const contentDiv = last.querySelector('div');
-        if (contentDiv) contentDiv.innerHTML = content;
-    }
-}
-
 export async function sendMessage(overrideText) {
     const input = document.getElementById('input');
-    // overrideText lets callers send multi-line messages (the single-line
-    // text input strips newlines, which breaks the PROD change-ticket form).
+    // overrideText lets callers send multi-line messages (the single-line text
+    // input strips newlines, which breaks the release form's change request).
     const message = (typeof overrideText === 'string' ? overrideText : input.value).trim();
     if (!message) return;
 
     // A deploy command typed in the chat box opens the editable JSON instead
     // of going straight to the agent (the JSON payload from the editor, which
-    // starts with '{', is sent normally).
+    // starts with '{', is sent normally). A PROD one has no form to open: it is
+    // answered with the release route (core/deploy_routing.js) — the backend
+    // refuses it too, so this only saves the round trip.
     if (!message.startsWith('{')) {
         const di = parseDeployIntent(message);
         if (di) {
             if (typeof overrideText !== 'string') input.value = '';
             addMessage('user', message);
-            showDeployForm(di.env, di.name, di.version);
+            if (di.releaseOnly) addMessage('bot', escapeHtml(di.message));
+            else showDeployForm(di.form, di.name, di.version);
             return;
         }
     }
@@ -312,6 +316,14 @@ export async function sendMessage(overrideText) {
                             botMsg.remove();
                         }
                         addMessage('interrupt', data.data || {});
+                    } else if (data.type === 'investigation') {
+                        // An Investigate answer is complete: let the person say
+                        // whether it was right. Loaded on use and guarded, so a
+                        // missing or broken feedback module never costs the
+                        // answer that is already on the page.
+                        import('./forms/support_feedback.js')
+                            .then(m => m.renderInvestigationFeedback(botMsg, data.data || {}))
+                            .catch(e => console.warn('investigation feedback unavailable', e));
                     } else if (data.type === 'done') {
                         // Refresh the banner ONLY when this turn actually changed
                         // release/deploy state — a question shouldn't cost 5

@@ -111,8 +111,8 @@ directly; every change is a PR chain.**
   release PR** — a single day-long PR on a `release/prd/<date>` branch that **accumulates**
   (upsert by chart name) **both** `uat/deployment.json` and `prd/deployment.json`. Every
   prod deploy through the day adds to the same open PR (the staging view).
-- **Release to PROD (promote at cutoff).** Production is **never written directly and never
-  skips SIT/UAT.** After the daily cutoff (`PRD_CUTOFF_HOUR_UTC`, default 16:00 UTC), and
+- **Release to PROD.** Production is **never written directly and never
+  skips SIT/UAT.** There is no time-of-day gate — a release can ship at any hour, and
   only when asked — say *"release prod"* (→ `merge_prod_release`, also a UI quick-action) —
   the staged charts are **promoted through the full chain `… → SIT → UAT → PRD`** (a fresh
   branch cut from current SIT, upserted so existing prod charts are preserved — no
@@ -132,9 +132,9 @@ directly; every change is a PR chain.**
   looks up the GitHub Actions run the merge triggered (by merge commit) and shows it as
   a clickable link. Needs a workflow on a UAT/PRD push (e.g. `deploy-uat.yml`,
   `on-merge-deploy.yml`); otherwise the run is simply omitted.
-- **Remove / unstage:** `remove_from_release(image_names, environment)` drops the chart
-  by `helm_chart_name` via the same PR chain — `uat` removes from `uat/deployment.json`;
-  `prod` removes from **both** files.
+- **No removals:** a chart leaves the next release only by being withdrawn from the
+  release queue. A UAT deploy overwrites `uat/deployment.json`, so a chart comes off
+  UAT by deploying UAT without it.
 
 This is **shared across sessions** because the state lives in **GitHub itself** (the
 deployment JSONs + the open PRD release PR), not in any in-process memory. The side panel
@@ -144,7 +144,7 @@ load, after each turn, and every 60s. Ask in chat: *"what's deployed to prod?"* 
 in today's PRD release PR?"* (`check_release_window`).
 
 - **Config:** `SIT_BRANCH`/`UAT_BRANCH`/`PRD_BRANCH`, `DEPLOYMENT_PATH_PATTERN`
-  (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`, `PRD_CUTOFF_HOUR_UTC`
+  (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`
   (`{env}/values_{env}.yaml`), `UAT_NAMESPACE`/`PRD_NAMESPACE`.
 
 The per-session ADK state is only for *conversation* memory; the deploy state is
@@ -176,14 +176,14 @@ Two clearly separated lanes run on **Google ADK 2.x**:
    **Skills** as the router: each `SKILL.md` declares its `adk_additional_tools`, so a
    domain's tools are surfaced to the model **only when that skill activates**:
    - `release-status` / `release-pr` / `release-controls` — **read-only**
-   - `release-ops` — scoped mutations only: `remove_from_release`,
-     `retrigger_deployment_workflow`, `merge_prod_release`
+   - `release-ops` — scoped mutations only: `merge_prod_release`,
+     `promote_release` / `promote_df_release`
    - `release-deploy` — **tool-less guard**; defers to the deterministic Workflow
 
    The agent is wrapped in an ADK `App` with a **`MutationGuardPlugin`** that blocks the
-   release-defining mutations (`open_release_pr`, `apply_json_update`, `dispatch_workflow`,
-   `apply_confirmed_deploy`) from the free-form chat path **in code** — not just by prompt.
-   High-impact prod ops (`merge_prod_release`, a **prod** `remove_from_release`) require an
+   release-defining mutations (`open_release_pr`, `apply_confirmed_deploy`,
+   `deploy_dataflow`) from the free-form chat path **in code** — not just by prompt.
+   High-impact prod ops (`merge_prod_release`, a PRD/PRL1 release promotion) require an
    ADK tool-confirmation before they run.
 
 - **PyGithub** for all GitHub operations — no `gh` subprocess in the tool layer; the
@@ -219,6 +219,7 @@ adk_release_agent/
   deploy.py                 # deploy preview/token/apply helpers used by the Workflow nodes
   safety.py                 # MutationGuardPlugin — blocks release-defining mutations in free-form chat
   tools.py                  # ADK Function Tool wrappers over the existing GitHub tool layer
+  support_tools.py          # the Support chat tools (triage, evidence readers, investigate_evidence)
   skills/*/SKILL.md         # ADK Skills (status, pr, controls, ops, deploy) with adk_additional_tools
 ```
 
@@ -244,7 +245,7 @@ apply sequence. Deploy intent never reaches the LLM.
 | **Context caching** (`ContextCacheConfig`) | Caches the static prefix (root instruction + skill catalog) to cut latency/cost. `ADK_CONTEXT_CACHE`. |
 | **Event compaction** (`EventsCompactionConfig`) | Summarizes older events on long chats to avoid context overflow. `ADK_EVENT_COMPACTION`. |
 | **Memory** (`preload_memory` + `add_session_to_memory`) | Recalls relevant context each turn; persists finished sessions to the **in-memory** memory service. `ADK_MEMORY_ENABLED`. |
-| **Conditional confirmation** (`require_confirmation`) | `merge_prod_release` always confirms; `remove_from_release` confirms **only for prod**. `ADK_CONFIRM_PROD_OPS`. |
+| **Conditional confirmation** (`require_confirmation`) | `merge_prod_release` always confirms; a release promotion confirms **only for PRD/PRL1**. `ADK_CONFIRM_PROD_OPS`. |
 
 Memory and sessions are **in-memory (per-pod, ephemeral)** by design — see the scaling
 note below. A PVC does not persist the in-memory memory service (it is pure RAM); durable
@@ -327,14 +328,13 @@ GitHub token + the repo env vars:
 # No GOOGLE_CLOUD_PROJECT required — this runner never touches the LLM.
 
 PYTHONPATH=src python -m release_agent.tools_cli                       # list all tools + args
-PYTHONPATH=src python -m release_agent.tools_cli get_build_controls    # show one tool's schema
-PYTHONPATH=src python -m release_agent.tools_cli get_build_controls image=payments-api tag=v1.5.0
+PYTHONPATH=src python -m release_agent.tools_cli get_build_report     # show one tool's schema
+PYTHONPATH=src python -m release_agent.tools_cli get_build_report image=payments-api tag=v1.5.0
 PYTHONPATH=src python -m release_agent.tools_cli find_prs '{"search_term":"payments-api"}'
 ```
 
 Read/query tools are safe to run. The mutating tools (`open_release_pr`,
-`apply_json_update`, `dispatch_workflow`, `remove_from_release`,
-`retrigger_deployment_workflow`) **execute for real** — this runner bypasses the
+`merge_prod_release`) **execute for real** — this runner bypasses the
 human-confirmation gate by design. Add `--dry-run` to simulate them without executing
 (read-only tools still run), so you can sweep the whole toolset safely:
 

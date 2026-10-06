@@ -1,17 +1,24 @@
 from adk_release_agent import deploy, tools
+from adk_release_agent.safety import BLOCKED_FREEFORM_TOOLS
 
 
 def test_adk_chat_tools_exclude_release_defining_mutations():
     names = {tool.__name__ for tool in tools.ADK_CHAT_TOOLS}
 
-    assert not (tools.RELEASE_DEFINING_MUTATIONS & names)
-    assert {"remove_from_release", "retrigger_deployment_workflow", "merge_prod_release"} <= names
+    # Stronger than checking a private duplicate set: this is the SAME set the
+    # MutationGuardPlugin enforces against at runtime.
+    assert not (BLOCKED_FREEFORM_TOOLS & names)
+    assert {"promote_release", "promote_df_release"} <= names
+    assert "remove_from_release" not in names, "the portal has no removals"
 
 
 def test_adk_tool_result_coercion_preserves_json_objects():
-    assert tools._coerce_tool_result('{"ok": true, "value": 1}') == {"ok": True, "value": 1}
-    assert tools._coerce_tool_result("[1, 2]") == {"result": [1, 2]}
-    assert tools._coerce_tool_result("plain text") == {"result": "plain text"}
+    """Lives in gh_tools now — the ADK wrappers and the queue gate share it."""
+    from release_agent.tools.gh_tools import coerce_result
+
+    assert coerce_result('{"ok": true, "value": 1}') == {"ok": True, "value": 1}
+    assert coerce_result("[1, 2]") == {"result": [1, 2]}
+    assert coerce_result("plain text") == {"result": "plain text"}
 
 
 def test_adk_agent_module_imports_without_google_adk_installed():
@@ -42,16 +49,22 @@ def test_deploy_preview_mints_token_and_exact_uat_plan():
     assert preview["token"] in deploy._PENDING_PREVIEWS
 
 
-def test_deploy_preview_for_prod_plans_both_files():
+def test_deploy_preview_for_prod_is_refused_no_token_minted(monkeypatch):
+    """PROD is reached only through a release now — a chart:version deploy that
+    names prod is refused before any preview is built."""
     deploy._PENDING_PREVIEWS.clear()
+    calls = []
+    monkeypatch.setattr(deploy, "_invoke_tool", lambda name, args: calls.append((name, args)))
 
     preview = deploy.prepare_deploy_preview(
         message="deploy abc-client-api-svc:1.1.1230 to prod",
     )
 
-    assert preview["ok"] is True
-    assert preview["environment"] == "prod"
-    assert {"uat/deployment.json", "prd/deployment.json"} == set(preview["proposed"])
+    assert preview["ok"] is False
+    assert "release" in preview["error"].lower()
+    assert "token" not in preview
+    assert calls == []
+    assert deploy._PENDING_PREVIEWS == {}
 
 
 def test_apply_confirmed_deploy_rejects_missing_or_wrong_token(monkeypatch):

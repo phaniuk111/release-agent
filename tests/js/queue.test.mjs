@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-    batchRow, envsOf, forRelease, queueDestination, queueSubmissionProblems,
+    batchRow, buildSummary, envsOf, forRelease, queueDestination, queueSubmissionProblems,
     releaseRouteText, tickHint, tickProblem, ticksToFlags,
 } from '../../src/release_agent/static/core/queue.js';
+import { requeuePlan } from '../../src/release_agent/static/core/queue.js';
 
 test('ticks map onto the fields the API stores', () => {
     assert.deepEqual(ticksToFlags({ df: false, prd: true, prl1: true }),
@@ -93,6 +94,18 @@ test('a batch row carries the artifact, its run and the routing', () => {
     });
 });
 
+test('the build badge reads the same on every screen, and unknown is not a failure', () => {
+    assert.deepEqual(buildSummary({ build_verified: true }).state, 'verified');
+    assert.equal(buildSummary({ build_verified: true }).label, 'verified');
+    assert.ok(buildSummary({ build_verified: true }).title.includes('built this version'));
+    assert.equal(buildSummary({ build_verified: false }).state, 'unverified');
+    assert.equal(buildSummary({ build_verified: false }).label, 'not verified');
+    // Never checked is its own state — the release form shows no badge for it.
+    assert.equal(buildSummary({ build_verified: null }).state, 'unknown');
+    assert.equal(buildSummary({}).state, 'unknown');
+    assert.equal(buildSummary(undefined).label, 'not checked');
+});
+
 test('the Controls column shows an allowed control as open, by number, else all passed', async () => {
     const { controlsSummary } = await import('../../src/release_agent/static/core/queue.js');
     const failed = controlsSummary({ build_verified: true,
@@ -104,4 +117,23 @@ test('the Controls column shows an allowed control as open, by number, else all 
         '1691, 43 open');
     assert.equal(controlsSummary({ build_verified: true }).label, 'all passed');
     assert.equal(controlsSummary({ build_verified: null }).label, 'not checked');
+});
+
+test('history ticks: a chart that qualified goes back directly; one that never queued takes the gate, once it has run + ticket', () => {
+    const { direct, gated, skipped } = requeuePlan([
+        { artifact_name: 'a', artifact_version: '1.0.0', from_queue: true, build_run_url: 'https://x/run/1', jira_ticket: 'ABC-1' },
+        { artifact_name: 'b', artifact_version: '2.0.0', from_queue: false, build_run_url: '' },
+        { artifact_name: 'c', artifact_version: '3.0.0', from_queue: true, in_queue: true },
+        { artifact_name: 'd', artifact_version: '4.0.0', from_queue: false, build_run_url: 'https://x/run/4' },
+        { artifact_name: 'e', artifact_version: '5.0.0', from_queue: false, build_run_url: 'https://x/run/5', jira_ticket: 'ABC-5',
+          prl1_only: true, target_envs: 'prl1', change_details: 'typed in', note: 'n' },
+    ]);
+    assert.deepEqual(direct, [{ artifact_name: 'a', artifact_version: '1.0.0' }]);
+    assert.deepEqual(gated, [{ artifact: 'e:5.0.0', build_run_url: 'https://x/run/5', jira_ticket: 'ABC-5',
+                               prl1_only: true, df_only: false, target_envs: 'prl1', change_details: 'typed in', note: 'n' }]);
+    assert.deepEqual(skipped.map(s => s.artifact), ['b:2.0.0', 'c:3.0.0', 'd:4.0.0']);
+    assert.match(skipped[0].reason, /paste the run/);
+    assert.match(skipped[1].reason, /already queued/);
+    assert.match(skipped[2].reason, /JIRA ticket/);
+    assert.deepEqual(requeuePlan([]), { direct: [], gated: [], skipped: [] });
 });

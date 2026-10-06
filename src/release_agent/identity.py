@@ -38,7 +38,6 @@ _ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384"]   # never "none" or 
 class Caller:
     email: str
     name: str = ""
-    subject: str = ""
 
 
 _current: contextvars.ContextVar[Caller | None] = contextvars.ContextVar("caller", default=None)
@@ -137,7 +136,42 @@ def verify(token: str) -> Caller:
         raise ValueError("verified, but the token carries no email claim — "
                          "map one in the mesh's UserAuthConfig")
     name = _claim(claims, "attributes.name") or _claim(claims, "name")
-    return Caller(email=email.lower(), name=name, subject=str(claims.get("sub") or ""))
+    return Caller(email=email.lower(), name=name)
+
+
+def presented(token: str) -> dict:
+    """What a presented token SAYS about itself — iss, aud, kid, alg — read
+    without verifying anything. For /api/diagnostics only, so an operator can
+    copy the aud the gateway actually sends into IDENTITY_AUDIENCE (and see an
+    issuer mismatch) without kubectl. Never an input to who the caller is:
+    ``verify`` reads the claims again, after the signature check. None of these
+    four is a secret — they are configuration values, not the person."""
+    import jwt
+
+    token = (token or "").strip().split(" ")[-1]
+    try:
+        header = jwt.get_unverified_header(token)
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except jwt.PyJWTError as e:
+        return {"error": f"not a JWT ({e})"}
+    aud = claims.get("aud")
+    return {
+        "iss": claims.get("iss"),
+        "aud": aud if isinstance(aud, str) else (list(aud) if isinstance(aud, list) else aud),
+        "kid": header.get("kid"),
+        "alg": header.get("alg"),
+        "note": "read from the header WITHOUT verification — for setting IDENTITY_AUDIENCE / "
+                "IDENTITY_ISSUER only, never who the caller is",
+    }
+
+
+def presented_from_headers(headers: Mapping[str, str]) -> dict | None:
+    """``presented`` for the configured header, or None when no token was sent."""
+    if not enabled():
+        return None
+    name = settings.identity_header.strip().lower()
+    value = next((v for k, v in headers.items() if k.lower() == name), "")
+    return presented(value) if value else None
 
 
 def from_headers(headers: Mapping[str, str]) -> tuple[Caller | None, str]:

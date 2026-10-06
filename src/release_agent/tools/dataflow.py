@@ -14,17 +14,16 @@ differently (``module``/``binary_version`` rather than ``image``/``tag``). See
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import itertools
+import json
 import time
 
-from ._common import (
-    settings,
-    tool,
-    BaseModel,
-    Field,
-    json,
-    _get_github_client,
-)
+from pydantic import BaseModel, Field
+
+from ._common import settings, tool, _get_github_client
+
+logger = logging.getLogger("release_copilot")
 
 
 class DeployDataflowInput(BaseModel):
@@ -133,6 +132,23 @@ def _find_dispatched_run(workflow, before_ids: set, since=None, match: str = "",
     return None, 0
 
 
+def _parse_dispatch_template() -> tuple[dict | None, str]:
+    """(mapping, error) from DF_DISPATCH_INPUTS. mapping is None when the
+    template is empty or unusable; error explains why, for callers that must
+    fail loudly (_dispatch_inputs) — callers that must not (_dispatch_mapping)
+    just look at the mapping and ignore the error."""
+    template = (settings.df_dispatch_inputs or "").strip()
+    if not template:
+        return None, ""
+    try:
+        mapping = json.loads(template)
+    except json.JSONDecodeError as e:
+        return None, f"DF_DISPATCH_INPUTS is not valid JSON ({e}): {template[:80]}"
+    if not isinstance(mapping, dict):
+        return None, "DF_DISPATCH_INPUTS must be a JSON object"
+    return mapping, ""
+
+
 def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
     """Map our values onto the target workflow's declared input names.
 
@@ -143,23 +159,75 @@ def _dispatch_inputs(image: str, tag: str, env: str) -> dict:
     {environment} are substituted. Keys absent from the template are simply not
     sent, which is how a workflow with no environment input is supported.
     """
-    template = (settings.df_dispatch_inputs or "").strip()
-    if not template:
+    mapping, error = _parse_dispatch_template()
+    if mapping is None:
+        if error:
+            # A bad template must break the deploy — dispatching with the raw
+            # image/tag names when the operator meant to rename them would
+            # silently reach the wrong workflow input.
+            raise ValueError(error)
         return {"image": image, "tag": tag, "environment": env}
-    try:
-        mapping = json.loads(template)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"DF_DISPATCH_INPUTS is not valid JSON ({e}): {template[:80]}")
-    if not isinstance(mapping, dict):
-        raise ValueError("DF_DISPATCH_INPUTS must be a JSON object")
-    values = {"image": image, "tag": tag, "environment": env}
+    from . import attribution
+
+    # {requested_by} is the VERIFIED caller ("" with identity off — never a
+    # typed name): a team maps it onto an input its workflow declares and uses
+    # in `run-name:`, so the Actions list shows who asked, not the bot token.
+    values = {"image": image, "tag": tag, "environment": env,
+              "requested_by": attribution.requester_email()}
     out = {}
     for key, raw in mapping.items():
         text = str(raw)
         for name, value in values.items():
             text = text.replace("{" + name + "}", value)
+        leftover = _unsubstituted(text)
+        if leftover:
+            # The easy mistake is writing the workflow's own input NAME as the
+            # placeholder ({"module": "{module}"}), which substitutes nothing and
+            # dispatches the literal text. GitHub then rejects it with "Provided
+            # value '{module}' for input 'module' not in the list", which reads
+            # like a choice-list problem and sends you looking in the wrong place.
+            raise ValueError(
+                f"DF_DISPATCH_INPUTS: input {str(key)!r} still contains {leftover} "
+                f"after substitution. The KEY is your workflow's input name; the "
+                f"VALUE must use one of {{image}}, {{tag}}, {{environment}}, {{requested_by}} — e.g. "
+                f'{{"{key}": "{{image}}"}}. Nothing was dispatched.'
+            )
         out[str(key)] = text
     return out
+
+
+def _without_undeclared_requester(inputs: dict, declared: dict) -> tuple[dict, list[str]]:
+    """Drop the requested_by input(s) the workflow at this ref does not declare.
+
+    GitHub refuses a dispatch carrying any input the workflow lacks, so a
+    ConfigMap that maps {requested_by} before the pipeline declares the input
+    would turn every DF deploy into a 422 until the pipeline caught up.
+    Attribution is optional; the deploy is not. ONLY that placeholder is
+    dropped — a mismapped image/tag input must still fail loudly at GitHub.
+    ``declared`` empty means the workflow could not be read: drop nothing.
+    """
+    if not declared:
+        return inputs, []
+    requester_keys = {str(k) for k, raw in _dispatch_mapping().items()
+                      if str(raw).strip() == "{requested_by}"}
+    dropped = sorted(k for k in inputs if k in requester_keys and k not in declared)
+    return {k: v for k, v in inputs.items() if k not in dropped}, dropped
+
+
+def _unsubstituted(text: str) -> str:
+    """The first ``{placeholder}`` left in ``text``, or "" — so a template that
+    names something we do not substitute fails HERE, with a message naming it,
+    instead of at GitHub. No regex (house rule): a brace scan is enough."""
+    start = text.find("{")
+    while start != -1:
+        end = text.find("}", start + 1)
+        if end == -1:
+            return ""
+        inner = text[start + 1:end]
+        if inner and "{" not in inner:
+            return "{" + inner + "}"
+        start = text.find("{", start + 1)
+    return ""
 
 
 def _dispatch_mapping() -> dict:
@@ -168,14 +236,8 @@ def _dispatch_mapping() -> dict:
     UI-facing callers want the mapping without inheriting the dispatch path's
     hard failure — a bad template must break the deploy, not blank the form.
     """
-    template = (settings.df_dispatch_inputs or "").strip()
-    if not template:
-        return {}
-    try:
-        mapping = json.loads(template)
-    except json.JSONDecodeError:
-        return {}
-    return mapping if isinstance(mapping, dict) else {}
+    mapping, _error = _parse_dispatch_template()
+    return mapping or {}
 
 
 def _field_input_names() -> dict:
@@ -256,6 +318,10 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
         ref = (settings.df_deploy_ref or "").strip() or repo.default_branch
     except Exception as e:
         return f"ERROR deploying dataflow: {e}"
+    inputs, dropped = _without_undeclared_requester(inputs, workflow_dispatch_inputs(repo, workflow, ref))
+    if dropped:
+        logger.warning("DF dispatch: %s not declared by %s@%s — sent without it",
+                       ", ".join(dropped), settings.df_deploy_workflow, ref)
 
     since = _dt.datetime.now(_dt.timezone.utc)
     try:

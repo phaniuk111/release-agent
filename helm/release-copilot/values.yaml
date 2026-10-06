@@ -127,9 +127,13 @@ config:
   # Names of the workflow_dispatch inputs to send. GitHub REJECTS the dispatch
   # (HTTP 422 "Unexpected inputs provided") if the payload carries an input the
   # workflow does not declare, so this must match the target workflow's `inputs:`
-  # block. {image}, {tag} and {environment} are substituted; omit a key to not
-  # send it. For a workflow declaring module + binary_version:
+  # block. {image}, {tag}, {environment} and {requested_by} are substituted;
+  # omit a key to not send it. For a workflow declaring module + binary_version:
   #   DF_DISPATCH_INPUTS: '{"module": "{image}", "binary_version": "{tag}"}'
+  # {requested_by} is the VERIFIED caller's email ("" with identity off). Map it
+  # onto an input the workflow declares and use it in `run-name:` so the
+  # Actions list shows who asked, not the bot token (see the README). If the
+  # workflow does not declare it yet, that one input is dropped — never a 422.
   DF_DISPATCH_INPUTS: '{"image": "{image}", "tag": "{tag}", "environment": "{environment}"}'
   # CARE/DF release forms fill every change-request field except start and end.
   # The release name is "<prefix><Month Dayth YYYY> : Release <N>", N read from
@@ -154,8 +158,6 @@ config:
   # "Add to next release" queues a chart only when its build run's controls ALL
   # passed; "false" lets a run with open or unmatched controls in with a warning.
   QUEUE_REQUIRE_CONTROLS_PASS: "true"
-  # ...and only with the run that built exactly that chart:version — read from
-  # the tag that triggered the run, or the line its tag step logs (below).
   # Controls allowed to FAIL at queue time (CARE and DF) — e.g. one that can be a
   # false positive, closed by hand. The chart is queued and the control shows as
   # OPEN in the release queue's Controls column; releases are not stopped by it.
@@ -164,9 +166,21 @@ config:
   # RCTL-1691, "Control 1691: …" — not RCTLDEF0016910); "*1691*" = wildcard
   # over the name; other text = the name contains it. Comma list; empty = none.
   QUEUE_ALLOWED_FAILING_CONTROLS: "1691"
+  # ...and only with the run that built exactly that chart:version — read from
+  # the tag that triggered the run, or the line its tag step logs (below).
   QUEUE_REQUIRE_RUN_MATCH: "true"
-  BUILD_TAG_STEP: "Generate Git tag"
-  BUILD_TAG_MARKER: "TAG_GENERATED="
+  # A run whose tag is a BARE version ("5.0.445") names no image. "false" (the
+  # default) takes the matching version as proof — a monorepo tags per service
+  # and listing every one in image-workflows.json goes stale. "true" demands the
+  # image be listed there and the run come from that workflow. Either way, a
+  # catalogue entry naming a DIFFERENT workflow refuses the run.
+  QUEUE_REQUIRE_IMAGE_WORKFLOW: "false"
+  # Where a run records the tag it built. BUILD_TAG_STEP names either a STEP or a
+  # whole JOB (a reusable workflow's job is "<caller job> / <job>" in the API —
+  # the last part is what the run page shows, and either form matches); its log
+  # must carry "<BUILD_TAG_MARKER> <tag>". Whitespace and case are ignored.
+  BUILD_TAG_STEP: "Create new tag"
+  BUILD_TAG_MARKER: "New tag is:"
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
   # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
   # EMPTY BQ_DATASET DISABLES the whole feature cleanly.
@@ -174,6 +188,124 @@ config:
   BQ_TABLE: "release_intents"
   BQ_LOCATION: "US"
   BQ_AUTO_CREATE: "false"   # keep false in cluster; true only for local dev
+  # ==================== [FEATURE] BigQuery cost report ======================
+  # design/BQ_COST.md. Read-only: every statement is either a dry run or an
+  # INFORMATION_SCHEMA read (tools/bq_guard.py forces it) — no table data is
+  # ever read. The service account needs exactly three roles, on the project
+  # named below: roles/bigquery.resourceViewer (every principal's jobs, no
+  # table data), roles/bigquery.metadataViewer (schemas, partitioning,
+  # clustering), roles/bigquery.jobUser (run INFORMATION_SCHEMA queries and dry
+  # runs). NO roles/bigquery.dataViewer is needed or granted.
+  # EMPTY BQ_COST_REGION DISABLES the feature — the wrong region would
+  # otherwise just silently report nothing.
+  BQ_COST_REGION: ""                 # e.g. "region-europe-west3" (INFORMATION_SCHEMA prefix)
+  BQ_COST_PROJECT: ""                # empty = BQ_PROJECT (or GOOGLE_CLOUD_PROJECT)
+  BQ_COST_BILLING: "on-demand"       # "on-demand" ranks by bytes billed; "reservations" by slot-hours
+  BQ_COST_DAYS: "14"
+  BQ_COST_TOP: "10"
+  BQ_COST_MAX_QUERIES: "40"          # INFORMATION_SCHEMA reads per scan (10 MB minimum each)
+  # Region-wide storage/write views need tables.list on EVERY dataset in the
+  # region, so ONE dataset denying this account (e.g. one of BigQuery's own
+  # hidden anonymous cached-result datasets) denies the whole view — the
+  # normal case in any shared project, not an edge case. The storage section
+  # then falls back to one INFORMATION_SCHEMA statement per visible dataset
+  # (10 MB minimum each); this caps how many datasets that costs.
+  BQ_COST_MAX_DATASETS: "50"
+  BQ_COST_USD_PER_TIB: "6.25"        # on-demand list price, for the approximate $ column only
+  BQ_COST_DATASET: ""                # findings memory across runs; empty = off (set: + dataEditor on THAT dataset only)
+  # ==================== [FEATURE] support triage (L1) =====================
+  # An L1 work list from the pipelines' workflow control table: what failed,
+  # got stuck or never ran for a business date, known issue or not (the runbook
+  # skill in the image), what to do now and who owns it, with a
+  # ticket note. READ-ONLY: a few fixed queries (BigQuery counts; only problems
+  # come back), partition-filtered on the date, the
+  # only non-metadata table tools/bq_guard.py lets it read. EMPTY SUPPORT_TABLE
+  # DISABLES it. Service account: roles/bigquery.dataViewer on THAT table +
+  # roles/bigquery.jobUser on SUPPORT_PROJECT.
+  SUPPORT_TABLE: ""                  # "project.dataset.table"
+  SUPPORT_PROJECT: ""                # where the query runs and bills; empty = BQ_PROJECT
+  # role=column[:Label]. Roles: date, run_id, status (required); updated_at,
+  # event_at, event_id, job_id, error, details, members, system, source,
+  # process, unit, scope (optional — each switches on the checks needing it).
+  SUPPORT_COLUMNS: ""                # e.g. "date=biz_date:COB,run_id=run_id,status=state,unit=account:Account"
+  SUPPORT_FAILED_STATUSES: ""        # empty = FAILED,ERROR + the failed-looking words the table really uses
+  SUPPORT_DONE_STATUSES: ""          # empty = SUCCEEDED,SUCCESS,COMPLETED,COMPLETE,DONE + the table's own
+  SUPPORT_DATE_LABEL: ""             # empty = from the date column's description (e.g. COB), else "Business date"
+  SUPPORT_STUCK_MINUTES: "120"       # unfinished and not updated for longer = stuck
+  SUPPORT_LOOKBACK_DAYS: "7"         # earlier dates read for recurring / missing
+  SUPPORT_DETAIL_KEYS: ""            # top-level keys of the error-details JSON worth grouping on
+  SUPPORT_JOB_URL: ""                # e.g. "https://console.cloud.google.com/dataflow/jobs/<region>/{job_id}?project=<project>"
+  SUPPORT_OWNERS: ""                 # "role:value=Team,…,default=Team" — who an escalation goes to
+  # Priority: HIGH = a critical value, collapsed output, >= HIGH_COUNT runs, or
+  # >= MEDIUM_COUNT runs with a shared cause; MEDIUM = stuck/missing, >= MEDIUM_COUNT
+  # runs, or failing dates in a row; else LOW. Each incident says which rule applied.
+  SUPPORT_HIGH_COUNT: "10"
+  SUPPORT_MEDIUM_COUNT: "3"
+  SUPPORT_CRITICAL: ""               # "role:value,…" always HIGH, e.g. "process:<report>,scope:<entity>"
+  SUPPORT_ERRORS_TO_MODEL: "false"   # error text is the team's data: off = the chat model never sees it
+  # --- Investigate (the support-investigate skill): where a SOURCE service runs
+  # and what to read about it. The source value in the control table is the
+  # workload's `app` pod label (SUPPORT_SOURCE_LABEL). Read-only; the service
+  # account needs roles/logging.viewer (container + audit logs),
+  # roles/dataflow.viewer, and the PromQL access the Monitoring pill already has.
+  # Investigating REQUIRES the model to read error text and log excerpts.
+  SUPPORT_CLUSTER: ""                # GKE cluster name the sources run in
+  SUPPORT_NAMESPACE: ""              # their namespace
+  SUPPORT_SOURCE_LABEL: "app"        # the pod label that names a source
+  # Two projects (services in one, BigQuery + Dataflow in another) need NO extra
+  # project settings: the source's logs and metrics are read from
+  # GOOGLE_CLOUD_PROJECT (where the services run), the Dataflow jobs from the
+  # project named in SUPPORT_TABLE (where the data is), and audit-log denials
+  # from both. The three *_PROJECT settings here are overrides for a layout
+  # that differs from that.
+  SUPPORT_LOGS_PROJECT: ""           # where the sources' logs land; empty = GOOGLE_CLOUD_PROJECT
+  SUPPORT_LOGS_MAX_LINES: "500"      # lines read per source per window, grouped before the model sees them
+  SUPPORT_RUN_LOG_MINUTES: "5"       # a failed run's own lines: those naming its run id, from this many minutes before its row was written
+  SUPPORT_SERVICE_ACCOUNT: ""        # the pipelines' service account, to narrow audit-log denials
+  SUPPORT_DATAFLOW_REGION: ""        # e.g. "europe-west2"
+  SUPPORT_DATAFLOW_PROJECT: ""       # empty = the project in SUPPORT_TABLE
+  # name=expr;… PromQL health checks per source; {source} {namespace} {cluster}
+  # {window} are filled in. Empty = restarts (kube-state-metrics), up, 5xx rate
+  # (http_requests_total) — override for your own exporters. A Cloud Monitoring
+  # metric (kubernetes_io:…, custom_googleapis_com:…) also needs its
+  # monitored_resource="…" matcher, or Managed Prometheus refuses the query.
+  SUPPORT_SOURCE_PROMQL: ""
+  # A second, stronger model the investigation may consult when its evidence
+  # conflicts (ADK ModelConsultTool, tool-less, read-only by construction).
+  # EMPTY DISABLES it; the caps bound the spend per turn and per session.
+  ADVISOR_MODEL: ""                  # e.g. "gemini-3.1-pro-preview"
+  ADVISOR_MAX_USES: "2"
+  ADVISOR_SESSION_MAX_USES: "5"
+  # Investigate runs as a fixed pipeline: the evidence is collected in code, in
+  # parallel, and the model is called on the result — so a cheaper model is
+  # enough, and the cap bounds what one investigation can spend. Past the cap
+  # (or with LLM_ENABLED=false) the answer is the evidence itself, model-free.
+  INVESTIGATE_MODEL: ""              # empty = GEMINI_MODEL; e.g. a Flash-class model
+  INVESTIGATE_MAX_MODEL_CALLS: "4"
+  # "Was this right?" on every investigation, stored APPEND-ONLY (one INSERT per
+  # answer; the latest per person wins at read time). EMPTY DATASET DISABLES it.
+  # Service account: roles/bigquery.dataEditor on THAT dataset only. The table
+  # comes from bigquery/support_findings.schema.json (terraform module).
+  SUPPORT_FEEDBACK_DATASET: ""
+  SUPPORT_FEEDBACK_TABLE: "support_findings"
+  # ==================== [FEATURE] agent observability =====================
+  # Every chat turn — the router's decision, each model call with its token
+  # usage, each tool call, the deploy Workflow's nodes — exported as
+  # OpenTelemetry spans to Langfuse (adk_release_agent/telemetry.py). EMPTY
+  # LANGFUSE_HOST DISABLES it: nothing is exported and nothing is written
+  # locally. The project keys come from a Secret — see `langfuse:` below.
+  # Any other OTLP sink (a collector, Cloud Trace): leave this empty and set
+  # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_HEADERS via
+  # extraEnv instead; both are honoured as-is.
+  LANGFUSE_HOST: ""                  # e.g. "https://langfuse.internal.example.com" — self-hosted is the safe choice
+  OTEL_SERVICE_NAME: "release-copilot"
+  # Prompts, tool arguments and results IN the spans. Keep false unless
+  # Langfuse runs inside the bank: with it on, PR/JIRA text, requester emails
+  # and SQL previews leave the pod with every trace. False still gives model
+  # names, token counts, latency, tool names and errors — and names each
+  # person by a stable digest instead of their email, so Langfuse still groups
+  # per user and per session without the address leaving.
+  TRACE_CONTENT: "false"
   # PromQL access — checked by /api/diagnostics (section "promql") and used by
   # the Monitoring pill + chat. Empty PROMETHEUS_URL = Managed Service for Prometheus in
   # PROMETHEUS_PROJECT (empty = GOOGLE_CLOUD_PROJECT); the pod's service account
@@ -212,8 +344,8 @@ config:
   #        --set virtualService.pathPrefix=/dev-portal-preview \
   #        --set-string config.PREVIEW_USERS='*'
   PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
-  PREVIEW_GROUPS: "Check"            # comma list of pill groups (palette.js GROUPS)
-  PREVIEW_FEATURES: "monitoring"     # comma list of gated server features
+  PREVIEW_GROUPS: "Check,Monitoring"  # comma list of pill groups (palette.js GROUPS); Monitoring = BQ cost. Support triage is out of preview: add "Support" here to hide it again
+  PREVIEW_FEATURES: "monitoring,bq-cost"  # gated server features: their API + chat tools refuse non-preview users ("support-triage" to gate Support again)
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's
@@ -224,7 +356,16 @@ config:
   IDENTITY_HEADER: ""                      # x-asm-rctoken for CSM user auth
   IDENTITY_JWKS_URL: "http://authservice.asm-user-auth.svc.cluster.local:10004/_gcp_user_auth/jwks"
   IDENTITY_ISSUER: "authservice.asm-user-auth.svc.cluster.local"
-  IDENTITY_AUDIENCE: ""                    # the RCToken's aud (UserAuthConfig) — set it
+  # Must equal UserAuthConfig.spec.outputJWTAudience. Empty = aud NOT checked;
+  # the sample value "test_audience" means every app in the mesh shares one.
+  # No kubectl? Deploy with it empty, open /api/diagnostics: identity.
+  # presented_token.aud is the value the gateway actually sends — copy it here.
+  IDENTITY_AUDIENCE: ""
+  # The RCToken carries NO email unless the mesh maps one in:
+  #   UserAuthConfig.spec.attributeMapping: { email: assertion.email }
+  # Without it the token verifies and nobody is signed in — everything looks
+  # normal and every per-person protection (tokens, approvals, PATs, memory)
+  # quietly collapses to one anonymous user. /api/whoami must show YOUR email.
   IDENTITY_EMAIL_CLAIM: "attributes.email,email"
   IDENTITY_REQUIRED: "false"               # true = refuse queue writes with no verified user
   # CARE/DF release forms: lets devs type bare name:version (they can always
@@ -255,6 +396,11 @@ config:
   UAT_BRANCH: "UAT"
   PRD_BRANCH: "PRD"
   PRL1_BRANCH: "PRL1"
+  # UAT changes always flow via SIT: a UAT deploy/removal merges its PR into SIT
+  # only; the deployment repo's own workflow raises SIT -> UAT on a change to
+  # uat/deployment.json, and the portal shows that PR for the developer to merge.
+  # How long it waits for that PR to appear:
+  UAT_PR_WAIT_SECONDS: "90"
   # One release at a time: adds are blocked while an OPEN PR targets one of
   # these. Empty = just PRD_BRANCH. Recommended: "SIT,UAT,PRD,PRL1".
   RELEASE_GUARD_BRANCHES: ""
@@ -264,17 +410,49 @@ config:
   # sign-off actually depends on (e.g. a scanner gate) — not every check that
   # happens to run in the pipeline.
   CONTROL_PREFIXES: "RCTLD,RLFT,RFTL"
-  # Fail-closed: block a PRD release when any build control failed.
-  PRD_REQUIRE_CONTROLS: "true"
-  # Release window policy.
-  PRD_CUTOFF_HOUR_UTC: "16"
-  PRD_LEAD_TIME_DAYS: "1"
-  # Path (inside DEPLOY_REPO) of the team's release file-set generator.
+  # Path of the team's release file-set generator, INSIDE whichever repo the
+  # release lands in — DEPLOY_REPO for CARE, DF_RELEASE_REPO for DF — on that
+  # kind's landing branch (CARE: SIT; DF: the first of DF_RELEASE_BRANCHES).
+  # ONE value for both, so the two repos must keep it at the same path. It is
+  # invoked as: python <script> --release-details-file <transient json>.
   RELEASE_UPDATER_SCRIPT: "scripts/release/update_release_files.py"
-  # Dispatched in DEPLOY_REPO by chat "re-run the deploy for PR #N" to regenerate
-  # a deployment PR's control comments. Matched EXACTLY (case + .yml/.yaml). Set
-  # it only if that workflow exists; nothing else depends on it.
-  ON_MERGE_WORKFLOW: "on-merge-deploy.yml"
+  # CARE release as ONE committed file (CARE_RELEASE_MODE: "mono"): the portal
+  # edits CARE_RELEASE_FILE in CARE_RELEASE_REPO on a CARE_RELEASE_BRANCH_PREFIX
+  # branch and raises a PR against CARE_RELEASE_BASE_BRANCH. A person reviews and
+  # merges it — the portal never does — and the repo's own workflow updates the
+  # deployment repo. Its charts leave the queue for Release history as soon as
+  # the PR is raised (put them back from there if it does not go through). The token needs
+  # contents + pull-request write on that repo. "fileset" (default) keeps the
+  # updater-script model above for CARE; DF releases always use it.
+  # "false" runs the portal with no model at all: forms, pills, the release
+  # queue and history, deploys and releases (preview → CONFIRM token) work as
+  # always; the chat answers the pills' commands only, with the same tools and
+  # the same yes/no approvals (an ADK workflow, not the agent); change-request
+  # drafting, "Ask why" and onboarding guidance say to enable LLM access.
+  LLM_ENABLED: "true"
+  # Chat-model calls in flight at once in this pod (0 = no cap). Above it a call
+  # waits for a slot rather than being refused 429 by the shared Vertex pool —
+  # ten developers at once measured most chat turns failing without it.
+  GEMINI_MAX_CONCURRENCY: "8"
+  # The model that drafts the change-request summary/description/reason (thinking
+  # off — it only summarises what developers wrote). gemini-3.5-flash is served
+  # only at Vertex's "global" endpoint, which does not keep processing in one
+  # region; set CHG_DRAFT_LOCATION to a region (and a model served there, e.g.
+  # gemini-2.5-flash) if data-residency policy requires it. Empty = GEMINI_MODEL
+  # at GOOGLE_CLOUD_LOCATION.
+  CHG_DRAFT_MODEL: "gemini-3.5-flash"
+  CHG_DRAFT_LOCATION: "global"
+  CARE_RELEASE_MODE: "fileset"
+  CARE_RELEASE_REPO: ""                    # owner/<mono-repo>; required in mono mode
+  CARE_RELEASE_BASE_BRANCH: "main"
+  CARE_RELEASE_FILE: ".github/release/release_details.json"
+  # Names the PR's branch — and only open PRs into the base branch whose branch
+  # starts with it count as "a release in flight" (a mono repo's base always has
+  # other PRs open).
+  CARE_RELEASE_BRANCH_PREFIX: "release/"
+  # strftime pattern for the release name in mono mode, dated by the release's
+  # start, e.g. "<TEAM> CARE Release - %Y.%m.%d". Empty keeps today's naming.
+  CARE_RELEASE_NAME_FORMAT: ""
   # ADK runtime (leave true).
   ADK_CONTEXT_CACHE: "true"
   ADK_EVENT_COMPACTION: "true"
@@ -318,17 +496,51 @@ config:
   # ADK_CONTEXT_CACHE_TTL_SECONDS: "1800"
   # ADK_COMPACTION_INTERVAL: "20"
   # ADK_COMPACTION_OVERLAP: "3"
-  # REACT_MAX_TOOL_TURNS: "8"
-  # PRD_ONCE_PER_DAY: "true"
-  # CHANGE_REQUEST_PATH: "change-request.json"
   # DEPLOYMENT_PATH_PATTERN: "{env}/deployment.json"
   # HELM_VALUES_PATTERN: "{env}/values_{env}.yaml"
-  # ENV_CONFIG_PATH: "configs/images.json"
-  # MANIFEST_PATH: "release-manifest.json"
   # CONFIG_PATH: "image-workflows.json"
 
 # Extra raw env entries appended to the container (list of {name,value|valueFrom}).
 extraEnv: []
+
+# --- Support triage: the control table, written readably ---
+# The same settings as SUPPORT_TABLE / SUPPORT_COLUMNS / SUPPORT_DATE_LABEL /
+# SUPPORT_*_STATUSES / SUPPORT_OWNERS under `config:`, one column per line so a
+# review shows exactly which mapping changed. When `table` is set, what this
+# block gives replaces those strings; leave it empty to keep using them.
+# Draft it from the table's schema — the obvious roles are filled in, the
+# grouping ones are marked for you to confirm:
+#   python scripts/support_mapping.py --table <project>.<dataset>.<table>
+#   python scripts/support_mapping.py --schema <schema.json>
+# GET /api/support/config-check then compares the mapping with the live table.
+supportTable: {}
+#  table: "my-project.ops.control_runs"   # the ONLY line a proof of concept needs: without
+#                                 # `columns:` the app maps the table from its schema, and
+#                                 # without `statuses:` it reads the status words from the
+#                                 # table (/api/support/config-check shows what it found).
+#                                 # Everything below overrides that, line by line.
+#  dateLabel: COB
+#  columns:                       # role: column   or   role: {column, label}
+#    date:       { column: biz_date,  label: COB }
+#    run_id:     run_id
+#    status:     state
+#    updated_at: written_at
+#    error:      err_msg
+#    system:     { column: feed,    label: Feed }
+#    process:    { column: report,  label: Report }
+#    unit:       { column: account, label: Account }
+#  statuses:
+#    failed: [FAILED, ERROR]
+#    done:   [SUCCEEDED]
+#  owners:
+#    default: Platform L2
+#    system:  { SYS-A: Feed team }
+#    process: { REPORT-B: Reports L2 }
+
+# --- Support triage runbook ---
+# The runbook is NOT chart config: it is a plain-English skill in the image,
+# adk_release_agent/skills/support-runbook/SKILL.md — reviewed and versioned
+# with the code, read by the triage cards and by the AI alike.
 
 # --- GitHub token (required; the in-cluster image has no `gh` login fallback) ---
 githubToken:
@@ -345,6 +557,13 @@ githubToken:
 jiraToken:
   existingSecret: ""          # e.g. "release-copilot-jira" (external-secrets etc.)
   existingSecretKey: "jira-api-token"
+
+# Langfuse project keys for config.LANGFUSE_HOST — referenced from a Secret
+# managed outside the chart, never templated in. Ignored while the host is empty.
+langfuse:
+  existingSecret: ""          # e.g. "release-copilot-langfuse"
+  publicKeyKey: "public-key"
+  secretKeyKey: "secret-key"
 
 serviceAccount:
   create: true
@@ -387,6 +606,21 @@ resources:
     memory: "1Gi"
 
 # Probes hit the FastAPI /health endpoint.
+#
+# The app imports ADK, google-genai and the Vertex SDK before it listens:
+# MEASURED at 33s to first 200 on a GKE Autopilot node. Liveness alone would
+# give it 30 + 15x2 = 60s before a restart, and every restart pays that cost
+# again — a slower node or a colder image pull turns that into a loop it never
+# escapes. The startupProbe holds liveness off until the app answers (up to
+# 30 x 5s = 150s), then normal liveness takes over. Raise failureThreshold,
+# not the liveness delay, if the image ever gets slower to boot.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  failureThreshold: 30
+  timeoutSeconds: 3
 livenessProbe:
   httpGet:
     path: /health

@@ -178,6 +178,7 @@ PAYLOAD = {
     "start_date": "2026-09-20 18:00:00",
     "end_date": "2026-09-20 20:00:00",
     "change_initiator": "dev@example.com",
+    "jira": "ABC-1234",
     "change_summary": "weekly",
     "artefact": ["payments-api:1.2.0"],
     "deployment_repo": "o/deploy",
@@ -222,3 +223,19 @@ def test_an_existing_branch_is_refused_in_plain_words(wired):
     wired.create_git_ref = taken
     out = RF.apply_release_fileset(RF.prepare_release_fileset(dict(PAYLOAD)))
     assert not out["ok"] and "already exists" in out["error"] and not wired.pulls
+
+
+def test_a_confirmed_release_leads_its_commit_and_pr_with_the_jira_and_records_it(wired):
+    """Through the confirm path (deploy._apply), as the release form sends it:
+    the release commit and PR title start with the JIRA, and the PR keeps it for
+    the promotions that follow (they have no form)."""
+    from adk_release_agent import deploy
+
+    prep = RF.prepare_release_fileset(dict(PAYLOAD))
+    out = deploy._apply({"deployment_type": "release", "release": dict(PAYLOAD), "release_prep": prep},
+                        "prod", "CONFIRM-R1")
+
+    assert out["ok"], out
+    assert wired.commits[0][0].startswith("ABC-1234 ")
+    assert wired.pulls[0]["title"].startswith("ABC-1234 ")
+    assert f"{RF._JIRA_MARKER} ABC-1234" in wired.pulls[0]["body"]

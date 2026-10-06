@@ -47,6 +47,23 @@ release-manifest.json.bak
 
 # Local tooling
 .claude/
-traces/
 .vscode/
 .worktrees/
+
+# Local scratch checkouts — never part of this repo
+.codex/
+# (backstage/ is tracked on this branch — it is the Backstage app itself)
+practice/
+# terraform: provider cache and state from a local `terraform init/plan`.
+# The module here is consumed by the caller's own root config, which owns the
+# lock file and the state.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+# Private, per-deployment config: the real support-triage table and columns,
+# the runbook, owners, and the denylist the private-names check reads. Never
+# committed — the repo holds only generic code (scripts/private_names_check.py).
+.private/
+*.private.yaml
+*.private.json

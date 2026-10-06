@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from adk_release_agent import tools as T
+from release_agent.tools import queue_gate as QG
 from release_agent.tools import controls as C
 from release_agent.tools import release_queue as RQ
 
@@ -36,16 +37,16 @@ def test_versions_match_exactly(built, wanted, ok):
 def test_the_echoed_script_line_is_not_a_tag():
     """Seen in a real run's log: GitHub prints the step's script, colour codes
     and all, before its output — the unexpanded variable must not count."""
-    log = ("2026-06-26T10:00:00Z \x1b[36;1mecho \"TAG_GENERATED=${GITHUB_REF_NAME}\"\x1b[0m\n"
-           "2026-06-26T10:00:01Z TAG_GENERATED=orders-api-1.0.0-pass\n")
-    assert C._tags_from_log(log, "TAG_GENERATED=") == ["orders-api-1.0.0-pass"]
+    log = ("2026-06-26T10:00:00Z \x1b[36;1mecho \"New tag is: ${GITHUB_REF_NAME}\"\x1b[0m\n"
+           "2026-06-26T10:00:01Z New tag is: orders-api-1.0.0-pass\n")
+    assert C._tags_from_log(log, "New tag is:") == ["orders-api-1.0.0-pass"]
 
 
 def test_every_tag_a_matrix_run_logged_is_read():
-    log = ("2026-09-12T10:00:00Z TAG_GENERATED=orders-api-1.2.3\n"
-           "noise\n2026-09-12T10:00:01Z echo \"TAG_GENERATED='payments-api-4.0.0'\"\n"
-           "TAG_GENERATED=orders-api-1.2.3\n")
-    assert C._tags_from_log(log, "TAG_GENERATED=") == ["orders-api-1.2.3", "payments-api-4.0.0"]
+    log = ("2026-09-12T10:00:00Z New tag is: orders-api-1.2.3\n"
+           "noise\n2026-09-12T10:00:01Z echo \"New tag is: 'payments-api-4.0.0'\"\n"
+           "New tag is: orders-api-1.2.3\n")
+    assert C._tags_from_log(log, "New tag is:") == ["orders-api-1.2.3", "payments-api-4.0.0"]
 
 
 # --- reading a real run's shape ---------------------------------------------------
@@ -99,15 +100,15 @@ def test_the_right_image_at_another_version_is_refused(github):
 
 
 def test_a_branch_run_is_read_from_its_tag_step_log(github):
-    job = SimpleNamespace(id=7, steps=[_step("Checkout"), _step("Generate Git tag")])
-    github(_run(event="workflow_dispatch", jobs=[job]), logs={7: "TAG_GENERATED=orders-api-1.2.3"})
+    job = SimpleNamespace(id=7, steps=[_step("Checkout"), _step("Create new tag")])
+    github(_run(event="workflow_dispatch", jobs=[job]), logs={7: "New tag is: orders-api-1.2.3"})
     out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
     assert out == {"ok": True, "built": "orders-api-1.2.3", "source": "log"}
 
 
 def test_a_failed_tag_step_proves_nothing(github):
-    job = SimpleNamespace(id=7, steps=[_step("Generate Git tag", "failure")])
-    github(_run(event="workflow_dispatch", jobs=[job]), logs={7: "TAG_GENERATED=orders-api-1.2.3"})
+    job = SimpleNamespace(id=7, steps=[_step("Create new tag", "failure")])
+    github(_run(event="workflow_dispatch", jobs=[job]), logs={7: "New tag is: orders-api-1.2.3"})
     out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
     assert out["ok"] is False and "Can't tell which image and tag" in out["reason"]
 
@@ -117,24 +118,45 @@ def test_a_push_to_a_branch_is_not_mistaken_for_a_tag(github):
     assert C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")["ok"] is False
 
 
-def test_a_bare_version_counts_only_from_the_images_own_workflow(github):
+def test_a_bare_version_is_tied_to_the_image_by_its_own_workflow(github):
     github(_run(head="1.2.3"), tags={"1.2.3"})
     ok = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
     assert ok["ok"] is True and ok["via_workflow"] == "build-orders-api.yml"
 
+
+def test_a_bare_version_from_another_images_workflow_is_always_refused(github):
+    """The catalogue CONTRADICTS the run — that is evidence, not a gap."""
     github(_run(head="1.2.3", path=".github/workflows/build-payments-api.yml"), tags={"1.2.3"})
     out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
-    assert out["ok"] is False and "build workflow is build-orders-api.yml" in out["reason"]
+    assert out["ok"] is False and "is built by build-orders-api.yml" in out["reason"]
 
+
+def test_an_image_outside_the_catalogue_is_carried_by_the_version_alone(github):
+    """A monorepo tags per service; listing every one in image-workflows.json
+    goes stale, so a matching version is enough unless the setting demands more."""
+    github(_run(head="1.2.3"), tags={"1.2.3"}, workflow=None)
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is True and out["via_version_only"] is True
+
+
+def test_the_catalogue_can_be_made_mandatory(github, monkeypatch):
+    monkeypatch.setattr(C.settings, "queue_require_image_workflow", True, raising=False)
     github(_run(head="1.2.3"), tags={"1.2.3"}, workflow=None)
     out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
     assert out["ok"] is False and "no build workflow in" in out["reason"]
 
 
+def test_a_bare_version_that_is_the_wrong_version_is_still_refused(github):
+    """Relaxing the image tie must not relax the version check."""
+    github(_run(head="1.2.30"), tags={"1.2.30"}, workflow=None)
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "not orders-api:1.2.3" in out["reason"]
+
+
 def test_a_matrix_run_that_built_ours_among_others_counts(github):
-    job = SimpleNamespace(id=7, steps=[_step("Generate Git tag")])
+    job = SimpleNamespace(id=7, steps=[_step("Create new tag")])
     github(_run(event="workflow_dispatch", jobs=[job]),
-           logs={7: "TAG_GENERATED=payments-api-4.0.0\nTAG_GENERATED=orders-api-1.2.3"})
+           logs={7: "New tag is: payments-api-4.0.0\nNew tag is: orders-api-1.2.3"})
     assert C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")["ok"] is True
 
 
@@ -150,7 +172,7 @@ def queue(monkeypatch):
                   "controls": [{"control": "RLFT-a", "job": "b", "passed": True, "failed": False}],
                   "failed_controls": [], "open_controls": [], "failed_steps": [], "gate": "PASS",
                   **report_over}
-        monkeypatch.setattr(T, "_invoke_tool", lambda name, args=None: report)
+        monkeypatch.setattr(QG, "_invoke_tool", lambda name, args=None: report)
         monkeypatch.setattr(C, "match_run_to_artifact", lambda *a: match)
         monkeypatch.setattr(RQ, "add_intent", lambda **kw: writes.append(kw) or {"ok": True})
         monkeypatch.setattr(RQ, "_fetch_events", lambda: [])
@@ -186,3 +208,66 @@ def test_the_check_can_be_relaxed(queue, monkeypatch):
     monkeypatch.setattr(settings, "queue_require_run_match", False)
     out = queue({"ok": False, "built": ["x"], "reason": "wrong run"})
     assert out["ok"] is True
+
+
+# --- the tag step may BE a job -----------------------------------------------------
+# Found live (2026-09-17): the pipeline generates the tag in a reusable-workflow
+# job called "Create new tag", whose own steps are named after the actions they
+# run ("Tag this new commit"). Matching step names alone found nothing, and the
+# refusal blamed the step for logging nothing while its log held the tag.
+
+def _reusable_run(job_name, step_names, job_conclusion="success"):
+    job = SimpleNamespace(
+        id=7, name=job_name, conclusion=job_conclusion, status="completed",
+        steps=[SimpleNamespace(name=n, number=i + 1, status="completed", conclusion="success")
+               for i, n in enumerate(step_names)])
+    return _run(event="push", head="main", jobs=[job])
+
+
+def test_the_tag_job_of_a_reusable_workflow_is_found_by_its_own_name(github):
+    """The API names it "<caller> / <job>"; the run page shows only the last part."""
+    github(_reusable_run("build-deploy-publish / Create new tag",
+                         ["Set up job", "Tag this new commit", "Complete job"]),
+           logs={7: "2026-09-17T09:00:00Z New tag is: orders-api-1.2.3\n"})
+    assert C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3") == {
+        "ok": True, "built": "orders-api-1.2.3", "source": "log"}
+
+
+def test_a_tag_job_that_did_not_succeed_vouches_for_nothing(github):
+    github(_reusable_run("build-deploy-publish / Create new tag", ["Set up job"],
+                         job_conclusion="failure"),
+           logs={7: "New tag is: orders-api-1.2.3\n"})
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "did not succeed" in out["reason"]
+
+
+@pytest.mark.parametrize("configured, name, ok", [
+    ("Create new tag", "build-deploy-publish / Create new tag", True),
+    ("Create new tag", "Create new tag", True),
+    ("Create new tag", "  create NEW tag ", True),
+    ("Create new tag", "Create new tag v2", False),
+    ("Create new tag", "Tag this new commit", False),
+    ("", "Create new tag", False),
+])
+def test_which_names_answer_to_the_configured_one(configured, name, ok):
+    assert C.tag_name_matches(configured, name) is ok
+
+
+def test_an_unreadable_log_does_not_read_as_a_pipeline_that_logged_nothing(github):
+    """A token without actions:read, or a blocked log download, must say so."""
+    github(_reusable_run("Create new tag", ["Set up job"]), logs={})
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "log could not be read" in out["reason"]
+
+
+def test_a_name_that_is_nowhere_in_the_run_says_exactly_that(github):
+    github(_reusable_run("build", ["Set up job", "Build"]), logs={7: "nothing here"})
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "no step or job in that run is named" in out["reason"]
+
+
+def test_a_matching_step_whose_log_has_no_marker_is_reported_as_such(github):
+    github(_reusable_run("build", ["Set up job", C.settings.build_tag_step]),
+           logs={7: "built fine, said nothing about a tag"})
+    out = C.match_run_to_artifact("o/build", 1, "orders-api", "1.2.3")
+    assert out["ok"] is False and "has no" in out["reason"]

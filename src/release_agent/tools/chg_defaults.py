@@ -16,6 +16,11 @@ overrides the risk / consequence / impact templates in config; see
 Nothing here submits anything. The fields land in an editable form, a human
 edit always wins over a recomputed default, and the release still runs through
 the deterministic preview → CONFIRM path.
+
+A CARE release in mono mode (CARE_RELEASE_MODE=mono: one committed file in the
+mono repo) is named by CARE_RELEASE_NAME_FORMAT, its summary is its name, and
+its risk and impact open with the team's standard leads below. DF releases and
+file-set CARE releases keep the wording above.
 """
 from __future__ import annotations
 
@@ -30,6 +35,13 @@ _NUMBER_MARKER = " : Release "
 _MAX_LISTED_ITEMS = 4
 _CACHE_SECONDS = 60.0
 _number_cache: dict[str, tuple[float, int | None]] = {}
+
+# The team's standard risk and impact wording in mono mode. A statement the
+# release team makes and the person releasing can change — never the model's
+# claim: the mono-mode AI draft (adk_release_agent/chg_draft) only ever adds
+# detail after these.
+RISK_LEAD = "Low risk."
+IMPACT_LEAD = "No user impact is expected."
 
 
 # ------------------------------------------------------------------ naming --
@@ -99,6 +111,31 @@ def release_name(day: _dt.date, number: int | None, prefix: str | None = None) -
     return f"{base}{_NUMBER_MARKER}{number}" if number else base
 
 
+def care_mono(kind: str) -> bool:
+    """A CARE release raised as one committed file in the mono repo."""
+    return str(kind).lower() != "df" and settings.care_release_mode == "mono"
+
+
+def formatted_release_name(day: _dt.date) -> str:
+    """``day`` through CARE_RELEASE_NAME_FORMAT; "" when none is set, or when
+    the pattern cannot be applied — the caller then keeps the usual naming
+    rather than failing the form."""
+    pattern = str(settings.care_release_name_format or "")
+    if not pattern.strip():
+        return ""
+    try:
+        return day.strftime(pattern).strip()
+    except (ValueError, UnicodeError):
+        return ""
+
+
+def uses_name_format(kind: str) -> bool:
+    """True when a release of ``kind`` is named by CARE_RELEASE_NAME_FORMAT.
+    Such a name carries no release number, so none needs looking up — which
+    in a busy mono repo means several pages of unrelated PRs."""
+    return care_mono(kind) and bool(str(settings.care_release_name_format or "").strip())
+
+
 # ------------------------------------------------------------------ fields --
 def _plural(count: int, one: str, many: str) -> str:
     return one if count == 1 else many
@@ -137,8 +174,9 @@ def build_defaults(
     wording treats its build as unverified, because it was never checked.
     """
     df = str(kind).lower() == "df"
+    mono = care_mono(kind)
     day = day or _dt.date.today()
-    name = release_name(day, number)
+    name = (formatted_release_name(day) if mono else "") or release_name(day, number)
     count = len(items)
     noun = _plural(count, "Dataflow image", "Dataflow images") if df else _plural(count, "chart", "charts")
 
@@ -191,21 +229,32 @@ def build_defaults(
         for i in items
     )
 
-    risk_t = settings.chg_risk_template or (
-        "Standard release of {count} {noun} ({items}) through the {pipeline} pipeline. "
-        "{prl1_note} {verification} {rollback}")
-    consequence_t = settings.chg_consequence_template or (
-        "If this release does not go ahead, {jira_keys} will not be delivered and "
-        "{unchanged}.")
-    impact_t = settings.chg_impact_template or (
+    risk_default = ("Standard release of {count} {noun} ({items}) through the {pipeline} pipeline. "
+                    "{prl1_note} {verification} {rollback}")
+    impact_default = (
         "Dataflow flex-template update for {count} {noun} ({names}); running jobs keep their "
         "current template until relaunched. No downtime is planned."
         if df else
         "Rolling Helm deployment of {count} {noun} ({names}); no downtime is planned.")
+    if mono:
+        # The team's statement first, the facts behind it after. A team
+        # template, when set, is the team's whole wording and is used as is.
+        risk_default = f"{RISK_LEAD} {risk_default}"
+        impact_default = f"{IMPACT_LEAD} {impact_default}"
+    risk_t = settings.chg_risk_template or risk_default
+    consequence_t = settings.chg_consequence_template or (
+        "If this release does not go ahead, {jira_keys} will not be delivered and "
+        "{unchanged}.")
+    impact_t = settings.chg_impact_template or impact_default
+
+    if mono:
+        summary = name        # the release file's summary is its name
+    else:
+        summary = f"{name} — {count} {noun}: {_items_phrase(items)}" if count else name
 
     return {
         "release_name": name,
-        "change_summary": f"{name} — {count} {noun}: {_items_phrase(items)}" if count else name,
+        "change_summary": summary,
         "change_description": description,
         "change_reason": (f"Delivers {jira_text}." if jira_keys
                           else "Delivers the changes listed in the description."),

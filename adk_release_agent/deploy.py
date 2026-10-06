@@ -32,6 +32,19 @@ _PENDING_PREVIEWS: dict[str, dict[str, Any]] = {}
 _PREVIEW_TTL_SECONDS = 30 * 60
 
 
+def preview_owner() -> str:
+    """Who a preview is minted FOR — the verified caller, or the one shared id
+    everyone has when identity is off (``adk_service._user_id``).
+
+    The token itself is not a secret: it is printed in the chat and gets pasted
+    into tickets. This dict is process-wide, so the owner is what stops one
+    person's token from applying their deploy on somebody else's thread.
+    """
+    from release_agent import identity
+
+    return identity.current_email() or "fastapi-user"
+
+
 def _cleanup_expired_previews(now: float | None = None) -> None:
     now = time.time() if now is None else now
     expired = [
@@ -150,7 +163,7 @@ def _image_tags(req: dict[str, Any]) -> str:
     return ",".join(f"{image['name']}:{image['tag']}" for image in req.get("images", []))
 
 
-def _extract_prefixed_token(text: str, prefix: str) -> str:
+def _extract_confirmation_token(text: str, prefix: str = "CONFIRM-") -> str:
     for token in str(text).replace("`", " ").replace(",", " ").split():
         cleaned = token.strip().strip(".;:!?)(")
         if cleaned.upper().startswith(prefix):
@@ -158,9 +171,20 @@ def _extract_prefixed_token(text: str, prefix: str) -> str:
     return ""
 
 
-def _extract_confirmation_token(text: str) -> str:
-    return _extract_prefixed_token(text, "CONFIRM-")
 
+def _uat_deploy_blocked(req: dict[str, Any]) -> str:
+    """Early word, before a token is minted, that this UAT deploy would be refused
+    (an open PR changes uat/deployment.json, or someone is deploying right now).
+    Best-effort: if GitHub cannot be asked, the confirm asks again — that is the
+    check that counts (promotion.open_release_pr)."""
+    try:
+        from release_agent.tools._common import _get_github_client, active_deploy_repo
+        from release_agent.tools.promotion import uat_deploy_blocker
+
+        repo_full = req.get("deployment_repo") or active_deploy_repo()
+        return uat_deploy_blocker(_get_github_client().get_repo(repo_full), repo_full)
+    except Exception:
+        return ""
 
 
 def prepare_deploy_preview(
@@ -210,8 +234,18 @@ def prepare_deploy_preview(
         req["release_prep"] = prep
         token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
         pending = {"token": token, "request": req, "preview": prep["preview"],
-                   "created_at": time.time()}
+                   "created_at": time.time(), "owner": preview_owner()}
         _PENDING_PREVIEWS[token] = pending
+        if prep.get("mode") == "mono":
+            # Nothing lands anywhere on CONFIRM: it raises a PR someone else
+            # merges, and the heading has to say that, not "create".
+            heading = (f"Raise CARE release PR {prep['release_name']} → "
+                       f"{prep.get('deployment_repo')}@{prep.get('landing_branch')}")
+        else:
+            # A release is created INTO SIT and promoted from there — the deploy
+            # heading ("Deploy … to PROD") described something else entirely.
+            heading = (f"Create {'DF ' if prep.get('kind') == 'df' else ''}release "
+                       f"{prep['release_name']} → {prep.get('landing_branch') or _settings.sit_branch}")
         return {
             "ok": True,
             # Returned so the Workflow can persist it in ADK session state. The
@@ -222,18 +256,34 @@ def prepare_deploy_preview(
             "status": "awaiting_confirmation",
             "environment": env,
             "image_tags": prep["release_name"],
-            # A release is created INTO SIT and promoted from there — the deploy
-            # heading ("Deploy … to PROD") described something else entirely.
-            "heading": f"Create {'DF ' if prep.get('kind') == 'df' else ''}release "
-                       f"{prep['release_name']} → {prep.get('landing_branch') or _settings.sit_branch}",
+            "heading": heading,
+            "jira": _jira_of(req),
             "token": token,
             "proposed": prep["preview"],
             "deployment_repo": "",
             "message": f"Reply with exactly {token} to create this release.",
         }
+    if env == "prod" and req.get("deployment_type") != "dataflow":
+        # PROD is reachable only through a release (queue -> CARE/DF release ->
+        # promote) — the daily "accumulate charts, then merge_prod_release" model
+        # is gone. Refused here, before any GitHub work and before a token is
+        # minted, so a typed "deploy X to prod" can never reach open_release_pr.
+        # Dataflow keeps its own (already uat-only) refusal at apply time.
+        return {
+            "ok": False,
+            "error": (
+                "PROD is reached through a release, not a single-chart deploy. Queue the chart "
+                "(Add to next release), then raise the CARE or DF release, then promote it."
+            ),
+        }
+    if req.get("deployment_type") != "dataflow":
+        blocked = _uat_deploy_blocked(req)
+        if blocked:
+            return {"ok": False, "error": f"Not deployed — {blocked}"}
     preview = _build_preview(req)
     token = f"CONFIRM-{uuid.uuid4().hex[:6].upper()}"
-    pending = {"token": token, "request": req, "preview": preview, "created_at": time.time()}
+    pending = {"token": token, "request": req, "preview": preview,
+               "created_at": time.time(), "owner": preview_owner()}
     _PENDING_PREVIEWS[token] = pending
     return {
         "ok": True,
@@ -246,6 +296,8 @@ def prepare_deploy_preview(
         "proposed": preview,
         "change_request": req.get("change_request"),
         "deployment_repo": req.get("deployment_repo") or "",
+        "jira": _jira_of(req),
+        "flow": _uat_flow_note(req),
         "message": f"Reply with exactly {token} to apply this deploy.",
     }
 
@@ -307,7 +359,48 @@ def apply_confirmed_deploy(
         }
 
 
+def _outcome_of(result: dict[str, Any]) -> dict[str, Any]:
+    """Give a tool result an honest ``ok``.
+
+    The GitHub tools report a failure as an "ERROR …" STRING, which coerces to
+    ``{"result": "ERROR …"}`` carrying no ok flag — so ``setdefault("ok", True)``
+    reads a REFUSED operation as a success. Found live: GitHub rejected a DF
+    workflow_dispatch (422, an input value the workflow does not allow); the
+    portal reported a deploy, said nothing about the rejection, and raised the
+    Composer DAG PR anyway — pointing the DAGs at a template version that was
+    never built, which is exactly what dispatching before the bump prevents.
+    """
+    text = result.get("result")
+    if isinstance(text, str) and text.lstrip().upper().startswith("ERROR"):
+        return {"ok": False, "error": text.strip()}
+    result.setdefault("ok", True)
+    return result
+
+
+def _uat_flow_note(req: dict[str, Any]) -> str:
+    """How a CARE UAT deploy finishes: UAT changes flow via SIT."""
+    from release_agent.config import settings
+
+    if req.get("deployment_type"):
+        return ""
+    return (f"This merges into {settings.sit_branch}. Your repository then raises "
+            f"{settings.sit_branch} → {settings.uat_branch}; merging that PR deploys to UAT.")
+
+
+def _jira_of(req: dict[str, Any]) -> str:
+    """The JIRA typed on the form this request came from ("" when none)."""
+    return str(req.get("jira") or (req.get("release") or {}).get("jira") or "").strip()
+
+
 def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
+    # Every commit and PR title this action creates starts with the form's JIRA.
+    from release_agent.tools import attribution
+
+    with attribution.jira(_jira_of(req)):
+        return _apply_request(req, env, token)
+
+
+def _apply_request(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
     args: dict[str, Any]
     if req.get("deployment_type") == "release":
         from release_agent.tools import release_fileset as _rf
@@ -321,8 +414,7 @@ def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
         args = {"environment": env, "image": image["name"], "tag": image["tag"]}
         if req.get("deployment_repo"):
             args["deployment_repo"] = req["deployment_repo"]
-        result = _invoke_tool("deploy_dataflow", args)
-        result.setdefault("ok", True)
+        result = _outcome_of(_invoke_tool("deploy_dataflow", args))
         result["confirmed_token"] = token
         dags = req.get("dag_files") or []
         if dags and result.get("ok"):
@@ -346,15 +438,11 @@ def _apply(req: dict[str, Any], env: str, token: str) -> dict[str, Any]:
             if req.get(key):
                 args[key] = req[key]
 
-    # PROD deploy form: carry change-request details into open_release_pr.
-    if req.get("change_request"):
-        args["change_request"] = req["change_request"]
     # Deploy form: target deployment repo for this deploy (part of the JSON payload).
     if req.get("deployment_repo"):
         args["deployment_repo"] = req["deployment_repo"]
 
-    result = _invoke_tool("open_release_pr", args)
-    result.setdefault("ok", True)
+    result = _outcome_of(_invoke_tool("open_release_pr", args))
     result["confirmed_token"] = token
     _record_deploy_event(req, env, result)
     return result

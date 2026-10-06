@@ -1,15 +1,11 @@
-"""Deployment-repo PR tracking + control-summary tools."""
+"""Deployment-repo PR tracking tools."""
 
-from ._common import (
-    tool,
-    BaseModel,
-    Field,
-    json,
-    itertools,
-    _get_github_client,
-    active_deploy_repo,
-    ON_MERGE_WORKFLOW,
-)
+import itertools
+import json
+
+from pydantic import BaseModel, Field
+
+from ._common import tool, _get_github_client, active_deploy_repo
 
 
 class FindPrsInput(BaseModel):
@@ -31,50 +27,6 @@ class PrCommentsInput(BaseModel):
         le=300,
         description="Max comments to fetch (defaults high so the agent sees all PR comments, e.g. CHG/RMG tickets and RLFT gates)",
     )
-
-
-class RetriggerDeploymentWorkflowInput(BaseModel):
-    pr_number: int = Field(..., description="PR number in the deployment repo to simulate for")
-    simulate_closed_controls: str = Field(
-        default="",
-        description="Comma-separated list of controls to mark as closed (e.g. 'RLFT approval gate,RLFT deploy control'). Use this to simulate external actions.",
-    )
-
-
-def _find_prs_for_images(image_tags: str, limit: int = 20) -> list[dict]:
-    """Return deployment-repo PRs whose title/branch matches ALL tokens of the
-    given image tags, newest first. Empty list on error or no match."""
-    try:
-        g = _get_github_client()
-        repo = g.get_repo(active_deploy_repo())
-        tokens = [t for t in image_tags.lower().replace(":", " ").replace(",", " ").split() if t]
-        if not tokens:
-            return []
-        out: list[dict] = []
-        for pr in itertools.islice(
-            repo.get_pulls(state="all", sort="created", direction="desc"), 60
-        ):
-            hay = f"{pr.title} {pr.head.ref or ''}".lower()
-            if all(tok in hay for tok in tokens):
-                out.append(
-                    {
-                        "number": pr.number,
-                        "url": pr.html_url,
-                        "title": pr.title,
-                        "state": pr.state,
-                    }
-                )
-                if len(out) >= limit:
-                    break
-        return out
-    except Exception:
-        return []
-
-
-def _find_pr_for_images(image_tags: str) -> dict | None:
-    """Newest deployment-repo PR matching the image tags, or None."""
-    prs = _find_prs_for_images(image_tags, limit=1)
-    return prs[0] if prs else None
 
 
 @tool(args_schema=FindPrsInput)
@@ -224,65 +176,4 @@ def get_pr_comments(pr_number: int, limit: int = 30) -> str:
     (e.g. "CHG-12345 created", "RLFT approval gate closed", "controls opened").
     """
     return _fetch_pr_comments(pr_number, limit)
-
-
-@tool(args_schema=PrNumberInput)
-def summarize_pr_controls(pr_number: int) -> str:
-    """
-    Fetch the PR + its comments and provide a summary focused on:
-    - CHG/change ticket references
-    - Release control states (RLFT gates, closed/opened)
-    - Overall readiness
-    """
-    try:
-        details = json.loads(_fetch_pr_details(pr_number))
-        comments_data = json.loads(_fetch_pr_comments(pr_number, limit=100))
-
-        return json.dumps(
-            {
-                "pr_details": details,
-                "comments": comments_data.get("comments", []),
-                "note": "Look for CHG and RMG tickets, 'RLFT', 'closed', 'opened', 'approved', 'gate' in the comments.",
-            },
-            indent=2,
-        )
-    except Exception as e:
-        return f"ERROR summarizing PR #{pr_number}: {e}"
-
-
-@tool(args_schema=RetriggerDeploymentWorkflowInput)
-def retrigger_deployment_workflow(pr_number: int, simulate_closed_controls: str = "") -> str:
-    """
-    Retrigger the deployment simulation workflow in the active_deploy_repo().
-    This is useful when you have closed some controls manually (outside the automation)
-    and want the deployment comments / status to be re-generated with the updated control state.
-    """
-    try:
-        g = _get_github_client()
-        repo = g.get_repo(active_deploy_repo())
-        workflow = repo.get_workflow(ON_MERGE_WORKFLOW)
-
-        inputs = {"pr_number": str(pr_number)}
-        if simulate_closed_controls:
-            inputs["simulate_closed_controls"] = simulate_closed_controls
-
-        # throw=True: PyGithub's default swallows a rejected dispatch and returns
-        # False, which would have us report "triggered" for a run GitHub refused.
-        workflow.create_dispatch(ref=repo.default_branch, inputs=inputs, throw=True)
-
-        return json.dumps(
-            {
-                "triggered": True,
-                "repo": active_deploy_repo(),
-                "pr_number": pr_number,
-                "simulate_closed_controls": simulate_closed_controls,
-                "note": "Workflow retriggered. Use summarize_pr_controls or get_pr_comments to see the updated status.",
-            },
-            indent=2,
-        )
-    except Exception as e:
-        return f"ERROR retriggering deployment workflow for PR #{pr_number}: {e}"
-
-
-# ============ Image-tag build verification (PyGithub refactor of gh-image-tag-steps.sh) ============
 

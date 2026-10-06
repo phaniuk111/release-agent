@@ -2,7 +2,7 @@ import json
 import asyncio
 
 from adk_release_agent import deploy
-from release_agent.adk_service import AdkChatService, _looks_like_deploy_request
+from release_agent.adk_service import AdkChatService, _looks_like_deploy_request, _user_id
 
 
 def _collect(service: AdkChatService, message: str, thread_id: str = "t-adk"):
@@ -81,7 +81,7 @@ def test_adk_service_accepts_ui_deploy_json_payload():
     service = AdkChatService()
     payload = json.dumps(
         {
-            "environment": "prod",
+            "environment": "uat",
             "include": [
                 {
                     "helm_chart_name": "abc-client-api-svc",
@@ -95,8 +95,34 @@ def test_adk_service_accepts_ui_deploy_json_payload():
     events = _collect(service, payload)
 
     interrupt = _interrupt(events)
-    assert interrupt["environment"] == "prod"
-    assert {"uat/deployment.json", "prd/deployment.json"} == set(interrupt["proposed"])
+    assert interrupt["environment"] == "uat"
+    assert {"uat/deployment.json"} == set(interrupt["proposed"])
+
+
+def test_adk_service_refuses_ui_deploy_json_payload_targeting_prod():
+    """PROD is reached only through a release now — a chart-deploy JSON payload
+    that names prod is refused, no CONFIRM interrupt raised."""
+    deploy._PENDING_PREVIEWS.clear()
+    service = AdkChatService()
+    payload = json.dumps(
+        {
+            "environment": "prod",
+            "include": [
+                {
+                    "helm_chart_name": "abc-client-api-svc",
+                    "helm_chart_version": "1.1.1230",
+                    "gke_namespace": "default",
+                }
+            ],
+        }
+    )
+
+    events = _collect(service, payload)
+
+    assert not any(e.get("type") == "interrupt" for e in events)
+    tokens = "".join(e["content"] for e in _token_events(events))
+    assert "release" in tokens.lower()
+    assert deploy._PENDING_PREVIEWS == {}
 
 
 def test_progress_events_describe_tool_calls():
@@ -126,25 +152,42 @@ def test_progress_events_describe_tool_calls():
     assert S._progress_events(SimpleNamespace(get_function_calls=lambda: [])) == []
 
 
-def test_only_state_changing_tools_mark_a_turn_mutated():
+def test_only_state_changing_tools_that_ran_mark_a_turn_mutated():
     """The banner is refreshed only when a turn actually changed release state —
-    that is what keeps read-only questions off GitHub's rate limit."""
+    that is what keeps read-only questions off GitHub's rate limit. A CALL is
+    not a change: one that pauses for approval has changed nothing yet."""
     from types import SimpleNamespace
 
     from release_agent import adk_service as S
 
-    def ev(*names):
-        return SimpleNamespace(
-            get_function_calls=lambda: [SimpleNamespace(name=n, args={}) for n in names]
-        )
+    def ran(*names):
+        return SimpleNamespace(get_function_responses=lambda: [
+            SimpleNamespace(name=n, response={"ok": True, "note": "done"}) for n in names])
 
-    assert S._changes_release_state(ev("promote_release")) is True
-    assert S._changes_release_state(ev("merge_prod_release")) is True
-    assert S._changes_release_state(ev("remove_from_release")) is True
+    assert S._landed_changes(ran("promote_release"))
+    assert S._landed_changes(ran("promote_df_release"))
     # reads must NOT trigger a refresh
-    assert S._changes_release_state(ev("release_stats", "find_prs")) is False
-    assert S._changes_release_state(ev("list_release_queue")) is False
-    assert S._changes_release_state(ev()) is False
+    assert S._landed_changes(ran("release_stats", "find_prs")) == []
+    assert S._landed_changes(ran("list_release_queue")) == []
+    assert S._landed_changes(ran()) == []
+
+
+def test_a_turn_that_only_pauses_for_approval_is_not_a_change():
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            from types import SimpleNamespace
+
+            yield _Ev(calls=[SimpleNamespace(id="o1", name="promote_release", args={"target": "prd"})])
+            yield _Ev(calls=[_confirmation_call("c9")], long_running=["c9"])
+
+    service.chat_runner = _Runner()
+    events = asyncio.run(_drain(service._run_chat_agent(None, "t-pause")))
+    assert _interrupt(events)
+    assert events[-1] == {"type": "done", "mutated": False}
 
 
 # --- a repeat of an operation the person just approved --------------------------
@@ -197,7 +240,7 @@ def test_a_repeat_of_the_just_approved_operation_is_declined_not_asked_again(mon
                 yield _Ev(text="Okay, I have cancelled the promotion.")
 
     service.chat_runner = _Runner()
-    service._pending_adk_calls["t-rep"] = PendingAdkCall(
+    service._pending_adk_calls[(_user_id(), "t-rep")] = PendingAdkCall(
         invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
         args=_confirmation_call("c1").args)
     events = _collect(service, "yes", thread_id="t-rep")
@@ -207,6 +250,58 @@ def test_a_repeat_of_the_just_approved_operation_is_declined_not_asked_again(mon
     text = "".join(e["content"] for e in _token_events(events))
     assert "promoted to PRD via PR #150" in text and "cancelled" not in text
     assert "t-rep" not in service._pending_adk_calls
+
+
+def test_an_approved_operation_is_reported_by_its_own_result_not_the_models_reply():
+    """Found live: 'yes' merged the DF PRD promotion and the model answered
+    "Hello! What can I help you with today?" — the person was told nothing."""
+    from types import SimpleNamespace
+
+    from release_agent.adk_service import PendingAdkCall
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(responses=[SimpleNamespace(name="promote_release", response={
+                "ok": True, "note": "Release file-set promoted to RELEASE_PRD via PR #9 (merged)."})])
+            yield _Ev(text="Hello! What can I help you with today?")
+
+    service.chat_runner = _Runner()
+    service._pending_adk_calls[(_user_id(), "t-note")] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
+        args=_confirmation_call("c1").args)
+    events = _collect(service, "yes", thread_id="t-note")
+    text = "".join(e["content"] for e in _token_events(events))
+    assert text == "Release file-set promoted to RELEASE_PRD via PR #9 (merged)."
+    assert events[-1] == {"type": "done", "mutated": True}
+
+
+def test_an_approved_operation_that_failed_is_explained_by_the_model():
+    """A refusal or error carries no note — the model's explanation is the reply."""
+    from types import SimpleNamespace
+
+    from release_agent.adk_service import PendingAdkCall
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(responses=[SimpleNamespace(name="promote_release", response={
+                "ok": False, "error": "Could not determine the release file list."})])
+            yield _Ev(text="The promotion failed: the release file list could not be read.")
+
+    service.chat_runner = _Runner()
+    service._pending_adk_calls[(_user_id(), "t-err")] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
+        args=_confirmation_call("c1").args)
+    events = _collect(service, "yes", thread_id="t-err")
+    text = "".join(e["content"] for e in _token_events(events))
+    assert "promotion failed" in text
 
 
 def test_a_different_operation_after_an_approval_still_asks(monkeypatch):
@@ -224,8 +319,456 @@ def test_a_different_operation_after_an_approval_still_asks(monkeypatch):
             yield _Ev(calls=[_confirmation_call("c2", target="prl1")], long_running=["c2"])
 
     service.chat_runner = _Runner()
-    service._pending_adk_calls["t-diff"] = PendingAdkCall(
+    service._pending_adk_calls[(_user_id(), "t-diff")] = PendingAdkCall(
         invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
         args=_confirmation_call("c1").args)
     events = _collect(service, "yes", thread_id="t-diff")
     assert "interrupt" in _types(events), "PRL1 is a different operation — the person decides"
+
+
+class _DeployEvent:
+    """The shape _stream_deploy_preview reads off a workflow event."""
+
+    def __init__(self, output):
+        self.output = output
+        self.content = None
+        self.actions = None
+        self.author = "deploy"
+        self.invocation_id = "i"
+        self.long_running_tool_ids = set()
+
+    def get_function_calls(self):
+        return []
+
+
+def test_a_preview_that_cannot_be_built_says_why_instead_of_nothing():
+    """Found live: a release payload with a malformed date produced an empty
+    turn — the form was submitted and the user was told nothing at all. The
+    gate routes an unbuildable preview to cancel, which carries its reason in
+    the node OUTPUT rather than as text, so the streamer has to render it."""
+    from release_agent import adk_service as S
+
+    svc = S.AdkChatService.__new__(S.AdkChatService)
+    svc._pending_deploy = {}
+    cancelled = _DeployEvent(
+        output={"ok": False, "status": "cancelled", "token": "",
+                "error": "'start_date' must be 'YYYY-MM-DD HH:MM:SS'"})
+
+    class _Runner:
+        async def run_async(self, **kw):
+            # The gate's rejecting Event and the cancel node both carry it.
+            yield cancelled
+            yield cancelled
+
+    svc.deploy_runner = _Runner()
+
+    async def drain():
+        return [e async for e in svc._stream_deploy_preview("{}", "t")]
+
+    events = asyncio.run(drain())
+    said = " ".join(e.get("content", "") for e in events if e.get("type") == "token")
+    assert "start_date" in said, "the reason the preview failed must reach the user"
+    assert said.count("start_date") == 1, "said once, not once per node that carries it"
+    assert events[-1]["type"] == "done"
+
+
+def test_a_silent_deploy_graph_still_answers():
+    """Even with no text and no output, the lane must not answer with silence."""
+    from release_agent import adk_service as S
+
+    svc = S.AdkChatService.__new__(S.AdkChatService)
+    svc._pending_deploy = {}
+
+    class _Runner:
+        async def run_async(self, **kw):
+            yield _DeployEvent(output=None)
+
+    svc.deploy_runner = _Runner()
+
+    async def drain():
+        return [e async for e in svc._stream_deploy_preview("{}", "t")]
+
+    events = asyncio.run(drain())
+    assert any(e.get("type") == "token" and e.get("content") for e in events)
+
+
+def _confirmation_pending(function, args):
+    from release_agent.adk_service import PendingAdkCall
+
+    return PendingAdkCall(
+        invocation_id="i", function_call_id="c", function_name="adk_request_confirmation",
+        args={"originalFunctionCall": {"name": function, "args": args},
+              "toolConfirmation": {"hint": "Please approve or reject the tool call "
+                                           f"{function}() by responding with a FunctionResponse "
+                                           "with an expected ToolConfirmation payload."}})
+
+
+def test_adk_protocol_boilerplate_is_never_shown_as_the_question():
+    from release_agent.adk_service import _confirmation_interrupt_payload
+
+    p = _confirmation_interrupt_payload(_confirmation_pending("some_other_tool", {}))
+    assert "FunctionResponse" not in p["message"]
+    assert p["message"] == "Confirm some_other_tool?"
+
+
+def test_every_lane_of_a_turn_is_traced_under_a_named_route(monkeypatch):
+    """Each branch of stream_chat must run under a `turn` span carrying the
+    route and the ids Langfuse groups by. The two RESUME branches — the
+    approval and the CONFIRM token — are the ones worth auditing most, and
+    they were the ones that had no span at all."""
+    import release_agent.adk_service as S
+
+    seen = []
+
+    def fake_traced_stream(source, route, *, thread_id, user_id, session_id, detail=""):
+        seen.append({"route": route, "thread_id": thread_id, "session_id": session_id})
+        return source
+
+    monkeypatch.setattr(S, "traced_stream", fake_traced_stream)
+    service = AdkChatService.__new__(AdkChatService)      # no runners needed
+    service._pending_adk_calls = {}
+    service._pending_deploy = {}
+
+    async def fake_stream(*a, **k):
+        yield {"type": "done"}
+
+    monkeypatch.setattr(service, "_stream_deploy_preview", fake_stream, raising=False)
+    monkeypatch.setattr(service, "_run_chat_agent", fake_stream, raising=False)
+    monkeypatch.setattr(service, "_stream_deploy_resume", fake_stream, raising=False)
+    monkeypatch.setattr(S, "_looks_like_deploy_request", lambda m: m.startswith("deploy "))
+    monkeypatch.setattr(S.adk_parsing, "is_queue_intent", lambda m: False)
+    monkeypatch.setattr(S.adk_intent, "deploy_payload_from_freeform", lambda m: None)
+
+    async def no_pending(*a, **k):
+        return None
+
+    monkeypatch.setattr(service, "_pending_call_from_session", no_pending, raising=False)
+    monkeypatch.setattr(service, "_pending_token_from_session", no_pending, raising=False)
+
+    _collect(service, "deploy payments-api:1.2.3 to uat", "t1")
+    _collect(service, "what is deployed in uat?", "t2")
+
+    # the CONFIRM-token resume branch
+    service._pending_deploy[(S._user_id(), "t3")] = "CONFIRM-ABC123"
+    _collect(service, "CONFIRM-ABC123", "t3")
+
+    assert [s["route"] for s in seen] == [
+        "deploy_workflow:deterministic", "chat", "deploy_workflow:resume",
+    ]
+    assert [s["thread_id"] for s in seen] == ["t1", "t2", "t3"]
+    assert seen[0]["session_id"].endswith(":deploy") or "deploy" in seen[0]["session_id"]
+    assert "chat" in seen[1]["session_id"]
+
+
+def test_one_persons_yes_cannot_answer_another_persons_paused_approval(monkeypatch):
+    """A thread id is not a secret — the portal prints it in its header. The
+    paused prod-ops approval is therefore keyed by (owner, thread), like the
+    PAT store and the CONFIRM preview: bob typing "yes" against alice's thread
+    id must not approve the operation she is being asked about."""
+    import release_agent.adk_service as S
+    from release_agent import identity
+    from release_agent.adk_service import PendingAdkCall
+
+    alice, bob = identity.Caller(email="alice@example.com"), identity.Caller(email="bob@example.com")
+    service = AdkChatService.__new__(AdkChatService)
+    service._pending_adk_calls = {}
+    service._pending_deploy = {}
+
+    async def no_pending(*a, **k):
+        return None
+
+    monkeypatch.setattr(service, "_pending_call_from_session", no_pending, raising=False)
+    monkeypatch.setattr(service, "_pending_token_from_session", no_pending, raising=False)
+    monkeypatch.setattr(S, "_looks_like_deploy_request", lambda m: False)
+    monkeypatch.setattr(S.adk_parsing, "is_queue_intent", lambda m: False)
+    monkeypatch.setattr(S.adk_intent, "deploy_payload_from_freeform", lambda m: None)
+
+    answered = []
+
+    async def fake_chat(content, thread_id, **kw):
+        answered.append(kw.get("approved"))
+        yield {"type": "done"}
+
+    monkeypatch.setattr(service, "_run_chat_agent", fake_chat, raising=False)
+
+    with identity.activate(alice):
+        service._pending_adk_calls[(S._user_id(), "t-shared")] = PendingAdkCall(
+            invocation_id="inv-1", function_call_id="fc-1", function_name="adk_request_confirmation",
+            args={"originalFunctionCall": {"name": "merge_prod_release", "args": {"env": "prd"}}},
+        )
+
+    with identity.activate(bob):
+        _collect(service, "yes", "t-shared")
+    assert answered == [None], "bob's turn must not carry an approval"
+    assert (("alice@example.com", "t-shared") in service._pending_adk_calls), \
+        "alice's pending approval must still be waiting for HER"
+
+    with identity.activate(alice):
+        _collect(service, "yes", "t-shared")
+    assert answered[-1] == ("merge_prod_release", '{"env": "prd"}'), "the owner's yes still approves"
+    assert not service._pending_adk_calls, "and consumes it"
+
+
+# --- something already waiting on the thread ---------------------------------
+# Found live: a release form submitted while a prod-ops approval was paused was
+# read as the reply to it — "You rejected it — nothing was released" — and the
+# person never saw a preview of what they had asked for. A pending approval or
+# token is consumed only by an explicit answer; a NEW request replaces it; and
+# anything else is a reminder, not a rejection.
+
+def _bare_service(monkeypatch):
+    """A service with no runners: the two pending stores, plus fakes for every
+    lane that record what they were asked to do."""
+    import release_agent.adk_service as S
+
+    service = AdkChatService.__new__(AdkChatService)
+    service._pending_adk_calls = {}
+    service._pending_deploy = {}
+    log = {"previews": [], "resumed": [], "chat": []}
+
+    async def none(*a, **k):
+        return None
+
+    for name in ("_pending_call_from_session", "_pending_token_from_session", "_persist_pending_call"):
+        monkeypatch.setattr(service, name, none, raising=False)
+    monkeypatch.setattr(S, "_looks_like_deploy_request", lambda m: m.startswith("deploy "))
+    monkeypatch.setattr(S.adk_parsing, "is_queue_intent", lambda m: False)
+    monkeypatch.setattr(S.adk_intent, "deploy_payload_from_freeform", lambda m: None)
+
+    async def fake_preview(message, thread_id):
+        log["previews"].append(message)
+        yield {"type": "interrupt", "data": {"type": "confirmation", "token": "CONFIRM-NEW111"}}
+        yield {"type": "done"}
+
+    async def fake_resume_deploy(thread_id, token, confirmed):
+        log["resumed"].append((token, confirmed))
+        service._pending_deploy.pop((S._user_id(), thread_id), None)
+        return {"ok": False, "status": "cancelled"}
+
+    async def fake_chat(content, thread_id, **kw):
+        log["chat"].append(kw.get("approved"))
+        # what the model says to a "no" — must never reach the person when the
+        # "no" was the runtime's, not theirs
+        yield {"type": "token", "content": "You rejected it — nothing was released."}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(service, "_stream_deploy_preview", fake_preview, raising=False)
+    monkeypatch.setattr(service, "_resume_deploy", fake_resume_deploy, raising=False)
+    monkeypatch.setattr(service, "_run_chat_agent", fake_chat, raising=False)
+    return service, log
+
+
+def _texts(events):
+    return [e["content"] for e in events if e.get("type") == "token"]
+
+
+def test_a_new_request_while_a_token_is_pending_replaces_it_with_a_new_preview(monkeypatch):
+    from release_agent.adk_service import _user_id as uid
+
+    service, log = _bare_service(monkeypatch)
+    service._pending_deploy[(uid(), "t")] = "CONFIRM-OLD000"
+
+    events = _collect(service, "deploy payments-api:1.2.4 to uat", "t")
+
+    assert log["resumed"] == [("CONFIRM-OLD000", False)], "the old preview is cancelled, never applied"
+    assert any("CONFIRM-OLD000" in t and "nothing was applied" in t for t in _texts(events)), \
+        "and the person is told which token was replaced"
+    assert _interrupt(events)["token"] == "CONFIRM-NEW111", "then the new request gets its own token"
+    assert log["previews"] == ["deploy payments-api:1.2.4 to uat"]
+    assert (uid(), "t") not in service._pending_deploy
+
+
+def test_a_question_while_a_token_is_pending_is_a_reminder_not_a_rejection(monkeypatch):
+    from release_agent.adk_service import _user_id as uid
+
+    service, log = _bare_service(monkeypatch)
+    service._pending_deploy[(uid(), "t")] = "CONFIRM-OLD000"
+
+    events = _collect(service, "what is deployed in uat?", "t")
+
+    assert _types(events) == ["token", "done"]
+    assert "CONFIRM-OLD000" in events[0]["content"] and "still waiting" in events[0]["content"]
+    assert log == {"previews": [], "resumed": [], "chat": []}, "nothing ran: not the chat lane either"
+    assert service._pending_deploy[(uid(), "t")] == "CONFIRM-OLD000", "the token is still there to paste"
+
+
+def test_no_cancels_a_pending_token_but_a_wrong_token_does_not(monkeypatch):
+    from release_agent.adk_service import _user_id as uid
+
+    service, log = _bare_service(monkeypatch)
+    service._pending_deploy[(uid(), "t")] = "CONFIRM-OLD000"
+
+    events = _collect(service, "CONFIRM-TYPO00", "t")
+    assert log["resumed"] == [], "a typo (or an old token from higher up) must not throw the preview away"
+    assert "CONFIRM-TYPO00" in events[0]["content"] and "CONFIRM-OLD000" in events[0]["content"]
+    assert service._pending_deploy[(uid(), "t")] == "CONFIRM-OLD000"
+
+    events = _collect(service, "no", "t")
+    assert log["resumed"] == [("CONFIRM-OLD000", False)]
+    assert "Cancelled `CONFIRM-OLD000`" in events[0]["content"]
+    assert events[-1] == {"type": "done", "mutated": False}
+
+
+def test_a_new_request_while_an_approval_is_pending_drops_it_and_previews_the_new_one(monkeypatch):
+    from release_agent.adk_service import PendingAdkCall
+    from release_agent.adk_service import _user_id as uid
+
+    service, log = _bare_service(monkeypatch)
+    service._pending_adk_calls[(uid(), "t")] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="fc-1", function_name="adk_request_confirmation",
+        args={"originalFunctionCall": {"name": "merge_prod_release", "args": {"env": "prd"}}},
+    )
+
+    events = _collect(service, "deploy payments-api:1.2.4 to uat", "t")
+
+    assert log["chat"] == [None], "the paused approval was answered 'no' for them"
+    assert not any("You rejected it" in t for t in _texts(events)), \
+        "the model's rejection narrative describes a decision nobody made — never shown"
+    assert any("merge prod release" in t and "nothing was applied" in t for t in _texts(events))
+    assert _interrupt(events)["token"] == "CONFIRM-NEW111"
+    assert not service._pending_adk_calls
+
+
+def test_a_question_while_an_approval_is_pending_is_a_reminder(monkeypatch):
+    from release_agent.adk_service import PendingAdkCall
+    from release_agent.adk_service import _user_id as uid
+
+    service, log = _bare_service(monkeypatch)
+    service._pending_adk_calls[(uid(), "t")] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="fc-1", function_name="adk_request_confirmation",
+        args={"originalFunctionCall": {"name": "merge_prod_release", "args": {"env": "prd"}}},
+    )
+
+    events = _collect(service, "what is deployed in uat?", "t")
+
+    assert _types(events) == ["token", "done"]
+    assert "merge prod release" in events[0]["content"] and "`yes`" in events[0]["content"]
+    assert log["chat"] == [], "the approval was neither approved nor rejected"
+    assert (uid(), "t") in service._pending_adk_calls
+
+
+def test_another_persons_message_never_sees_or_disturbs_a_pending_token(monkeypatch):
+    """A thread id is printed in the page header. Bob sending anything against
+    Alice's thread id must neither be shown her token in a reminder nor cancel
+    her preview by asking for a deploy of his own."""
+    from release_agent import identity
+    from release_agent.adk_service import _user_id as uid
+
+    alice, bob = identity.Caller(email="alice@example.com"), identity.Caller(email="bob@example.com")
+    service, log = _bare_service(monkeypatch)
+    with identity.activate(alice):
+        service._pending_deploy[(uid(), "t-shared")] = "CONFIRM-ALICE1"
+
+    with identity.activate(bob):
+        events = _collect(service, "what is deployed in uat?", "t-shared")
+        assert all("CONFIRM-ALICE1" not in (e.get("content") or "") for e in events)
+        assert log["chat"] == [None], "for bob this is an ordinary chat turn"
+        _collect(service, "deploy payments-api:1.2.4 to uat", "t-shared")
+        assert log["resumed"] == [], "bob's request replaces nothing of alice's"
+
+    with identity.activate(alice):
+        assert service._pending_deploy[(uid(), "t-shared")] == "CONFIRM-ALICE1"
+
+
+def test_live_workflow_a_second_request_cancels_the_first_preview_and_mints_a_new_token(monkeypatch):
+    """Against the real deploy Workflow, not fakes: ADK must accept the silent
+    cancel of the paused invocation and then start a fresh preview on the same
+    deploy session — two tokens, the first one dead."""
+    deploy._PENDING_PREVIEWS.clear()
+    service = AdkChatService()
+    first = _interrupt(_collect(service, "deploy abc-client-api-svc:1.1.1230 to uat", "t-live"))["token"]
+    assert first in deploy._PENDING_PREVIEWS
+
+    events = _collect(service, "deploy abc-client-api-svc:1.1.1231 to uat", "t-live")
+
+    second = _interrupt(events)["token"]
+    assert second != first
+    assert any(first in t and "nothing was applied" in t for t in _texts(events))
+    assert first not in deploy._PENDING_PREVIEWS, "the replaced preview is gone, so its token can never apply"
+    assert service._pending_deploy[(_user_id(), "t-live")] == second
+
+    # and the dead token is refused, the live one is still waiting
+    refused = _collect(service, first, "t-live")
+    assert "not the token waiting" in refused[0]["content"] and second in refused[0]["content"]
+    assert service._pending_deploy[(_user_id(), "t-live")] == second
+
+
+def test_a_model_failure_after_a_change_landed_says_what_ran_not_nothing_changed():
+    """Found under load: Vertex answered 429 after an approved promotion ran, and
+    the endpoint told the person "Nothing was changed"."""
+    from types import SimpleNamespace
+
+    from release_agent.adk_service import PendingAdkCall
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(responses=[SimpleNamespace(name="promote_release", response={
+                "ok": True, "note": "Release file-set promoted to PRD via PR #151 (merged)."})])
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    service.chat_runner = _Runner()
+    service._pending_adk_calls[(_user_id(), "t-429")] = PendingAdkCall(
+        invocation_id="inv-1", function_call_id="c1", function_name="adk_request_confirmation",
+        args=_confirmation_call("c1").args)
+    events = _collect(service, "yes", thread_id="t-429")
+
+    text = "".join(e["content"] for e in _token_events(events))
+    assert "PR #151" in text and "do NOT repeat" in text
+    assert events[-1] == {"type": "done", "mutated": True}, "the banner is refreshed"
+
+
+def test_a_model_failure_before_anything_ran_still_reaches_the_endpoint():
+    import pytest
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield _Ev(text="Let me look")
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    service.chat_runner = _Runner()
+    with pytest.raises(RuntimeError):
+        asyncio.run(_drain(service._run_chat_agent(None, "t-429b")))
+
+
+async def _drain(gen):
+    return [e async for e in gen]
+
+
+def test_a_model_failure_after_a_no_is_not_reported_as_a_change():
+    """Found in the ten-developer load test: the person answered "no", ADK sent
+    the tool its rejection, Vertex then answered 429 — and the turn claimed the
+    promotion had run (mutated=True). A refusal is not a run."""
+    from types import SimpleNamespace
+
+    from release_agent import adk_service as S
+
+    def responses(body):
+        return _Ev(responses=[SimpleNamespace(name="promote_release", response=body)])
+
+    assert S._landed_changes(responses({"error": "This tool call is rejected."})) == []
+    assert S._landed_changes(responses({"error": "blocked", "error_code": "MUTATION_BLOCKED",
+                                        "blocked_tool": "promote_release"})) == []
+    assert S._landed_changes(responses({"ok": True, "note": "PR #1"})) == [("promote_release", "PR #1")]
+    assert S._landed_changes(responses({"result": "ERROR promoting: no release"})) == [("promote_release", "")]
+
+    service = AdkChatService()
+
+    class _Runner:
+        app_name = "adk_release_agent"
+
+        async def run_async(self, **kw):
+            yield responses({"error": "This tool call is rejected."})
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    service.chat_runner = _Runner()
+    import pytest
+    with pytest.raises(RuntimeError):      # nothing ran: the endpoint's "nothing was changed" is true
+        asyncio.run(_drain(service._run_chat_agent(None, "t-no429")))

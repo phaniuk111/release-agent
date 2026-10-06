@@ -57,6 +57,18 @@ variable "partition_expiration_days" {
   default     = 0
 }
 
+variable "bq_cost_findings_table" {
+  description = "Optional memory table for the BigQuery cost report (design/BQ_COST.md §7) — must match Helm values config.BQ_COST_FINDINGS_TABLE, with config.BQ_COST_DATASET = this dataset. Empty = not created."
+  type        = string
+  default     = ""
+}
+
+variable "support_findings_table" {
+  description = "Optional memory table for 'was the support investigation right?' answers (tools/support/feedback.py) — must match Helm values config.SUPPORT_FEEDBACK_TABLE, with config.SUPPORT_FEEDBACK_DATASET = this dataset (and SUPPORT_PROJECT/BQ_PROJECT = this project). Empty = not created."
+  type        = string
+  default     = ""
+}
+
 resource "google_bigquery_dataset" "release_agent" {
   project     = var.project_id
   dataset_id  = var.dataset_id
@@ -82,6 +94,49 @@ resource "google_bigquery_table" "release_intents" {
   schema = file("${path.module}/../release_intents.schema.json")
 }
 
+# The BQ cost report's memory across runs (what it suggested, whether the cost
+# fell) — append-only like the event log, but advisory, so it may be dropped
+# and rebuilt. Living in the same dataset means the dataEditor binding below
+# already covers it: no extra IAM for the feature's optional memory.
+resource "google_bigquery_table" "bq_cost_findings" {
+  count       = var.bq_cost_findings_table == "" ? 0 : 1
+  project     = var.project_id
+  dataset_id  = google_bigquery_dataset.release_agent.dataset_id
+  table_id    = var.bq_cost_findings_table
+  description = "BQ cost report findings per scan (append-only, advisory) — adoption is derived by the app"
+
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "run_ts"
+  }
+
+  schema = file("${path.module}/../bq_cost_findings.schema.json")
+}
+
+# The support investigation's feedback memory: one row per "right / right
+# direction / wrong" answer, append-only like the event log. Corrections are new
+# rows — the app picks each person's latest per incident when it reads — so the
+# table is never UPDATEd or DELETEd. Same dataset as above: the dataEditor
+# binding below already covers it.
+resource "google_bigquery_table" "support_findings" {
+  count       = var.support_findings_table == "" ? 0 : 1
+  project     = var.project_id
+  dataset_id  = google_bigquery_dataset.release_agent.dataset_id
+  table_id    = var.support_findings_table
+  description = "Support investigation feedback (append-only) — accuracy is derived by the app; actual_cause holds people's own words"
+
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "created_at"
+  }
+
+  schema = file("${path.module}/../support_findings.schema.json")
+}
+
 # Least privilege for the runtime SA: insert + select on THIS dataset only,
 # plus the project-level right to run query jobs. No schema permissions —
 # column additions are applied here (terraform), not by the app.
@@ -103,4 +158,14 @@ resource "google_project_iam_member" "runtime_job_user" {
 output "table_id" {
   value       = "${var.project_id}.${var.dataset_id}.${var.table_id}"
   description = "Fully-qualified table id the app will read/write."
+}
+
+output "bq_cost_findings_table_id" {
+  value       = var.bq_cost_findings_table == "" ? null : "${var.project_id}.${var.dataset_id}.${var.bq_cost_findings_table}"
+  description = "Fully-qualified id of the BQ cost report's memory table, when created."
+}
+
+output "support_findings_table_id" {
+  value       = var.support_findings_table == "" ? null : "${var.project_id}.${var.dataset_id}.${var.support_findings_table}"
+  description = "Fully-qualified id of the support feedback memory table, when created."
 }

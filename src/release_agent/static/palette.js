@@ -3,7 +3,7 @@
 // in the palette only filters.
 import { sendMessage } from './chat.js';
 import { visibleCapabilities } from './core/capabilities.js';
-import { showDeployForm } from './forms.js';
+import { showDeployForm } from './forms/deploy_form.js';
 
 // This person's view, baked into the page by the server (features.py): preview
 // groups are left out for everyone except the people testing them.
@@ -17,6 +17,12 @@ export const GROUPS = [
     {name:'Release',  hint:'the weekly cut — queue it, build the file-set, ship it'},
     {name:'Deploy',   hint:'push one chart or DF template to an environment'},
     {name:'Check',    hint:'read-only — status, controls, builds, PRs'},
+    // Read-only like Check, but a different question: not "is this release
+    // safe" but "what is BigQuery costing us, and why".
+    {name:'Monitoring', hint:'read-only — what BigQuery is costing, and why'},
+    // L1 support for the pipelines: a different audience again — someone working
+    // a queue of failures, not shipping a release.
+    {name:'Support',  hint:'L1 — what failed in the pipelines, and what to do now'},
     // Its own row because the audience is different: everything above is for
     // the team shipping the release, this is for someone CONSUMING our APIs.
     {name:'Onboarding', hint:'consuming our APIs — guided from the onboarding docs'},
@@ -29,21 +35,27 @@ export const CAPABILITIES = [
     {group:'Release', icon:'fa-list-ul',           label:'Check release queue', desc:"what's queued for the next release, as a table — who added it, routing, JIRA, build; remove a row", form:'queue-table'},
     {group:'Release', icon:'fa-box-open',          label:'CARE Release',         desc:'full weekly release: helm artifacts + CHG + governance file-set (pre-filled from the queue)', form:'release'},
     {group:'Release', icon:'fa-water',             label:'DF Release',           desc:'Dataflow release: DF images + CHG + governance file-set (images excluded from helm deploys)', form:'df-release'},
-    {group:'Release', icon:'fa-eraser',            label:'Remove from release',  desc:'unstage a chart before it ships',             send:false, text:"remove <chart-name> from the release"},
-    {group:'Release', icon:'fa-shield-heart',      label:'Release to PROD',      desc:'promote the PRD release via SIT→UAT→PRD (finalizes the release)',  send:true,  text:'release prod'},
+    {group:'Release', icon:'fa-clock-rotate-left', label:'Release history',      desc:'past releases and what each shipped — tick charts to put them back into the next release', form:'release-history'},
+    // The text says CARE/DF explicitly: "promote the release to prd" alone makes
+    // the agent stop and ask which one, and a pill should never need answering.
+    {group:'Release', icon:'fa-shield-heart',      label:'Promote CARE release to PRD', desc:'promote the CARE release file-set to PRD — PROD is only ever reached this way, never by deploying a single chart', send:true,  text:'promote the CARE release to prd'},
+    {group:'Release', icon:'fa-water',             label:'Promote DF release to PRD',   desc:'promote the Dataflow release file-set to its PRD branch — the DF chain has its own repo and guard', send:true,  text:'promote the DF release to prd'},
     {group:'Deploy',  icon:'fa-flask',             label:'Deploy to CARE UAT',   desc:'deploy a Helm chart to CARE UAT',             form:'uat'},
     {group:'Deploy',  icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},
-    // No "Deploy to PROD" pill: PROD is reached through the release ("Release to
-    // PROD"), not by pushing a single chart. The form itself still exists and
-    // still opens for a typed "deploy <chart>:<version> to prod" — this only
-    // removes it from the offered actions.
+    // No PROD deploy pill and no PROD deploy form: PROD is reached by promoting
+    // the release file-set ("Promote CARE release to PRD" / the DF release),
+    // never by pushing one chart. A typed "deploy <chart>:<version> to prod" is
+    // answered with that route (forms/parse.js), not with a form.
     {group:'Check',   icon:'fa-calendar-day',      label:'Deploy status',        desc:'UAT, PRD & the release PR',                   send:true,  text:'what is the current deploy status of UAT, PRD and the PRD release PR?'},
     {group:'Check',   icon:'fa-circle-check',      label:'Verify a build',       desc:'tag-gen step + RCTLD controls for a tag',     send:false, text:'verify <image>:<tag> was built in <owner/repo>'},
     {group:'Check',   icon:'fa-list-check',        label:'Check PRD controls',   desc:'pass/fail RCTLD control gates for a tag',     send:false, text:'check build controls for <image>:<tag> before a PRD release'},
     {group:'Check',   icon:'fa-code-pull-request', label:'Track a PR',           desc:'find the PR & summarize CHG/RMG/controls',    send:false, text:'find the deployment PR for <image>:<tag> and summarize its CHG, RMG and RLFT controls'},
     {group:'Check',   icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
-    {group:'Check',   icon:'fa-heart-pulse',       label:'Monitoring',           desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
     {group:'Check',   icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
+    // Still a preview feature (the server refuses it for non-testers), so it stays in the preview row.
+    {group:'Check',   icon:'fa-heart-pulse',       label:'PromQL checks',        desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
+    {group:'Monitoring', icon:'fa-coins',          label:'BQ cost report',       desc:"the most expensive BigQuery queries this fortnight, why, and what they'd cost after a fix — measured, not guessed", form:'bq-cost'},
+    {group:'Support', icon:'fa-headset',        label:'Support triage',       desc:'L1 view of the pipelines’ control table: what failed, got stuck or never ran, known issue or not, what to do now and who owns it', form:'support-triage'},
     {group:'Onboarding', icon:'fa-plug',           label:'Consumer onboarding',  desc:'how to start using our APIs — access, auth, first call, going live', send:true,  text:'I want to onboard to your APIs — walk me through it step by step'},
 ];
 
@@ -54,6 +66,8 @@ const GROUP_STYLE = {
     Release: {icon:'text-violet-300',  border:'hover:border-violet-400/50',  label:'text-violet-300/70'},
     Deploy:  {icon:'text-sky-300',     border:'hover:border-sky-400/50',     label:'text-sky-300/70'},
     Check:   {icon:'text-emerald-300', border:'hover:border-emerald-400/50', label:'text-emerald-300/70'},
+    Monitoring: {icon:'text-rose-300', border:'hover:border-rose-400/50', label:'text-rose-300/70'},
+    Support: {icon:'text-amber-300', border:'hover:border-amber-400/50', label:'text-amber-300/80'},
     Onboarding: {icon:'text-cyan-300', border:'hover:border-cyan-400/50', label:'text-cyan-300/70'},
 };
 
