@@ -5,9 +5,11 @@ import {
 } from '@backstage/frontend-plugin-api';
 import ReleaseIcon from '@material-ui/icons/Publish';
 import OnboardingIcon from '@material-ui/icons/School';
+import OperationsIcon from '@material-ui/icons/Assessment';
 
 export const rootRouteRef = createRouteRef();
 export const onboardingRouteRef = createRouteRef();
+export const operationsRouteRef = createRouteRef();
 
 const releaseCopilotPage = PageBlueprint.make({
   params: {
@@ -36,8 +38,22 @@ const onboardingPage = PageBlueprint.make({
   },
 });
 
+// Operating what runs (what failed overnight, what it costs, what is deployed)
+// is a different job from shipping it: its own page and sidebar entry.
+const operationsPage = PageBlueprint.make({
+  name: 'operations',
+  params: {
+    routeRef: operationsRouteRef,
+    path: '/operations',
+    title: 'Operations',
+    icon: <OperationsIcon />,
+    loader: () =>
+      import('./components/OperationsPage').then(m => <m.OperationsPage />),
+  },
+});
+
 export const releaseCopilotPlugin = createFrontendPlugin({
   pluginId: 'release-copilot',
-  extensions: [releaseCopilotPage, onboardingPage],
-  routes: { root: rootRouteRef, onboarding: onboardingRouteRef },
+  extensions: [releaseCopilotPage, operationsPage, onboardingPage],
+  routes: { root: rootRouteRef, onboarding: onboardingRouteRef, operations: operationsRouteRef },
 });

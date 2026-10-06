@@ -1,24 +1,26 @@
-import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Box, Button, makeStyles, Tab, Tabs, Typography } from '@material-ui/core';
+import { useCallback, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useRouteRef } from '@backstage/frontend-plugin-api';
+import { operationsRouteRef } from '../plugin';
+import { Box, Button, Chip, makeStyles, Tab, Tabs, Typography } from '@material-ui/core';
 import { Content, Header, Page } from '@backstage/core-components';
 import { ChatGrid } from './ChatTab';
 import { DeployTab } from './DeployTab';
 import { DataflowTab } from './DataflowTab';
 import { ReleasesTab } from './ReleasesTab';
 import { QueueTab } from './QueueTab';
-import { InsightsTab } from './InsightsTab';
 import { HistoryTab } from './HistoryTab';
-import { SupportTab } from './SupportTab';
-import { MonitoringTab } from './MonitoringTab';
 import { useAgentChat } from './useAgentChat';
 import { useUiConfig } from '../api';
+import { OPS_VIEWS, VIEW_LABEL, View, areaOf, resolve, visibleAreas } from './navigation';
 import { DEV_PORTAL as P } from '../look';
 
 export type { ChatMessage } from './useAgentChat';
 
 const useStyles = makeStyles(theme => ({
   tabsBar: { borderBottom: `1px solid ${theme.palette.divider}` },
+  // The screens of the chosen area: a quiet row under the area tabs.
+  views: { display: 'flex', flexWrap: 'wrap', gap: theme.spacing(1), marginTop: theme.spacing(2) },
   // The portal's confirmation box: amber, on glass.
   confirmBar: {
     display: 'flex',
@@ -40,58 +42,44 @@ const useStyles = makeStyles(theme => ({
   spacer: { flex: 1 },
 }));
 
-const ALL_TABS = [
-  'Chat',
-  'Deploy',
-  'Dataflow',
-  'Releases',
-  'Queue',
-  'History',
-  'Support',
-  'Monitoring',
-  'Insights',
-] as const;
-type TabName = (typeof ALL_TABS)[number];
-
-// The portal's pill group a tab belongs to, when that group can be preview
-// (PREVIEW_GROUPS): a caller outside the preview does not see the tab, and the
-// agent refuses its API anyway.
-const GROUP_OF_TAB: Partial<Record<TabName, string>> = { Monitoring: 'Monitoring', Support: 'Support' };
-
-// Tabs whose submissions show their own result (and confirm) in place.
-const ORIGIN_OF_TAB: Partial<Record<TabName, string>> = {
-  Deploy: 'deploy',
-  Dataflow: 'dataflow',
-  Releases: 'releases',
-  Support: 'support',
-  Monitoring: 'monitoring',
+// Screens whose submissions show their own result (and confirm) in place.
+const ORIGIN_OF_VIEW: Partial<Record<View, string>> = {
+  deploy: 'deploy',
+  dataflow: 'dataflow',
+  releases: 'releases',
 };
 
 export function ReleaseCopilotPage() {
   const classes = useStyles();
   const ui = useUiConfig();
-  const TABS = ALL_TABS.filter(t => {
-    const group = GROUP_OF_TAB[t];
-    return !group || !ui.hiddenGroups.includes(group);
-  });
+  const areas = visibleAreas(ui.hiddenGroups);
   const [searchParams, setSearchParams] = useSearchParams();
-  const tabName = (searchParams.get('tab') ?? '').toLowerCase();
-  const urlTab = TABS.map(t => t.toLowerCase()).indexOf(tabName);
-  const [tab, setTab] = useState(urlTab >= 0 ? urlTab : 0);
-  const current: TabName = TABS[Math.min(tab, TABS.length - 1)];
+  const { area, view: current } = resolve(areas, searchParams.get('tab'), searchParams.get('view'));
 
-  // Deep-link: /release-copilot?tab=queue (or deploy, insights, ...)
+  // Operations moved to its own page: an old link here to one of its screens
+  // (?tab=support, ?tab=monitoring …) is sent on to it.
+  const navigate = useNavigate();
+  const operationsLink = useRouteRef(operationsRouteRef);
+  const oldOpsView = [searchParams.get('tab'), searchParams.get('view')]
+    .map(x => (x ?? '').toLowerCase())
+    .find(x => (OPS_VIEWS as string[]).includes(x));
   useEffect(() => {
-    if (urlTab >= 0 && urlTab !== tab) setTab(urlTab);
-  }, [urlTab]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (oldOpsView && operationsLink) navigate(`${operationsLink()}?view=${oldOpsView}`, { replace: true });
+  }, [oldOpsView, operationsLink, navigate]);
 
-  const selectTab = useCallback(
-    (v: number) => {
-      setTab(v);
-      setSearchParams({ tab: TABS[v].toLowerCase() }, { replace: true });
+  // ?tab=<area>&view=<screen>; the old ?tab=<screen> links resolve too.
+  const go = useCallback(
+    (areaKey: string, view?: View) => {
+      const next: Record<string, string> = { tab: areaKey };
+      if (view) next.view = view;
+      setSearchParams(next, { replace: true });
     },
-    [setSearchParams, TABS],
+    [setSearchParams],
   );
+  const openView = (view: View) => {
+    const home = areaOf(areas, view);
+    if (home) go(home.key, view);
+  };
 
   const chat = useAgentChat('release');
   const deploy = chat.resultFor('deploy');
@@ -101,7 +89,7 @@ export function ReleaseCopilotPage() {
   // The page-level bar is for a token the current tab cannot confirm itself:
   // one raised in Chat, or one raised by a form tab you have since left.
   const showBar =
-    chat.pending && !chat.busy && ORIGIN_OF_TAB[current] !== chat.pending.origin;
+    chat.pending && !chat.busy && ORIGIN_OF_VIEW[current] !== chat.pending.origin;
 
   return (
     <Page themeId="tool">
@@ -146,23 +134,35 @@ export function ReleaseCopilotPage() {
         )}
         <Tabs
           className={classes.tabsBar}
-          value={tab}
-          onChange={(_, v) => selectTab(v)}
+          value={areas.indexOf(area)}
+          onChange={(_, i) => go(areas[i].key)}
           indicatorColor="primary"
-          // On a narrow screen the six tabs overflow; scroll them rather than
-          // cutting "Insights" off where nobody can reach it.
-          variant="scrollable"
-          scrollButtons="auto"
         >
-          {TABS.map(label => (
-            <Tab key={label} label={label} />
+          {areas.map(a => (
+            <Tab key={a.key} label={a.label} title={a.hint} />
           ))}
         </Tabs>
+        {area.views.length > 1 && (
+          <Box className={classes.views} role="tablist" aria-label={`${area.label} screens`}>
+            {area.views.map(v => (
+              <Chip
+                key={v}
+                role="tab"
+                aria-selected={v === current}
+                label={VIEW_LABEL[v]}
+                clickable
+                color={v === current ? 'primary' : 'default'}
+                variant={v === current ? 'default' : 'outlined'}
+                onClick={() => go(area.key, v)}
+              />
+            ))}
+          </Box>
+        )}
         <Box mt={3}>
-          {current === 'Chat' && (
+          {current === 'chat' && (
             <ChatGrid messages={chat.messages} busy={chat.busy} onSend={sendFrom('chat')} />
           )}
-          {current === 'Deploy' && (
+          {current === 'deploy' && (
             <DeployTab
               onSend={sendFrom('deploy')}
               busy={chat.busy}
@@ -171,7 +171,7 @@ export function ReleaseCopilotPage() {
               onCancel={chat.dismiss}
             />
           )}
-          {current === 'Dataflow' && (
+          {current === 'dataflow' && (
             <DataflowTab
               onSend={sendFrom('dataflow')}
               busy={chat.busy}
@@ -180,7 +180,7 @@ export function ReleaseCopilotPage() {
               onCancel={chat.dismiss}
             />
           )}
-          {current === 'Releases' && (
+          {current === 'releases' && (
             <ReleasesTab
               onSend={sendFrom('releases')}
               busy={chat.busy}
@@ -190,28 +190,10 @@ export function ReleaseCopilotPage() {
               llm={ui.llm}
             />
           )}
-          {current === 'Queue' && <QueueTab />}
-          {current === 'History' && (
-            <HistoryTab onOpenQueue={() => selectTab(TABS.indexOf('Queue'))} />
+          {current === 'queue' && <QueueTab />}
+          {current === 'history' && (
+            <HistoryTab onOpenQueue={() => openView('queue')} />
           )}
-          {current === 'Support' && (
-            <SupportTab
-              onSend={sendFrom('support')}
-              busy={chat.busy}
-              result={chat.resultFor('support')}
-              llm={ui.llm}
-              investigation={chat.investigationFor('support')}
-            />
-          )}
-          {current === 'Monitoring' && (
-            <MonitoringTab
-              onSend={sendFrom('monitoring')}
-              busy={chat.busy}
-              result={chat.resultFor('monitoring')}
-              llm={ui.llm}
-            />
-          )}
-          {current === 'Insights' && <InsightsTab />}
         </Box>
       </Content>
     </Page>
