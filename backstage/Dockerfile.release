@@ -1,0 +1,85 @@
+# Backstage image built from RELEASE ARTIFACTS — the enterprise format.
+#
+# CI runs scripts/build-release-artifacts.sh <tag>, which produces
+#   <tag>-skeleton.tar.gz  every package.json (enough for the production install)
+#   <tag>-bundle.tar.gz    the built backend, with the frontend inside it
+# and uploads both to the artifact store. This image downloads them by tag,
+# installs production dependencies only, and runs the bundle — no source build
+# inside the image.
+#
+# Two stages: INSTALL on a full Node image (curl, and the compilers the native
+# modules — better-sqlite3, isolated-vm — fall back to when no prebuilt binary
+# can be downloaded), then RUN on a slim one as a non-root user. Defaults are
+# the Docker Official Images, Node 24 (Backstage 1.54 supports 22 and 24; 24 is
+# supported upstream until April 2028). In an enterprise point both at the
+# platform team's Node 24 images; the same one for both stages works too.
+#
+# Nothing internal is written here: the images, the artifact store, the npm
+# registry and the proxy are all build args (Docker keeps HTTP(S)_PROXY and the
+# YARN_* args out of the final image's environment).
+#
+#   docker build -f Dockerfile.release \
+#     --build-arg BUILD_IMAGE=<node 24 image with curl + compilers> \
+#     --build-arg RUNTIME_IMAGE=<node 24 slim image> \
+#     --build-arg ARTIFACT_BASE_URL=https://<artifact store>/<repo>/<path> \
+#     --build-arg ARTIFACT_API_KEY=... --build-arg RELEASE_TAG=<tag> \
+#     --build-arg YARN_NPM_REGISTRY_SERVER=https://<npm mirror> .
+ARG BUILD_IMAGE=node:24-bookworm
+ARG RUNTIME_IMAGE=node:24-bookworm-slim
+
+# ---- install: download the artifacts, production dependencies only ----------
+FROM ${BUILD_IMAGE} AS install
+
+ARG ARTIFACT_BASE_URL
+# Sent as the store's API-key header when set; empty = an open store.
+ARG ARTIFACT_API_KEY=""
+ARG ARTIFACT_API_HEADER="X-JFrog-Art-Api"
+ARG RELEASE_TAG
+# Yarn 4 reads its registry, auth and TLS settings from these — not .npmrc.
+ARG YARN_NPM_REGISTRY_SERVER
+ARG YARN_NPM_AUTH_IDENT
+ARG YARN_NPM_AUTH_TOKEN
+ARG YARN_ENABLE_STRICT_SSL
+ARG YARN_HTTPS_PROXY
+ARG YARN_HTTP_PROXY
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Yarn itself comes from the repo (.yarnrc.yml yarnPath), so the base image's
+# own yarn version — or none — does not matter.
+COPY package.json yarn.lock backstage.json .yarnrc.yml ./
+COPY .yarn/releases ./.yarn/releases
+
+RUN curl -fSL ${ARTIFACT_API_KEY:+-H "${ARTIFACT_API_HEADER}:${ARTIFACT_API_KEY}"} \
+      -o skeleton.tar.gz "${ARTIFACT_BASE_URL}/${RELEASE_TAG}-skeleton.tar.gz" \
+ && tar xzf skeleton.tar.gz && rm skeleton.tar.gz
+
+RUN node .yarn/releases/yarn-*.cjs workspaces focus --all --production \
+ && rm -rf "$(node .yarn/releases/yarn-*.cjs config get cacheFolder)"
+
+RUN curl -fSL ${ARTIFACT_API_KEY:+-H "${ARTIFACT_API_HEADER}:${ARTIFACT_API_KEY}"} \
+      -o bundle.tar.gz "${ARTIFACT_BASE_URL}/${RELEASE_TAG}-bundle.tar.gz" \
+ && tar xzf bundle.tar.gz && rm bundle.tar.gz
+
+# ---- run: slim image, non-root ----------------------------------------------
+FROM ${RUNTIME_IMAGE}
+
+ARG RELEASE_TAG
+LABEL release_name=${RELEASE_TAG}
+ENV NODE_ENV=production
+# --no-node-snapshot: the scaffolder's isolated-vm needs it on Node 20+.
+ENV NODE_OPTIONS="--no-node-snapshot"
+WORKDIR /app
+
+# uid 1000 is the official image's `node` user and the chart's runAsUser.
+# Files stay root-owned and read-only to it; only the sqlite folder is its own.
+COPY --from=install /app /app
+COPY app-config*.yaml startBackstage.sh ./
+COPY examples ./examples
+RUN mkdir -p /app/backstage-data && chown 1000:1000 /app/backstage-data \
+ && chmod 755 /app /app/startBackstage.sh
+USER 1000
+
+EXPOSE 7007
+CMD ["./startBackstage.sh"]
