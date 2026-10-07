@@ -40,6 +40,12 @@ PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(project
 # left orphans behind. Record them BEFORE the cluster goes away, while the
 # `kubernetes.io/created-for/pvc/name` description still ties them to this demo.
 DEMO_DISKS=""
+# Network endpoint groups (k8s1-<cluster hash>-…) outlive the cluster too — ~20
+# per Autopilot + mesh cluster — and the regional quota is 100: after a few
+# demo runs the next cluster cannot create one in a new zone, and the mesh then
+# never sees a pod that moved zones (healthy, but no traffic). The hash is only
+# readable while the cluster exists.
+NEG_PREFIX=""
 
 # Graceful first: uninstall helm releases so the PVC is released and any
 # finalizers run cleanly. If the cluster is already gone, skip.
@@ -48,6 +54,9 @@ if gcloud container clusters describe "$CLUSTER_NAME" --region "$REGION" \
 
   if gcloud container clusters get-credentials "$CLUSTER_NAME" --region "$REGION" \
     --project "$PROJECT_ID" >/dev/null 2>&1; then
+
+    NEG_PREFIX="$(kubectl get svcneg -A -o jsonpath='{.items[0].metadata.name}' 2>/dev/null \
+      | cut -d- -f1-2 || true)"
 
     if [ "$KEEP_DISK" != "true" ]; then
       DEMO_DISKS="$(kubectl -n "$NAMESPACE" get pv \
@@ -77,7 +86,8 @@ gcloud container fleet memberships delete "$CLUSTER_NAME" \
 # bindings do NOT — they linger as dangling members on the policy.
 say "Revoking Workload Identity IAM grants"
 KSA_PRINCIPAL="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/${NAMESPACE}/sa/release-copilot"
-for role in roles/aiplatform.user roles/bigquery.jobUser roles/bigquery.dataEditor; do
+for role in roles/aiplatform.user roles/bigquery.jobUser roles/bigquery.dataEditor \
+  roles/bigquery.dataViewer roles/logging.viewer roles/monitoring.viewer roles/dataflow.viewer; do
   gcloud projects remove-iam-policy-binding "$PROJECT_ID" \
     --member="$KSA_PRINCIPAL" --role="$role" --condition=None >/dev/null 2>&1 || true
 done
@@ -122,9 +132,24 @@ gcloud compute disks list --project "$PROJECT_ID" \
       --project "$PROJECT_ID" --quiet || true
   done
 
+# Only this cluster's prefix, and only EMPTY groups: a group still holding
+# endpoints belongs to something alive. Google-managed gsmrsvd-* are never ours.
+if [ -n "$NEG_PREFIX" ]; then
+  say "Deleting this cluster's network endpoint groups ($NEG_PREFIX-*)"
+  gcloud compute network-endpoint-groups list --project "$PROJECT_ID" \
+    --filter="name~^${NEG_PREFIX}- AND size=0" --format="value(name,zone.basename())" 2>/dev/null |
+    while read -r neg zone; do
+      [ -n "$neg" ] || continue
+      gcloud compute network-endpoint-groups delete "$neg" --zone "$zone" \
+        --project "$PROJECT_ID" --quiet >/dev/null 2>&1 || echo "  could not delete $neg ($zone)"
+    done
+fi
+
 say "Down. Remaining PoC footprint:"
 gcloud container clusters list --project "$PROJECT_ID" --format='value(name)' | sed 's/^/  cluster: /'
 gcloud artifacts repositories list --project "$PROJECT_ID" --format='value(name)' | sed 's/^/  ar-repo: /'
 gcloud compute disks list --project "$PROJECT_ID" --format='value(name)' | sed 's/^/  disk:    /'
+echo "  network endpoint groups: $(gcloud compute network-endpoint-groups list --project "$PROJECT_ID" \
+  --filter='name~^k8s1-' --format='value(name)' 2>/dev/null | wc -l | tr -d ' ') (k8s1-*, quota 100 per region)"
 echo
 echo "Next session: scripts/gke-demo-up.sh  (~15 min to a working demo)"
