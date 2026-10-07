@@ -63,12 +63,59 @@ releaseCopilot:
 # (emptyDir). Enable persistence to survive pod restarts/reschedules.
 #
 # NOTE: single-replica only — a PVC with ReadWriteOnce cannot be shared.
-# For multi-replica, switch backend.database to Postgres (see config below).
+# For multi-replica, use database.type: postgres (below) and leave this off.
 persistence:
   enabled: false
   size: 1Gi
   # storageClassName: ""   # leave empty to use the cluster default
   mountPath: /app/backstage-data
+
+# Extra environment for the Backstage container, as Kubernetes env entries —
+# the way a secret reaches the config without sitting in the ConfigMap, e.g. the
+# support watcher's notifications token (config: ${SUPPORT_NOTIFY_TOKEN}):
+#   - name: SUPPORT_NOTIFY_TOKEN
+#     valueFrom: { secretKeyRef: { name: support-notify, key: token } }
+extraEnv: []
+
+# Backstage's OWN database (catalog, sign-in signing keys, search, scaffolder
+# history). Release Copilot keeps nothing here — its state is BigQuery, GitHub
+# and the agent. Steps: helm/backstage-portal/POSTGRES.md.
+#   sqlite    PoC: one replica, data lives as long as the pod (or the PVC above)
+#   postgres  production, and REQUIRED for replicaCount > 1: replicas must share
+#             the signing keys, or a sign-in on one pod is refused by the next
+database:
+  type: sqlite
+  postgres:
+    # Password sign-in (any Postgres): a Secret with POSTGRES_HOST,
+    # POSTGRES_PORT, POSTGRES_USER and POSTGRES_PASSWORD, created outside the
+    # chart — External Secrets / Vault / kubectl. Not used with cloudSql below.
+    existingSecret: ""
+    # The one database every plugin's schema goes in (created by the DBA).
+    database: backstage
+    # schema: ONE database, a schema per plugin — no CREATE DATABASE right
+    # needed. "database" (Backstage's default) creates a database per plugin.
+    pluginDivisionMode: schema
+    # Password sign-in to a managed service: most require TLS, e.g.
+    #   ssl: { require: true, rejectUnauthorized: true, ca: { $file: /path/ca.crt } }
+    # (cloudSql below does its own TLS — leave this false there.)
+    ssl: false
+    # Per plugin, per replica: ~12 plugins x replicas x max must stay under the
+    # server's max_connections (small Cloud SQL tiers allow only ~25-100).
+    pool:
+      min: 0
+      max: 5
+    # Google Cloud SQL with Cloud IAM — Backstage's own connector
+    # (connection.type: cloudsql): no password, no Secret, no proxy sidecar.
+    # The pod signs in as its Workload Identity service account.
+    cloudSql:
+      enabled: false
+      # project:region:instance
+      instance: ""
+      # PRIVATE for a VPC-native cluster (Backstage defaults to PUBLIC), or PSC.
+      ipAddressType: PRIVATE
+      # The IAM database user: the service account's email WITHOUT the
+      # ".gserviceaccount.com" suffix, e.g. backstage@my-project.iam
+      user: ""
 
 # Backstage app-config overrides merged over the baked-in app-config.yaml.
 # Rendered into a ConfigMap mounted as app-config.kubernetes.yaml.
@@ -84,14 +131,8 @@ config:
     # forwarded headers (X-Forwarded-Proto/For) instead of the real scheme —
     # trust them so redirects/OAuth callbacks keep the external https URL.
     trustProxy: true
-    # SQLite path is injected by the chart (see persistence.*) — do not set
-    # a hardcoded path here unless you override the mount too.
-    # For anything real, switch to postgres instead:
-    # database:
-    #   client: pg
-    #   connection: { host: .., port: 5432, user: .., password: .. } (from a Secret)
-    database:
-      client: better-sqlite3
+    # backend.database is written by the chart from `database:` above — set
+    # it there, not here.
   auth:
     providers:
       # The built image runs NODE_ENV=production, where Backstage disables the

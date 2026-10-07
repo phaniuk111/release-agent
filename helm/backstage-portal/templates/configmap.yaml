@@ -7,6 +7,28 @@ metadata:
 data:
   app-config.kubernetes.yaml: |
     {{- $cfg := .Values.config | deepCopy }}
+    {{- $backend := $cfg.backend | default dict }}
+    {{- if eq (include "backstage-portal.dbType" .) "postgres" }}
+    {{- $pg := .Values.database.postgres }}
+    {{/*
+      `directory` is set to null so the sqlite folder app-config.docker.yaml
+      gives the base connection does not ride along into the pg connection
+      (configs merge key by key).
+    */}}
+    {{- $conn := dict "database" $pg.database "directory" nil }}
+    {{- if $pg.cloudSql.enabled }}
+    {{/* Backstage's Cloud SQL connector: IAM sign-in, it opens the TLS itself. */}}
+    {{- $_ := merge $conn (dict "type" "cloudsql" "instance" $pg.cloudSql.instance "ipAddressType" $pg.cloudSql.ipAddressType "user" $pg.cloudSql.user) }}
+    {{- else }}
+    {{/* Credentials stay in the Secret: the config names the variables, Backstage substitutes them at startup. */}}
+    {{- $_ := merge $conn (dict "host" "${POSTGRES_HOST}" "port" "${POSTGRES_PORT}" "user" "${POSTGRES_USER}" "password" "${POSTGRES_PASSWORD}") }}
+    {{- if $pg.ssl }}
+    {{- $_ := set $conn "ssl" $pg.ssl }}
+    {{- end }}
+    {{- end }}
+    {{- $db := dict "client" "pg" "pluginDivisionMode" $pg.pluginDivisionMode "ensureExists" false "ensureSchemaExists" true "connection" $conn "knexConfig" (dict "pool" $pg.pool) }}
+    {{- $_ := set $backend "database" $db }}
+    {{- else }}
     {{/*
       Backstage splits its data across a database PER PLUGIN. For sqlite that
       means the base connection must name a DIRECTORY it can create files in;
@@ -15,9 +37,13 @@ data:
       Only the no-persistence case may be a bare string, because every plugin
       can share one anonymous in-memory database.
     */}}
+    {{- $db := dict "client" "better-sqlite3" }}
     {{- if .Values.persistence.enabled }}
-    {{- $_ := set $cfg.backend.database "connection" (dict "directory" .Values.persistence.mountPath) }}
+    {{- $_ := set $db "connection" (dict "directory" .Values.persistence.mountPath) }}
     {{- else }}
-    {{- $_ := set $cfg.backend.database "connection" ":memory:" }}
+    {{- $_ := set $db "connection" ":memory:" }}
     {{- end }}
+    {{- $_ := set $backend "database" $db }}
+    {{- end }}
+    {{- $_ := set $cfg "backend" $backend }}
 {{ $cfg | toYaml | indent 4 }}

@@ -59,6 +59,17 @@ spec:
             # Backend proxy forwards /api/proxy/release-copilot/* here.
             - name: RELEASE_COPILOT_URL
               value: {{ .Values.releaseCopilot.url | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if and (eq (include "backstage-portal.dbType" .) "postgres") (not .Values.database.postgres.cloudSql.enabled) }}
+          # POSTGRES_HOST/PORT/USER/PASSWORD — app-config.kubernetes.yaml names
+          # them, Backstage reads them at startup. (Cloud SQL signs in as the
+          # pod's Workload Identity instead: no Secret.)
+          envFrom:
+            - secretRef:
+                name: {{ .Values.database.postgres.existingSecret | quote }}
+          {{- end }}
           resources:
             {{- .Values.resources | toYaml | nindent 12 }}
           volumeMounts:
@@ -85,15 +96,6 @@ spec:
           livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          # app-config.kubernetes.yaml is merged LAST, after the image's baked-in
-          # app-config.yaml / app-config.docker.yaml.
-          command:
-            - node
-            - packages/backend
-            - --config
-            - app-config.yaml
-            - --config
-            - app-config.kubernetes.yaml
       volumes:
         - name: app-config
           configMap:

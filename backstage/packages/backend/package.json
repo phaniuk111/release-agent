@@ -47,6 +47,7 @@
     "@backstage/plugin-signals-backend": "^0.3.18",
     "@backstage/plugin-techdocs-backend": "^2.2.3",
     "@backstage/plugin-user-settings-backend": "^0.4.6",
+    "@google-cloud/cloud-sql-connector": "^1.4.0",
     "app": "link:../app",
     "better-sqlite3": "^12.0.0",
     "jose": "^5.10.0",
