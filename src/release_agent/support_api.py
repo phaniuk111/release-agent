@@ -124,3 +124,74 @@ def support_feedback_for_incident(request: Request, date: str = "", incident_id:
     if not features.allowed("support-triage", _caller(request)):
         return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
     return feedback.for_incident(date, incident_id)
+
+
+# ----- the watcher (tools/support/watch.py, adk_release_agent/support_watch.py) ------
+
+@router.get("/api/support/watch")
+def support_watch_feed(request: Request, date: str = ""):
+    """The watcher's findings for one business date (default: the date of its
+    last pass), ranked, and the watcher's own status — when it last ran, and
+    what went wrong if it did."""
+    from fastapi.responses import JSONResponse
+
+    from .app_fastapi import _caller
+
+    from .tools.support import watch
+
+    if not features.allowed("support-triage", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
+    status = watch.status()
+    day = (date or "").strip() or status.get("last_business_date") or ""
+    res = watch.latest(day)
+    return {"ok": bool(res.get("ok")), "error": res.get("error"), "business_date": day,
+            "findings": res.get("findings") or [], "status": status}
+
+
+class SupportWatchRunRequest(BaseModel):
+    business_date: str = ""
+
+
+@router.post("/api/support/watch/run")
+async def support_watch_run(req: SupportWatchRunRequest, request: Request):
+    """Run one watcher pass now (the "Run now" button; the timer runs the same).
+    Read-only, but it spends model calls, so it is a write in identity terms."""
+    from fastapi.responses import JSONResponse
+
+    from adk_release_agent.support_watch import run_pass
+
+    from .app_fastapi import _actor_or_refusal, _caller
+
+    caller = _caller(request)
+    if not features.allowed("support-triage", caller):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
+    _, refused = _actor_or_refusal("", caller)
+    if refused:
+        return refused
+    return await run_pass(req.business_date)
+
+
+class SupportWatchStatusRequest(BaseModel):
+    """A person's change to a finding. No actor field: who is the verified caller."""
+    business_date: str
+    incident_id: str
+    status: str
+
+
+@router.post("/api/support/watch/status")
+def support_watch_set_status(req: SupportWatchStatusRequest, request: Request):
+    """Dismiss, resolve, or reopen a finding — a new row, and the notification
+    is updated in place."""
+    from fastapi.responses import JSONResponse
+
+    from .app_fastapi import _actor_or_refusal, _caller
+
+    from .tools.support import watch
+
+    caller = _caller(request)
+    if not features.allowed("support-triage", caller):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
+    actor, refused = _actor_or_refusal("", caller)
+    if refused:
+        return refused
+    return watch.set_status(req.business_date.strip(), req.incident_id.strip(), req.status.strip(), actor)

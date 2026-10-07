@@ -15,7 +15,7 @@ with proper auth, TLS, and observability.
 
 import asyncio
 import contextvars
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 import json
 import logging
 import os
@@ -48,7 +48,26 @@ logger = logging.getLogger("release_copilot")
 # Use shared Pydantic settings (repos come from env / .env / Helm ConfigMap).
 settings = app_settings
 
-app = FastAPI(title=settings.app_title, version="0.2.0")
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    # The support watcher (SUPPORT_WATCH_MINUTES > 0): in-process, so it runs
+    # once per replica — fine at the chart's one replica; with more, run it as
+    # a CronJob against a shared SUPPORT_WATCH_DATASET instead.
+    watcher = None
+    if settings.support_watch_minutes > 0:
+        from adk_release_agent.support_watch import watch_forever
+
+        watcher = asyncio.create_task(watch_forever(), name="support-watcher")
+    try:
+        yield
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+
+
+app = FastAPI(title=settings.app_title, version="0.2.0", lifespan=_lifespan)
 
 # Serve the UI's JavaScript from real files (not embedded in a Python string) so it
 # is lint/syntax-checkable and free of Python-string escaping traps.

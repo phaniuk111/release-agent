@@ -716,6 +716,29 @@ class Settings(BaseSettings):
     # dataset = no memory: the "Was this right?" buttons say so and nothing is written.
     support_feedback_dataset: str = Field(default="", validation_alias=AliasChoices("SUPPORT_FEEDBACK_DATASET"))
     support_feedback_table: str = Field(default="support_findings", validation_alias=AliasChoices("SUPPORT_FEEDBACK_TABLE"))
+    # The watcher (tools/support/watch.py + adk_release_agent/support_watch.py):
+    # every N minutes it triages the control table, investigates the NEW
+    # problems (at most SUPPORT_WATCH_MAX_INVESTIGATIONS a pass — the rest wait
+    # for the next one), keeps the findings and notifies. 0 = off. Read-only:
+    # it never changes anything; actions are proposed for a person.
+    support_watch_minutes: int = Field(default=0, validation_alias=AliasChoices("SUPPORT_WATCH_MINUTES"))
+    support_watch_max_investigations: int = Field(
+        default=3, validation_alias=AliasChoices("SUPPORT_WATCH_MAX_INVESTIGATIONS"))
+    # Where the findings are kept: an append-only table (bigquery/support_watch.schema.json),
+    # latest row per incident wins — shared by every pod and kept across restarts.
+    # EMPTY = this process's memory only (one replica; a restart forgets them).
+    support_watch_dataset: str = Field(default="", validation_alias=AliasChoices("SUPPORT_WATCH_DATASET"))
+    support_watch_table: str = Field(default="support_watch", validation_alias=AliasChoices("SUPPORT_WATCH_TABLE"))
+    # Backstage notifications (the bell): the notifications endpoint and a static
+    # external-access token restricted to the notifications plugin (a Secret).
+    # Empty URL = no notifications. Recipients: "broadcast", or entity refs
+    # ("group:default/data-platform,user:default/alice"). Only findings at or
+    # above SUPPORT_NOTIFY_MIN_PRIORITY notify; one notification per incident,
+    # updated in place as it changes (the notification's scope).
+    support_notify_url: str = Field(default="", validation_alias=AliasChoices("SUPPORT_NOTIFY_URL"))
+    support_notify_token: str = Field(default="", validation_alias=AliasChoices("SUPPORT_NOTIFY_TOKEN"))
+    support_notify_recipients: str = Field(default="broadcast", validation_alias=AliasChoices("SUPPORT_NOTIFY_RECIPIENTS"))
+    support_notify_min_priority: str = Field(default="medium", validation_alias=AliasChoices("SUPPORT_NOTIFY_MIN_PRIORITY"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every
