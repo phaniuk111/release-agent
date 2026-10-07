@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Box, Chip, Grid, makeStyles } from '@material-ui/core';
 import { Content, Header, HeaderLabel, Page } from '@backstage/core-components';
 import { SupportTab } from './SupportTab';
+import { WatcherFeed } from './WatcherFeed';
 import { MonitoringTab } from './MonitoringTab';
 import { InsightsTab } from './InsightsTab';
 import { ChatTab, QuickAsk, StatusCard } from './ChatTab';
@@ -101,13 +102,18 @@ export function OperationsPage() {
           </Box>
         )}
         {current === 'support' && (
-          <SupportTab
-            onSend={sendFrom('support')}
-            busy={chat.busy}
-            result={chat.resultFor('support')}
-            llm={ui.llm}
-            investigation={chat.investigationFor('support')}
-          />
+          <>
+            <WatcherFeed />
+            <Box mt={3}>
+              <SupportTab
+                onSend={sendFrom('support')}
+                busy={chat.busy}
+                result={chat.resultFor('support')}
+                llm={ui.llm}
+                investigation={chat.investigationFor('support')}
+              />
+            </Box>
+          </>
         )}
         {current === 'monitoring' && (
           <MonitoringTab

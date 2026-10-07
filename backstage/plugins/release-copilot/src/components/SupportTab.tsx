@@ -277,7 +277,7 @@ function IncidentCard(props: {
 
 /** "Was this right?" under a complete investigation. Who answered is decided by
  *  the server (the verified caller); nothing but the answer is sent from here. */
-function InvestigationFeedback(props: { data: InvestigationEvent }) {
+export function InvestigationFeedback(props: { data: InvestigationEvent }) {
   const classes = useStyles();
   const dark = useDark();
   const apiBase = useApiBase();
