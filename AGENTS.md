@@ -97,8 +97,13 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    values that change move; a key the file lacks, like df_images, is refused) on a
    `CARE_RELEASE_BRANCH_PREFIX` branch, and raised as a PR against
    `CARE_RELEASE_BASE_BRANCH` that the portal NEVER merges — a person does, and
-   the repo's own workflow updates the deployment repo. Same CONFIRM token; apply
-   refuses if the file on the base moved since the preview. The PR names who
+   the repo's own workflow updates the deployment repo. Before the release file is
+   overwritten, its CURRENT artefacts — the last merged release — are carried into
+   `CARE_PREVIOUS_TAGS_FILE` (the repo's `{chart: version}` record; existing
+   charts updated, a new one added, others untouched; empty setting = off): the
+   PR carries two commits in that order, previous tags then release file, and the
+   preview shows both diffs. Same CONFIRM token; apply refuses if either file on
+   the base moved since the preview. The PR names who
    raised it (the verified email, else the typed one marked unverified). Its guard
    counts only open PRs into the base whose branch has the prefix, and runs at
    preview AND again at apply; apply reuses an open PR only when its branch

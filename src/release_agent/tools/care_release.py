@@ -9,12 +9,17 @@ workflow takes it from there to the deployment repo.
   prepare : read the file at the base branch's head, splice this release into
             it (json_splice: only the values that change move, every other
             byte stays) and preview the exact diff. Reads only.
-  apply   : refuse unless the base still holds the previewed file, the splice
-            reproduces the approved text, and no other release PR has opened
-            since the preview (the guard runs again: only a PR already
+            With CARE_PREVIOUS_TAGS_FILE set, the release file's CURRENT
+            artefacts — the last merged release — are first carried into that
+            {chart: version} file (a chart new to it is added), and the preview
+            shows both diffs, that one first.
+  apply   : refuse unless the base still holds the previewed file(s), the
+            splices reproduce the approved text, and no other release PR has
+            opened since the preview (the guard runs again: only a PR already
             carrying exactly this text — this approval, applied before — is
-            not another release); commit the one file on a new release
-            branch, raise the PR, and release its charts in the queue at once
+            not another release); commit on a new release branch — the
+            previous tags first, then the release file, two commits in that
+            order — raise the PR, and release its charts in the queue at once
             (they move to Release history; no merge is tracked).
 
 Same prep/result contract as release_fileset, so the CONFIRM-token flow in
@@ -25,6 +30,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import logging
 from typing import Any
 
@@ -53,6 +59,21 @@ def file_doc(details: dict[str, Any]) -> dict[str, Any]:
     return {key: details[key] for key in FILE_KEYS}
 
 
+def carried_tags(release_text: str) -> tuple[dict[str, str], list[str]]:
+    """PURE. ``({chart: version}, entries skipped)`` of a release file's
+    artefacts — what the previous release tags file takes before the release
+    file is overwritten. An entry with no ``name:version`` is skipped, and said."""
+    tags: dict[str, str] = {}
+    skipped: list[str] = []
+    for entry in json.loads(release_text).get("artefact") or []:
+        nv = _artifact_name_version(str(entry))
+        if nv:
+            tags[nv[0]] = nv[1]
+        else:
+            skipped.append(str(entry))
+    return tags, skipped
+
+
 def _raised_by(details: dict[str, Any]) -> tuple[str, bool]:
     """(email, verified) of whoever raises the PR: the verified caller, or with
     identity off the email typed on the form — a claim, so the PR says so."""
@@ -71,6 +92,15 @@ def _read_base(gh_repo: Any, base: str, path: str) -> tuple[str, str, str]:
     if isinstance(blob, list):
         raise ValueError(f"{path} is a directory")
     return head, blob.decoded_content.decode("utf-8"), blob.sha
+
+
+def _read_at(gh_repo: Any, path: str, ref: str) -> tuple[str, str]:
+    """(text, blob sha) of ``path`` at commit ``ref`` — the same commit the
+    release file was read at, so both files come from one moment of the base."""
+    blob = gh_repo.get_contents(path, ref=ref)
+    if isinstance(blob, list):
+        raise ValueError(f"{path} is a directory")
+    return blob.decoded_content.decode("utf-8"), blob.sha
 
 
 def _content_hash(text: str) -> str:
@@ -111,6 +141,11 @@ def _carries(gh_repo: Any, path: str, ref: str, text: str) -> bool:
         return False
 
 
+def _carries_all(gh_repo: Any, files: list[tuple[str, str]], ref: str) -> bool:
+    """Every (path, text) of this release at ``ref`` — one file alone is not it."""
+    return all(_carries(gh_repo, path, ref, text) for path, text in files)
+
+
 def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     """Preview the release PR: the file diff it would raise. Writes nothing."""
     repo = settings.care_release_repo.strip()
@@ -148,8 +183,33 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     if new_text == old_text:
         return _refuse(f"{base} already carries exactly this release — {path} would not change.")
 
+    # Before the release file is overwritten, what it holds now — the last
+    # merged release — goes into the previous release tags file.
+    prev_path = settings.care_previous_tags_file.strip()
+    prev_old = prev_new = prev_blob = ""
+    skipped: list[str] = []
+    if prev_path:
+        try:
+            prev_old, prev_blob = _read_at(gh_repo, prev_path, head)
+        except Exception as e:
+            return _refuse(f"Could not read {prev_path} on {base} in {repo}: {e} "
+                           "(CARE_PREVIOUS_TAGS_FILE — set it empty to skip this step).")
+        tags, skipped = carried_tags(old_text)
+        try:
+            prev_new = json_splice.splice_top_level(prev_old, tags, add_missing=True)
+        except ValueError as e:
+            return _refuse(f"{prev_path} on {base} cannot take the previous release's tags: {e}")
+    prev_changes = prev_new != prev_old
+
     email, verified = _raised_by(details)
     branch = prefix + _slugify(details["release_name"])
+    diff = (_diff(prev_old, prev_new, prev_path) if prev_changes else "") + _diff(old_text, new_text, path)
+    previous_note = ""
+    if prev_path:
+        previous_note = ("carries the last release's versions (first commit)" if prev_changes
+                         else "unchanged — it already holds the last release's versions")
+        if skipped:
+            previous_note += f"; skipped (no name:version): {', '.join(skipped)}"
     return {
         "ok": True,
         "mode": "mono",
@@ -166,6 +226,10 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
         "base_commit": head,
         "base_blob_sha": blob_sha,      # apply refuses if the file on the base moved
         "content_hash": _content_hash(new_text),
+        "previous_file": prev_path,
+        "previous_blob_sha": prev_blob,
+        "previous_changes": prev_changes,
+        "previous_content_hash": _content_hash(prev_new) if prev_changes else "",
         "pr_title": details["release_name"],
         "preview": {
             "release": details["release_name"],
@@ -177,8 +241,10 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
             "file": path,
             "branch": branch,
             "environments": partition_environments(details),
-            # What CONFIRM approves: the exact bytes the PR will carry.
-            "file_diff": _diff(old_text, new_text, path),
+            **({"previous_tags_file": prev_path, "previous_tags": previous_note} if prev_path else {}),
+            # What CONFIRM approves: the exact bytes the PR will carry — the
+            # previous tags' diff first (first commit), then the release file's.
+            "file_diff": diff,
         },
     }
 
@@ -203,9 +269,9 @@ def _delete_branch(gh_repo: Any, branch: str) -> None:
 
 
 def _claim_branch(gh_repo: Any, repo: str, wanted: str, base: str, head: str,
-                  path: str, text: str) -> tuple[str, Any, bool]:
+                  files: list[tuple[str, str]]) -> tuple[str, Any, bool]:
     """(branch, its open PR or None, created now). A branch with an open PR
-    into the base is reused only when it already carries exactly ``text`` —
+    into the base is reused only when it already carries exactly ``files`` —
     this approval, applied before. With anything else it is another release
     of the same name (the name is a date, and two people can raise on the
     same day), and writing over it would change what that PR's reviewers
@@ -225,7 +291,7 @@ def _claim_branch(gh_repo: Any, repo: str, wanted: str, base: str, head: str,
         pr = _open_pr(gh_repo, owner, name, base)
         if pr is None:
             continue
-        if not _carries(gh_repo, path, name, text):
+        if not _carries_all(gh_repo, files, name):
             raise _Stop(f"PR #{pr.number} ({pr.html_url}) for this release name is open with different "
                         "content — nothing was pushed. One release at a time: merge or close it first.")
         return name, pr, False
@@ -233,12 +299,13 @@ def _claim_branch(gh_repo: Any, repo: str, wanted: str, base: str, head: str,
                 "— delete those leftover branches, then start the release again. Nothing was pushed.")
 
 
-def _pr_body(details: dict[str, Any], path: str) -> str:
+def _pr_body(details: dict[str, Any], path: str, previous: str = "") -> str:
     email, verified = _raised_by(details)
     who = email if verified else f"{email} (unverified — typed on the form)"
     artefacts = "\n".join(f"- {a}" for a in details.get("artefact") or [])
+    first = (f"`{previous}` takes the last release's versions (first commit), then " if previous else "")
     return (
-        f"Release **{details['release_name']}** — updates `{path}`.\n\n"
+        f"Release **{details['release_name']}** — {first}updates `{path}`.\n\n"
         f"Window: {details['start_date']} → {details['end_date']}\n"
         f"Raised by: {who}\n\n"
         f"{artefacts}\n\n"
@@ -286,36 +353,66 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
         raise _Stop("The release no longer matches what you approved — start the release again. "
                     "Nothing was pushed.")
 
+    # The previous release tags, checked the same way: the file on the base as
+    # previewed, and the carried tags reproducing the approved text.
+    prev_path = prep.get("previous_file") or ""
+    commits: list[tuple[str, str, str, str]] = []      # (path, text, blob sha, subject) in order
+    if prev_path:
+        try:
+            prev_old, prev_blob = _read_at(gh_repo, prev_path, head)
+        except Exception as e:
+            raise _Stop(f"Could not read {prev_path} on {base} in {repo}: {e}. Nothing was pushed.") from None
+        if prev_blob != prep.get("previous_blob_sha"):
+            raise _Stop(f"{prev_path} on {base} changed since the preview — start the release again. "
+                        "Nothing was pushed.")
+        try:
+            prev_new = json_splice.splice_top_level(prev_old, carried_tags(old_text)[0], add_missing=True)
+        except ValueError as e:
+            raise _Stop(f"{prev_path} on {base} cannot take the previous release's tags: {e}. "
+                        "Nothing was pushed.") from None
+        changes = prev_new != prev_old
+        if changes != bool(prep.get("previous_changes")) or (
+                changes and _content_hash(prev_new) != prep.get("previous_content_hash")):
+            raise _Stop("The previous release tags no longer match what you approved — start the "
+                        "release again. Nothing was pushed.")
+        if changes:
+            commits.append((prev_path, prev_new, prev_blob, f"Previous release tags before {title}"))
+    commits.append((path, text, blob_sha, title))
+    files = [(c[0], c[1]) for c in commits]
+
     # The preview's guard is minutes old by now: another release PR may have
     # opened since, and two releases in flight is what the guard exists to stop.
     blocker = _open_prd_pr_blocker(gh_repo, branches=[base], head_prefix=prefix,
-                                   skip=lambda open_pr: _carries(gh_repo, path, open_pr.head.ref, text))
+                                   skip=lambda open_pr: _carries_all(gh_repo, files, open_pr.head.ref))
     if blocker is not None:
         raise _Stop(_in_flight(blocker) + " Nothing was pushed.")
 
-    branch, pr, created = _claim_branch(gh_repo, repo, wanted, base, head, path, text)
+    branch, pr, created = _claim_branch(gh_repo, repo, wanted, base, head, files)
     committed = False
     if created:
-        # Just cut from the head read above, so its file is exactly that blob.
-        # A reused branch already carries ``text`` (_claim_branch), so only a
-        # new one is ever written to.
-        try:
-            gh_repo.update_file(path, attribution.commit_message(title), text, blob_sha,
-                                branch=branch, **attribution.author_kwargs())
-        except Exception as e:
-            # urllib3 retries a PUT after a 5xx that may already have landed, and
-            # the retry then fails on the stale sha: read back before failing.
-            if not _carries(gh_repo, path, branch, text):
-                _delete_branch(gh_repo, branch)
-                raise _Stop(f"Could not commit {path} to {branch} in {repo}: {e}. Nothing was "
-                            f"merged; {base} is unchanged.") from None
+        # Just cut from the head read above, so each file is exactly the blob
+        # read there. A reused branch already carries every file (_claim_branch),
+        # so only a new one is ever written to — the previous tags first, then
+        # the release file: two commits, in that order.
+        for fpath, ftext, fblob, subject in commits:
+            try:
+                gh_repo.update_file(fpath, attribution.commit_message(subject), ftext, fblob,
+                                    branch=branch, **attribution.author_kwargs())
+            except Exception as e:
+                # urllib3 retries a PUT after a 5xx that may already have landed,
+                # and the retry then fails on the stale sha: read back first.
+                if not _carries(gh_repo, fpath, branch, ftext):
+                    _delete_branch(gh_repo, branch)
+                    raise _Stop(f"Could not commit {fpath} to {branch} in {repo}: {e}. Nothing was "
+                                f"merged; {base} is unchanged.") from None
         committed = True
 
     action = "release_pr_exists"
     if pr is None:
         try:
             pr = gh_repo.create_pull(title=attribution.titled(title),
-                                     body=attribution.with_trailer(_pr_body(details, path)),
+                                     body=attribution.with_trailer(
+                                         _pr_body(details, path, prev_path if len(commits) > 1 else "")),
                                      head=branch, base=base)
             action = "release_pr_opened"
         except Exception as e:

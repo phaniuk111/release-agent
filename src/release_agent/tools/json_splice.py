@@ -80,12 +80,33 @@ def _render(value: Any, indent: str, newline: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def splice_top_level(text: str, updates: dict[str, Any]) -> str:
+def _appended(text: str, spans: dict[str, tuple[int, int, str]], new: dict[str, Any],
+              newline: str) -> tuple[int, str]:
+    """(offset, text) that adds ``new`` as members after the last one, laid out
+    like that last member: its indentation and its ``key: value`` spacing."""
+    if spans:
+        last_start, last_end, indent = max(spans.values(), key=lambda s: s[1])
+        # From the last key's closing quote to its value: "k": v, "k" : v, …
+        quote = text.rfind('"', 0, text.rfind(":", 0, last_start))
+        sep = text[quote + 1:last_start] if quote >= 0 else ": "
+        at, lead = last_end, ","
+    else:                       # an empty object: open it up, two-space members
+        at, lead, indent, sep = text.index("{") + 1, "", "  ", ": "
+    members = [newline + indent + json.dumps(k, ensure_ascii=False) + sep + _render(v, indent, newline)
+               for k, v in new.items()]
+    tail = "" if spans else newline
+    return at, lead + ",".join(members) + tail
+
+
+def splice_top_level(text: str, updates: dict[str, Any], *, add_missing: bool = False) -> str:
     """``text`` with the top-level values in ``updates`` replaced in place.
 
     Raises ValueError — and changes nothing — when ``text`` is not a JSON
     object, or when ``updates`` names a key the file does not already have:
-    the file's owners decide its shape, so a key is never added.
+    the file's owners decide its shape, so by default a key is never added.
+    ``add_missing`` is for a file that is a map the portal keeps (the previous
+    release tags: a chart released for the first time is a new key) — missing
+    keys are appended after the last member, in the file's own layout.
     """
     try:
         original = json.loads(text)
@@ -94,9 +115,9 @@ def splice_top_level(text: str, updates: dict[str, Any]) -> str:
     if not isinstance(original, dict):
         raise ValueError("not a JSON object")
     spans = top_level_spans(text)
-    unknown = sorted(k for k in updates if k not in spans)
-    if unknown:
-        raise ValueError(f"not in the file, so never added: {', '.join(unknown)}")
+    unknown = [k for k in updates if k not in spans]
+    if unknown and not add_missing:
+        raise ValueError(f"not in the file, so never added: {', '.join(sorted(unknown))}")
     newline = "\r\n" if "\r\n" in text else "\n"
     try:
         edits = sorted(
@@ -104,9 +125,14 @@ def splice_top_level(text: str, updates: dict[str, Any]) -> str:
              for key, value in updates.items()
              # An unchanged value keeps its bytes — an empty list spread over
              # blank lines stays exactly as its owner left it.
-             if _canon(original[key]) != _canon(value)),
+             if key in spans and _canon(original[key]) != _canon(value)),
             reverse=True,
         )
+        if unknown:
+            # After every existing member, so applied first (the list runs right
+            # to left) it moves nothing the replacements still point at.
+            at, added = _appended(text, spans, {k: updates[k] for k in unknown}, newline)
+            edits.insert(0, (at, at, added))
         expected = _canon({**original, **updates})
     except TypeError as e:
         raise ValueError(f"a value is not JSON: {e}") from None

@@ -76,7 +76,10 @@ def _payload(**over):
 def mono(monkeypatch):
     for k, v in {"care_release_mode": "mono", "care_release_repo": MONO,
                  "care_release_base_branch": "main", "care_release_file": FILE,
-                 "care_release_branch_prefix": "release/", "artifactory_base_url": ""}.items():
+                 "care_release_branch_prefix": "release/", "artifactory_base_url": "",
+                 # The release file alone; the previous release tags step has its
+                 # own tests below (prev fixture).
+                 "care_previous_tags_file": ""}.items():
         monkeypatch.setattr(CR.settings, k, v, raising=False)
 
 
@@ -445,3 +448,133 @@ def test_fileset_mode_keeps_care_on_the_fileset_path(monkeypatch):
     monkeypatch.setattr(RF.settings, "sit_branch", "SIT", raising=False)
     out = RF.prepare_release_fileset(_payload(deployment_repo="example-org/deploy-repo"))
     assert out == {"ok": False, "errors": ["clone reached"]} and cloned == ["SIT"]
+
+
+# --- previous release tags: carried before the release file is overwritten -----
+
+PREV = ".github/release/previous_release_tags.json"
+PREV_COMMITTED = """{
+  "svc-a": "5.0.440",
+  "svc-b": "5.0.450",
+  "svc-x": "1.0.0"
+}
+"""
+
+
+@pytest.fixture
+def prev(repo, monkeypatch):
+    """The step on, and main holding a previous release tags file."""
+    monkeypatch.setattr(CR.settings, "care_previous_tags_file", PREV, raising=False)
+    repo.files["main"][PREV] = PREV_COMMITTED
+    return repo
+
+
+def _changed(diff):
+    return [line for line in diff.splitlines() if line[:1] in "+-" and line[:3] not in ("+++", "---")]
+
+
+def test_the_last_merged_releases_versions_are_carried_into_the_previous_tags_first(prev):
+    prep = _prepare()
+    assert prep["ok"], prep
+    diff = prep["preview"]["file_diff"]
+    assert diff.index(f"--- a/{PREV}") < diff.index(f"--- a/{FILE}"), "previous tags first, then the release file"
+    prev_part = diff[:diff.index(f"--- a/{FILE}")]
+    assert _changed(prev_part) == [
+        '-  "svc-a": "5.0.440",', '-  "svc-b": "5.0.450",',
+        '+  "svc-a": "5.0.463",', '+  "svc-b": "5.0.458",',
+    ], "main's CURRENT release (svc-a 5.0.463, svc-b 5.0.458) — not the new one; svc-x untouched"
+    assert "carries the last release's versions" in prep["preview"]["previous_tags"]
+    assert prev.writes == [] and prev.prs == []
+
+
+def test_apply_commits_the_previous_tags_then_the_release_file_in_one_pr(prev, pending):
+    with identity.activate(ALICE):
+        prep, out = _raise_pr()
+    assert out["ok"] and out["action"] == "release_pr_opened", out
+    assert [(w["path"], w["branch"]) for w in prev.writes] == [(PREV, BRANCH), (FILE, BRANCH)], \
+        "two commits on the release branch, in that order"
+    assert prev.writes[0]["msg"] == ("Previous release tags before <TEAM> CARE Release - 2026.10.01"
+                                     "\n\nRequested-by: alice@example.com\n")
+    assert json.loads(prev.files[BRANCH][PREV]) == {"svc-a": "5.0.463", "svc-b": "5.0.458", "svc-x": "1.0.0"}
+    assert CR._content_hash(prev.files[BRANCH][PREV]) == prep["previous_content_hash"]
+    assert CR._content_hash(prev.files[BRANCH][FILE]) == prep["content_hash"]
+    assert prev.files["main"][PREV] == PREV_COMMITTED, "main is untouched until a person merges"
+    [pr] = prev.prs
+    assert pr.body.startswith(f"Release **<TEAM> CARE Release - 2026.10.01** — `{PREV}` takes the last "
+                              f"release's versions (first commit), then updates `{FILE}`.")
+
+
+def test_a_chart_new_to_the_previous_tags_is_added(prev, pending):
+    prev.files["main"][PREV] = '{\n  "svc-a": "5.0.440"\n}\n'
+    _prep, out = _raise_pr()
+    assert out["ok"], out
+    assert prev.files[BRANCH][PREV] == '{\n  "svc-a": "5.0.463",\n  "svc-b": "5.0.458"\n}\n'
+
+
+def test_previous_tags_already_current_means_only_the_release_file_is_committed(prev, pending):
+    prev.files["main"][PREV] = '{\n  "svc-a": "5.0.463",\n  "svc-b": "5.0.458"\n}\n'
+    prep, out = _raise_pr()
+    assert "unchanged" in prep["preview"]["previous_tags"]
+    assert f"--- a/{PREV}" not in prep["preview"]["file_diff"]
+    assert out["ok"] and [w["path"] for w in prev.writes] == [FILE]
+
+
+def test_previous_tags_moved_on_main_since_the_preview_is_refused(prev, pending):
+    prep = _prepare()
+    prev.files["main"][PREV] = PREV_COMMITTED.replace("1.0.0", "1.0.1")
+    out = RF.apply_release_fileset(prep)
+    assert out["ok"] is False and "changed since the preview" in out["error"] and PREV in out["error"]
+    assert prev.writes == [] and prev.prs == [] and pending == []
+
+
+def test_a_missing_previous_tags_file_is_refused_never_created(prev):
+    del prev.files["main"][PREV]
+    out = _prepare()
+    assert out["ok"] is False and PREV in out["errors"][0] and "CARE_PREVIOUS_TAGS_FILE" in out["errors"][0]
+    assert prev.writes == []
+
+
+def test_a_failed_second_commit_leaves_no_branch_behind(prev, pending, monkeypatch):
+    real = prev.update_file
+
+    def release_file_refused(path, *a, **k):
+        if path == FILE:
+            raise Exception("500 boom")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(prev, "update_file", release_file_refused)
+    _prep, out = _raise_pr()
+    assert out["ok"] is False and "Could not commit" in out["error"] and FILE in out["error"]
+    assert BRANCH not in prev.files, "the first commit's branch is deleted with it"
+    assert prev.prs == [] and pending == []
+
+
+def test_applying_again_reuses_the_pr_only_when_it_carries_both_files(prev, pending):
+    prep, first = _raise_pr()
+    assert first["ok"]
+    again = RF.apply_release_fileset(prep)
+    assert again["ok"] and again["action"] == "release_pr_exists" and len(prev.writes) == 2
+    prev.files[BRANCH][PREV] = '{"edited": "by a reviewer"}\n'      # the PR no longer carries both
+    refused = RF.apply_release_fileset(prep)
+    assert refused["ok"] is False and len(prev.writes) == 2, "never written over the open PR"
+
+
+def test_carried_tags_reads_name_and_version_and_skips_what_has_none():
+    tags, skipped = CR.carried_tags(json.dumps({"artefact": [f"{ART}/svc-a:5.0.463", "no-version-here", "svc-b:2.0"]}))
+    assert tags == {"svc-a": "5.0.463", "svc-b": "2.0"} and skipped == ["no-version-here"]
+    assert CR.carried_tags('{"artefact": []}') == ({}, [])
+
+
+def test_queued_1_2_over_released_1_1_moves_1_1_into_the_previous_tags(prev, pending):
+    """The user's own example: svc-a 1.2 queued, release_details holds 1.1,
+    previous tags hold 1.0 → the PR sets release_details to 1.2 and the
+    previous tags to 1.1 (previous first, then the release file)."""
+    prev.files["main"][FILE] = COMMITTED.replace(
+        f'"{ART}/svc-a:5.0.463",\n    "{ART}/svc-b:5.0.458"', f'"{ART}/svc-a:1.1"')
+    prev.files["main"][PREV] = '{\n  "svc-a": "1.0"\n}\n'
+    prep, out = _raise_pr(artefact=[f"{ART}/svc-a:1.2"])
+    assert out["ok"], out
+    assert [w["path"] for w in prev.writes] == [PREV, FILE]
+    assert json.loads(prev.files[BRANCH][PREV]) == {"svc-a": "1.1"}
+    assert json.loads(prev.files[BRANCH][FILE])["artefact"] == [f"{ART}/svc-a:1.2"]
+    assert prev.files["main"][PREV] == '{\n  "svc-a": "1.0"\n}\n', "main unchanged until merged"

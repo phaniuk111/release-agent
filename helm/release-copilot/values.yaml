@@ -446,6 +446,11 @@ config:
   CARE_RELEASE_REPO: ""                    # owner/<mono-repo>; required in mono mode
   CARE_RELEASE_BASE_BRANCH: "main"
   CARE_RELEASE_FILE: ".github/release/release_details.json"
+  # The repo's {chart: version} record of the previous release. Mono mode first
+  # carries CARE_RELEASE_FILE's current artefacts (the last merged release) into
+  # it, then updates the release file — two commits, in that order, in one PR.
+  # "" = the release file only.
+  CARE_PREVIOUS_TAGS_FILE: ".github/release/previous_release_tags.json"
   # Names the PR's branch — and only open PRs into the base branch whose branch
   # starts with it count as "a release in flight" (a mono repo's base always has
   # other PRs open).

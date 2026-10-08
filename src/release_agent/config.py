@@ -325,6 +325,14 @@ class Settings(BaseSettings):
     care_release_file: str = Field(
         default=".github/release/release_details.json", validation_alias=AliasChoices("CARE_RELEASE_FILE"),
     )
+    # The repo's {chart: version} record of what was released before. A mono
+    # release first carries the release file's CURRENT artefacts (the last
+    # merged release) into it, then updates the release file — two commits, in
+    # that order, in the one PR. Empty = the release file only.
+    care_previous_tags_file: str = Field(
+        default=".github/release/previous_release_tags.json",
+        validation_alias=AliasChoices("CARE_PREVIOUS_TAGS_FILE"),
+    )
     # Names the PR's branch, and is what the one-release-at-a-time guard looks
     # for — other PRs into the base branch of a busy mono repo are not releases.
     care_release_branch_prefix: str = Field(

@@ -115,3 +115,30 @@ def test_spans_are_the_top_level_members_only():
 def test_windows_line_endings_are_kept():
     text = '{\r\n  "a": [\r\n    1\r\n  ]\r\n}\r\n'
     assert splice_top_level(text, {"a": [2, 3]}) == '{\r\n  "a": [\r\n    2,\r\n    3\r\n  ]\r\n}\r\n'
+
+
+# --- add_missing: a map the portal keeps (the previous release tags) ------------
+
+def test_by_default_a_missing_key_is_still_refused():
+    with pytest.raises(ValueError, match="never added: svc-new"):
+        splice_top_level('{\n  "svc-a": "1"\n}\n', {"svc-new": "2"})
+
+
+def test_add_missing_appends_new_keys_in_the_files_own_layout():
+    text = '{\n  "svc-a": "5.0.440",\n  "svc-b": "5.0.450"\n}\n'
+    out = splice_top_level(text, {"svc-a": "5.0.463", "svc-new": "0.1.0"}, add_missing=True)
+    assert out == '{\n  "svc-a": "5.0.463",\n  "svc-b": "5.0.450",\n  "svc-new": "0.1.0"\n}\n'
+
+
+def test_add_missing_keeps_crlf_indent_and_spacing_around_the_colon():
+    out = splice_top_level('{\r\n    "a" : "1"\r\n}', {"b": "2"}, add_missing=True)
+    assert out == '{\r\n    "a" : "1",\r\n    "b" : "2"\r\n}'
+
+
+def test_add_missing_opens_up_an_empty_object():
+    assert splice_top_level("{}", {"x": "1"}, add_missing=True) == '{\n  "x": "1"\n}'
+
+
+def test_add_missing_with_nothing_new_changes_nothing():
+    text = '{\n  "a": "1"\n}\n'
+    assert splice_top_level(text, {"a": "1"}, add_missing=True) == text
