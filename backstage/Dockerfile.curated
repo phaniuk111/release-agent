@@ -1,0 +1,87 @@
+# Backstage on hardened, curated Node 24 images (Wolfi: glibc, non-root, no
+# package manager — no apk, no compilers, no tar/curl), built like the team's
+# UI pipelines build: everything inside the image. One file, nothing else.
+#
+#   docker build -f Dockerfile.curated \
+#     --secret id=npmrc,src="$NPMRC_FILE" \
+#     --build-arg BASE_REGISTRY=<artifactory docker repo of curated images> \
+#     --build-arg NODE_IMAGE=node:24-wolfi.<date> \
+#     --build-arg RUNTIME_IMAGE=node:24-no-npm-wolfi.<date> \
+#     --build-arg ENV=DEV --build-arg SKIP_NATIVE=true \
+#     -t <registry>/backstage:<tag> .
+#
+# Packages: the pipeline's .npmrc as a BuildKit secret → Artifactory, reached
+# directly, credentials never in a layer. Yarn 4 ignores .npmrc, so the install
+# step turns it into Yarn settings (YARN_* env) for that step only. No secret →
+# public npm, through --build-arg HTTPS_PROXY/HTTP_PROXY if given (Docker's
+# predefined proxy args: used by the build, not written into the image).
+#
+# SKIP_NATIVE=true (Postgres): the one native module, better-sqlite3, is never
+# loaded, so no binary is fetched. On sqlite leave it false: better-sqlite3
+# downloads a prebuilt glibc binary from GitHub (through the proxy), or from
+# --build-arg BETTER_SQLITE3_MIRROR=<mirror of its GitHub release downloads>.
+ARG BASE_REGISTRY
+ARG NODE_IMAGE=node:24-wolfi
+ARG RUNTIME_IMAGE=node:24-no-npm-wolfi
+ARG ENV=DEV
+
+# ---- build: install, type-check, bundle, then the production tree in /app ----
+FROM ${BASE_REGISTRY}/${NODE_IMAGE} AS build
+
+ARG ENV
+ARG SKIP_NATIVE=false
+ARG BETTER_SQLITE3_MIRROR=""
+# The curated image is non-root and keeps npm's global bin off PATH.
+USER root
+ENV PATH=/usr/local/bin:$PATH \
+    CI=true \
+    ENV=${ENV} \
+    npm_config_better_sqlite3_binary_host_mirror=${BETTER_SQLITE3_MIRROR}
+WORKDIR /src
+COPY . .
+
+# One step, one secret mount:
+#  1. .npmrc → YARN_* settings (registry, scoped _auth, always-auth; proxy only
+#     when there is no internal registry) — inline Node, no extra files;
+#  2. full install with install scripts OFF — the dev tree carries native
+#     modules that only compile (tree-sitter, cpu-features, keytar) and this
+#     image has no compiler; esbuild/swc are prebuilt packages, not scripts;
+#  3. tsc + bundle; 4. the bundle's skeleton → production-only install in /app
+#     (scripts per SKIP_NATIVE); 5. the built code on top. Unpacked with Node's
+#     tar library (installed in step 2), not a tar binary.
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
+    eval "$(node -e 'const fs=require("fs"),f="/root/.npmrc",s={};if(fs.existsSync(f))for(const r of fs.readFileSync(f,"utf8").split("\n")){const l=r.trim(),i=l.indexOf("=");if(!l||l[0]==="#"||i<0)continue;let k=l.slice(0,i).trim();const c=k.lastIndexOf(":");if(k.startsWith("//")&&c>1)k=k.slice(c+1);s[k]=l.slice(i+1).trim()}const e=process.env,p=e.HTTPS_PROXY||e.https_proxy||"",h=e.HTTP_PROXY||e.http_proxy||p,o={YARN_NPM_REGISTRY_SERVER:s.registry,YARN_NPM_AUTH_IDENT:s._auth,YARN_NPM_AUTH_TOKEN:s._authToken,YARN_NPM_ALWAYS_AUTH:s["always-auth"],YARN_ENABLE_STRICT_SSL:s["strict-ssl"],npm_config_https_proxy:p||h,npm_config_proxy:h};if(!s.registry){o.YARN_HTTPS_PROXY=p||h;o.YARN_HTTP_PROXY=h}const Q="\x27",q=v=>Q+String(v).split(Q).join(Q+"\\"+Q+Q)+Q;for(const k in o)if(o[k])console.log("export "+k+"="+q(o[k]))')" \
+ && YARN_ENABLE_SCRIPTS=false node .yarn/releases/yarn-*.cjs install --immutable \
+ && node .yarn/releases/yarn-*.cjs tsc \
+ && node .yarn/releases/yarn-*.cjs build:backend \
+ && mkdir -p /app/.yarn \
+ && cp package.json yarn.lock backstage.json .yarnrc.yml /app/ \
+ && cp -r .yarn/releases /app/.yarn/ \
+ && node -e 'require("/src/node_modules/tar").x({file: "/src/packages/backend/dist/skeleton.tar.gz", cwd: "/app", sync: true})' \
+ && cd /app \
+ && if [ "$SKIP_NATIVE" = "true" ]; then export YARN_ENABLE_SCRIPTS=false; else export YARN_ENABLE_SCRIPTS=true; fi \
+ && node .yarn/releases/yarn-*.cjs workspaces focus --all --production \
+ && node -e 'require("/src/node_modules/tar").x({file: "/src/packages/backend/dist/bundle.tar.gz", cwd: "/app", sync: true})' \
+ && mkdir -p /app/backstage-data && chmod 1777 /app/backstage-data
+# backstage-data: sqlite's folder, writable by ANY non-root uid (sticky, like
+# /tmp) — the image's user and the chart's runAsUser need not match. A volume
+# (the chart) or Postgres replaces it.
+
+# ---- run: the curated no-npm image, as its non-root user ---------------------
+FROM ${BASE_REGISTRY}/${RUNTIME_IMAGE}
+
+ARG ENV
+ARG RUNTIME_USER=nonroot
+ENV NODE_ENV=production \
+    NODE_OPTIONS="--no-node-snapshot" \
+    ENV=${ENV}
+WORKDIR /app
+# Root-owned, world-readable: the non-root user reads, never writes the app.
+COPY --from=build /app /app
+COPY app-config*.yaml ./
+COPY examples ./examples
+
+USER ${RUNTIME_USER}
+EXPOSE 7007
+# Exec form: no shell needed. The Helm chart passes its own --config list.
+CMD ["node", "packages/backend", "--config", "app-config.yaml"]

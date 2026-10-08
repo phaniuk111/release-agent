@@ -40,16 +40,16 @@ spec:
         - name: backstage
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # The image's CMD names only app-config.yaml + app-config.docker.yaml,
-          # so the ConfigMap mounted below is inert unless it is passed as a
-          # third --config here. Order matters: last file wins on conflicts.
+          # The baked-in config files (appConfigFiles), then the ConfigMap
+          # mounted below — always LAST, so the chart's values win. Order
+          # matters: last file wins on conflicts.
           command: ["node"]
           args:
             - "packages/backend"
+            {{- range .Values.appConfigFiles }}
             - "--config"
-            - "app-config.yaml"
-            - "--config"
-            - "app-config.docker.yaml"
+            - {{ . | quote }}
+            {{- end }}
             - "--config"
             - "app-config.kubernetes.yaml"
           ports:

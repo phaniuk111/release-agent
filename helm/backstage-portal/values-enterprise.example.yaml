@@ -1,0 +1,111 @@
+# Production values for the Backstage portal — an EXAMPLE to copy and fill in.
+# Pairs with backstage/Dockerfile.curated (curated Node 24 images, non-root).
+#
+#   helm upgrade --install backstage ./helm/backstage-portal \
+#     -n <namespace> -f values-enterprise.yaml
+#
+# Every <…> is yours to fill. Secrets are referenced by NAME only: create them
+# with your secret tooling (External Secrets / Vault / kubectl) beforehand.
+
+image:
+  repository: <your docker registry>/backstage
+  tag: <release tag>
+  pullPolicy: IfNotPresent
+
+# Production config only: app-config.production.yaml instead of the PoC's
+# app-config.docker.yaml (guest sign-in, sqlite). The chart's own config
+# (below, rendered last) still wins over both.
+appConfigFiles:
+  - app-config.yaml
+  - app-config.production.yaml
+
+# The Release Copilot agent already running in the cluster — its SERVICE port.
+releaseCopilot:
+  url: "http://release-copilot.<agent namespace>.svc.cluster.local:80"
+
+# Backstage's own database. Postgres for production (the image is built with
+# SKIP_NATIVE=true, so sqlite is not even possible) — pick ONE:
+database:
+  type: postgres
+  postgres:
+    database: backstage
+    pluginDivisionMode: schema
+    # (a) Cloud SQL, IAM sign-in as the pod's Workload Identity, no password:
+    cloudSql:
+      enabled: true
+      instance: "<project>:<region>:<instance>"
+      ipAddressType: PRIVATE
+      user: "<service account name>@<project>.iam"
+    # (b) any Postgres with a password — instead of (a):
+    # cloudSql: { enabled: false }
+    # existingSecret: backstage-postgres     # POSTGRES_HOST/PORT/USER/PASSWORD
+
+# The curated images run as their own non-root user (Wolfi `nonroot`,
+# uid 65532). Any uid works with this image; match it to keep one identity.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+podAnnotations:
+  # Start the app only once the mesh sidecar is up — otherwise the first
+  # outbound calls (Postgres, the agent, Google APIs) fail at startup.
+  proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+  sidecar.istio.io/proxyCPU: "100m"
+  sidecar.istio.io/proxyMemory: "128Mi"
+
+# Reached through the mesh's ingress gateway on your shared hostname.
+virtualService:
+  enabled: true
+  hosts: ["<portal hostname>"]
+  gateways: ["<istio-system/your-gateway>"]
+  pathPrefix: ""          # "" = the whole host; "/idp" = under a path
+  timeout: "300s"         # chat answers stream for a while (SSE)
+
+resources:
+  requests: { cpu: 500m, memory: 1Gi }
+  limits: { cpu: "1", memory: 2Gi }
+
+# Secrets as env (never in the ConfigMap). The support watcher's notification
+# token: the agent posts to Backstage's notifications API with it.
+extraEnv:
+  - name: SUPPORT_NOTIFY_TOKEN
+    valueFrom: { secretKeyRef: { name: support-notify, key: token } }
+
+config:
+  app:
+    baseUrl: https://<portal hostname>     # + the pathPrefix, if any
+    meshSignIn: true                      # sign-in comes from the mesh, not a button
+  backend:
+    baseUrl: https://<portal hostname>
+    listen: ":7007"
+    trustProxy: true
+    auth:
+      externalAccess:
+        - type: static
+          options:
+            token: ${SUPPORT_NOTIFY_TOKEN}
+            subject: support-watcher
+          accessRestrictions:
+            - plugin: notifications
+  auth:
+    providers:
+      # No guest outside development: everyone arrives through the mesh login.
+      guest:
+        dangerouslyAllowOutsideDevelopment: false
+      # The mesh (ASM user auth) puts a signed RCToken on every request; this
+      # VERIFIES it — same header and checks as the agent's IDENTITY_* settings.
+      rctoken:
+        header: x-rctoken
+        jwksUrl: http://authservice.asm-user-auth.svc.cluster.local:10004/_gcp_user_auth/jwks
+        issuer: authservice.asm-user-auth.svc.cluster.local
+        audience: "<the UserAuthConfig audience>"
+        emailClaim: attributes.email,email
+        signIn:
+          resolvers:
+            - resolver: emailLocalPartMatchingUserEntityName
+              dangerouslyAllowSignInWithoutUserInCatalog: true
+  catalog:
+    locations:
+      - type: url
+        target: <your catalog-info.yaml URL(s)>

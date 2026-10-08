@@ -50,6 +50,14 @@ gateway:
   #   mode: SIMPLE
   #   credentialName: backstage-tls
 
+# Config files baked into the image, loaded in this order before the chart's
+# own (app-config.kubernetes.yaml, always last). app-config.docker.yaml is for
+# local Docker and PoCs: guest sign-in and sqlite. Production loads
+# app-config.production.yaml instead — see values-enterprise.example.yaml.
+appConfigFiles:
+  - app-config.yaml
+  - app-config.docker.yaml
+
 # Where the backend proxy forwards /api/proxy/release-copilot/*.
 # Points at the release-copilot Helm release's Service (helm/release-copilot).
 releaseCopilot:
