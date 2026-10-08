@@ -25,10 +25,8 @@ file-set CARE releases keep the wording above.
 """
 from __future__ import annotations
 
-import contextlib
-import contextvars
 import datetime as _dt
-from typing import Any, Iterator
+from typing import Any
 
 from ._common import settings
 
@@ -47,49 +45,10 @@ IMPACT_LEAD = "No user impact is expected."
 # no number up — except a mono-mode CARE release with CARE_RELEASE_NAME_FORMAT,
 # the team's own fixed pattern (formatted_release_name below).
 
-# The CARE release mode of THIS request — chosen on the release form. Empty =
-# the server's CARE_RELEASE_MODE. A context value, like attribution's JIRA, so
-# the defaults, the drafts and the release path all read the one choice
-# without a mode argument threaded through every layer.
-CARE_MODES = ("mono", "fileset")
-_MODE: contextvars.ContextVar[str] = contextvars.ContextVar("care_release_mode", default="")
-
-
-def available_care_modes() -> list[str]:
-    """The CARE release modes this deployment can actually run, the server's
-    default first: mono needs CARE_RELEASE_REPO; the deployment-repo file-set
-    needs a deployment repo (DEPLOY_REPO, or the session's own)."""
-    from ._common import active_deploy_repo
-
-    usable = {"mono": bool(settings.care_release_repo.strip()),
-              "fileset": bool((active_deploy_repo() or settings.deploy_repo or "").strip())}
-    default = settings.care_release_mode
-    ordered = [default] + [m for m in CARE_MODES if m != default]
-    # The default is always offered: a misconfigured one should say so when
-    # used, not vanish from the form.
-    return [m for m in ordered if m == default or usable[m]]
-
-
-@contextlib.contextmanager
-def care_mode(mode: str | None) -> Iterator[None]:
-    """Every read inside this block follows ``mode`` ("mono" or "fileset");
-    anything else leaves the server's default in charge."""
-    chosen = str(mode or "").strip().lower()
-    token = _MODE.set(chosen if chosen in CARE_MODES else "")
-    try:
-        yield
-    finally:
-        _MODE.reset(token)
-
-
-def current_care_mode() -> str:
-    """The mode a CARE release runs in: this request's choice, else the server's."""
-    return _MODE.get() or settings.care_release_mode
-
-
 def care_mono(kind: str) -> bool:
-    """A CARE release raised as one committed file in the mono repo."""
-    return str(kind).lower() != "df" and current_care_mode() == "mono"
+    """A CARE release raised as one committed file in the mono repo. The
+    deployment decides (CARE_RELEASE_MODE in values.yaml) — never the form."""
+    return str(kind).lower() != "df" and settings.care_release_mode == "mono"
 
 
 def formatted_release_name(day: _dt.date) -> str:

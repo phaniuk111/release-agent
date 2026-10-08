@@ -94,18 +94,3 @@ test('a DF release drafts its summary as well as the CARE prose fields', () => {
     assert.deepEqual(DF_DRAFT_FIELDS, ['change_summary', 'change_description', 'change_reason',
         'associated_risk', 'consequence', 'user_service_impact']);
 });
-
-import { CARE_MODE_LABEL, careModeChoice } from '../../src/release_agent/static/core/chg.js';
-
-test('the release type: what the server offers, its default first, the choice kept when on offer', () => {
-    const both = { care_release_mode: 'mono', care_release_modes: ['mono', 'fileset'] };
-    assert.deepEqual(careModeChoice(both), { modes: ['mono', 'fileset'], mode: 'mono' });
-    assert.deepEqual(careModeChoice(both, 'fileset'), { modes: ['mono', 'fileset'], mode: 'fileset' });
-    const monoOnly = { care_release_mode: 'mono', care_release_modes: ['mono'] };
-    assert.deepEqual(careModeChoice(monoOnly, 'fileset'), { modes: ['mono'], mode: 'mono' },
-        'a mode the server does not offer is never chosen');
-    assert.deepEqual(careModeChoice({ care_release_mode: 'fileset' }), { modes: ['fileset'], mode: 'fileset' },
-        'an older server (no list) keeps its one mode');
-    assert.deepEqual(careModeChoice({}), { modes: ['fileset'], mode: 'fileset' });
-    assert.equal(CARE_MODE_LABEL.mono, 'Mono repo');
-});

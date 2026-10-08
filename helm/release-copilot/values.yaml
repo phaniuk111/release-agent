@@ -422,6 +422,8 @@ config:
   # the PR is raised (put them back from there if it does not go through). The token needs
   # contents + pull-request write on that repo. "fileset" (default) keeps the
   # updater-script model above for CARE; DF releases always use it.
+  # This setting alone picks the CARE release type — the release form offers
+  # no choice and follows it.
   # "false" runs the portal with no model at all: forms, pills, the release
   # queue and history, deploys and releases (preview → CONFIRM token) work as
   # always; the chat answers the pills' commands only, with the same tools and
