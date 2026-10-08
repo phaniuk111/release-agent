@@ -171,7 +171,7 @@ def test_the_change_request_does_not_mention_it():
     hand, does not belong in the change record."""
     items = [{"name": "payments-api", "version": "1.4.2", "build_verified": True,
               "allowed_failures": "RCTLDEF0001691 in job build"}]
-    text = " ".join(str(v) for v in CHG.build_defaults(items, "care", None, 7).values())
+    text = " ".join(str(v) for v in CHG.build_defaults(items, "care", None).values())
     assert "1691" not in text and "with all release controls (RCTLD) passing." in text
 
 

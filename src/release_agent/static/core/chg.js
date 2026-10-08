@@ -77,3 +77,24 @@ export function monoReleaseNote(file, repo) {
         '. The portal raises a PR for you to review and merge; ' +
         'you\'ll see the exact change before anything is pushed.';
 }
+
+// ---- CARE release type ------------------------------------------------------
+// A CARE release is either one file in the mono repo, raised as a PR a person
+// merges ("mono"), or the release file-set generated in the deployment repo,
+// landing on SIT ("fileset"). The server says which this deployment is set up
+// for (care_release_modes, its default first); the form offers a choice only
+// when there are two.
+export const CARE_MODE_LABEL = { mono: 'Mono repo', fileset: 'Deployment repo' };
+export const CARE_MODE_HINT = {
+    mono: 'One release file in the mono repo — a PR a person merges.',
+    fileset: 'The release file-set in the deployment repo — lands on SIT, then UAT and PRD.',
+};
+
+/** {modes, mode}: the modes on offer and the one the form opens in — the one
+ *  asked for when it is on offer, else the server's default. */
+export function careModeChoice(ctx, wanted) {
+    const offered = ctx && Array.isArray(ctx.care_release_modes)
+        ? ctx.care_release_modes.filter(m => m === 'mono' || m === 'fileset') : [];
+    const modes = offered.length ? offered : [(ctx && ctx.care_release_mode) === 'mono' ? 'mono' : 'fileset'];
+    return { modes, mode: modes.includes(wanted) ? wanted : modes[0] };
+}

@@ -200,10 +200,26 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         return {"ok": False, "errors": errors}
 
     kind = release_chain.kind_of(details, str(payload.get("release_kind") or "").strip().lower())
-    if kind == "care" and settings.care_release_mode == "mono":
-        from . import care_release
+    # A CARE release runs in the mode chosen on the form (care_release_mode),
+    # else the server's CARE_RELEASE_MODE — and only in a mode this deployment
+    # is configured for. The prep records it, so confirm applies what was
+    # previewed even if the server's default changes in between.
+    mode = "fileset"
+    if kind == "care":
+        from . import chg_defaults
 
-        return care_release.prepare(payload, details)
+        asked = str(payload.get("care_release_mode") or "").strip().lower()
+        with chg_defaults.care_mode(asked):
+            mode = chg_defaults.current_care_mode()
+        if asked and asked not in chg_defaults.available_care_modes():
+            names = {"mono": "mono repo (CARE_RELEASE_REPO)", "fileset": "deployment repo (DEPLOY_REPO)"}
+            return {"ok": False, "errors": [
+                f"A CARE release in {names.get(asked, asked)} mode is not set up here — choose "
+                f"{' or '.join(names[m] for m in chg_defaults.available_care_modes())}."]}
+        if mode == "mono":
+            from . import care_release
+
+            return care_release.prepare(payload, details)
     # Form-supplied target repo wins; empty falls back to this kind's repo.
     repo_full = str(payload.get("deployment_repo") or "").strip() or (
         (settings.df_release_repo if kind == "df" else "") or active_deploy_repo())
@@ -312,6 +328,7 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         "deployment_repo": repo_full,
         "jira": str(payload.get("jira") or "").strip(),
         "kind": kind,
+        "mode": mode,                   # apply regenerates in this mode, never the server's
         "landing_branch": landing,
         "artifacts": artifact_pairs,
         "preview": {
@@ -369,7 +386,8 @@ def apply_release_fileset(prep: dict) -> dict:
         # in its own repo regenerated against the CARE repo.
         regenerated = prepare_release_fileset(
             {**details, "deployment_repo": prep.get("deployment_repo") or "",
-             "release_kind": prep.get("kind") or "", "jira": prep.get("jira") or ""},
+             "release_kind": prep.get("kind") or "", "jira": prep.get("jira") or "",
+             "care_release_mode": prep.get("mode") or ""},
             _keep_workdir=True,
         )
         if not regenerated.get("ok"):

@@ -2,9 +2,10 @@
 
 DevOps used to type the same change-request fields every release from
 information that was already here: the queued charts, their JIRA keys, the
-developers' own "what changed and why", whether each build was verified, and
-the previous release's number. This computes every field except the start and
-end dates — those are a decision, not a fact.
+developers' own "what changed and why", and whether each build was verified.
+This computes the change-request prose — not the release name, which the
+release manager writes (but for a mono-mode team format), nor the start and end
+dates: those are decisions, not facts.
 
 Standard wording, not a model: each sentence is assembled from facts, so the
 same inputs always give the same text and nothing can be invented. Where a fact
@@ -24,17 +25,14 @@ file-set CARE releases keep the wording above.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import datetime as _dt
-import time
-from typing import Any
+from typing import Any, Iterator
 
 from ._common import settings
 
-# The release-PR title convention: "<prefix><Month Dayth YYYY> : Release <N>".
-_NUMBER_MARKER = " : Release "
 _MAX_LISTED_ITEMS = 4
-_CACHE_SECONDS = 60.0
-_number_cache: dict[str, tuple[float, int | None]] = {}
 
 # The team's standard risk and impact wording in mono mode. A statement the
 # release team makes and the person releasing can change — never the model's
@@ -45,75 +43,53 @@ IMPACT_LEAD = "No user impact is expected."
 
 
 # ------------------------------------------------------------------ naming --
-def _ordinal(day: int) -> str:
-    if 10 <= day % 100 <= 20:
-        return f"{day}th"
-    return f"{day}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th') }"
+# The release manager names the release — the portal suggests no name and looks
+# no number up — except a mono-mode CARE release with CARE_RELEASE_NAME_FORMAT,
+# the team's own fixed pattern (formatted_release_name below).
+
+# The CARE release mode of THIS request — chosen on the release form. Empty =
+# the server's CARE_RELEASE_MODE. A context value, like attribution's JIRA, so
+# the defaults, the drafts and the release path all read the one choice
+# without a mode argument threaded through every layer.
+CARE_MODES = ("mono", "fileset")
+_MODE: contextvars.ContextVar[str] = contextvars.ContextVar("care_release_mode", default="")
 
 
-def format_release_date(day: _dt.date) -> str:
-    """July 23rd 2026 — the date as release names spell it."""
-    return f"{day.strftime('%B')} {_ordinal(day.day)} {day.year}"
+def available_care_modes() -> list[str]:
+    """The CARE release modes this deployment can actually run, the server's
+    default first: mono needs CARE_RELEASE_REPO; the deployment-repo file-set
+    needs a deployment repo (DEPLOY_REPO, or the session's own)."""
+    from ._common import active_deploy_repo
+
+    usable = {"mono": bool(settings.care_release_repo.strip()),
+              "fileset": bool((active_deploy_repo() or settings.deploy_repo or "").strip())}
+    default = settings.care_release_mode
+    ordered = [default] + [m for m in CARE_MODES if m != default]
+    # The default is always offered: a misconfigured one should say so when
+    # used, not vanish from the form.
+    return [m for m in ordered if m == default or usable[m]]
 
 
-def release_number_from_title(title: str) -> int | None:
-    """33 from "… : Release 33"; None when the title is not a numbered release."""
-    head, sep, tail = str(title or "").rpartition(_NUMBER_MARKER)
-    if not sep:
-        return None
-    digits = ""
-    for ch in tail.strip():
-        if not ch.isdigit():
-            break
-        digits += ch
-    return int(digits) if digits else None
-
-
-def next_release_number(titles: list[str]) -> int | None:
-    """One past the highest numbered release among ``titles``, or None if none."""
-    numbers = [n for n in (release_number_from_title(t) for t in titles) if n is not None]
-    return max(numbers) + 1 if numbers else None
-
-
-def next_release_number_for_repo(repo_full: str) -> int | None:
-    """The next release number, read from the deploy repo's own release PRs.
-
-    GitHub is the record: a release is a PR titled with its number, and the
-    event log only knows the releases the portal happened to see. Cached per
-    repo for a minute (the form asks on every tick). None on any failure — a
-    name without a number is still a usable default, a failed form is not.
-    """
-    repo_full = str(repo_full or "").strip()
-    if not repo_full:
-        return None
-    now = time.monotonic()
-    cached = _number_cache.get(repo_full)
-    if cached and now - cached[0] < _CACHE_SECONDS:
-        return cached[1]
+@contextlib.contextmanager
+def care_mode(mode: str | None) -> Iterator[None]:
+    """Every read inside this block follows ``mode`` ("mono" or "fileset");
+    anything else leaves the server's default in charge."""
+    chosen = str(mode or "").strip().lower()
+    token = _MODE.set(chosen if chosen in CARE_MODES else "")
     try:
-        import itertools
-
-        from ._common import _get_github_client
-
-        pulls = _get_github_client().get_repo(repo_full).get_pulls(
-            state="all", sort="created", direction="desc")
-        titles = [p.title for p in itertools.islice(pulls, 100)]
-        number = next_release_number(titles) or 1
-    except Exception:
-        number = None
-    _number_cache[repo_full] = (now, number)
-    return number
+        yield
+    finally:
+        _MODE.reset(token)
 
 
-def release_name(day: _dt.date, number: int | None, prefix: str | None = None) -> str:
-    prefix = settings.release_name_prefix if prefix is None else prefix
-    base = f"{prefix or ''}{format_release_date(day)}"
-    return f"{base}{_NUMBER_MARKER}{number}" if number else base
+def current_care_mode() -> str:
+    """The mode a CARE release runs in: this request's choice, else the server's."""
+    return _MODE.get() or settings.care_release_mode
 
 
 def care_mono(kind: str) -> bool:
     """A CARE release raised as one committed file in the mono repo."""
-    return str(kind).lower() != "df" and settings.care_release_mode == "mono"
+    return str(kind).lower() != "df" and current_care_mode() == "mono"
 
 
 def formatted_release_name(day: _dt.date) -> str:
@@ -127,13 +103,6 @@ def formatted_release_name(day: _dt.date) -> str:
         return day.strftime(pattern).strip()
     except (ValueError, UnicodeError):
         return ""
-
-
-def uses_name_format(kind: str) -> bool:
-    """True when a release of ``kind`` is named by CARE_RELEASE_NAME_FORMAT.
-    Such a name carries no release number, so none needs looking up — which
-    in a busy mono repo means several pages of unrelated PRs."""
-    return care_mono(kind) and bool(str(settings.care_release_name_format or "").strip())
 
 
 # ------------------------------------------------------------------ fields --
@@ -164,7 +133,6 @@ def render_template(template: str, values: dict[str, Any]) -> str:
 
 def build_defaults(
     items: list[dict[str, Any]], kind: str = "care", day: _dt.date | None = None,
-    number: int | None = None,
 ) -> dict[str, str]:
     """Every change-request field except start and end.
 
@@ -176,7 +144,7 @@ def build_defaults(
     df = str(kind).lower() == "df"
     mono = care_mono(kind)
     day = day or _dt.date.today()
-    name = (formatted_release_name(day) if mono else "") or release_name(day, number)
+    name = formatted_release_name(day) if mono else ""     # else the release manager's to write
     count = len(items)
     noun = _plural(count, "Dataflow image", "Dataflow images") if df else _plural(count, "chart", "charts")
 
@@ -250,7 +218,7 @@ def build_defaults(
     if mono:
         summary = name        # the release file's summary is its name
     else:
-        summary = f"{name} — {count} {noun}: {_items_phrase(items)}" if count else name
+        summary = f"{count} {noun}: {_items_phrase(items)}" if count else ""
 
     return {
         "release_name": name,

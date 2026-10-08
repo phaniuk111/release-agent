@@ -816,7 +816,7 @@ def _known_charts() -> list[str]:
 def release_queue_get():
     """The accumulated next-release queue + form context (default repo, known
     chart names). Powers the Insights panel and the Create-release pre-fill."""
-    from .tools import release_queue
+    from .tools import chg_defaults, release_queue
     from .tools._common import active_deploy_repo
 
     result = release_queue.current_queue()
@@ -832,6 +832,9 @@ def release_queue_get():
     # In mono mode a CARE release is one committed file in its own repo, and
     # the form shows that repo and file instead of the deployment repo.
     result["care_release_mode"] = app_settings.care_release_mode
+    # The modes a release manager may choose between on the form — only the
+    # ones this deployment is set up for, the default first.
+    result["care_release_modes"] = chg_defaults.available_care_modes()
     result["care_release_repo"] = app_settings.care_release_repo
     result["care_release_file"] = app_settings.care_release_file
     result["known_charts"] = _known_charts()
@@ -912,20 +915,20 @@ def release_queue_add_batch(req: QueueBatchRequest, request: Request):
 class ReleaseDraftRequest(BaseModel):
     artifacts: list[str] = []   # the artifact lines as they stand in the form (full URL or name:version)
     kind: str = "care"          # care | df
+    mode: str = ""              # CARE: mono | fileset as chosen on the form; "" = CARE_RELEASE_MODE
 
 
 class ReleaseDefaultsRequest(BaseModel):
     artifacts: list[str] = []   # the artifact lines as they stand in the form
     kind: str = "care"          # care | df
-    repo: str = ""              # the release's target repo — its PRs number the release
+    repo: str = ""              # the release's target repo (kept for older forms; unused)
     date: str = ""              # YYYY-MM-DD, the browser's date or the chosen start
-    number: int | None = None   # the release number from this form's first call — later
-                                # recomputes pass it back so they never wait on GitHub
+    mode: str = ""              # CARE: mono | fileset as chosen on the form; "" = CARE_RELEASE_MODE
 
 
 @app.post("/api/release-defaults")
 def release_defaults(req: ReleaseDefaultsRequest):
-    """Every change-request field except start and end, from the facts here.
+    """The change-request prose from the facts here — not the name or the dates.
 
     Standard wording, no model call — cheap enough to recompute on every tick.
     Artifacts are matched against the queue for their JIRA, details and build
@@ -960,14 +963,11 @@ def release_defaults(req: ReleaseDefaultsRequest):
             "requested_by": q.get("requested_by"), "build_verified": q.get("build_verified"),
             "prl1_only": q.get("prl1_only"),
         })
-    repo = (req.repo or "").strip() or (
-        app_settings.df_release_repo if req.kind == "df" else "") or app_settings.deploy_repo
-    if chg_defaults.uses_name_format(req.kind):
-        number = None           # the name carries no number, so none is looked up
-    else:
-        number = req.number if (req.number or 0) > 0 else chg_defaults.next_release_number_for_repo(repo)
-    return {"ok": True, "fields": chg_defaults.build_defaults(items, req.kind, day, number),
-            "number": number, "numbered_from": repo if number else ""}
+    # No release number is looked up and no name is suggested — the release
+    # manager writes the name (a mono-mode team format aside: build_defaults).
+    with chg_defaults.care_mode(req.mode):
+        fields = chg_defaults.build_defaults(items, req.kind, day)
+    return {"ok": True, "fields": fields}
 
 
 @app.post("/api/release-draft")
@@ -991,7 +991,7 @@ def release_draft(req: ReleaseDraftRequest):
         return {"ok": False, "disabled": True,
                 "error": "AI drafting is off (LLM_ENABLED=false) — the standard wording stays."}
     from adk_release_agent.chg_draft import draft_change_request
-    from .tools import release_queue
+    from .tools import chg_defaults, release_queue
 
     try:
         current = release_queue.current_queue()
@@ -1014,7 +1014,8 @@ def release_draft(req: ReleaseDraftRequest):
     if items and not queued:
         return {"ok": False, "error": "None of these items is queued, so there is nothing to "
                                       "summarise — the standard wording stays."}
-    return draft_change_request(items, kind=req.kind)
+    with chg_defaults.care_mode(req.mode):
+        return draft_change_request(items, kind=req.kind)
 
 
 @app.post("/api/release-queue/withdraw")
