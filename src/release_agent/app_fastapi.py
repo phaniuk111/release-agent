@@ -15,7 +15,7 @@ with proper auth, TLS, and observability.
 
 import asyncio
 import contextvars
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 import json
 import logging
 import os
@@ -48,7 +48,35 @@ logger = logging.getLogger("release_copilot")
 # Use shared Pydantic settings (repos come from env / .env / Helm ConfigMap).
 settings = app_settings
 
-app = FastAPI(title=settings.app_title, version="0.2.0")
+
+
+async def _sweep_idle_forever() -> None:
+    """Forget conversations — sessions, pending answers, connected GitHub
+    tokens — that nobody has written to for SESSION_IDLE_MINUTES."""
+    idle = settings.session_idle_minutes * 60
+    while True:
+        await asyncio.sleep(min(300.0, max(30.0, idle / 4)))
+        try:
+            threads = await adk_chat_service.sweep_idle(idle)
+            tokens = _session_store.sweep_idle(idle)
+            if threads or tokens:
+                logger.info(f"Idle sweep: {len(threads)} conversation(s), {len(tokens)} GitHub token(s) dropped")
+        except Exception:  # noqa: BLE001 - the sweep must outlive one bad pass
+            logger.exception("Idle sweep failed")
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    sweeper = (asyncio.create_task(_sweep_idle_forever(), name="idle-sweep")
+               if settings.session_idle_minutes > 0 else None)
+    try:
+        yield
+    finally:
+        if sweeper is not None:
+            sweeper.cancel()
+
+
+app = FastAPI(title=settings.app_title, version="0.2.0", lifespan=_lifespan)
 
 # Serve the UI's JavaScript from real files (not embedded in a Python string) so it
 # is lint/syntax-checkable and free of Python-string escaping traps.

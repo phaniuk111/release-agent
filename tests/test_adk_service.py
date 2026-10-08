@@ -349,6 +349,7 @@ def test_a_preview_that_cannot_be_built_says_why_instead_of_nothing():
     from release_agent import adk_service as S
 
     svc = S.AdkChatService.__new__(S.AdkChatService)
+    svc._last_seen, svc._running = {}, {}
     svc._pending_deploy = {}
     cancelled = _DeployEvent(
         output={"ok": False, "status": "cancelled", "token": "",
@@ -377,6 +378,7 @@ def test_a_silent_deploy_graph_still_answers():
     from release_agent import adk_service as S
 
     svc = S.AdkChatService.__new__(S.AdkChatService)
+    svc._last_seen, svc._running = {}, {}
     svc._pending_deploy = {}
 
     class _Runner:
@@ -426,6 +428,7 @@ def test_every_lane_of_a_turn_is_traced_under_a_named_route(monkeypatch):
 
     monkeypatch.setattr(S, "traced_stream", fake_traced_stream)
     service = AdkChatService.__new__(AdkChatService)      # no runners needed
+    service._last_seen, service._running = {}, {}
     service._pending_adk_calls = {}
     service._pending_deploy = {}
 
@@ -471,6 +474,7 @@ def test_one_persons_yes_cannot_answer_another_persons_paused_approval(monkeypat
 
     alice, bob = identity.Caller(email="alice@example.com"), identity.Caller(email="bob@example.com")
     service = AdkChatService.__new__(AdkChatService)
+    service._last_seen, service._running = {}, {}
     service._pending_adk_calls = {}
     service._pending_deploy = {}
 
@@ -522,6 +526,7 @@ def _bare_service(monkeypatch):
     import release_agent.adk_service as S
 
     service = AdkChatService.__new__(AdkChatService)
+    service._last_seen, service._running = {}, {}
     service._pending_adk_calls = {}
     service._pending_deploy = {}
     log = {"previews": [], "resumed": [], "chat": []}

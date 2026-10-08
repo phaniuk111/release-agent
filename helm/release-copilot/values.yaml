@@ -479,6 +479,10 @@ config:
   # fallback in the pod. See "Persistent chat sessions" in the README.
   # The connected PAT stays per-pod either way; see replicaCount at the top.
   ADK_SESSION_BACKEND: "memory"
+  # A conversation nobody writes to for this long is forgotten — its sessions,
+  # what was pending on it, and the GitHub token connected to it. CONFIRM
+  # previews lapse at 30 minutes anyway. 0 = keep until the pod restarts.
+  SESSION_IDLE_MINUTES: "60"
   # With backend "vertex" the engine is found by DISPLAY NAME in
   # GOOGLE_CLOUD_LOCATION and CREATED if it does not exist — so the same values
   # file works in every project and nobody pastes a numeric id. The pod's SA

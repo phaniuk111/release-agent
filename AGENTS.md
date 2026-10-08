@@ -133,7 +133,9 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    was verified against has not changed, so the new `queued` event copies the
    original's run, ticket, routing, verification result and details. A chart with
    no `queued` event never qualified and takes the gate like a first submission.
-5. **Secrets**: PATs are memory-only per thread and masked everywhere; nothing
+5. **Secrets**: PATs are memory-only per thread and masked everywhere, and
+   dropped with the rest of a conversation idle for `SESSION_IDLE_MINUTES`
+   (60; `sweep_idle` in adk_service.py and session_creds.py); nothing
    sensitive in git or BQ. Spans (`adk_release_agent/telemetry.py`) carry
    metadata only — model, tokens, latency, tool names, errors — and name a
    person by a stable digest, until `TRACE_CONTENT=true` deliberately admits

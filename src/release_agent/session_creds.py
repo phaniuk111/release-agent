@@ -22,12 +22,14 @@ Security posture:
   memory service;
 * tokens are never logged and never returned to the client (only a masked
   preview like ``ghp_…abcd``);
-* ``clear`` / a new thread drops the stored token.
+* ``clear`` / a new thread drops the stored token, and ``sweep_idle`` drops
+  one its thread has not used for SESSION_IDLE_MINUTES.
 """
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import time
 from dataclasses import dataclass, field
 from typing import Iterator
 
@@ -128,6 +130,8 @@ class SessionCredentialStore:
 
     def __init__(self) -> None:
         self._by_thread: dict[str, SessionCredentials] = {}
+        # thread_id -> when its token was last stored or used (sweep_idle).
+        self._last_used: dict[str, float] = {}
 
     def set(self, thread_id: str, creds: SessionCredentials) -> bool:
         """Store this thread's creds. False (and nothing stored) when the thread
@@ -144,6 +148,7 @@ class SessionCredentialStore:
                 and creds.owner is not None and existing.owner != creds.owner:
             return False
         self._by_thread[thread_id] = creds
+        self._last_used[thread_id] = time.monotonic()
         return True
 
     def get(self, thread_id: str, owner: str | None = None) -> SessionCredentials | None:
@@ -161,6 +166,17 @@ class SessionCredentialStore:
 
     def clear(self, thread_id: str) -> None:
         self._by_thread.pop(thread_id, None)
+        self._last_used.pop(thread_id, None)
+
+    def sweep_idle(self, idle_seconds: float, now: float | None = None) -> list[str]:
+        """Drop every token its thread has not used for ``idle_seconds`` — a
+        token a person connected and walked away from is not held until the pod
+        restarts. Returns the thread ids whose token was dropped."""
+        now = time.monotonic() if now is None else now
+        stale = [t for t, used in self._last_used.items() if now - used > idle_seconds]
+        for thread_id in stale:
+            self.clear(thread_id)
+        return stale
 
     @contextlib.contextmanager
     def activate(self, thread_id: str, owner: str | None = None) -> Iterator[SessionCredentials | None]:
@@ -170,6 +186,8 @@ class SessionCredentialStore:
         they belong to someone else — so the agent falls back to server config.
         """
         creds = self.get(thread_id, owner)
+        if creds is not None:
+            self._last_used[thread_id] = time.monotonic()
         token = _active.set(creds)
         try:
             yield creds

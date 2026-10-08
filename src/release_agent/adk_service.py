@@ -558,8 +558,66 @@ class AdkChatService:
             memory_service=self.memory_service,
             auto_create_session=True,
         )
+        # (owner, thread) -> when it last had a message, and how many of its
+        # turns are still running. sweep_idle forgets the quiet ones.
+        self._last_seen: dict[tuple[str, str], float] = {}
+        self._running: dict[tuple[str, str], int] = {}
 
     async def stream_chat(
+        self, message: str, thread_id: str, abort_signal: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """``_stream_chat``, with the thread marked busy while its turn runs —
+        a turn outlives its reader, and the sweep must not pull the session out
+        from under one still writing to it."""
+        key = (_user_id(), thread_id)
+        self._last_seen[key] = time.monotonic()
+        self._running[key] = self._running.get(key, 0) + 1
+        try:
+            async with aclosing(self._stream_chat(message, thread_id, abort_signal)) as events:
+                async for event in events:
+                    yield event
+        finally:
+            left = self._running.get(key, 1) - 1
+            if left > 0:
+                self._running[key] = left
+            else:
+                self._running.pop(key, None)
+            # Idle is measured from the END of the last turn, not its start.
+            self._last_seen[key] = time.monotonic()
+
+    async def sweep_idle(self, idle_seconds: float, now: float | None = None) -> list[tuple[str, str]]:
+        """Forget every conversation with no message for ``idle_seconds``: its
+        session in each lane and anything pending on it. Nothing that matters
+        lives only here — the release log and GitHub hold what happened — and a
+        pending CONFIRM preview has already lapsed (30 minutes). A thread with a
+        turn still running is skipped. Returns the (owner, thread) pairs dropped.
+        """
+        now = time.monotonic() if now is None else now
+        stale = [key for key, seen in self._last_seen.items()
+                 if now - seen > idle_seconds and not self._running.get(key)]
+        lanes = ((self.chat_runner, "chat"), (self.deploy_runner, "deploy"),
+                 (self.commands_runner, "command"), (self.investigate_runner, "investigate"))
+        dropped = []
+        for key in stale:
+            # Re-checked per thread: a delete awaits (Vertex), and a message
+            # that arrived meanwhile has made this thread busy again.
+            if self._running.get(key) or now - self._last_seen.get(key, now) <= idle_seconds:
+                continue
+            owner, thread_id = key
+            dropped.append(key)
+            for runner, lane in lanes:
+                try:
+                    await self.session_service.delete_session(
+                        app_name=runner.app_name, user_id=owner,
+                        session_id=_session_id(thread_id, lane))
+                except Exception:  # noqa: BLE001 - one bad delete must not stop the sweep
+                    logger.warning("Could not drop idle session %s/%s", thread_id, lane, exc_info=True)
+            for pending in (self._pending_deploy, self._pending_adk_calls, self._pending_commands):
+                pending.pop((owner, thread_id), None)
+            self._last_seen.pop(key, None)
+        return dropped
+
+    async def _stream_chat(
         self, message: str, thread_id: str, abort_signal: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Yield UI-compatible SSE event payloads.

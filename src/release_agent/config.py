@@ -522,6 +522,14 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("ADK_MEMORY_ENABLED", "RELEASE_ADK_MEMORY_ENABLED"),
     )
+    # A conversation nobody has written to for this long is forgotten: its ADK
+    # sessions, anything still waiting on it, and the GitHub token connected to
+    # it. Pending CONFIRM previews already lapse at 30 minutes, so an hour never
+    # cuts off a decision someone could still make. 0 keeps them until restart.
+    session_idle_minutes: int = Field(
+        default=60,
+        validation_alias=AliasChoices("SESSION_IDLE_MINUTES", "RELEASE_SESSION_IDLE_MINUTES"),
+    )
     # Where ADK chat sessions live. "memory" is per-pod: a restart loses the
     # conversation and a second replica sees a different history, which is why
     # the chart pins replicaCount: 1. "vertex" stores them in a Vertex AI Agent

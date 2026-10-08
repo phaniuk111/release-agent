@@ -131,6 +131,7 @@ class _Done:
 
 def _service(monkeypatch):
     service = AdkChatService.__new__(AdkChatService)
+    service._last_seen, service._running = {}, {}
     service._pending_adk_calls = {}
     service._pending_deploy = {}
     service._pending_commands = {}
