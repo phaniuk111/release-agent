@@ -136,8 +136,8 @@ def tickets_from(body: str, pr_url: str, comments: list[dict[str, Any]], wanted:
     return found
 
 
-def _read(github: Any, repo_full: str, pr_number: int) -> dict:
-    pr = github.get_repo(repo_full).get_pull(int(pr_number))
+def _read(github: Any, repo_full: str, pr_number: int, pr: Any = None) -> dict:
+    pr = pr if pr is not None else github.get_repo(repo_full).get_pull(int(pr_number))
     comments = []
     for comment in pr.get_issue_comments():
         comments.append({"body": getattr(comment, "body", "") or "",
@@ -150,10 +150,11 @@ def _read(github: Any, repo_full: str, pr_number: int) -> dict:
     return tickets_from(getattr(pr, "body", "") or "", getattr(pr, "html_url", "") or "", comments)
 
 
-def pr_tickets(repo_full: str, pr_number: int, github: Any = None, *, fresh: bool = False) -> dict:
+def pr_tickets(repo_full: str, pr_number: int, github: Any = None, *, fresh: bool = False, pr: Any = None) -> dict:
     """The tickets named on one PR: {"chg": {...} | None, "rmg": {...} | None, ...}
     per configured prefix, or {"error": ...}. Cached ten minutes per (repo, PR);
-    never raises."""
+    never raises. ``pr`` is the PR object when the caller already holds it, so
+    a cold cache does not fetch it again."""
     key = (str(repo_full or "").strip(), int(pr_number or 0))
     if not key[0] or not key[1]:
         return {"error": "a repo and a PR number are needed"}
@@ -168,7 +169,7 @@ def pr_tickets(repo_full: str, pr_number: int, github: Any = None, *, fresh: boo
             from ._common import _get_github_client
 
             github = _get_github_client()
-        value = _read(github, *key)
+        value = _read(github, *key, pr=pr)
     except Exception as e:  # noqa: BLE001 — a PR that cannot be read is a fact to show, not a crash
         logger.warning("tickets: could not read %s#%s: %s", key[0], key[1], e)
         return {"error": f"{type(e).__name__}: {str(e)[:200]}"}

@@ -140,6 +140,13 @@ same scope ("completed (after re-run)"). Token: `_resolve_github_token` as
 is — the session PAT when a thread is active, else `GH_TOKEN` (the bot; the
 values.yaml comment says so). Nothing here merges, re-runs or rolls back.
 
+Cost per pass: each pending PR is fetched ONCE — the sweep hands what it read
+to `pr_reconcile.reconcile_pending(outcomes=…)` and to `tickets.pr_tickets(pr=…)`.
+The CHG/RMG first-seen read (a BigQuery `history` query) runs only for a PR that
+is open or newly merged, never for a settled one. A merge whose
+`merge_commit_sha` GitHub has not filled in yet is counted in flight and read
+again next pass: nothing is matched to runs, recorded or dispatched without a SHA.
+
 ## 5. Auto-triage (tools/support/watch.py, adk_release_agent/support_watch.py)
 
 Port from `backstage_poc` (same file names, same `SUPPORT_WATCH_*` settings,

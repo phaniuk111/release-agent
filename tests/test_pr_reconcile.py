@@ -131,6 +131,20 @@ def test_reconcile_writes_merged_and_abandoned_and_leaves_open_prs(written):
                                                                    (11, "abandoned")}
 
 
+def test_reconcile_uses_the_readings_it_is_given_and_reads_only_the_rest(written):
+    when = dt.datetime(2026, 1, 2, tzinfo=dt.timezone.utc)
+    gh = _GitHub({10: _PR(merged=True, state="closed", when=when), 11: _PR(state="closed", when=when),
+                  12: _PR(), 13: _PR(merged=True, state="closed", when=when)})
+    given = {(REPO, 10): R.pr_outcome(gh.prs[10]), (REPO, 11): R.pr_outcome(gh.prs[11]),
+             (REPO, 12): None}                                    # None: read, still open
+    events = [_pending(10), _pending(11), _pending(12), _pending(13)]
+
+    assert R.reconcile_pending(events, github=gh, outcomes=given) == 3
+    assert gh.reads == [13], "only the PR nobody had read is fetched"
+    assert {(r["pr_number"], r["event_type"]) for r in written} == {(10, "deployed"), (11, "abandoned"),
+                                                                   (13, "deployed")}
+
+
 def test_reconcile_is_throttled(written):
     gh = _GitHub({10: _PR()})
     R.reconcile_pending([_pending(10)], github=gh)

@@ -220,8 +220,14 @@ def _notify_settled(repo_full: str, pr_number: int, outcome: str, pending: list[
         logger.warning("pr_reconcile: notification for %s#%s skipped", repo_full, pr_number, exc_info=True)
 
 
-def reconcile_pending(events: list[dict[str, Any]], github: Any = None) -> int:
+def reconcile_pending(events: list[dict[str, Any]], github: Any = None,
+                      outcomes: dict[tuple[str, int], tuple[str, Any, str, str] | None] | None = None) -> int:
     """Settle whatever pending PRs have merged or closed. Returns rows written.
+
+    ``outcomes`` are readings (``pr_outcome``; None = still open) the caller has
+    just taken of these PRs, by (repo, PR number): a PR in it is not fetched
+    again — the deployment tracker reads every pending PR each pass already.
+    A PR not in it is read here, as without it.
 
     Never raises: this runs inside a read, and a GitHub or BigQuery hiccup has
     to leave the read working on the events it already has.
@@ -245,7 +251,8 @@ def reconcile_pending(events: list[dict[str, Any]], github: Any = None) -> int:
         keys = sorted(open_, key=lambda k: -int(k[1]))[:_MAX_PRS_PER_RUN]
         for repo_full, pr_number in keys:
             try:
-                result = _check(github, repo_full, pr_number)
+                given = (repo_full, int(pr_number))
+                result = outcomes[given] if outcomes and given in outcomes else _check(github, repo_full, pr_number)
             except Exception:
                 logger.warning("pr_reconcile: could not read %s#%s", repo_full, pr_number,
                                exc_info=True)
