@@ -91,14 +91,15 @@ export function routeLink(link) {
     if (!raw) return { kind: 'none' };
     if (raw === 'portal:queue') return { kind: 'queue' };
     if (raw.startsWith('portal:support:')) {
-        // portal:support:<incident_id>:<date> — the id may itself carry ':'
+        // portal:support:<incident_id>:<date> (an Auto-triage finding; the stored
+        // link keeps its name) — the id may itself carry ':'
         // (a signature hash does not, but nothing guarantees it), so the date
         // is the LAST segment and the id everything between.
         const rest = raw.slice('portal:support:'.length);
         const cut = rest.lastIndexOf(':');
         const incidentId = cut < 0 ? rest : rest.slice(0, cut);
         const date = cut < 0 ? '' : rest.slice(cut + 1);
-        return { kind: 'support', incidentId, date };
+        return { kind: 'auto-triage', incidentId, date };
     }
     if (raw.startsWith('portal:deploy:')) {
         const what = raw.slice('portal:deploy:'.length).trim();

@@ -16,7 +16,7 @@ import {
 } from './core/notify.js';
 import { sendMessage } from './chat.js';
 import { showQueueTable } from './forms/queue_table.js';
-import { showSupportTriage } from './forms/support_triage.js';
+import { showAutoTriage } from './forms/auto_triage.js';
 import { showNotificationsCard } from './forms/notifications.js';
 
 const EMAIL_KEY = 'notify_email';
@@ -93,7 +93,7 @@ async function readAll() {
 export function followLink(link) {
     const route = routeLink(link);
     if (route.kind === 'queue') showQueueTable();
-    else if (route.kind === 'support') showSupportTriage({ date: route.date, incidentId: route.incidentId });
+    else if (route.kind === 'auto-triage') showAutoTriage({ date: route.date, incident: route.incidentId });
     else if (route.kind === 'chat') sendMessage(route.message);
     else if (route.kind === 'url') window.open(route.url, '_blank', 'noopener');
     return route.kind;
