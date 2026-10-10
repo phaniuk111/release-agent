@@ -726,6 +726,14 @@ class Settings(BaseSettings):
     # dataset = no memory: the "Was this right?" buttons say so and nothing is written.
     support_feedback_dataset: str = Field(default="", validation_alias=AliasChoices("SUPPORT_FEEDBACK_DATASET"))
     support_feedback_table: str = Field(default="support_findings", validation_alias=AliasChoices("SUPPORT_FEEDBACK_TABLE"))
+    # The portal's event log for notifications, Auto-triage and deployment
+    # tracking (tools/events_store.py): ONE append-only table, schema in
+    # bigquery/portal_events.schema.json. EMPTY dataset = a per-process memory
+    # store (lost on restart, not shared between replicas). Project defaults to
+    # the release log's (BQ_PROJECT, else the Vertex project).
+    portal_events_dataset: str = Field(default="", validation_alias=AliasChoices("PORTAL_EVENTS_DATASET"))
+    portal_events_table: str = Field(default="portal_events", validation_alias=AliasChoices("PORTAL_EVENTS_TABLE"))
+    portal_events_project: str = Field(default="", validation_alias=AliasChoices("PORTAL_EVENTS_PROJECT"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every

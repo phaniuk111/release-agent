@@ -29,6 +29,14 @@ model only chooses which tool to call.
 - **BigQuery** (`release_queue.py`, `bq_cost.py`): INSERT only. Every cost
   statement passes `bq_guard.py`. An empty `BQ_DATASET` disables the queue
   cleanly; check `queue_enabled()` before reading.
+- **Portal events** (`events_store.py`): the ONE writer/reader of the
+  `portal_events` table (notifications, Auto-triage, deployment tracking) — a
+  second append-only table under the same rules. Rows are flat and typed
+  (`bigquery/portal_events.schema.json` + `_SCHEMA`, additive nullable columns
+  only; a test fails when they differ); "read", "dismissed", "cleared" are new
+  rows and every read is the latest row per subject. Reads bind every value as a
+  query parameter. Nothing raises — an outage is `{"ok": False, "error"}` — and
+  an empty `PORTAL_EVENTS_DATASET` is a per-process memory store.
 - **Support** (`tools/support/`): read-only L1 view of a control
   table. Generic ROLES only — the real table, columns, statuses and owners are
   config (`SUPPORT_*`; only `SUPPORT_TABLE` is required — `discover.py` maps the

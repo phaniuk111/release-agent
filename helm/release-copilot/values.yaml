@@ -286,6 +286,16 @@ config:
   # comes from bigquery/support_findings.schema.json (terraform module).
   SUPPORT_FEEDBACK_DATASET: ""
   SUPPORT_FEEDBACK_TABLE: "support_findings"
+  # ==================== [FEATURE] portal events ============================
+  # The log behind the notification bell (and, later, Auto-triage and deployment
+  # tracking): ONE append-only table, INSERT only - a notification read is a new
+  # row. Provisioned by the terraform module (bigquery/portal_events.schema.json);
+  # service account: roles/bigquery.dataEditor on THAT dataset only. EMPTY DATASET =
+  # a memory store inside the pod: events are lost on restart and each replica
+  # sees only its own, so keep one replica until a dataset is set.
+  PORTAL_EVENTS_DATASET: ""          # e.g. "release_agent" (the release log's dataset works)
+  PORTAL_EVENTS_TABLE: "portal_events"
+  PORTAL_EVENTS_PROJECT: ""          # empty = BQ_PROJECT (or GOOGLE_CLOUD_PROJECT)
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token
   # usage, each tool call, the deploy Workflow's nodes — exported as

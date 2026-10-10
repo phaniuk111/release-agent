@@ -17,6 +17,18 @@ def _disable_bq_queue(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _portal_events_in_memory(monkeypatch):
+    """The portal event log (notifications, ...) is a per-process memory store
+    unless a dataset is set: tests start each with it empty and never reach BQ."""
+    from release_agent.tools import events_store
+
+    monkeypatch.setattr(settings, "portal_events_dataset", "", raising=False)
+    events_store.clear_memory()
+    yield
+    events_store.clear_memory()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_bigquery(monkeypatch):
     """No test may send a query to real BigQuery. Blanking the dataset was not
     enough: a read that skipped the enabled check still reached the project the

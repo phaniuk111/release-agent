@@ -45,6 +45,8 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   derived, latest event wins). An outage degrades to an error dict, never
   blocks a release. Schema: `bigquery/release_intents.schema.json` and
   `_SCHEMA` in `release_queue.py` together, additive nullable columns only.
+  `portal_events` (`tools/events_store.py`, `bigquery/portal_events.schema.json`)
+  is a second append-only table under the same rules.
 - **Secrets and identity.** GitHub PATs are memory-only and masked, and are
   dropped with a conversation idle for `SESSION_IDLE_MINUTES` (60); nothing
   sensitive in git, BigQuery or logs. The caller's identity comes only from a

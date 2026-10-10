@@ -92,6 +92,31 @@ then in Helm values `SUPPORT_FEEDBACK_DATASET: "release_agent"`. Leave it empty
 and investigations still work — the "Was this right?" row is simply not shown
 and no accuracy is measured.
 
+## Optional - the portal events table (notifications, Auto-triage, deployment tracking)
+
+The bell, Auto-triage and deployment tracking share a fourth append-only table,
+[portal_events.schema.json](portal_events.schema.json): flat and typed (an
+envelope, the human-readable fields, and each domain's own columns; `details`
+is JSON text for long overflow only). One INSERT per fact - a notification
+being read is a new row, and the app takes the latest per subject. Day
+partitioned on `event_ts`, clustered on `domain, subject, recipient`, in the
+SAME dataset so the existing `dataEditor` binding covers it:
+
+```hcl
+module "release_events" {
+  # ...as above...
+  portal_events_table = "portal_events"   # the default; empty = not created
+}
+```
+
+or `bq mk --table --time_partitioning_field event_ts --time_partitioning_type DAY
+--clustering_fields domain,subject,recipient
+PROJECT:release_agent.portal_events bigquery/portal_events.schema.json`, then in
+Helm values `PORTAL_EVENTS_DATASET: "release_agent"`. Leave it empty and the
+features still run - their events are kept in the pod's memory only (lost on
+restart, not shared between replicas). `recipient` and `actor` hold emails: set
+`partition_expiration_days` per your data policy.
+
 ## Rules of the road
 
 - **Append-only.** The app only ever INSERTs; queue state and per-environment
@@ -100,6 +125,8 @@ and no accuracy is measured.
 - **Schema changes** are additive nullable columns: edit
   `release_intents.schema.json`, `terraform apply` (BigQuery accepts additive
   schema updates in place), and mirror the column in `_SCHEMA` in
-  `src/release_agent/tools/release_queue.py`.
+  `src/release_agent/tools/release_queue.py` (for `portal_events`:
+  `portal_events.schema.json` and `_SCHEMA` in `tools/events_store.py`; a test
+  fails when they differ).
 - Retention/PII: `requested_by` holds emails — set
   `partition_expiration_days` per your data policy if required.

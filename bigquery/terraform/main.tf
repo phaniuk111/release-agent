@@ -69,6 +69,12 @@ variable "support_findings_table" {
   default     = ""
 }
 
+variable "portal_events_table" {
+  description = "Table for the notifications / Auto-triage / deployment-tracking events (tools/events_store.py) - must match Helm values config.PORTAL_EVENTS_TABLE, with config.PORTAL_EVENTS_DATASET = this dataset. Empty = not created."
+  type        = string
+  default     = "portal_events"
+}
+
 resource "google_bigquery_dataset" "release_agent" {
   project     = var.project_id
   dataset_id  = var.dataset_id
@@ -137,6 +143,31 @@ resource "google_bigquery_table" "support_findings" {
   schema = file("${path.module}/../support_findings.schema.json")
 }
 
+# The portal's second event log: notifications, Auto-triage findings and
+# deployment tracking in ONE flat, typed, append-only table. Reads and
+# acknowledgements are new rows (the app takes the latest per subject), so it is
+# never UPDATEd or DELETEd. It holds people's emails (recipient, actor): the
+# retention variable above applies, and the table is guarded like the release log.
+resource "google_bigquery_table" "portal_events" {
+  count       = var.portal_events_table == "" ? 0 : 1
+  project     = var.project_id
+  dataset_id  = google_bigquery_dataset.release_agent.dataset_id
+  table_id    = var.portal_events_table
+  description = "Portal events: notifications, Auto-triage findings, deployment tracking (append-only) - state is derived by the app, never UPDATE/DELETE"
+
+  deletion_protection = true
+
+  time_partitioning {
+    type          = "DAY"
+    field         = "event_ts"
+    expiration_ms = var.partition_expiration_days > 0 ? var.partition_expiration_days * 24 * 60 * 60 * 1000 : null
+  }
+
+  clustering = ["domain", "subject", "recipient"]
+
+  schema = file("${path.module}/../portal_events.schema.json")
+}
+
 # Least privilege for the runtime SA: insert + select on THIS dataset only,
 # plus the project-level right to run query jobs. No schema permissions —
 # column additions are applied here (terraform), not by the app.
@@ -168,4 +199,9 @@ output "bq_cost_findings_table_id" {
 output "support_findings_table_id" {
   value       = var.support_findings_table == "" ? null : "${var.project_id}.${var.dataset_id}.${var.support_findings_table}"
   description = "Fully-qualified id of the support feedback memory table, when created."
+}
+
+output "portal_events_table_id" {
+  value       = var.portal_events_table == "" ? null : "${var.project_id}.${var.dataset_id}.${var.portal_events_table}"
+  description = "Fully-qualified id of the portal events table, when created."
 }
