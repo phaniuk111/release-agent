@@ -22,5 +22,9 @@ Conventions:
   prebuilt file: only classes already in `vendor/tailwind.css` work; a new one
   needs `scripts/css/build.sh` and the regenerated CSS committed.
 - Feature visibility comes from `window.PORTAL_UI` (server-side
-  `features.ui_config`), e.g. `llm` and preview groups.
+  `features.ui_config`), e.g. `llm`, preview groups and `features` (the
+  bell in `notify.js` mounts no DOM unless `notifications` is listed).
+- The bell polls only while the tab is visible; a notification's `link` is
+  routed by `core/notify.js` `routeLink` — `portal:` actions and `chat:`
+  messages stay in the page, only http(s) opens a tab.
 - The deploy and release forms send a required `jira` (`core/jira.js`).

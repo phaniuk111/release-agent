@@ -8,6 +8,7 @@ import { toggleInsights, renderInsights } from './insights.js';
 import { loadReleaseStatus, toggleBannerDetail, startBannerAgeTicker, showBannerIdle } from './status.js';
 import { renderConsoleLinks } from './links.js';
 import { llmEnabled } from './core/capabilities.js';
+import { mountNotifyBell } from './notify.js';
 
 // Inline onclick handlers in the served HTML (and interrupt-box templates).
 // EXACTLY the names an onclick= names — a global nothing calls is a module
@@ -42,7 +43,8 @@ window.onload = () => {
     // Static config read — unlike the release banner this costs no GitHub call,
     // so it can load on every page view.
     renderConsoleLinks();
-    // Keep it fresh so a release raised in another session shows up here.
+    // The bell: only for a person the feature is on for (window.PORTAL_UI.features).
+    mountNotifyBell();
 };
 
 // ⌘K / Ctrl+K anywhere, or "/" in an empty composer, opens the palette.

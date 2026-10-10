@@ -91,6 +91,15 @@ export const supportFeedback = (payload) => post('/api/support/feedback', payloa
 /** How the investigations were rated: totals, accuracy, by category/model, the newest wrong answers. */
 export const supportFeedbackStats = (days) => get('/api/support/feedback/stats?' + query({ days: days || 30 }));
 
+// ---- notifications (the bell) ---------------------------------------------------
+// Per verified identity; with identity off the page's email travels as `email`.
+/** @returns {ok, unread, items: [{subject, kind, title, body, link, severity, status, at, ...}], checked_at, unverified?} */
+export const getNotifications = (params) => get('/api/notifications?' + query(params || {}));
+/** @param {{subjects: string[], status: 'read'|'dismissed', email?: string}} body */
+export const markNotifications = (body) => post('/api/notifications/mark', body);
+/** @param {{email?: string}} body */
+export const readAllNotifications = (body) => post('/api/notifications/read-all', body || {});
+
 // ---- release queue ----------------------------------------------------------
 export const QUEUE_PATH = '/api/release-queue';
 export const getQueue = () => get(QUEUE_PATH);

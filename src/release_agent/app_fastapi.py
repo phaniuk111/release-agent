@@ -306,6 +306,9 @@ async def chat_page(request: Request):
                     <span>What can I do?</span>
                     <span class="text-slate-500 font-mono text-[10px] border border-slate-700 rounded px-1">⌘K</span>
                 </button>
+                <!-- The notification bell (static/notify.js) mounts here, only
+                     when the feature is on for this person. -->
+                <div id="notify-slot" class="relative hidden"></div>
                 <button onclick="newThread()"
                         class="px-3 py-1 glass navbtn hover:border-emerald-400/30 rounded-lg text-xs flex items-center gap-2">
                     <i class="fa-solid fa-plus"></i>

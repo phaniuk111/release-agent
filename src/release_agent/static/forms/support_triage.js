@@ -16,14 +16,22 @@ import { opening, withDismiss } from './common.js';
 // Every value comes from the control table — error text, unit names — so all
 // of it goes through esc(), title attributes included.
 
-export async function showSupportTriage() {
+// `at` ({date, incidentId}, optional) opens the card on that business date
+// and scrolls to that incident — how a notification about it lands here.
+export async function showSupportTriage(at) {
     const _ph = opening('Support triage');
     const chat = document.getElementById('chat');
     const wrap = document.createElement('div');
     wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm queue-table-card';
     _ph.replaceWith(wrap);
-    await render(wrap, '', false);
+    await render(wrap, (at && at.date) || '', false);
     withDismiss(wrap);
+    const target = at && at.incidentId && wrap.querySelector('[data-incident="' + CSS.escape(at.incidentId) + '"]');
+    if (target) {
+        target.style.outline = '1px solid #fbbf24';
+        target.scrollIntoView({ block: 'center' });
+        return;
+    }
     chat.scrollTop = chat.scrollHeight;
 }
 
@@ -58,7 +66,7 @@ function incidentHtml(inc, i, report) {
           esc(inc.error_text) + '">' + esc(inc.error_text) + '</div>' : '';
     const jobs = (inc.job_ids || []).length
         ? '<div class="text-[10px] text-slate-500 mt-1">jobs: ' + jobLinks(inc.job_ids, report.job_url) + '</div>' : '';
-    return '<div class="rounded-xl border border-slate-700 bg-slate-900/60 p-3 mb-2">' +
+    return '<div class="rounded-xl border border-slate-700 bg-slate-900/60 p-3 mb-2" data-incident="' + esc(inc.id || '') + '">' +
         '<div class="flex items-center gap-2 flex-wrap">' +
         '<span class="rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ' + pri + '">' + esc(inc.priority || 'low') + '</span>' +
         '<span class="font-semibold text-slate-100">' + esc(inc.title || '') + '</span>' +
