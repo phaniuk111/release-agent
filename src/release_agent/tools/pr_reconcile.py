@@ -170,15 +170,49 @@ def resolution_rows(
     return rows
 
 
-def _check(gh: Any, repo_full: str, pr_number: int) -> tuple[str, Any, str] | None:
-    """('merged'|'closed', when, merged_by) — or None while the PR is open."""
+def _check(gh: Any, repo_full: str, pr_number: int) -> tuple[str, Any, str, str] | None:
+    """('merged'|'closed', when, merged_by, url) — or None while the PR is open."""
     pr = gh.get_repo(repo_full).get_pull(int(pr_number))
+    url = str(getattr(pr, "html_url", "") or "")
     if getattr(pr, "merged", False):
         by = getattr(getattr(pr, "merged_by", None), "login", "") or ""
-        return "merged", getattr(pr, "merged_at", None), by
+        return "merged", getattr(pr, "merged_at", None), by, url
     if getattr(pr, "state", "") == "closed":
-        return "closed", getattr(pr, "closed_at", None), ""
+        return "closed", getattr(pr, "closed_at", None), "", url
     return None
+
+
+def _notify_settled(repo_full: str, pr_number: int, outcome: str, pending: list[dict[str, Any]],
+                    rows: list[dict[str, Any]], url: str) -> None:
+    """Tell whoever asked for the change that its PR settled — the merge
+    happened in GitHub, outside any chat turn, so the bell is the one place
+    they hear of it. Best-effort: the events are already written, and nothing
+    here may undo that or raise into the read this runs in."""
+    try:
+        from . import notifications
+
+        who = sorted({str(ev.get("requested_by") or "").strip().lower() for ev in pending} - {""})
+        if not who:
+            return
+        env = str(next((r.get("environment") for r in rows if r.get("environment")), "") or "")
+        landed = [r for r in rows if r.get("event_type") == "deployed"] or rows
+        charts = sorted({f"{r.get('artifact_name')}:{r.get('artifact_version')}" for r in landed})
+        if outcome == "merged":
+            title = (f"Release PR #{pr_number} merged — {len(charts)} chart{'' if len(charts) == 1 else 's'}"
+                     f" on {env.upper() or 'the target'}")
+            severity = "info"
+        else:
+            title = f"Release PR #{pr_number} closed without merging"
+            severity = "warning"
+        for person in who:
+            notifications.notify(
+                person, kind="release_pr", title=title, body=", ".join(charts),
+                link=url or f"https://github.com/{repo_full}/pull/{pr_number}",
+                scope=f"release-pr:{repo_full}#{pr_number}", severity=severity,
+                repo=repo_full, pr_number=int(pr_number), environment=env or None,
+            )
+    except Exception:
+        logger.warning("pr_reconcile: notification for %s#%s skipped", repo_full, pr_number, exc_info=True)
 
 
 def reconcile_pending(events: list[dict[str, Any]], github: Any = None) -> int:
@@ -213,12 +247,14 @@ def reconcile_pending(events: list[dict[str, Any]], github: Any = None) -> int:
                 continue
             if result is None:
                 continue
-            outcome, when, by = result
-            rows = resolution_rows(open_[(repo_full, pr_number)], outcome, when, by)
+            outcome, when, by, url = result
+            pending = open_[(repo_full, pr_number)]
+            rows = resolution_rows(pending, outcome, when, by)
             if rows and _rq._insert(rows).get("ok"):
                 written += len(rows)
                 logger.info("pr_reconcile: %s#%s %s — wrote %d event(s)",
                             repo_full, pr_number, outcome, len(rows))
+                _notify_settled(repo_full, pr_number, outcome, pending, rows, url)
         return written
     except Exception:
         logger.warning("pr_reconcile: reconciliation skipped", exc_info=True)

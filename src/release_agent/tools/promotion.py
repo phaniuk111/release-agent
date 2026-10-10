@@ -20,6 +20,7 @@ Entries are keyed by helm_chart_name (one entry per chart per env file).
 
 import itertools
 import json
+import logging
 import threading
 import time
 import uuid
@@ -204,14 +205,41 @@ def _sit_to_uat_pr(repo, repo_full: str):
         time.sleep(5)
 
 
-def _via_sit_outcome(repo, repo_full: str, prs: list, what: str) -> dict:
+_logger = logging.getLogger("release_copilot")
+
+
+def _notify_uat_pr(repo_full: str, pr, charts: str) -> None:
+    """Tell the developer their SIT -> UAT PR is up — it is theirs to merge,
+    and a chat tab closed during the wait would otherwise be the only place
+    that said so. Only the verified caller is known here. Best-effort: the
+    deploy's outcome is already decided and this cannot change it or raise."""
+    try:
+        from . import attribution, notifications
+
+        who = attribution.requester_email()
+        if not who:
+            return
+        notifications.notify(
+            who, kind="uat_pr",
+            title=f"SIT → UAT PR #{pr.number} raised for your deploy of {charts} — merge when ready",
+            body=f"{settings.sit_branch} → {settings.uat_branch} in {repo_full}; {settings.uat_branch} is unchanged until it is merged.",
+            link=str(getattr(pr, "html_url", "") or ""), scope=f"uat-pr:{repo_full}#{pr.number}",
+            repo=repo_full, pr_number=int(pr.number), environment="uat",
+        )
+    except Exception:
+        _logger.warning("UAT PR notification for %s skipped", repo_full, exc_info=True)
+
+
+def _via_sit_outcome(repo, repo_full: str, prs: list, what: str, charts: str = "") -> dict:
     """The change is on SIT; the PR that finishes it is SIT -> UAT, the
     developer's to merge. Its pending entry is ``final``: merging it is what
-    lands the change (recorded then by pr_reconcile)."""
+    lands the change (recorded then by pr_reconcile). ``charts`` names what
+    was deployed, for the notification."""
     sit, uat = settings.sit_branch, settings.uat_branch
     lead = f"{what}: merged into {sit} — {_pr_chain_note(prs)}"
     pr = _sit_to_uat_pr(repo, repo_full)
     if pr is not None:
+        _notify_uat_pr(repo_full, pr, charts or what)
         return {
             "pending_prs": [{"number": pr.number, "url": pr.html_url, "stage": f"→{uat}",
                              "reason": f"{sit} → {uat}, raised by the repository's workflow",
@@ -712,7 +740,7 @@ def open_release_pr(
         )
         # Still "deploying" until the SIT -> UAT PR is there to show, so nobody
         # lands a second change on SIT in between (it would ride along).
-        via_sit = (_via_sit_outcome(repo, repo_key, res["prs"], f"Deploy {chart_str} to UAT")
+        via_sit = (_via_sit_outcome(repo, repo_key, res["prs"], f"Deploy {chart_str} to UAT", charts=chart_str)
                    if res["changed"] and res["delivered"] else None)
     finally:
         _release_uat_deploy(repo_key)

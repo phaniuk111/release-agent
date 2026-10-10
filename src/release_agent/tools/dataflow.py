@@ -278,6 +278,20 @@ def workflow_dispatch_inputs(repo, workflow, ref: str) -> dict:
     return inputs if isinstance(inputs, dict) else {}
 
 
+def _follow_run(repo, run: dict, image: str, tag: str, run_url: str) -> None:
+    """Hand the run to df_run so the bell says how it ended. Only the verified
+    caller is told — nobody else is known here. Best-effort: the deploy has
+    dispatched, and is reported dispatched whatever happens to this."""
+    try:
+        from . import attribution, df_run
+
+        who = attribution.requester_email()
+        if who:
+            df_run.watch_in_background(repo, run.get("id"), image, tag, who, run_url)
+    except Exception:
+        logger.warning("DF run %s: not followed", run.get("id"), exc_info=True)
+
+
 @tool(args_schema=DeployDataflowInput)
 def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str = "") -> str:
     """Deploy a Dataflow flex template: dispatch the DF repo's deploy workflow with
@@ -354,6 +368,8 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
     if run and not run.get("url") and base:
         run["url"] = f"{base}/actions/runs/{run['id']}"
     run_url = run["url"] if run else ""
+    if run:
+        _follow_run(repo, run, image, tag, run_url)
     note = (
         f"Dispatched DF deploy workflow {settings.df_deploy_workflow} in {repo_full} "
         f"for {image}:{tag} → {env}."

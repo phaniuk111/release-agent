@@ -40,7 +40,12 @@ model only chooses which tool to call.
 - **Notifications** (`notifications.py`) sit on `events_store`: `notify` never
   raises or waits on the caller's work; a scope that already has a notification
   gets an `updated` row with the same subject; `mark` writes only the
-  recipient's own subjects.
+  recipient's own subjects. A producer is one best-effort call at the place
+  the fact is already known, wrapped so it can never fail or change the action
+  it rides on (`pr_reconcile._notify_settled`, `promotion._notify_uat_pr`,
+  `dataflow._follow_run` → `df_run.py`, `release_queue._notify_requeued`); the
+  recipient is an email the code already has — the verified caller or the
+  event's `requested_by` — never a typed one, and nobody known means nothing sent.
 - **Support** (`tools/support/`): read-only L1 view of a control
   table. Generic ROLES only — the real table, columns, statuses and owners are
   config (`SUPPORT_*`; only `SUPPORT_TABLE` is required — `discover.py` maps the

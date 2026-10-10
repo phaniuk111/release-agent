@@ -690,7 +690,32 @@ def requeue_from_history(artifact_name: str, artifact_version: str, actor: str) 
     if result.get("ok"):
         result["artifact"] = f"{name}:{version}"
         result["note"] = "back in the next release with the run, ticket and details it first qualified with"
+        _notify_requeued(events, name, version, origin)
     return result
+
+
+def _notify_requeued(events: list[dict[str, Any]], name: str, version: str, origin: dict[str, Any]) -> None:
+    """Tell the chart's ORIGINAL requester it is back in the queue — a release
+    manager put it back, and the person who queued it would otherwise learn of
+    the redo from the next release. Best-effort: the queued event is written
+    and this changes nothing about it, raises nothing into it."""
+    try:
+        from . import notifications
+
+        who = str(origin.get("requested_by") or "").strip()
+        if not who:
+            return
+        # The newest release that shipped this version — the one being redone.
+        release = next((str(ev.get("release_name") or "") for ev in reversed(events)
+                        if ev.get("event_type") == "released" and ev.get("artifact_name") == name
+                        and ev.get("artifact_version") == version and ev.get("release_name")), "")
+        title = "Charts put back in the queue" + (f" — release {release} did not go through" if release else "")
+        notifications.notify(
+            who, kind="requeue", title=title, body=f"{name}:{version} is back in the next release",
+            link="portal:queue", scope=f"requeue:{release}:{name}",
+        )
+    except Exception:
+        logger.warning("requeue of %s:%s: notification skipped", name, version, exc_info=True)
 
 
 _HISTORY_LOOKBACK_DAYS = 365
