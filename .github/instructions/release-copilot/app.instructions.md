@@ -53,6 +53,12 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   used and the answer says `unverified`. A notification that changes is a new row
   with the SAME subject (one bell item per `scope`); read/dismissed are new rows;
   a notify call is best-effort and never raises.
+- **Auto-triage** (`tools/support/watch.py`, `adk_release_agent/support_watch.py`,
+  routes in `support_api.py`, preview feature `auto-triage`): Support triage and
+  the Investigate pipeline on a timer. Findings live in `portal_events` (domain
+  `watch`), the bell is told per incident, a person's resolve/dismiss/reopen is
+  recorded against the VERIFIED caller, and the loop runs only when
+  `SUPPORT_WATCH_MINUTES > 0` and `SUPPORT_TABLE` is set. Read-only throughout.
 - **Secrets and identity.** GitHub PATs are memory-only and masked, and are
   dropped with a conversation idle for `SESSION_IDLE_MINUTES` (60); nothing
   sensitive in git, BigQuery or logs. The caller's identity comes only from a

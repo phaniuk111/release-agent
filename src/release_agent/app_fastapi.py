@@ -69,11 +69,19 @@ async def _sweep_idle_forever() -> None:
 async def _lifespan(_app):
     sweeper = (asyncio.create_task(_sweep_idle_forever(), name="idle-sweep")
                if settings.session_idle_minutes > 0 else None)
+    # Auto-triage's loop (adk_release_agent/support_watch.py): only when asked
+    # for by SUPPORT_WATCH_MINUTES and there is a control table to watch.
+    from adk_release_agent import support_watch
+
+    watcher = (asyncio.create_task(support_watch.watch_forever(), name="auto-triage")
+               if support_watch.scheduled() else None)
     try:
         yield
     finally:
         if sweeper is not None:
             sweeper.cancel()
+        if watcher is not None:
+            watcher.cancel()
 
 
 app = FastAPI(title=settings.app_title, version="0.2.0", lifespan=_lifespan)

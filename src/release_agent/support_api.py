@@ -1,7 +1,9 @@
-"""The Support routes: triage, the live mapping check, and investigation feedback.
+"""The Support routes: triage, the live mapping check, investigation feedback,
+and Auto-triage.
 
 Every route checks the `support-triage` feature gate — open to everyone unless
-PREVIEW_FEATURES lists it (it is out of preview by default). They share the app's
+PREVIEW_FEATURES lists it (it is out of preview by default); Auto-triage's
+routes check their own, `auto-triage`, a preview feature by default. They share the app's
 helpers (the caller's verified identity, the single-flight cache, who is acting)
 by importing them inside the handler: app_fastapi includes this router, so a
 module-level import back into it would be circular.
@@ -124,3 +126,84 @@ def support_feedback_for_incident(request: Request, date: str = "", incident_id:
     if not features.allowed("support-triage", _caller(request)):
         return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("support-triage")})
     return feedback.for_incident(date, incident_id)
+
+
+# ----- Auto-triage (tools/support/watch.py, adk_release_agent/support_watch.py) ------
+# Its own preview feature, `auto-triage`: the findings are investigations run
+# without anyone asking, so they are shown only to the people testing that.
+
+def _auto_triage_refusal(caller):
+    from fastapi.responses import JSONResponse
+
+    if features.allowed("auto-triage", caller):
+        return None
+    return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("auto-triage")})
+
+
+@router.get("/api/support/watch")
+def support_watch_feed(request: Request, date: str = ""):
+    """Auto-triage's findings for one business date (default: the date of its
+    last pass), ranked, and its own status — when it last ran, when it will
+    again, and what went wrong if it did."""
+    from .app_fastapi import _caller
+
+    from .tools.support import watch
+
+    refused = _auto_triage_refusal(_caller(request))
+    if refused:
+        return refused
+    status = watch.status()
+    day = (date or "").strip()[:10] or status.get("last_business_date") or ""
+    res = watch.latest(day)
+    out = {"ok": bool(res.get("ok")), "business_date": day, "findings": res.get("findings") or [], "status": status}
+    if res.get("error"):
+        out["error"] = res["error"]
+    return out
+
+
+class SupportWatchRunRequest(BaseModel):
+    business_date: str = ""
+
+
+@router.post("/api/support/watch/run")
+async def support_watch_run(req: SupportWatchRunRequest, request: Request):
+    """Run one Auto-triage pass now (the "Run now" button; the timer runs the
+    same). Read-only, but it spends model calls, so it is a write in identity
+    terms. Refused while a pass is already running."""
+    from adk_release_agent.support_watch import run_pass
+
+    from .app_fastapi import _actor_or_refusal, _resolve_caller
+
+    caller = await _resolve_caller(request)
+    refused = _auto_triage_refusal(caller)
+    if refused:
+        return refused
+    _, refused = _actor_or_refusal("", caller)
+    if refused:
+        return refused
+    return await run_pass(req.business_date.strip()[:10])
+
+
+class SupportWatchStatusRequest(BaseModel):
+    """A person's change to a finding. No actor field: who is the verified caller."""
+    business_date: str
+    incident_id: str
+    status: str
+
+
+@router.post("/api/support/watch/status")
+def support_watch_set_status(req: SupportWatchStatusRequest, request: Request):
+    """Dismiss, resolve, or reopen a finding — a new row, and the bell item is
+    updated in place."""
+    from .app_fastapi import _actor_or_refusal, _caller
+
+    from .tools.support import watch
+
+    caller = _caller(request)
+    refused = _auto_triage_refusal(caller)
+    if refused:
+        return refused
+    actor, refused = _actor_or_refusal("", caller)
+    if refused:
+        return refused
+    return watch.set_status(req.business_date.strip()[:10], req.incident_id.strip(), req.status.strip(), actor)

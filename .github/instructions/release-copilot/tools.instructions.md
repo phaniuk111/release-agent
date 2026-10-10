@@ -55,5 +55,12 @@ model only chooses which tool to call.
   pure report (`report.py`), the L1 layer (`incidents.py`), each evidence reader
   on its own. An evidence read goes through `cache.remembered` keyed
   (kind, subject, business date) so the collector and the chat tools share it.
+- **Auto-triage** (`support/watch.py`, preview feature `auto-triage`): findings
+  are `events_store` rows (domain `watch`, subject `incident:<id>`, version =
+  business date; long parts in `details`), never a table of their own; every
+  change — cleared, resolved, dismissed, reopened, updated — is a NEW row. The
+  finding's cause is what code established (`finding_from`, PURE); a timed-out
+  investigation is a finding that says so. The bell goes through
+  `notifications.notify` with one scope per incident; nothing here changes a job.
 - **Parsing**: no regex. Split, partition and loop (see `json_splice.py`,
   `release_chain.py`).
