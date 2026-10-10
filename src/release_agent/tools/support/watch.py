@@ -121,7 +121,8 @@ def grew(finding: dict[str, Any], incident: dict[str, Any]) -> bool:
     return bool(set(job_signature(incident)) - set(finding.get("jobs") or []))
 
 
-def finding_from(incident: dict[str, Any], outcome: dict[str, Any], business_date: str) -> dict[str, Any]:
+def finding_from(incident: dict[str, Any], outcome: dict[str, Any], business_date: str,
+                 event_type: str = "finding") -> dict[str, Any]:
     """PURE. One finding from a triage incident and its investigation outcome
     ({"text", "bundle", "model", "model_calls", "seconds", "fallback",
     "timed_out"?}).
@@ -180,7 +181,7 @@ def finding_from(incident: dict[str, Any], outcome: dict[str, Any], business_dat
         "investigated_at": _iso(_now()),
         "changed_at": "",
         "actor": WATCHER,
-        "event_type": "finding",
+        "event_type": event_type,
     }
 
 
@@ -202,6 +203,16 @@ def new_incidents(report: dict[str, Any], known: set[str]) -> list[dict[str, Any
     triage's own order (most urgent first)."""
     return [i for i in (report.get("incidents") or []) if isinstance(i, dict) and i.get("id")
             and str(i["id"]) not in known]
+
+
+def returned(findings: list[dict[str, Any]], report: dict[str, Any]) -> list[dict[str, Any]]:
+    """PURE. Incidents whose finding the WATCHER cleared (they left the table)
+    and that are in the triage again on the same date: the problem is back, so
+    it is investigated and told again like a new one. Dismissed and resolved
+    are a person's decision and stay as they are. In the triage's own order."""
+    cleared = {str(f.get("incident_id")) for f in findings if f.get("status") == "cleared"}
+    return [i for i in (report.get("incidents") or []) if isinstance(i, dict) and i.get("id")
+            and str(i["id"]) in cleared]
 
 
 def grown(findings: list[dict[str, Any]], report: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
@@ -433,6 +444,8 @@ def notification(finding: dict[str, Any]) -> dict[str, Any]:
     it, and a scope per incident so a change updates it in place."""
     status = finding.get("status") or "open"
     lead = {"open": "", "dismissed": "Dismissed — ", "resolved": "Resolved — ", "cleared": "Cleared — "}.get(status, "")
+    if status == "open" and finding.get("event_type") == "reopened" and finding.get("actor") == WATCHER:
+        lead = "Back — "      # the watcher's own; a person reopening one is not news to them
     day, inc = str(finding.get("business_date") or ""), str(finding.get("incident_id") or "")
     return {
         "kind": "auto_triage",

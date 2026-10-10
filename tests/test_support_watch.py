@@ -287,6 +287,45 @@ def test_a_finding_whose_incident_left_the_triage_is_cleared(monkeypatch):
     assert N.list_for("alice@example.com")["items"][0]["title"] == "Auto-triage: Cleared — a failed"
 
 
+def test_a_cleared_incident_that_returns_is_investigated_and_told_again(monkeypatch):
+    monkeypatch.setattr(settings, "support_notify_recipients", "alice@example.com")
+    _fake_pass(monkeypatch, [_incident("a")])
+    asyncio.run(support_watch.run_pass())
+    _fake_pass(monkeypatch, [])
+    assert asyncio.run(support_watch.run_pass())["cleared"] == ["a"]
+    calls = _fake_pass(monkeypatch, [_incident("a")])
+    res = asyncio.run(support_watch.run_pass())
+    assert res["reopened"] == ["a"] and res["investigated"] == ["a"] and calls == ["a"]
+    f = watch.latest(DAY)["findings"][0]
+    assert f["status"] == "open" and f["event_type"] == "reopened" and f["actor"] == "watcher"
+    assert f["notified"] is True
+    items = N.list_for("alice@example.com")["items"]
+    assert len(items) == 1 and items[0]["title"] == "Auto-triage: Back — a failed"   # one bell item, updated
+    # Open again, it is an ordinary open finding: nothing more the next time.
+    again = asyncio.run(support_watch.run_pass())
+    assert again["reopened"] == [] and again["investigated"] == [] and calls == ["a"]
+
+
+def test_a_dismissed_or_resolved_incident_that_returns_stays_as_a_person_left_it(monkeypatch):
+    _fake_pass(monkeypatch, [_incident("a"), _incident("b")])
+    asyncio.run(support_watch.run_pass())
+    assert watch.set_status(DAY, "a", "dismissed", "p@example.com")["ok"]
+    assert watch.set_status(DAY, "b", "resolved", "p@example.com")["ok"]
+    calls = _fake_pass(monkeypatch, [_incident("a"), _incident("b")])
+    res = asyncio.run(support_watch.run_pass())
+    assert res["reopened"] == [] and res["investigated"] == [] and calls == []
+    assert {f["incident_id"]: f["status"] for f in watch.latest(DAY)["findings"]} == {
+        "a": "dismissed", "b": "resolved"}
+
+
+def test_returned_is_only_a_watcher_cleared_incident_present_again():
+    report = {"incidents": [_incident("a"), _incident("b"), _incident("c")]}
+    findings = [{"incident_id": "a", "status": "cleared"}, {"incident_id": "b", "status": "dismissed"},
+                {"incident_id": "c", "status": "open"}, {"incident_id": "d", "status": "cleared"}]
+    assert [i["id"] for i in watch.returned(findings, report)] == ["a"]
+    assert watch.returned(findings, {"incidents": []}) == []
+
+
 def test_a_cancelled_pass_releases_the_lock(monkeypatch):
     """Shutdown cancels the loop's task mid-pass; a lock left held would refuse
     every later pass and Run now."""

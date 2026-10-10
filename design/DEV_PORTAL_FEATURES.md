@@ -158,7 +158,15 @@ same routes `/api/support/watch`, `/watch/run`, `/watch/status`), with:
   end + 1 min); the status says `next_at`;
 - compare the JOBS inside an incident, not only its id: an incident whose
   job list grew since its finding is re-notified ("now 5 jobs");
-- a finding is stored and notified as EACH investigation completes.
+- a finding the watcher CLEARED (its incident left the table) whose incident
+  is in the table again the same day is new news: a `reopened` row (status
+  open), a fresh investigation under the same cap, and the bell item updated
+  to "Auto-triage: Back — <title>" (`watch.returned`). Dismissed and resolved
+  stay as the person left them;
+- a finding is stored and notified as EACH investigation completes;
+- "Run now" starts the pass in the background and answers `{ok, started}` at
+  once (the card polls the status); a pass cancelled mid-way releases the
+  watcher's lock (`error: "cancelled"`).
 The name a person sees is **Auto-triage** everywhere: pill, strip, card, bell.
 
 UI: a pill `Auto-triage` in the Support group (`form: 'auto-triage'`); a strip
