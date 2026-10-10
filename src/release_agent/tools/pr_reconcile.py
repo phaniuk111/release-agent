@@ -172,7 +172,12 @@ def resolution_rows(
 
 def _check(gh: Any, repo_full: str, pr_number: int) -> tuple[str, Any, str, str] | None:
     """('merged'|'closed', when, merged_by, url) — or None while the PR is open."""
-    pr = gh.get_repo(repo_full).get_pull(int(pr_number))
+    return pr_outcome(gh.get_repo(repo_full).get_pull(int(pr_number)))
+
+
+def pr_outcome(pr: Any) -> tuple[str, Any, str, str] | None:
+    """The same reading of a PR already fetched — the deployment tracker holds
+    the PR for its merge SHA too, and must not fetch it twice."""
     url = str(getattr(pr, "html_url", "") or "")
     if getattr(pr, "merged", False):
         by = getattr(getattr(pr, "merged_by", None), "login", "") or ""

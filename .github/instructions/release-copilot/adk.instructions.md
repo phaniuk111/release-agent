@@ -9,6 +9,17 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   the commands Workflow.
 - **What needs a yes** is defined once, in `approvals.py`, and shared by the chat
   agent and `commands_workflow.py`. Do not add approval rules anywhere else.
+  `ALLOWED_WITHOUT_YES` names the ONE write that never asks: the deployment
+  tracker dispatching the team's `NOTIFY_WORKFLOW` (it changes no deployment).
+- **Deployment tracking** (`deploy_tracker.py`, `DEPLOY_TRACKING_ENABLED`, preview
+  feature `deploy-tracking`): a timed sweep that only WATCHES and tells — merged
+  → `deploy/merged` + "Deployment starting"; every run on the merge SHA
+  concluded → `deploy/finished` on the SAME scope (one bell item that changes),
+  a failure naming the job and step; a re-run → "(after re-run)"; past
+  `TRACK_RUN_MAX_MINUTES` → one "still running" item then `abandoned_tracking`.
+  It never merges, re-runs or rolls back. The cadence is a pure function of the
+  pass summary (`next_delay`); a pass never raises; what is known about a merge
+  comes from the event log, not memory. With no session it is the bot's token.
 - **Deploys and releases** run `deploy_workflow.py`: gate (preview + `RequestInput`
   with the CONFIRM token) → apply / cancel. Pending state lives in ADK session
   state so any replica can resume it.

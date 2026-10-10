@@ -23,6 +23,17 @@ RULES = {
 }
 
 
+# The ONE GitHub write that never pauses for a yes: deploy_tracker dispatching
+# the team's send-notification workflow (NOTIFY_WORKFLOW) when a merge starts,
+# completes or fails. It changes no deployment — the workflow only tells people
+# what the tracker saw — and it runs from a timed sweep with nobody there to
+# answer. Named here, explicitly, so the list of what writes without asking is
+# this line and nothing else.
+ALLOWED_WITHOUT_YES = frozenset({"dispatch_notify_workflow"})
+
+
 def needs_approval(tool_name: str, args: dict) -> bool:
+    if tool_name in ALLOWED_WITHOUT_YES:
+        return False
     rule = RULES.get(tool_name)
     return bool(rule and rule(**(args or {})))

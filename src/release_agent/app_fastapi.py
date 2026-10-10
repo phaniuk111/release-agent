@@ -69,11 +69,20 @@ async def _sweep_idle_forever() -> None:
 async def _lifespan(_app):
     sweeper = (asyncio.create_task(_sweep_idle_forever(), name="idle-sweep")
                if settings.session_idle_minutes > 0 else None)
+    # Deployment tracking: watches the portal's pending PRs and their runs and
+    # tells the requester (adk_release_agent/deploy_tracker.py). Off by default.
+    tracker = None
+    if settings.deploy_tracking_enabled:
+        from adk_release_agent import deploy_tracker
+
+        tracker = asyncio.create_task(deploy_tracker.track_forever(), name="deploy-tracker")
     try:
         yield
     finally:
         if sweeper is not None:
             sweeper.cancel()
+        if tracker is not None:
+            tracker.cancel()
 
 
 app = FastAPI(title=settings.app_title, version="0.2.0", lifespan=_lifespan)
@@ -774,7 +783,36 @@ def _compute_release_status() -> dict:
             status["df"] = {"repo": df_repo, "error": str(e)}
         finally:
             executor.shutdown(wait=False)
+    _add_tickets(status, df_repo)
     return status
+
+
+def _add_tickets(status: dict, df_repo: str) -> None:
+    """The CHG / RMG tickets named on each release PR in flight (`tickets` on
+    `blocking_pr` and on `df.release_pr`), read together on their own threads.
+    Only when a PR exists, and cached ten minutes per PR (tools/tickets.py), so
+    the banner's GitHub cost barely moves. Best-effort: a failure is the PR's
+    `tickets: {"error"}`, never a missing banner."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .tools import tickets
+    from .tools._common import active_deploy_repo
+
+    wanted = []
+    if status.get("blocking_pr"):
+        wanted.append((status["blocking_pr"], active_deploy_repo()))
+    df_pr = (status.get("df") or {}).get("release_pr")
+    if df_pr:
+        wanted.append((df_pr, df_repo))
+    if not wanted:
+        return
+    with ThreadPoolExecutor(max_workers=len(wanted)) as pool:
+        futures = [(pr, pool.submit(tickets.pr_tickets, repo, pr.get("number"))) for pr, repo in wanted]
+        for pr, future in futures:
+            try:
+                pr["tickets"] = future.result()
+            except Exception as e:  # noqa: BLE001 — pr_tickets never raises; this is the belt
+                pr["tickets"] = {"error": str(e)[:200]}
 
 
 @app.get("/api/release-status")

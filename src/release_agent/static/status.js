@@ -1,12 +1,13 @@
 // One-line release status strip — reads /api/release-status:
 // { date_utc, now_utc, uat_charts, prd_charts, queued_next, reason,
-//   blocking_pr: {number,url,head,base}, df: {...} }
+//   blocking_pr: {number,url,head,base,tickets}, df: {...} }
 // There is no staged-PRD-batch slot any more: PROD is reached only by promoting
 // a release, so the PR open against a guarded branch (blocking_pr) IS the CARE
 // release in flight — the same reading the DF slot has always used. Every field
 // is optional; the strip must render whatever is missing.
 import { releaseStatus } from './api.js';
 import { escapeHtml as esc } from './core/format.js';
+import { ticketParts } from './core/tickets.js';
 
 function _chartList(arr) {
     return (arr || []).map(function(c){ return esc(c.helm_chart_name) + ':' + esc(c.helm_chart_version); })
@@ -19,6 +20,22 @@ function _chartList(arr) {
 function _envLists(s) {
     if (!(s.prd_charts || []).length) return '';
     return '<br><span class="text-slate-300">PRD (' + s.prd_charts.length + '):</span> ' + _chartList(s.prd_charts);
+}
+
+// The CHG / RMG tickets named on a release PR, after its number: each a link to
+// where it was said, with its state; a prefix the PR does not name yet reads
+// "CHG pending" in grey. Nothing when the server sent no tickets (no PR, or the
+// PR could not be read) — core/tickets.js decides.
+function _ticketsHtml(pr) {
+    const parts = ticketParts(pr && pr.tickets);
+    if (!parts.length) return '';
+    return ' · ' + parts.map(function (p) {
+        if (p.pending) return '<span class="text-slate-500">' + esc(p.text) + '</span>';
+        const id = p.url
+            ? '<a href="' + esc(p.url) + '" target="_blank" class="underline">' + esc(p.id) + '</a>'
+            : esc(p.id);
+        return id + (p.state ? ' ' + esc(p.state) : '');
+    }).join(' · ');
 }
 
 let _lastLoadedAt = 0;
@@ -74,7 +91,7 @@ function _dfSummary(s) {
             title: ' · DF: PR #' + pr.number + ' open',
             detail: '<br><span class="text-sky-300">DF release:</span> ' +
                 '<a href="' + esc(pr.url) + '" target="_blank" class="underline text-sky-400">PR #' +
-                esc(pr.number) + '</a>' +
+                esc(pr.number) + '</a>' + _ticketsHtml(pr) +
                 ((pr.charts || []).length ? ' — staged: ' + _chartList(pr.charts) : ''),
         };
     }
@@ -119,7 +136,8 @@ export async function loadReleaseStatus(fresh) {
         const blkDetail = blk
             ? '<br><span class="text-amber-400">⚠ Adds to the release are blocked: ' +
               '<a href="' + esc(blk.url) + '" target="_blank" class="underline">PR #' + esc(blk.number) +
-              '</a> (' + esc(blk.head) + ' → ' + esc(blk.base) + ') is open — merge or close it first.</span>'
+              '</a> (' + esc(blk.head) + ' → ' + esc(blk.base) + ') is open — merge or close it first.' +
+              _ticketsHtml(blk) + '</span>'
             : '';
         const df = _dfSummary(s);
         dot.className = blk
