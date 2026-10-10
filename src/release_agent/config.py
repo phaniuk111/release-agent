@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # server side too (API + chat tools), so a hidden pill is not one question away.
     preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
     preview_groups: str = Field(default="Check,Monitoring", validation_alias=AliasChoices("PREVIEW_GROUPS"))
-    preview_features: str = Field(default="monitoring,bq-cost,notifications,deploy-tracking", validation_alias=AliasChoices("PREVIEW_FEATURES"))
+    preview_features: str = Field(default="monitoring,bq-cost,notifications,auto-triage,deploy-tracking", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
     identity_required: bool = Field(
@@ -726,6 +726,26 @@ class Settings(BaseSettings):
     # dataset = no memory: the "Was this right?" buttons say so and nothing is written.
     support_feedback_dataset: str = Field(default="", validation_alias=AliasChoices("SUPPORT_FEEDBACK_DATASET"))
     support_feedback_table: str = Field(default="support_findings", validation_alias=AliasChoices("SUPPORT_FEEDBACK_TABLE"))
+    # Auto-triage (tools/support/watch.py + adk_release_agent/support_watch.py):
+    # every N minutes it triages the control table, investigates the NEW
+    # problems (at most SUPPORT_WATCH_MAX_INVESTIGATIONS a pass — the rest wait
+    # for the next one; each under SUPPORT_WATCH_INVESTIGATE_SECONDS, past which
+    # the finding says the evidence timed out), keeps the findings in the portal
+    # event log (PORTAL_EVENTS_DATASET decides where) and rings the bell. 0 = off:
+    # it runs only from the card's Run now. Read-only: it never changes anything;
+    # actions are proposed for a person.
+    support_watch_minutes: int = Field(default=0, validation_alias=AliasChoices("SUPPORT_WATCH_MINUTES"))
+    support_watch_max_investigations: int = Field(
+        default=3, validation_alias=AliasChoices("SUPPORT_WATCH_MAX_INVESTIGATIONS"))
+    support_watch_investigate_seconds: int = Field(
+        default=240, validation_alias=AliasChoices("SUPPORT_WATCH_INVESTIGATE_SECONDS"))
+    # Who Auto-triage tells (the portal's own bell, tools/notifications.py): a
+    # comma list of emails, plus a finding's runbook owner when that is an email.
+    # Empty = nobody but such owners. Only findings at or above
+    # SUPPORT_NOTIFY_MIN_PRIORITY notify; one bell item per incident, updated in
+    # place as it changes.
+    support_notify_recipients: str = Field(default="", validation_alias=AliasChoices("SUPPORT_NOTIFY_RECIPIENTS"))
+    support_notify_min_priority: str = Field(default="medium", validation_alias=AliasChoices("SUPPORT_NOTIFY_MIN_PRIORITY"))
     # The portal's event log for notifications, Auto-triage and deployment
     # tracking (tools/events_store.py): ONE append-only table, schema in
     # bigquery/portal_events.schema.json. EMPTY dataset = a per-process memory

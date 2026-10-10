@@ -99,6 +99,15 @@ export const getNotifications = (params) => get('/api/notifications?' + query(pa
 export const markNotifications = (body) => post('/api/notifications/mark', body);
 /** @param {{email?: string}} body */
 export const readAllNotifications = (body) => post('/api/notifications/read-all', body || {});
+// ---- Auto-triage (preview feature "auto-triage") -------------------------------
+/** The findings for a business date (empty = the date of the last pass) and the watcher's status:
+ * {ok, business_date, findings: [...], status: {running, last_run_at, next_at, last_summary, error, store, notifications, ...}} */
+export const getAutoTriage = (date) => get('/api/support/watch' + (date ? '?' + query({ date }) : ''));
+/** One pass now; refused while one is running. Answers the pass summary or {ok: false, error}. */
+export const runAutoTriage = (date) => post('/api/support/watch/run', { business_date: date || '' });
+/** @param {{business_date: string, incident_id: string, status: 'open'|'resolved'|'dismissed'}} body
+ *  who did it is the verified caller, decided server-side. */
+export const setAutoTriageStatus = (body) => post('/api/support/watch/status', body);
 
 // ---- release queue ----------------------------------------------------------
 export const QUEUE_PATH = '/api/release-queue';

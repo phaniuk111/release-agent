@@ -32,7 +32,7 @@ def test_only_listed_verified_users_are_testers(monkeypatch):
 def test_the_check_group_is_hidden_by_default_for_everyone_else():
     assert features.hidden_groups(OTHER) == ["Check"]
     assert features.hidden_groups(TESTER) == []
-    on = ["notifications", "deploy-tracking"]   # not gated in this test's settings: open to everyone
+    on = ["notifications", "auto-triage", "deploy-tracking"]   # not gated in this test's settings: open to everyone
     assert features.ui_config(TESTER) == {"hiddenGroups": [], "previewGroups": ["Check"], "preview": True, "llm": True,
                                           "features": on}
     assert features.ui_config(None) == {"hiddenGroups": ["Check"], "previewGroups": [], "preview": False, "llm": True,
@@ -67,7 +67,8 @@ def test_the_page_is_rendered_with_this_callers_view(monkeypatch):
 
     monkeypatch.setattr(APP, "_caller", lambda request: None)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
-    assert 'window.PORTAL_UI = {"hiddenGroups": ["Check"], "previewGroups": [], "preview": false, "llm": true, "features": ["notifications", "deploy-tracking"]};' in html
+    assert ('window.PORTAL_UI = {"hiddenGroups": ["Check"], "previewGroups": [], "preview": false, "llm": true, '
+            '"features": ["notifications", "auto-triage", "deploy-tracking"]};') in html
     monkeypatch.setattr(APP, "_caller", lambda request: TESTER)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
     assert '"preview": true' in html and "{PORTAL_UI}" not in html
@@ -97,7 +98,13 @@ def test_every_server_gated_pill_sits_in_a_preview_group_by_default():
         lines = [line for line in palette.splitlines() if f"form:'{feature}'" in line and "group:'" in line]
         # A gated feature with no pill of its own is fine (it may be chat-only);
         # what must never happen is a pill sitting in a group everyone can see.
+        # A pill that names its `feature:` is hidden by window.PORTAL_UI.features
+        # instead — the server lists that per caller from the same gate — so it
+        # may sit in an open group.
         for line in lines:
+            if f"feature:'{feature}'" in line:
+                assert feature in features.UI_FEATURES, (feature, "a feature: pill needs the page to be told")
+                continue
             group = line.split("group:'", 1)[1].split("'", 1)[0]
             assert group in default_groups, (feature, group)
     # Known limit: this reads `form:` pills only. A `send:true` pill whose chat

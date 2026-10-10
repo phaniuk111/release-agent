@@ -52,3 +52,10 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   How urgent it is comes from `skills/support-priority/SKILL.md` (plain English,
   the team's to edit) — never hard-code a priority rule in a prompt. Change the instruction or
   the model only with `scripts/eval_investigate.py` passing before and after.
+- **Auto-triage is that pipeline on a timer** (`support_watch.py`): one pass at
+  a time (`watch.begin()`), each investigation under
+  `SUPPORT_WATCH_INVESTIGATE_SECONDS` via `asyncio.wait_for`, every finding kept
+  and notified as its investigation completes, the next pass measured from this
+  one's START (`next_run_at`, pure). A pass never raises — it reports in the
+  watcher's status — and the loop starts in the app lifespan only when
+  `SUPPORT_WATCH_MINUTES > 0` and a control table is configured.

@@ -16,9 +16,11 @@ import { opening, withDismiss } from './common.js';
 // Every value comes from the control table — error text, unit names — so all
 // of it goes through esc(), title attributes included.
 
-// `at` ({date, incidentId}, optional) opens the card on that business date
-// and scrolls to that incident — how a notification about it lands here.
+// `at` (optional) opens the card on a business date and, as `{date, incidentId}`,
+// scrolls to that incident — how a notification about it lands here; Auto-triage's
+// "Open in Support" passes the date alone.
 export async function showSupportTriage(at) {
+    if (typeof at === 'string') at = { date: at };
     const _ph = opening('Support triage');
     const chat = document.getElementById('chat');
     const wrap = document.createElement('div');

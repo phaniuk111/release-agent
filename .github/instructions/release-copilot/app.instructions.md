@@ -62,6 +62,12 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   `deploy-tracking`): watches the portal's pending PRs and their runs and tells
   the requester; never merges, re-runs or rolls back. Its `NOTIFY_WORKFLOW`
   dispatch is the one write `approvals.py` allows without a yes.
+- **Auto-triage** (`tools/support/watch.py`, `adk_release_agent/support_watch.py`,
+  routes in `support_api.py`, preview feature `auto-triage`): Support triage and
+  the Investigate pipeline on a timer. Findings live in `portal_events` (domain
+  `watch`), the bell is told per incident, a person's resolve/dismiss/reopen is
+  recorded against the VERIFIED caller, and the loop runs only when
+  `SUPPORT_WATCH_MINUTES > 0` and `SUPPORT_TABLE` is set. Read-only throughout.
 - **Secrets and identity.** GitHub PATs are memory-only and masked, and are
   dropped with a conversation idle for `SESSION_IDLE_MINUTES` (60); nothing
   sensitive in git, BigQuery or logs. The caller's identity comes only from a

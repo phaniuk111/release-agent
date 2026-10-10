@@ -76,6 +76,12 @@ async def _lifespan(_app):
         from adk_release_agent import deploy_tracker
 
         tracker = asyncio.create_task(deploy_tracker.track_forever(), name="deploy-tracker")
+    # Auto-triage's loop (adk_release_agent/support_watch.py): only when asked
+    # for by SUPPORT_WATCH_MINUTES and there is a control table to watch.
+    from adk_release_agent import support_watch
+
+    watcher = (asyncio.create_task(support_watch.watch_forever(), name="auto-triage")
+               if support_watch.scheduled() else None)
     try:
         yield
     finally:
@@ -83,6 +89,8 @@ async def _lifespan(_app):
             sweeper.cancel()
         if tracker is not None:
             tracker.cancel()
+        if watcher is not None:
+            watcher.cancel()
 
 
 app = FastAPI(title=settings.app_title, version="0.2.0", lifespan=_lifespan)

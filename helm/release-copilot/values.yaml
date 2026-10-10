@@ -286,6 +286,26 @@ config:
   # comes from bigquery/support_findings.schema.json (terraform module).
   SUPPORT_FEEDBACK_DATASET: ""
   SUPPORT_FEEDBACK_TABLE: "support_findings"
+  # --- Auto-triage (preview feature "auto-triage"): every N minutes the portal
+  # triages the control table on its own, investigates each NEW problem the way
+  # the Investigate button does (at most MAX_INVESTIGATIONS a pass — the rest
+  # wait for the next one; each within INVESTIGATE_SECONDS, past which the
+  # finding says the evidence timed out and the pass moves on), keeps the
+  # findings in the portal event log (PORTAL_EVENTS_DATASET below decides
+  # where — memory until a dataset is set) and rings the bell. The interval is
+  # measured from a pass's START, never sooner than a minute after its end.
+  # 0 = off: it runs only from the card's Run now. READ-ONLY: it never re-runs
+  # or changes a job; an action is a proposal for a person. Needs SUPPORT_TABLE.
+  SUPPORT_WATCH_MINUTES: "0"         # e.g. "10"
+  SUPPORT_WATCH_MAX_INVESTIGATIONS: "3"
+  SUPPORT_WATCH_INVESTIGATE_SECONDS: "240"
+  # Who hears about a finding on the portal's bell: a comma list of emails,
+  # plus the finding's runbook owner whenever that owner is an email. Only
+  # findings at or above MIN_PRIORITY (critical/high/medium/low) notify; one
+  # bell item per incident, updated in place when it is cleared, resolved,
+  # dismissed or grows. Empty = only such owners are told.
+  SUPPORT_NOTIFY_RECIPIENTS: ""      # e.g. "l1@example.com,oncall@example.com"
+  SUPPORT_NOTIFY_MIN_PRIORITY: "medium"
   # ==================== [FEATURE] portal events ============================
   # The log behind the notification bell (and, later, Auto-triage and deployment
   # tracking): ONE append-only table, INSERT only - a notification read is a new
@@ -387,7 +407,7 @@ config:
   #        --set-string config.PREVIEW_USERS='*'
   PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
   PREVIEW_GROUPS: "Check,Monitoring"  # comma list of pill groups (palette.js GROUPS); Monitoring = BQ cost. Support triage is out of preview: add "Support" here to hide it again
-  PREVIEW_FEATURES: "monitoring,bq-cost,notifications,deploy-tracking"  # gated server features: their API + chat tools refuse non-preview users ("support-triage" to gate Support again; drop "notifications" to open the bell to everyone, "deploy-tracking" likewise)
+  PREVIEW_FEATURES: "monitoring,bq-cost,notifications,auto-triage,deploy-tracking"  # gated server features: their API + chat tools refuse non-preview users ("support-triage" to gate Support again; drop "notifications" to open the bell to everyone, "deploy-tracking" likewise)
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's
