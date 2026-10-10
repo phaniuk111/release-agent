@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -285,6 +287,70 @@ def test_a_finding_whose_incident_left_the_triage_is_cleared(monkeypatch):
     assert N.list_for("alice@example.com")["items"][0]["title"] == "Auto-triage: Cleared — a failed"
 
 
+def test_a_cleared_incident_that_returns_is_investigated_and_told_again(monkeypatch):
+    monkeypatch.setattr(settings, "support_notify_recipients", "alice@example.com")
+    _fake_pass(monkeypatch, [_incident("a")])
+    asyncio.run(support_watch.run_pass())
+    _fake_pass(monkeypatch, [])
+    assert asyncio.run(support_watch.run_pass())["cleared"] == ["a"]
+    calls = _fake_pass(monkeypatch, [_incident("a")])
+    res = asyncio.run(support_watch.run_pass())
+    assert res["reopened"] == ["a"] and res["investigated"] == ["a"] and calls == ["a"]
+    f = watch.latest(DAY)["findings"][0]
+    assert f["status"] == "open" and f["event_type"] == "reopened" and f["actor"] == "watcher"
+    assert f["notified"] is True
+    items = N.list_for("alice@example.com")["items"]
+    assert len(items) == 1 and items[0]["title"] == "Auto-triage: Back — a failed"   # one bell item, updated
+    # Open again, it is an ordinary open finding: nothing more the next time.
+    again = asyncio.run(support_watch.run_pass())
+    assert again["reopened"] == [] and again["investigated"] == [] and calls == ["a"]
+
+
+def test_a_dismissed_or_resolved_incident_that_returns_stays_as_a_person_left_it(monkeypatch):
+    _fake_pass(monkeypatch, [_incident("a"), _incident("b")])
+    asyncio.run(support_watch.run_pass())
+    assert watch.set_status(DAY, "a", "dismissed", "p@example.com")["ok"]
+    assert watch.set_status(DAY, "b", "resolved", "p@example.com")["ok"]
+    calls = _fake_pass(monkeypatch, [_incident("a"), _incident("b")])
+    res = asyncio.run(support_watch.run_pass())
+    assert res["reopened"] == [] and res["investigated"] == [] and calls == []
+    assert {f["incident_id"]: f["status"] for f in watch.latest(DAY)["findings"]} == {
+        "a": "dismissed", "b": "resolved"}
+
+
+def test_returned_is_only_a_watcher_cleared_incident_present_again():
+    report = {"incidents": [_incident("a"), _incident("b"), _incident("c")]}
+    findings = [{"incident_id": "a", "status": "cleared"}, {"incident_id": "b", "status": "dismissed"},
+                {"incident_id": "c", "status": "open"}, {"incident_id": "d", "status": "cleared"}]
+    assert [i["id"] for i in watch.returned(findings, report)] == ["a"]
+    assert watch.returned(findings, {"incidents": []}) == []
+
+
+def test_a_cancelled_pass_releases_the_lock(monkeypatch):
+    """Shutdown cancels the loop's task mid-pass; a lock left held would refuse
+    every later pass and Run now."""
+    _fake_pass(monkeypatch, [_incident("a")])
+    async def scenario():
+        started = asyncio.Event()
+
+        async def hang(day, incident_id, *, thread_id):
+            started.set()
+            await asyncio.sleep(60)
+
+        monkeypatch.setattr(support_watch.investigate_workflow, "run_once", hang)
+        task = asyncio.create_task(support_watch.run_pass())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    st = watch.status()
+    assert st["running"] is False and st["error"] == "cancelled" and st["last_business_date"] == DAY
+    assert watch.begin(), "the next pass is not refused"
+    watch.finish()
+
+
 def test_one_pass_at_a_time(monkeypatch):
     _fake_pass(monkeypatch, [_incident("a")])
     assert watch.begin()
@@ -388,14 +454,31 @@ def test_the_feed_answers_the_findings_and_the_status(signed_in, client, monkeyp
     assert client.get(f"/api/support/watch?date={DAY}").json()["error"] == "down"
 
 
-def test_run_now_runs_one_pass_and_says_when_one_is_already_running(signed_in, client, monkeypatch):
+def test_run_now_answers_at_once_while_the_pass_runs_on_and_says_when_one_is_already_running(
+        signed_in, monkeypatch):
     signed_in(TESTER)
     _fake_pass(monkeypatch, [_incident("a")])
-    body = client.post("/api/support/watch/run", json={"business_date": DAY}).json()
-    assert body["ok"] and body["investigated"] == ["a"]
-    assert watch.begin()
-    assert "already running" in client.post("/api/support/watch/run", json={}).json()["error"]
-    watch.finish()
+    release, ran = threading.Event(), []
+
+    async def slow_pass(day=""):
+        ran.append(day)
+        while not release.is_set():          # the pass outlives the request that started it
+            await asyncio.sleep(0.01)
+        return {"ok": True}
+
+    monkeypatch.setattr(support_watch, "run_pass", slow_pass)
+    with TestClient(APP.app) as client:      # one event loop for the whole session, as in the app
+        body = client.post("/api/support/watch/run", json={"business_date": DAY}).json()
+        assert body == {"ok": True, "started": True}
+        deadline = time.monotonic() + 5
+        while not ran and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ran == [DAY], "the pass was started, not awaited"
+        release.set()
+        assert watch.begin()
+        refused = client.post("/api/support/watch/run", json={}).json()
+        assert refused["ok"] is False and "already running" in refused["error"]
+        watch.finish()
 
 
 def test_a_status_change_is_recorded_against_the_verified_caller(signed_in, client):

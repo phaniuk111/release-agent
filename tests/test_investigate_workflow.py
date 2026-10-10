@@ -401,6 +401,38 @@ def test_run_once_is_collect_then_the_same_finding(evidence, finder):
     assert result["text"] == finder.reply and result["bundle"] == BUNDLE and result["model_calls"] == 1
 
 
+def _sessions_held(runner):
+    listed = asyncio.run(runner.session_service.list_sessions(app_name=runner.app_name))
+    return [s.id for s in listed.sessions]
+
+
+def test_an_investigation_leaves_no_session_behind(evidence, finder):
+    runner = investigate_workflow._scripts_runner()
+    before = _sessions_held(runner)
+    asyncio.run(investigate_workflow.run_once("2026-10-03", "e-1a2b3c4d", thread_id="auto-triage"))
+    asyncio.run(investigate_workflow.answer_from_bundle(BUNDLE, thread_id="auto-triage"))
+    assert _sessions_held(runner) == before
+
+
+def test_a_failed_investigation_leaves_no_session_behind_either(evidence, finder):
+    runner = investigate_workflow._scripts_runner()
+    before = _sessions_held(runner)
+    finder.fail = True
+    asyncio.run(investigate_workflow.answer_from_bundle(BUNDLE, thread_id="auto-triage"))
+    assert _sessions_held(runner) == before
+
+
+def test_a_session_that_cannot_be_deleted_does_not_fail_the_investigation(evidence, finder, monkeypatch):
+    runner = investigate_workflow._scripts_runner()
+
+    async def broken(**kwargs):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(runner.session_service, "delete_session", broken)
+    result = asyncio.run(investigate_workflow.answer_from_bundle(BUNDLE, thread_id="auto-triage-2"))
+    assert result["text"] == finder.reply
+
+
 # --- the chat lane's one-call tool ------------------------------------------------------
 
 def test_the_chat_tool_returns_the_pruned_bundle_and_is_gated(monkeypatch):

@@ -4,8 +4,10 @@ triage the control table → the incidents not seen yet → investigate each the
 way the Investigate button does (``investigate_workflow.run_once``: evidence in
 code, one capped model step, the model-free summary when the model is off or
 fails) → keep the finding → ring the bell. Open findings whose incident has
-left the triage are marked cleared; open findings whose incident grew (more
-jobs than when it was found) are updated and told again.
+left the triage are marked cleared — and a cleared one whose incident is in
+the triage again the same day is investigated and told again ("Back"); open
+findings whose incident grew (more jobs than when it was found) are updated
+and told again. Dismissed and resolved findings stay a person's decision.
 
 At most SUPPORT_WATCH_MAX_INVESTIGATIONS investigations a pass, one after
 another: the model quota is shared with everyone's chat, and an incident left
@@ -115,22 +117,34 @@ async def run_pass(business_date: str = "") -> dict[str, Any]:
             notified += int(row["notified"])
             updated.append(row["incident_id"])
 
+        # A cleared problem that is in the table again is new news: investigated
+        # and told again, under the same cap. One left over by the cap stays
+        # cleared and is simply back on the next pass.
+        back = watch.returned(findings, report)
         new = watch.new_incidents(report, {str(f.get("incident_id")) for f in findings})
+        todo = [(i, "reopened") for i in back] + [(i, "finding") for i in new]
         cap = max(0, settings.support_watch_max_investigations)
-        investigated = []
-        for incident in new[:cap]:
+        investigated, reopened = [], []
+        for incident, event_type in todo[:cap]:
             outcome = await investigate(day, str(incident["id"]))
-            finding = await _keep(watch.finding_from(incident, outcome, day))
+            finding = await _keep(watch.finding_from(incident, outcome, day, event_type))
             notified += int(finding["notified"])
             investigated.append(finding["incident_id"])
+            if event_type == "reopened":
+                reopened.append(finding["incident_id"])
         summary = {"ok": True, "business_date": day, "incidents": len(report.get("incidents") or []),
-                   "investigated": investigated, "waiting": max(0, len(new) - cap), "updated": updated,
-                   "cleared": cleared, "notified": notified}
+                   "investigated": investigated, "waiting": max(0, len(todo) - cap), "updated": updated,
+                   "cleared": cleared, "reopened": reopened, "notified": notified}
         await asyncio.to_thread(watch.record_pass, day, summary)
         watch.finish(business_date=day, summary=summary)
         logger.info("Auto-triage pass | date=%s investigated=%d waiting=%d updated=%d cleared=%d notified=%d",
                     day, len(investigated), summary["waiting"], len(updated), len(cleared), notified)
         return summary
+    except asyncio.CancelledError:
+        # A BaseException, so the clause below misses it — and a lock left held
+        # would refuse every later pass and Run now until the process restarts.
+        watch.finish(business_date=day, error="cancelled")
+        raise
     except Exception as e:  # noqa: BLE001 — a pass that fails is reported, never raised
         logger.exception("Auto-triage pass failed")
         error = f"{type(e).__name__}: {str(e)[:300]}"

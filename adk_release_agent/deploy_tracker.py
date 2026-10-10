@@ -238,7 +238,10 @@ def _run_dict(run: Any) -> dict[str, Any]:
 
 
 def runs_for(repo_obj: Any, merge_sha: str) -> list[dict[str, Any]]:
-    """The workflow runs on the merge commit that count as the deployment."""
+    """The workflow runs on the merge commit that count as the deployment. No
+    commit, no runs — an empty SHA would list every run in the repo."""
+    if not merge_sha:
+        return []
     wanted = _wanted_workflows()
     found = []
     for run in itertools.islice(repo_obj.get_workflow_runs(head_sha=merge_sha), _MAX_RUNS):
@@ -337,7 +340,11 @@ def _record(row: dict[str, Any]) -> None:
 
 
 def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict[str, dict[str, Any]],
-            now: _dt.datetime, summary: dict[str, Any]) -> None:
+            now: _dt.datetime, summary: dict[str, Any],
+            outcomes: dict[tuple[str, int], Any] | None = None) -> None:
+    """Follow one pending PR. ``outcomes``, when given, is filled with this
+    pass's reading of the PR (``pr_reconcile.pr_outcome``) so the settlement that
+    follows the pass does not fetch it a second time."""
     repo_full, pr_number = key[0], int(key[1])
     pending = cand["pending"]
     what = describe(pending, pr_number)
@@ -348,23 +355,37 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
     repo_obj = github.get_repo(repo_full)
     pr = repo_obj.get_pull(pr_number)
     pr_url = str(getattr(pr, "html_url", "") or "")
-    tk = tickets.pr_tickets(repo_full, pr_number, github=github)
-    cols = tickets.columns(tk)
-    tickets.note_first_seen(repo_full, pr_number, tk, requested_by=requester, what=what)
-
     outcome = pr_reconcile.pr_outcome(pr)
+    if outcomes is not None:
+        outcomes[(repo_full, pr_number)] = outcome
     if outcome is None:
         summary["open"] += 1
+        tk = tickets.pr_tickets(repo_full, pr_number, github=github, pr=pr)
+        tickets.note_first_seen(repo_full, pr_number, tk, requested_by=requester, what=what)
         return
     kind, when, merged_by, _url = outcome
     if kind != "merged":
         return                                    # pr_reconcile records the abandonment
     merge_sha = str(getattr(pr, "merge_commit_sha", "") or "")
+    if not merge_sha:
+        # GitHub omits merge_commit_sha for a moment after a merge. Without it
+        # there is nothing to follow — and a run lookup on "" lists every run in
+        # the repo. Nothing is recorded or sent; the next pass reads it again.
+        summary["in_flight"] += 1
+        return
     merged_at = _when(when) or now
+    last = known.get(scope)
+    beyond_window = now - merged_at > window()
+    if last is not None and (last.get("event_type") == _ABANDONED
+                             or (last.get("event_type") == _FINISHED and beyond_window)):
+        return                       # given up on, or a re-run after the window: not followed
+    tk = tickets.pr_tickets(repo_full, pr_number, github=github, pr=pr)
+    cols = tickets.columns(tk)
+    if last is None:                 # newly merged: the one time the tickets are noted for a merge
+        tickets.note_first_seen(repo_full, pr_number, tk, requested_by=requester, what=what)
     common = {"subject": scope, "scope": scope, "repo": repo_full, "pr_number": pr_number,
               "merge_sha": merge_sha, "jira": jira or None, "title": what,
               "environment": _first(pending, "environment") or None, **cols}
-    last = known.get(scope)
 
     if last is None:
         dispatched = dispatch_notify_workflow(github, "starting", release=what, chg=cols["chg"], rmg=cols["rmg"],
@@ -379,12 +400,7 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
                 link=pr_url, scope=scope, repo=repo_full, pr_number=pr_number)
         summary["started"].append(scope)
         last = {"event_type": _MERGED, "event_ts": merged_at.isoformat()}
-    elif last.get("event_type") == _ABANDONED:
-        return
 
-    beyond_window = now - merged_at > window()
-    if last.get("event_type") == _FINISHED and beyond_window:
-        return                                    # a re-run after the window is not followed
     runs = runs_for(repo_obj, merge_sha)
     rerun = last.get("event_type") == _FINISHED
     if rerun and not is_rerun(runs, last):
@@ -469,16 +485,18 @@ def run_pass(*, github: Any = None, events: list[dict[str, Any]] | None = None,
         if not read.get("ok"):
             raise RuntimeError(f"the event log could not be read: {read.get('error')}")
         known = known_merges(read.get("rows") or [])
+        outcomes: dict[tuple[str, int], Any] = {}
         for key in sorted(cands, key=lambda k: -int(k[1])):
             try:
-                _follow(github, key, cands[key], known, now, summary)
+                _follow(github, key, cands[key], known, now, summary, outcomes)
             except Exception as e:  # noqa: BLE001 — one PR's failure must not stop the others
                 line = f"{key[0]}#{key[1]}: {type(e).__name__}: {str(e)[:200]}"
                 summary["errors"].append(line)
                 logger.warning("deploy_tracker: %s", line)
         # The release log is settled too (throttled, locked, never raises) so a
         # merge the tracker saw first does not wait for a read path to notice it.
-        pr_reconcile.reconcile_pending(events, github=github)
+        # It is handed what this pass just read, so no PR is fetched twice.
+        pr_reconcile.reconcile_pending(events, github=github, outcomes=outcomes)
         finish(summary=summary)
         logger.info("deploy_tracker pass | open=%d in_flight=%d started=%d finished=%d abandoned=%d errors=%d",
                     summary["open"], summary["in_flight"], len(summary["started"]), len(summary["finished"]),

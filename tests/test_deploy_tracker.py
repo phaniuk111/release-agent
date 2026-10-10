@@ -18,6 +18,7 @@ ME = "me@example.com"
 # a merge the tracker records is stamped with the PR's merge time.
 T0 = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(minutes=30)
 SHA = "abc1234def5678"
+_REAL_RECONCILE = R.reconcile_pending      # the fixture below stubs it; one test wants the real one
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +28,7 @@ def _settings(monkeypatch):
                         ("ticket_state_words", "created,approved,rejected,closed,cancelled")):
         monkeypatch.setattr(settings, name, value, raising=False)
     monkeypatch.setitem(R._state, "at", float("-inf"))
-    monkeypatch.setattr(R, "reconcile_pending", lambda events, github=None: 0)
+    monkeypatch.setattr(R, "reconcile_pending", lambda events, github=None, outcomes=None: 0)
     tickets.clear_cache()
     DT._status.update(running=False)
     yield
@@ -169,7 +170,7 @@ class _GitHub:
     head SHA, and the workflow the NOTIFY_WORKFLOW dispatch reaches."""
 
     def __init__(self, prs, runs=None, workflow=None):
-        self.prs, self.runs, self.dispatches = prs, runs or {}, []
+        self.prs, self.runs, self.dispatches, self.pulls = prs, runs or {}, [], []
         self.workflow = workflow or (lambda log: _Workflow(log))
 
     def get_repo(self, full):
@@ -179,6 +180,7 @@ class _GitHub:
             default_branch = "main"
 
             def get_pull(self, n):
+                gh.pulls.append(n)
                 pr = gh.prs[n]
                 if isinstance(pr, Exception):
                     raise pr
@@ -315,6 +317,59 @@ def test_a_merge_pr_reconcile_settled_between_passes_is_still_followed():
     assert out["started"] == [f"deploy:{REPO}#7"] and out["finished"] == [f"deploy:{REPO}#7"]
 
 
+def test_a_pass_fetches_each_pr_once_the_settlement_reuses_what_the_tracker_read(monkeypatch):
+    from release_agent.tools import release_queue as RQ
+
+    inserted = []
+    monkeypatch.setattr(RQ, "_insert", lambda batch: inserted.extend(batch) or {"ok": True})
+    monkeypatch.setattr(R, "reconcile_pending", _REAL_RECONCILE)
+    gh = _GitHub({7: _PR(7, merged=True, state="closed", when=T0), 8: _PR(8),
+                  9: _PR(9, state="closed", when=T0)}, runs={SHA: [_Run(1)]})
+    out = DT.run_pass(github=gh, events=[_pending(7), _pending(8), _pending(9)], now=T0)
+    assert out["ok"] and out["open"] == 1
+    assert sorted(gh.pulls) == [7, 8, 9], "one get_pull per PR, tracker and settlement together"
+    assert sorted((r["pr_number"], r["event_type"]) for r in inserted) == [(7, "deployed"), (9, "abandoned")]
+
+
+def test_the_tickets_are_noted_for_an_open_or_newly_merged_pr_never_a_settled_one(monkeypatch):
+    noted = []
+    monkeypatch.setattr(tickets, "note_first_seen", lambda repo, n, tk, **kw: noted.append(n) or {})
+    gh = _GitHub({7: _PR(7, merged=True, state="closed", when=T0), 8: _PR(8), 9: _PR(9, state="closed", when=T0)},
+                 runs={SHA: [_Run(1)]})
+    events = [_pending(7), _pending(8), _pending(9)]
+    DT.run_pass(github=gh, events=events, now=T0)
+    assert sorted(noted) == [7, 8], "open, and merged for the first time; the closed one is settled"
+    noted.clear()
+    DT.run_pass(github=gh, events=events, now=T0 + dt.timedelta(minutes=1))
+    assert noted == [8], "the merge already recorded is settled: no ticket read for it"
+    noted.clear()
+    gh.prs[8] = _PR(8, state="closed", when=T0)
+    DT.run_pass(github=gh, events=events, now=T0 + dt.timedelta(minutes=2))
+    assert noted == []
+
+
+def test_a_merge_whose_sha_github_has_not_given_yet_is_read_again_next_pass(monkeypatch):
+    """merge_commit_sha is briefly absent after a merge. A run lookup on "" lists
+    every run in the repo, so nothing may be concluded, recorded or dispatched
+    from it."""
+    monkeypatch.setattr(settings, "notify_workflow", "example-org/ops:notify.yml")
+    pr = _PR(7, merged=True, state="closed", when=T0)
+    pr.merge_commit_sha = None
+    gh = _GitHub({7: pr}, runs={"": [_Run(9, status="completed", conclusion="success")]})
+    out = DT.run_pass(github=gh, events=[_pending(7)], now=T0)
+    assert out["ok"] and out["in_flight"] == 1 and out["started"] == [] and out["finished"] == []
+    assert _rows() == [] and _items() == [] and gh.dispatches == []
+    pr.merge_commit_sha = SHA                                      # GitHub caught up
+    gh.runs[SHA] = [_Run(1)]
+    out = DT.run_pass(github=gh, events=[_pending(7)], now=T0 + dt.timedelta(minutes=1))
+    assert out["started"] == [f"deploy:{REPO}#7"] and len(_rows("merged")) == 1
+
+
+def test_no_commit_means_no_runs_not_every_run():
+    repo = SimpleNamespace(get_workflow_runs=lambda **kw: pytest.fail("listed runs without a commit"))
+    assert DT.runs_for(repo, "") == []
+
+
 def test_a_closed_pr_is_left_to_pr_reconcile():
     gh = _GitHub({7: _PR(7, state="closed", when=T0)})
     out = DT.run_pass(github=gh, events=[_pending(7)], now=T0)
@@ -437,5 +492,5 @@ def test_the_feature_is_registered_the_way_notifications_is():
     from release_agent import features
 
     assert "deploy-tracking" in features.UI_FEATURES
-    assert "deploy-tracking" in settings.model_fields["preview_features"].default.split(",")
+    assert "deploy-tracking" in type(settings).model_fields["preview_features"].default.split(",")
     assert features.refusal("deploy-tracking") == "Deployment tracking is not available yet — it is a preview feature."
