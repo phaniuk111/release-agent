@@ -305,6 +305,31 @@ config:
   # state is the LAST of these words on its line. Read once per PR every 10 min.
   TICKET_PREFIXES: "CHG,RMG"
   TICKET_STATE_WORDS: "created,approved,rejected,closed,cancelled"
+  # ==================== [FEATURE] deployment tracking ======================
+  # A timed sweep (adk_release_agent/deploy_tracker.py) that WATCHES the PRs the
+  # portal raised and could not merge: when a person merges one it tells the
+  # requester "Deployment starting", follows the workflow runs on the merge
+  # commit and tells them "completed" or "failed at <job> > <step>" — one bell
+  # item per PR that changes, the facts in portal_events (domain deploy). It
+  # never merges, re-runs or rolls back. Preview feature "deploy-tracking".
+  # TOKEN: a sweep has no chat session, so it reads GitHub (and dispatches
+  # NOTIFY_WORKFLOW) as the bot — githubToken below (GH_TOKEN) — which needs
+  # actions:read on the deployment repo and actions:write on the NOTIFY_WORKFLOW
+  # repo. The memory store note above applies: with no PORTAL_EVENTS_DATASET a
+  # restart forgets which merges were already announced.
+  DEPLOY_TRACKING_ENABLED: "false"
+  TRACK_OPEN_MINUTES: "5"          # a pending PR open: check every 5 min (idle: one event-log read per 5 min)
+  TRACK_RUN_SECONDS: "60"          # a merge with runs in flight: check every minute
+  TRACK_RUN_MAX_MINUTES: "90"      # no conclusion after this: one "still running" item, then the merge is left alone
+  # Which runs on the merge commit are the deployment: comma list of workflow
+  # names or file names ("Deploy to UAT,deploy-prd.yml"); empty = every run.
+  DEPLOY_WORKFLOWS: ""
+  # The team's own send-notification workflow, "owner/repo:workflow-file.yml",
+  # dispatched (workflow_dispatch on its default branch) at each stage with
+  # inputs {stage: starting|completed|failed, release, chg, rmg, pr, requested_by}.
+  # Empty = no dispatch. This is the ONE GitHub write that never pauses for a
+  # yes (adk_release_agent/approvals.py): it changes no deployment.
+  NOTIFY_WORKFLOW: ""
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token
   # usage, each tool call, the deploy Workflow's nodes — exported as
@@ -362,7 +387,7 @@ config:
   #        --set-string config.PREVIEW_USERS='*'
   PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
   PREVIEW_GROUPS: "Check,Monitoring"  # comma list of pill groups (palette.js GROUPS); Monitoring = BQ cost. Support triage is out of preview: add "Support" here to hide it again
-  PREVIEW_FEATURES: "monitoring,bq-cost,notifications"  # gated server features: their API + chat tools refuse non-preview users ("support-triage" to gate Support again; drop "notifications" to open the bell to everyone)
+  PREVIEW_FEATURES: "monitoring,bq-cost,notifications,deploy-tracking"  # gated server features: their API + chat tools refuse non-preview users ("support-triage" to gate Support again; drop "notifications" to open the bell to everyone, "deploy-tracking" likewise)
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's

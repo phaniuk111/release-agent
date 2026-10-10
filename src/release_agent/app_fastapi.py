@@ -69,11 +69,20 @@ async def _sweep_idle_forever() -> None:
 async def _lifespan(_app):
     sweeper = (asyncio.create_task(_sweep_idle_forever(), name="idle-sweep")
                if settings.session_idle_minutes > 0 else None)
+    # Deployment tracking: watches the portal's pending PRs and their runs and
+    # tells the requester (adk_release_agent/deploy_tracker.py). Off by default.
+    tracker = None
+    if settings.deploy_tracking_enabled:
+        from adk_release_agent import deploy_tracker
+
+        tracker = asyncio.create_task(deploy_tracker.track_forever(), name="deploy-tracker")
     try:
         yield
     finally:
         if sweeper is not None:
             sweeper.cancel()
+        if tracker is not None:
+            tracker.cancel()
 
 
 app = FastAPI(title=settings.app_title, version="0.2.0", lifespan=_lifespan)

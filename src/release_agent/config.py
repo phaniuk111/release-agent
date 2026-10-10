@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # server side too (API + chat tools), so a hidden pill is not one question away.
     preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
     preview_groups: str = Field(default="Check,Monitoring", validation_alias=AliasChoices("PREVIEW_GROUPS"))
-    preview_features: str = Field(default="monitoring,bq-cost,notifications", validation_alias=AliasChoices("PREVIEW_FEATURES"))
+    preview_features: str = Field(default="monitoring,bq-cost,notifications,deploy-tracking", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
     identity_required: bool = Field(
@@ -744,6 +744,25 @@ class Settings(BaseSettings):
         default="created,approved,rejected,closed,cancelled",
         validation_alias=AliasChoices("TICKET_STATE_WORDS"),
     )
+
+    # --- Deployment tracking (adk_release_agent/deploy_tracker.py) ------------------
+    # A timed sweep that WATCHES the PRs the portal raised: when one merges it tells
+    # the requester, follows the workflow runs the merge started and tells them how
+    # those ended. It never merges, re-runs or rolls back. Off by default; preview
+    # feature "deploy-tracking" decides who sees it. With no session in play it
+    # reads GitHub as the bot (GH_TOKEN).
+    deploy_tracking_enabled: bool = Field(default=False, validation_alias=AliasChoices("DEPLOY_TRACKING_ENABLED"))
+    track_open_minutes: int = Field(default=5, validation_alias=AliasChoices("TRACK_OPEN_MINUTES"))
+    track_run_seconds: int = Field(default=60, validation_alias=AliasChoices("TRACK_RUN_SECONDS"))
+    track_run_max_minutes: int = Field(default=90, validation_alias=AliasChoices("TRACK_RUN_MAX_MINUTES"))
+    # Which workflow runs on the merge commit count as the deployment (comma list
+    # of workflow names or file names); empty = every run on that commit.
+    deploy_workflows: str = Field(default="", validation_alias=AliasChoices("DEPLOY_WORKFLOWS"))
+    # The team's own send-notification workflow, "owner/repo:workflow-file.yml",
+    # dispatched at each stage (starting / completed / failed) with the release,
+    # tickets, PR and requester as inputs. Empty = no dispatch. The ONE GitHub
+    # write that never pauses for a yes (approvals.py): it changes no deployment.
+    notify_workflow: str = Field(default="", validation_alias=AliasChoices("NOTIFY_WORKFLOW"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every

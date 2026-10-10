@@ -57,6 +57,11 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   `/api/release-status` adds `tickets` to `blocking_pr` and `df.release_pr`
   only when a PR exists; the banner shows them after the PR number as links,
   grey "CHG pending" for a prefix the PR does not name, nothing on a read error.
+- **Deployment tracking** (`adk_release_agent/deploy_tracker.py`, started in
+  `_lifespan` only with `DEPLOY_TRACKING_ENABLED=true`, preview feature
+  `deploy-tracking`): watches the portal's pending PRs and their runs and tells
+  the requester; never merges, re-runs or rolls back. Its `NOTIFY_WORKFLOW`
+  dispatch is the one write `approvals.py` allows without a yes.
 - **Secrets and identity.** GitHub PATs are memory-only and masked, and are
   dropped with a conversation idle for `SESSION_IDLE_MINUTES` (60); nothing
   sensitive in git, BigQuery or logs. The caller's identity comes only from a
