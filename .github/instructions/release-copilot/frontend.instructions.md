@@ -22,5 +22,13 @@ Conventions:
   prebuilt file: only classes already in `vendor/tailwind.css` work; a new one
   needs `scripts/css/build.sh` and the regenerated CSS committed.
 - Feature visibility comes from `window.PORTAL_UI` (server-side
-  `features.ui_config`), e.g. `llm` and preview groups.
+  `features.ui_config`), e.g. `llm` and preview groups. A page-level feature
+  (`features`: the bell, the Auto-triage pill, strip and Insights section) is
+  checked with `core/capabilities.js` `hasFeature`; a pill names it as
+  `feature:` and `visibleCapabilities` leaves it out otherwise.
+- Auto-triage (`forms/auto_triage.js`, rules in `core/auto_triage.js`) renders
+  what the server found; it never judges a cause. "Ask why" is offered only
+  with a model (`llmEnabled`); "Was this right?" reuses
+  `forms/support_feedback.js`. The strip in `status.js` reads
+  `/api/support/watch` through `api.js` once a minute while the tab is visible.
 - The deploy and release forms send a required `jira` (`core/jira.js`).

@@ -5,7 +5,7 @@ import { addMessage, sendMessage, sendConfirmation, sendApproval, newThread } fr
 import { refreshConnectionStatus, showConnectForm } from './connect.js';
 import { showCapabilities, openPalette } from './palette.js';
 import { toggleInsights, renderInsights } from './insights.js';
-import { loadReleaseStatus, toggleBannerDetail, startBannerAgeTicker, showBannerIdle } from './status.js';
+import { loadReleaseStatus, toggleBannerDetail, startBannerAgeTicker, showBannerIdle, startAutoTriageStrip } from './status.js';
 import { renderConsoleLinks } from './links.js';
 import { llmEnabled } from './core/capabilities.js';
 
@@ -39,6 +39,9 @@ window.onload = () => {
     refreshConnectionStatus();
     showBannerIdle();
     startBannerAgeTicker();
+    // Absent unless the auto-triage feature is on for this person; one event-log
+    // read a minute, no GitHub call.
+    startAutoTriageStrip();
     // Static config read — unlike the release banner this costs no GitHub call,
     // so it can load on every page view.
     renderConsoleLinks();

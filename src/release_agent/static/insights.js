@@ -3,8 +3,11 @@
 // render() — no new layout code. Each section is a native <details> accordion.
 // Static sections render once on first expand; sections marked live:true
 // re-render every time they're opened (fresh data each look).
-import { releaseInsights } from './api.js';
+import { getAutoTriage, releaseInsights, runAutoTriage, supportFeedbackStats } from './api.js';
+import { counts, hhmm, lastRunText, watcherHealth } from './core/auto_triage.js';
+import { hasFeature } from './core/capabilities.js';
 import { escapeHtml as esc } from './core/format.js';
+import { showAutoTriage } from './forms/auto_triage.js';
 import { showQueueTable } from './forms/queue_table.js';
 
 // The queue itself is ONE screen: forms/queue_table.js. This drawer used to
@@ -98,6 +101,49 @@ async function _renderStatsSection(body) {
     results.innerHTML = html + '</div>';
 }
 
+// Auto-triage at a glance: when it last looked, what is open, how right its
+// investigations have been (the "Was this right?" memory, when one is set),
+// and Run now. The card itself is forms/auto_triage.js; this opens it.
+async function _renderAutoTriageSection(body) {
+    body.innerHTML = '<div class="text-[11px] text-slate-500">Loading…</div>';
+    let feed, stats;
+    try {
+        [feed, stats] = await Promise.all([
+            getAutoTriage('').catch(e => ({ ok: false, error: String(e), status: {} })),
+            supportFeedbackStats(30).catch(() => null),
+        ]);
+    } catch (e) { feed = { ok: false, error: String(e), status: {} }; }
+    const status = (feed && feed.status) || {};
+    const health = watcherHealth(status);
+    const n = counts(feed && feed.findings);
+    const accuracy = stats && stats.ok && typeof stats.accuracy === 'number'
+        ? Math.round(stats.accuracy * 100) + '% right of ' + (stats.total || 0) + ' rated'
+        : (stats && stats.disabled ? 'no feedback memory' : (stats && stats.ok ? 'nothing rated yet' : 'unavailable'));
+    const tone = { ok: 'text-emerald-300', warn: 'text-amber-300', error: 'text-red-300', off: 'text-slate-400' }[health.tone];
+    body.innerHTML =
+        '<div class="text-[11px]" style="display:grid;gap:4px">' +
+        '<div><span class="text-slate-500">Last check:</span> <span class="' + tone + '">' + esc(health.text) + '</span>' +
+        (status.last_run_at ? ' <span class="text-slate-600">(' + esc(hhmm(status.last_run_at)) + ' UTC)</span>' : '') + '</div>' +
+        '<div><span class="text-slate-500">Open:</span> <span class="text-slate-200">' + n.open + '</span>' +
+        ' <span class="text-slate-500">· needs attention:</span> <span class="' + (n.attention ? 'text-amber-300' : 'text-slate-200') + '">' + n.attention + '</span></div>' +
+        // A failed pass has no summary: "not run yet" would contradict the line above.
+        (status.error ? '' : '<div class="text-slate-500">' + esc(lastRunText(status.last_summary)) + '</div>') +
+        '<div><span class="text-slate-500">Accuracy (30d):</span> <span class="text-slate-200">' + esc(accuracy) + '</span></div>' +
+        (feed && feed.ok === false ? '<div class="text-amber-400">' + esc(feed.error || 'unavailable') + '</div>' : '') +
+        '</div>' +
+        '<div class="flex items-center gap-3 mt-2 text-[11px]">' +
+        '<button type="button" data-ai="open" class="text-emerald-400 hover:text-emerald-300"><i class="fa-solid fa-eye mr-1"></i>Open Auto-triage</button>' +
+        '<button type="button" data-ai="run" class="text-amber-300 hover:underline"' + (status.running ? ' disabled' : '') + '>' +
+        (status.running ? 'Running…' : 'Run now') + '</button></div>';
+    body.querySelector('[data-ai="open"]').addEventListener('click', () => showAutoTriage());
+    body.querySelector('[data-ai="run"]').addEventListener('click', async (ev) => {
+        ev.currentTarget.disabled = true;
+        ev.currentTarget.textContent = 'Running…';
+        try { await runAutoTriage(''); } catch (e) { /* the re-render below shows the status */ }
+        _renderAutoTriageSection(body);
+    });
+}
+
 const INSIGHT_SECTIONS = [
     {
         id: 'next-release',
@@ -111,6 +157,14 @@ const INSIGHT_SECTIONS = [
         icon: 'fa-chart-simple',
         live: true,
         render: _renderStatsSection,
+    },
+    {
+        id: 'auto-triage',
+        title: 'Auto-triage',
+        icon: 'fa-eye',
+        live: true,
+        feature: 'auto-triage',   // shown only when the server listed it for this person
+        render: _renderAutoTriageSection,
     },
     // A section belongs here once it has a data source. An empty box that says
     // "Placeholder" is a to-do list shipped to the people using the portal.
@@ -129,7 +183,7 @@ export function renderInsights() {
     _insightsRendered = true;
     const box = document.getElementById('insights-sections');
     box.innerHTML = '';
-    INSIGHT_SECTIONS.forEach(sec => {
+    INSIGHT_SECTIONS.filter(sec => !sec.feature || hasFeature(window.PORTAL_UI, sec.feature)).forEach(sec => {
         const d = document.createElement('details');
         d.className = 'border border-slate-700/70 rounded-xl overflow-hidden';
         const sum = document.createElement('summary');

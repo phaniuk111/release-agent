@@ -159,6 +159,9 @@ def finding_from(incident: dict[str, Any], outcome: dict[str, Any], business_dat
         "priority": str(inc.get("priority") or ""),
         "count": int(inc.get("count") or 0),
         "jobs": job_signature(inc),
+        # The source the incident's runs share (the control table's own value),
+        # for the card's "source · owner · category" line.
+        "source": str((inc.get("shared") or {}).get("source") or "") if isinstance(inc.get("shared"), dict) else "",
         "owner": str(inc.get("owner") or ""),
         "runbook": str(inc.get("runbook") or ""),
         "cause": cause[:400],
@@ -247,7 +250,7 @@ def summary_line(finding: dict[str, Any]) -> str:
 
 # ----- rows <-> findings ------------------------------------------------------------
 
-_DETAIL_KEYS = ("do_now", "timeline", "note", "answer", "jobs", "investigated_at", "changed_at",
+_DETAIL_KEYS = ("do_now", "timeline", "note", "answer", "jobs", "source", "investigated_at", "changed_at",
                 "priority", "previous_count")
 
 
@@ -300,6 +303,7 @@ def from_row(row: dict[str, Any]) -> dict[str, Any]:
         "priority": str(details.get("priority") or row.get("severity") or ""),
         "count": int(row.get("count") or 0),
         "jobs": [str(j) for j in (details.get("jobs") or [])],
+        "source": str(details.get("source") or ""),
         "owner": str(row.get("owner") or ""),
         "runbook": str(row.get("runbook") or ""),
         "cause": str(row.get("cause") or ""),

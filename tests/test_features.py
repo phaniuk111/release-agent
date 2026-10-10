@@ -98,7 +98,13 @@ def test_every_server_gated_pill_sits_in_a_preview_group_by_default():
         lines = [line for line in palette.splitlines() if f"form:'{feature}'" in line and "group:'" in line]
         # A gated feature with no pill of its own is fine (it may be chat-only);
         # what must never happen is a pill sitting in a group everyone can see.
+        # A pill that names its `feature:` is hidden by window.PORTAL_UI.features
+        # instead — the server lists that per caller from the same gate — so it
+        # may sit in an open group.
         for line in lines:
+            if f"feature:'{feature}'" in line:
+                assert feature in features.UI_FEATURES, (feature, "a feature: pill needs the page to be told")
+                continue
             group = line.split("group:'", 1)[1].split("'", 1)[0]
             assert group in default_groups, (feature, group)
     # Known limit: this reads `form:` pills only. A `send:true` pill whose chat

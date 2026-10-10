@@ -56,6 +56,9 @@ export const CAPABILITIES = [
     {group:'Check',   icon:'fa-heart-pulse',       label:'PromQL checks',        desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
     {group:'Monitoring', icon:'fa-coins',          label:'BQ cost report',       desc:"the most expensive BigQuery queries this fortnight, why, and what they'd cost after a fix — measured, not guessed", form:'bq-cost'},
     {group:'Support', icon:'fa-headset',        label:'Support triage',       desc:'L1 view of the pipelines’ control table: what failed, got stuck or never ran, known issue or not, what to do now and who owns it', form:'support-triage'},
+    // Gated by its own preview feature: the pill is absent unless the server
+    // listed 'auto-triage' for this person (core/capabilities.js), its routes refuse otherwise.
+    {group:'Support', icon:'fa-eye',            label:'Auto-triage',          desc:'checks the control table every few minutes and investigates what is new — runbook first', form:'auto-triage', feature:'auto-triage'},
     {group:'Onboarding', icon:'fa-plug',           label:'Consumer onboarding',  desc:'how to start using our APIs — access, auth, first call, going live', send:true,  text:'I want to onboard to your APIs — walk me through it step by step'},
 ];
 

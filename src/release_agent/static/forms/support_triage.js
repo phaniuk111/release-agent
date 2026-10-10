@@ -16,13 +16,15 @@ import { opening, withDismiss } from './common.js';
 // Every value comes from the control table — error text, unit names — so all
 // of it goes through esc(), title attributes included.
 
-export async function showSupportTriage() {
+/** `date` (optional) opens the card on that business date — Auto-triage's
+ *  "Open in Support" lands on the date of its finding. */
+export async function showSupportTriage(date) {
     const _ph = opening('Support triage');
     const chat = document.getElementById('chat');
     const wrap = document.createElement('div');
     wrap.className = 'message bot interrupt-box rounded-2xl p-4 text-sm queue-table-card';
     _ph.replaceWith(wrap);
-    await render(wrap, '', false);
+    await render(wrap, typeof date === 'string' ? date : '', false);
     withDismiss(wrap);
     chat.scrollTop = chat.scrollHeight;
 }

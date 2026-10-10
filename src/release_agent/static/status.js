@@ -5,8 +5,11 @@
 // a release, so the PR open against a guarded branch (blocking_pr) IS the CARE
 // release in flight — the same reading the DF slot has always used. Every field
 // is optional; the strip must render whatever is missing.
-import { releaseStatus } from './api.js';
+import { getAutoTriage, releaseStatus } from './api.js';
+import { stripLine } from './core/auto_triage.js';
+import { hasFeature } from './core/capabilities.js';
 import { escapeHtml as esc } from './core/format.js';
+import { showAutoTriage } from './forms/auto_triage.js';
 
 function _chartList(arr) {
     return (arr || []).map(function(c){ return esc(c.helm_chart_name) + ':' + esc(c.helm_chart_version); })
@@ -83,6 +86,51 @@ function _dfSummary(s) {
         // No image count here either — same reason as the CARE title.
         detail: '<br><span class="text-sky-300">DF release:</span> none open',
     };
+}
+
+// ---- Auto-triage strip ---------------------------------------------------------
+// One line under Release status: "Auto-triage · every 10 min · last check
+// 09:41 · 2 needs attention · 3 open · next 09:51" — amber when something
+// needs attention, red when the last pass failed. Unlike the banner it costs
+// no GitHub call (one read of the event log), so it refreshes itself every
+// minute while the tab is visible and at once on focus. Absent entirely when
+// the auto-triage feature is not on for this person. Built here, not in the
+// HTML shell: the shell does not need to know about a preview feature.
+const STRIP_MS = 60000;
+const STRIP_DOT = { ok: 'bg-emerald-500', warn: 'bg-amber-400', error: 'bg-red-600', off: 'bg-slate-600' };
+
+async function _refreshAutoTriageStrip() {
+    const dot = document.getElementById('at-dot');
+    const title = document.getElementById('at-title');
+    if (!dot || !title) return;
+    let feed;
+    try { feed = await getAutoTriage(''); } catch (e) { feed = { ok: false, error: String((e && e.message) || e), status: {} }; }
+    const line = stripLine(feed);
+    dot.className = 'w-2 h-2 rounded-full inline-block ' + (STRIP_DOT[line.tone] || STRIP_DOT.off);
+    title.textContent = line.text;
+}
+
+export function startAutoTriageStrip() {
+    if (!hasFeature(window.PORTAL_UI, 'auto-triage')) return;
+    const banner = document.getElementById('release-banner');
+    if (!banner || document.getElementById('auto-triage-strip')) return;
+    const strip = document.createElement('div');
+    strip.id = 'auto-triage-strip';
+    strip.className = 'mb-3 rounded-xl border px-3 py-1.5 text-xs border-slate-800 bg-slate-900/60';
+    strip.innerHTML =
+        '<div class="flex items-center gap-2">' +
+        '<span id="at-dot" class="w-2 h-2 rounded-full bg-slate-600 inline-block"></span>' +
+        '<span id="at-title" class="text-slate-300 truncate cursor-pointer hover:text-white" ' +
+        'title="Open the Auto-triage card">Auto-triage — checking…</span>' +
+        '<span class="flex-1"></span>' +
+        '<button id="at-refresh" title="Refresh now" class="text-slate-600 hover:text-slate-400">' +
+        '<i class="fa-solid fa-rotate-right"></i></button></div>';
+    banner.insertAdjacentElement('afterend', strip);
+    strip.querySelector('#at-title').addEventListener('click', () => showAutoTriage());
+    strip.querySelector('#at-refresh').addEventListener('click', _refreshAutoTriageStrip);
+    _refreshAutoTriageStrip();
+    setInterval(() => { if (document.visibilityState === 'visible') _refreshAutoTriageStrip(); }, STRIP_MS);
+    window.addEventListener('focus', _refreshAutoTriageStrip);
 }
 
 export async function loadReleaseStatus(fresh) {
