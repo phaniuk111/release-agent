@@ -315,6 +315,28 @@ def test_a_merge_pr_reconcile_settled_between_passes_is_still_followed():
     assert out["started"] == [f"deploy:{REPO}#7"] and out["finished"] == [f"deploy:{REPO}#7"]
 
 
+def test_a_merge_whose_sha_github_has_not_given_yet_is_read_again_next_pass(monkeypatch):
+    """merge_commit_sha is briefly absent after a merge. A run lookup on "" lists
+    every run in the repo, so nothing may be concluded, recorded or dispatched
+    from it."""
+    monkeypatch.setattr(settings, "notify_workflow", "example-org/ops:notify.yml")
+    pr = _PR(7, merged=True, state="closed", when=T0)
+    pr.merge_commit_sha = None
+    gh = _GitHub({7: pr}, runs={"": [_Run(9, status="completed", conclusion="success")]})
+    out = DT.run_pass(github=gh, events=[_pending(7)], now=T0)
+    assert out["ok"] and out["in_flight"] == 1 and out["started"] == [] and out["finished"] == []
+    assert _rows() == [] and _items() == [] and gh.dispatches == []
+    pr.merge_commit_sha = SHA                                      # GitHub caught up
+    gh.runs[SHA] = [_Run(1)]
+    out = DT.run_pass(github=gh, events=[_pending(7)], now=T0 + dt.timedelta(minutes=1))
+    assert out["started"] == [f"deploy:{REPO}#7"] and len(_rows("merged")) == 1
+
+
+def test_no_commit_means_no_runs_not_every_run():
+    repo = SimpleNamespace(get_workflow_runs=lambda **kw: pytest.fail("listed runs without a commit"))
+    assert DT.runs_for(repo, "") == []
+
+
 def test_a_closed_pr_is_left_to_pr_reconcile():
     gh = _GitHub({7: _PR(7, state="closed", when=T0)})
     out = DT.run_pass(github=gh, events=[_pending(7)], now=T0)

@@ -238,7 +238,10 @@ def _run_dict(run: Any) -> dict[str, Any]:
 
 
 def runs_for(repo_obj: Any, merge_sha: str) -> list[dict[str, Any]]:
-    """The workflow runs on the merge commit that count as the deployment."""
+    """The workflow runs on the merge commit that count as the deployment. No
+    commit, no runs — an empty SHA would list every run in the repo."""
+    if not merge_sha:
+        return []
     wanted = _wanted_workflows()
     found = []
     for run in itertools.islice(repo_obj.get_workflow_runs(head_sha=merge_sha), _MAX_RUNS):
@@ -360,6 +363,12 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
     if kind != "merged":
         return                                    # pr_reconcile records the abandonment
     merge_sha = str(getattr(pr, "merge_commit_sha", "") or "")
+    if not merge_sha:
+        # GitHub omits merge_commit_sha for a moment after a merge. Without it
+        # there is nothing to follow — and a run lookup on "" lists every run in
+        # the repo. Nothing is recorded or sent; the next pass reads it again.
+        summary["in_flight"] += 1
+        return
     merged_at = _when(when) or now
     common = {"subject": scope, "scope": scope, "repo": repo_full, "pr_number": pr_number,
               "merge_sha": merge_sha, "jira": jira or None, "title": what,
