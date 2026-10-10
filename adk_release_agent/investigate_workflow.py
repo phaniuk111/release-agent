@@ -449,11 +449,25 @@ async def answer_from_bundle(bundle: dict, *, thread_id: str = "eval", runner: A
         run.seconds = round(time.monotonic() - started, 1)
         return outcome(run)
     runner = runner or _scripts_runner()
-    async with aclosing(stream_run(runner, run, user_id=thread_id,
-                                   session_id=f"{thread_id}-{run.key}")) as events:
-        async for _ in events:
-            pass
+    session_id = f"{thread_id}-{run.key}"
+    try:
+        async with aclosing(stream_run(runner, run, user_id=thread_id, session_id=session_id)) as events:
+            async for _ in events:
+                pass
+    finally:
+        await _drop_session(runner, thread_id, session_id)
     return outcome(run)
+
+
+async def _drop_session(runner: Any, user_id: str, session_id: str) -> None:
+    """Each investigation here has a session of its own that nothing reads
+    again; Auto-triage runs hundreds a day in one process, so it is deleted
+    — on success, failure and cancellation alike. Never raises."""
+    try:
+        await runner.session_service.delete_session(app_name=runner.app_name, user_id=user_id,
+                                                    session_id=session_id)
+    except Exception:  # noqa: BLE001 — a session that stays is a leak, not a failed investigation
+        logger.warning("could not delete investigation session %s", session_id, exc_info=True)
 
 
 async def run_once(business_date: str, incident_id: str, *, thread_id: str = "eval") -> dict:
