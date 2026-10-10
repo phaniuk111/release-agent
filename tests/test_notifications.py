@@ -320,3 +320,84 @@ def test_a_store_outage_is_an_error_body_not_a_500(signed_in, client, monkeypatc
     monkeypatch.setattr(events_store, "latest", lambda *a, **k: {"ok": False, "error": "BigQuery unavailable"})
     res = client.get("/api/notifications")
     assert res.status_code == 200 and res.json()["ok"] is False
+
+
+# ----- a busy recipient: the 500-row default of `latest` must not hide their older items ----------
+
+def _seed(recipient, count, *, prefix="notification:busy-"):
+    """``count`` unread items for ``recipient``, subject N older than N+1 (seconds apart)."""
+    base = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)
+    out = events_store.record_many([
+        {"domain": "notification", "event_type": "created", "subject": f"{prefix}{n}", "recipient": recipient,
+         "status": "unread", "title": f"t{n}", "event_ts": (base + dt.timedelta(seconds=n)).isoformat()}
+        for n in range(count)])
+    assert out["ok"]
+
+
+def test_read_all_marks_every_unread_even_past_the_500_newest():
+    _seed(ME, 600)
+    assert N.unread_count(ME) == 600
+    out = N.read_all(ME, ME)
+    assert out["ok"] and len(out["marked"]) == 600 and out["skipped"] == []
+    assert N.unread_count(ME) == 0
+    assert N.read_all(ME, ME) == {"ok": True, "marked": [], "skipped": []}, "nothing left to write"
+
+
+def test_the_read_all_route_marks_all_600_and_leaves_the_badge_at_zero(signed_in, client):
+    _seed("tester@example.com", 600)
+    _seed(OTHER.email, 3, prefix="notification:theirs-")
+    signed_in(TESTER)
+    body = client.post("/api/notifications/read-all").json()
+    assert body["ok"] and len(body["marked"]) == 600 and body["unread"] == 0
+    assert N.unread_count(OTHER.email) == 3
+
+
+def test_mark_finds_a_subject_older_than_the_500_newest():
+    _seed(ME, 600)      # busy-0 is the oldest: 599 newer items sit above it
+    assert "notification:busy-0" not in {r["subject"] for r in events_store.latest(
+        "notification", recipient=ME)["rows"]}, "the default cap really hides it"
+    out = N.mark(ME, ["notification:busy-0"], "read", ME)
+    assert out == {"ok": True, "marked": ["notification:busy-0"], "skipped": []}
+    assert events_store.latest("notification", recipient=ME, subject="notification:busy-0")["rows"][0]["status"] == "read"
+
+
+def test_another_recipients_subject_is_still_skipped_among_a_busy_list():
+    _seed(ME, 600)
+    _seed(YOU, 2, prefix="notification:yours-")
+    out = N.mark(ME, ["notification:busy-0", "notification:yours-1"], "read", ME)
+    assert out["marked"] == ["notification:busy-0"] and out["skipped"] == ["notification:yours-1"]
+    assert N.unread_count(YOU) == 2
+    assert N.read_all(ME, ME)["ok"] and N.unread_count(YOU) == 2, "read-all is the caller's own"
+
+
+def test_the_recipient_filter_comes_before_the_cap():
+    _seed(YOU, 700, prefix="notification:noisy-")
+    _seed(ME, 3)
+    assert len(events_store.latest("notification", recipient=ME)["rows"]) == 3
+    assert len(events_store.latest("notification", recipient=YOU)["rows"]) == 500
+    assert len(events_store.latest("notification", recipient=YOU, limit=650)["rows"]) == 650
+    assert len(events_store.latest("notification", recipient=YOU, limit=10**9)["rows"]) == 700, "clamped, not refused"
+
+
+def test_mark_refuses_more_than_200_subjects_in_one_call():
+    _seed(ME, 250)
+    out = N.mark(ME, [f"notification:busy-{n}" for n in range(201)], "read", ME)
+    assert out["ok"] is False and "200" in out["error"]
+    assert N.unread_count(ME) == 250, "nothing was written"
+    ok = N.mark(ME, [f"notification:busy-{n}" for n in range(200)], "read", ME)
+    assert ok["ok"] and len(ok["marked"]) == 200
+
+
+def test_a_failed_point_read_marks_nothing(monkeypatch):
+    _seed(ME, 2)
+    real = events_store.latest
+
+    def flaky(domain, **kw):
+        if kw.get("subject") == "notification:busy-1":
+            return {"ok": False, "error": "BigQuery unavailable"}
+        return real(domain, **kw)
+    monkeypatch.setattr(events_store, "latest", flaky)
+    out = N.mark(ME, ["notification:busy-0", "notification:busy-1"], "read", ME)
+    assert out == {"ok": False, "error": "BigQuery unavailable"}
+    monkeypatch.setattr(events_store, "latest", real)
+    assert N.unread_count(ME) == 2

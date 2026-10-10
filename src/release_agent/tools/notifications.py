@@ -41,7 +41,13 @@ MARKS = ("read", "dismissed")
 # bell any more, so they start a new thread / cannot be marked.
 _THREAD_DAYS = 30
 _MARK_DAYS = 30
+# `mark` checks each subject with a point read, so a call is capped; the bell's
+# "Mark all read" is `read_all`, which reads the recipient's list in one query.
 _MAX_MARKS = 200
+# The most items one recipient's list holds (their own newest N — the recipient
+# filter is applied before the cap). `read_all` writes in batches of _MARK_BATCH.
+_LIST_LIMIT = 2000
+_MARK_BATCH = 500
 
 
 def _who(recipient: Any) -> str:
@@ -124,7 +130,7 @@ def list_for(recipient: str, *, since_days: int = 14) -> dict:
         to = _who(recipient)
         if not to:
             return {"ok": False, "error": "recipient is required"}
-        got = events_store.latest(DOMAIN, since_days=since_days, recipient=to)
+        got = events_store.latest(DOMAIN, since_days=since_days, recipient=to, limit=_LIST_LIMIT)
         if not got.get("ok"):
             return got
         items = sorted((_item(r) for r in got["rows"]), key=lambda i: i["at"], reverse=True)
@@ -133,44 +139,77 @@ def list_for(recipient: str, *, since_days: int = 14) -> dict:
         return _fail(e)
 
 
+def _mark_row(current: dict[str, Any], to: str, status: str, actor: str) -> dict[str, Any]:
+    """The row that acknowledges ``current`` (a subject's latest row): its text
+    carried over, so the latest row per subject stays a complete item."""
+    return {
+        "domain": DOMAIN, "event_type": status, "subject": current["subject"], "recipient": to,
+        "scope": current.get("scope"), "status": status, "severity": current.get("severity"),
+        "title": current.get("title"), "body": current.get("body"), "link": current.get("link"),
+        "category": current.get("category"), "repo": current.get("repo"),
+        "pr_number": current.get("pr_number"), "actor": actor or None,
+        "details": {"notified_at": _item(current)["at"]},
+    }
+
+
 def mark(recipient: str, subjects: list[str], status: str, actor: str) -> dict:
     """Acknowledge ``subjects`` as "read" or "dismissed" by appending one row each.
     Only the recipient's OWN notifications can be marked: any other subject, an
     unknown one, or one already in that state is skipped and written to nothing.
-    {"ok": True, "marked": [...], "skipped": [...]} or {"ok": False, "error"};
-    ``actor`` is who did it (the verified email, "" when identity is off)."""
+    Each subject is checked with its own point read (recipient + subject), so how
+    old it is among the recipient's items does not matter; more than 200 distinct
+    subjects in one call is refused. {"ok": True, "marked": [...], "skipped": [...]}
+    or {"ok": False, "error"}; ``actor`` is who did it (the verified email, ""
+    when identity is off)."""
     try:
         to = _who(recipient)
         if not to:
             return {"ok": False, "error": "recipient is required"}
         if status not in MARKS:
             return {"ok": False, "error": f"status must be one of {', '.join(MARKS)}"}
-        wanted = list(dict.fromkeys(str(s).strip() for s in subjects or [] if str(s).strip()))[:_MAX_MARKS]
+        wanted = list(dict.fromkeys(str(s).strip() for s in subjects or [] if str(s).strip()))
+        if len(wanted) > _MAX_MARKS:
+            return {"ok": False, "error": f"at most {_MAX_MARKS} notifications can be marked in one call "
+                                          f"({len(wanted)} given); use read-all to mark everything"}
         if not wanted:
             return {"ok": True, "marked": [], "skipped": []}
-        got = events_store.latest(DOMAIN, since_days=_MARK_DAYS, recipient=to)
-        if not got.get("ok"):
-            return got
-        mine = {r["subject"]: r for r in got["rows"]}
         rows, marked = [], []
-        for subject in wanted:
-            current = mine.get(subject)
+        for subject in wanted:     # read everything first: a failed read writes nothing
+            got = events_store.latest(DOMAIN, since_days=_MARK_DAYS, recipient=to, subject=subject)
+            if not got.get("ok"):
+                return got
+            current = (got.get("rows") or [None])[0]
             if current is None or current.get("status") == status:
                 continue
             marked.append(subject)
-            rows.append({
-                "domain": DOMAIN, "event_type": status, "subject": subject, "recipient": to,
-                "scope": current.get("scope"), "status": status, "severity": current.get("severity"),
-                "title": current.get("title"), "body": current.get("body"), "link": current.get("link"),
-                "category": current.get("category"), "repo": current.get("repo"),
-                "pr_number": current.get("pr_number"), "actor": actor or None,
-                "details": {"notified_at": _item(current)["at"]},
-            })
+            rows.append(_mark_row(current, to, status, actor))
         if rows:
             out = events_store.record_many(rows)
             if not out.get("ok"):
                 return out
         return {"ok": True, "marked": marked, "skipped": [s for s in wanted if s not in marked]}
+    except Exception as e:  # noqa: BLE001
+        return _fail(e)
+
+
+def read_all(recipient: str, actor: str, *, since_days: int = 14) -> dict:
+    """Mark every unread notification the recipient has as read — everything
+    `list_for` returns, however many (it is their own newest 2000, not a cap on
+    what one `mark` call may name). {"ok": True, "marked": [...], "skipped": []}
+    or {"ok": False, "error"}; never raises."""
+    try:
+        to = _who(recipient)
+        if not to:
+            return {"ok": False, "error": "recipient is required"}
+        got = events_store.latest(DOMAIN, since_days=since_days, recipient=to, limit=_LIST_LIMIT)
+        if not got.get("ok"):
+            return got
+        unread = [r for r in got["rows"] if r.get("status") == "unread"]
+        for i in range(0, len(unread), _MARK_BATCH):
+            out = events_store.record_many([_mark_row(r, to, "read", actor) for r in unread[i:i + _MARK_BATCH]])
+            if not out.get("ok"):
+                return out
+        return {"ok": True, "marked": [r["subject"] for r in unread], "skipped": []}
     except Exception as e:  # noqa: BLE001
         return _fail(e)
 

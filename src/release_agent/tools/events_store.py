@@ -102,6 +102,7 @@ _HISTORY_FILTERS = _LATEST_FILTERS + ("scope", "event_type", "status", "actor")
 
 _MAX_DAYS = 400
 _LATEST_LIMIT = 500
+_LATEST_MAX = 5000      # the most a caller may ask `latest` for
 _HISTORY_LIMIT = 1000
 _MAX_BYTES_BILLED = 2**30
 _LABELS = {"release_copilot": "portal_events"}
@@ -317,13 +318,20 @@ def _public(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def latest(domain: str, *, since_days: int = 14, recipient: str = "", subject: str = "",
-           subject_version: str = "") -> dict:
+           subject_version: str = "", limit: int = 0) -> dict:
     """The newest row per (subject, subject_version) of ``domain`` written within
     ``since_days``, newest first, optionally only for one recipient / subject /
-    version. {"ok": True, "rows": [...]} or {"ok": False, "error"} — never raises."""
+    version. The filters apply BEFORE the cap: ``limit`` (default 500, at most
+    5000) keeps the newest N of what matched, so one busy recipient never hides
+    another's rows nor — within their cap — their own.
+    {"ok": True, "rows": [...]} or {"ok": False, "error"} — never raises."""
     want, why = _filters(_LATEST_FILTERS, {"recipient": recipient, "subject": subject,
                                            "subject_version": subject_version})
-    return _read(domain, since_days, want, why, latest_only=True)
+    try:
+        cap = min(max(int(limit or _LATEST_LIMIT), 1), _LATEST_MAX)
+    except (TypeError, ValueError):
+        cap = _LATEST_LIMIT
+    return _read(domain, since_days, want, why, latest_only=True, limit=cap)
 
 
 def history(domain: str, *, since_days: int = 14, **filters: str) -> dict:
@@ -334,23 +342,26 @@ def history(domain: str, *, since_days: int = 14, **filters: str) -> dict:
     return _read(domain, since_days, want, why, latest_only=False)
 
 
-def _read(domain: str, since_days: Any, want: dict[str, str], why: str, *, latest_only: bool) -> dict:
+def _read(domain: str, since_days: Any, want: dict[str, str], why: str, *, latest_only: bool,
+          limit: int = 0) -> dict:
     if why:
         return {"ok": False, "error": why}
     domain = str(domain or "").strip()
     if not domain:
         return {"ok": False, "error": "domain is required"}
     days = _days(since_days)
+    cap = limit or (_LATEST_LIMIT if latest_only else _HISTORY_LIMIT)
     try:
-        rows = _read_bigquery(domain, days, want, latest_only) if enabled() \
-            else _read_memory(domain, days, want, latest_only)
+        rows = _read_bigquery(domain, days, want, latest_only, cap) if enabled() \
+            else _read_memory(domain, days, want, latest_only, cap)
     except Exception as e:  # noqa: BLE001
         logger.warning("portal_events read failed: %s", e)
         return _error(e)
     return {"ok": True, "rows": rows}
 
 
-def _read_memory(domain: str, days: int, want: dict[str, str], latest_only: bool) -> list[dict[str, Any]]:
+def _read_memory(domain: str, days: int, want: dict[str, str], latest_only: bool,
+                 limit: int) -> list[dict[str, Any]]:
     cutoff = _now() - _dt.timedelta(days=days)
     with _memory_lock:
         snapshot = list(enumerate(_memory))
@@ -364,7 +375,7 @@ def _read_memory(domain: str, days: int, want: dict[str, str], latest_only: bool
             continue
         keep[(row["subject"], row.get("subject_version", "")) if latest_only else i] = (ts, i, row)
     ordered = sorted(keep.values(), key=lambda t: (t[0], t[1]), reverse=True)
-    return [_public(t[2]) for t in ordered[: _LATEST_LIMIT if latest_only else _HISTORY_LIMIT]]
+    return [_public(t[2]) for t in ordered[:limit]]
 
 
 # Filters are bound parameters, never text: an empty one matches everything, so
@@ -391,12 +402,13 @@ _HISTORY_SQL = (
 )
 
 
-def _read_bigquery(domain: str, days: int, want: dict[str, str], latest_only: bool) -> list[dict[str, Any]]:
+def _read_bigquery(domain: str, days: int, want: dict[str, str], latest_only: bool,
+                   limit: int) -> list[dict[str, Any]]:
     from google.cloud import bigquery
 
     params = [bigquery.ScalarQueryParameter("domain", "STRING", domain),
               bigquery.ScalarQueryParameter("days", "INT64", days),
-              bigquery.ScalarQueryParameter("limit", "INT64", _LATEST_LIMIT if latest_only else _HISTORY_LIMIT)]
+              bigquery.ScalarQueryParameter("limit", "INT64", limit)]
     params += [bigquery.ScalarQueryParameter(name, "STRING", want.get(name, "")) for name in _HISTORY_FILTERS]
     sql = (_LATEST_SQL if latest_only else _HISTORY_SQL).format(table=_table_id())
     cfg = bigquery.QueryJobConfig(query_parameters=params, maximum_bytes_billed=_MAX_BYTES_BILLED,

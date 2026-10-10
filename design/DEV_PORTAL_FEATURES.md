@@ -67,6 +67,8 @@ def notify(recipient: str, *, kind: str, title: str, body: str = "", link: str =
     # created row: SAME subject, so the bell shows ONE item whose text changed), status="unread"
 def list_for(recipient: str, *, since_days: int = 14) -> dict   # latest per subject, newest first
 def mark(recipient: str, subjects: list[str], status: str, actor: str) -> dict   # "read" | "dismissed" rows
+    # each subject checked by a point read (recipient + subject), so age does not matter; > 200 subjects refused
+def read_all(recipient: str, actor: str) -> dict   # every unread of list_for (the recipient's newest 2000), written in batches
 def unread_count(recipient: str) -> int
 ```
 

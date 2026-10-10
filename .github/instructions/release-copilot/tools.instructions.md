@@ -40,7 +40,9 @@ model only chooses which tool to call.
 - **Notifications** (`notifications.py`) sit on `events_store`: `notify` never
   raises or waits on the caller's work; a scope that already has a notification
   gets an `updated` row with the same subject; `mark` writes only the
-  recipient's own subjects. A producer is one best-effort call at the place
+  recipient's own subjects, each checked by a point read (at most 200 per call);
+  `read_all` marks everything the recipient's list holds. `events_store.latest`
+  applies its filters before its row cap. A producer is one best-effort call at the place
   the fact is already known, wrapped so it can never fail or change the action
   it rides on (`pr_reconcile._notify_settled`, `promotion._notify_uat_pr`,
   `dataflow._follow_run` → `df_run.py`, `release_queue._notify_requeued`); the

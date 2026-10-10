@@ -109,11 +109,7 @@ def notifications_read_all(request: Request, req: ReadAllRequest = ReadAllReques
         return refusal
     if not who:
         return {"ok": False, "error": "Your email is needed to mark notifications."}
-    listed = notifications.list_for(who)
-    if not listed.get("ok"):
-        return listed
-    unread = [i["subject"] for i in listed["items"] if i["status"] == "unread"]
-    out = notifications.mark(who, unread, "read", caller.email if caller else "")
+    out = notifications.read_all(who, caller.email if caller else "")
     return _after_mark(out, who, unverified)
 
 
