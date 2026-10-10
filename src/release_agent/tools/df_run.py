@@ -11,7 +11,10 @@ notification.
 The thread keeps the Repository object the dispatch used — it carries the
 caller's own token — rather than resolving one again: the session PAT lives in
 a contextvar the request owns, and the request is long gone by the time the
-run ends.
+run ends. That token is the thread's to hold only for SESSION_IDLE_MINUTES
+(invariant 5), so a watcher begun with a session PAT stops, quietly, as soon as
+the thread no longer holds it — before any further call to GitHub — and never
+waits longer than that either.
 
 Best-effort throughout: a run that cannot be read, a store that is down, a
 run still going after `MAX_MINUTES` — each is logged or said, never raised,
@@ -24,10 +27,13 @@ import threading
 import time
 from typing import Any
 
+from ..config import settings
+
 logger = logging.getLogger("release_copilot")
 
 POLL_SECONDS = 30.0
-MAX_MINUTES = 90.0
+# Never longer than a session PAT is held (0 = the sweep is off: no cap from it).
+MAX_MINUTES = float(min(90, settings.session_idle_minutes or 90))
 # Consecutive read failures before the watcher gives up: a token revoked or a
 # proxy outage, not a blip, and a thread per run must not poll forever.
 _MAX_READ_FAILURES = 5
@@ -59,9 +65,23 @@ def still_running_notification(image: str, tag: str, run_id: Any, run_url: str, 
             "body": "The portal stopped following it; the run itself carries on."}
 
 
-def watch(repo: Any, run_id: Any, image: str, tag: str, recipient: str, run_url: str = "") -> dict[str, Any]:
+def _pat_gone(thread_id: str) -> bool:
+    """True when the run was dispatched with a thread's session PAT and the
+    thread no longer holds it (swept idle, or cleared). No thread id means the
+    server's own token — nothing to outlive."""
+    if not thread_id:
+        return False
+    from ..session_creds import get_store
+
+    return not get_store().holds(thread_id)
+
+
+def watch(repo: Any, run_id: Any, image: str, tag: str, recipient: str, run_url: str = "",
+          thread_id: str = "") -> dict[str, Any]:
     """Follow run ``run_id`` in ``repo`` until it completes, then notify
     ``recipient``. Blocking — the dispatch calls `watch_in_background`.
+    ``thread_id`` is the thread whose session PAT ``repo`` carries: once that
+    thread no longer holds it the watcher stops without telling anyone.
     Returns what happened ({"ok", "conclusion" | "reason"}); never raises."""
     try:
         from . import controls, notifications
@@ -71,6 +91,9 @@ def watch(repo: Any, run_id: Any, image: str, tag: str, recipient: str, run_url:
         deadline = time.monotonic() + MAX_MINUTES * 60
         failures = 0
         while True:
+            if _pat_gone(thread_id):
+                logger.info("DF run %s: the thread's GitHub token is gone; no longer followed", run_id)
+                return {"ok": False, "reason": "token dropped"}
             try:
                 run = repo.get_workflow_run(int(run_id))
                 failures = 0
@@ -96,11 +119,12 @@ def watch(repo: Any, run_id: Any, image: str, tag: str, recipient: str, run_url:
         return {"ok": False, "reason": f"{type(e).__name__}: {e}"[:300]}
 
 
-def watch_in_background(repo: Any, run_id: Any, image: str, tag: str, recipient: str, run_url: str = "") -> bool:
+def watch_in_background(repo: Any, run_id: Any, image: str, tag: str, recipient: str, run_url: str = "",
+                        thread_id: str = "") -> bool:
     """Start `watch` on a daemon thread. False (and nothing started) without a
     recipient or a run id — a notification nobody would get is not worth a thread."""
     if not recipient or not run_id:
         return False
-    threading.Thread(target=watch, args=(repo, run_id, image, tag, recipient, run_url),
+    threading.Thread(target=watch, args=(repo, run_id, image, tag, recipient, run_url, thread_id),
                      name=f"df-run-{run_id}", daemon=True).start()
     return True

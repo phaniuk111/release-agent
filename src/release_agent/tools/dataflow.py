@@ -285,9 +285,15 @@ def _follow_run(repo, run: dict, image: str, tag: str, run_url: str) -> None:
     try:
         from . import attribution, df_run
 
+        from ..session_creds import active_credentials
+
         who = attribution.requester_email()
+        # The thread whose session PAT `repo` carries ("" = the server's token):
+        # the watcher stops when that thread drops the PAT.
+        creds = active_credentials()
         if who:
-            df_run.watch_in_background(repo, run.get("id"), image, tag, who, run_url)
+            df_run.watch_in_background(repo, run.get("id"), image, tag, who, run_url,
+                                       creds.thread_id if creds else "")
     except Exception:
         logger.warning("DF run %s: not followed", run.get("id"), exc_info=True)
 

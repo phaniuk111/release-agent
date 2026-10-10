@@ -99,6 +99,9 @@ class SessionCredentials:
     deploy_repo: str = field(default="")
     # The verified signed-in user who connected it (identity on), else None.
     owner: str | None = None
+    # The thread that holds it — set by the store, so work that outlives the
+    # request (a run watcher) can ask whether the thread still holds a token.
+    thread_id: str = ""
 
     def __post_init__(self) -> None:
         self.repo = _normalize_repo(self.repo)
@@ -147,6 +150,7 @@ class SessionCredentialStore:
         if existing is not None and existing.owner is not None \
                 and creds.owner is not None and existing.owner != creds.owner:
             return False
+        creds.thread_id = thread_id
         self._by_thread[thread_id] = creds
         self._last_used[thread_id] = time.monotonic()
         return True
@@ -163,6 +167,11 @@ class SessionCredentialStore:
                 and creds.owner != owner:
             return None
         return creds
+
+    def holds(self, thread_id: str) -> bool:
+        """Is a token still held for this thread? Unlike ``activate`` it does not
+        count as use, so asking never keeps an idle token alive."""
+        return bool(thread_id) and thread_id in self._by_thread
 
     def clear(self, thread_id: str) -> None:
         self._by_thread.pop(thread_id, None)

@@ -46,6 +46,9 @@ model only chooses which tool to call.
   `dataflow._follow_run` → `df_run.py`, `release_queue._notify_requeued`); the
   recipient is an email the code already has — the verified caller or the
   event's `requested_by` — never a typed one, and nobody known means nothing sent.
+  A `df_run` watcher polls with the dispatch's session PAT, so it stops (silently)
+  the moment the thread no longer holds it (`SessionCredentialStore.holds`) and
+  never runs past `SESSION_IDLE_MINUTES`.
 - **Tickets** (`tickets.py`): the CHG / RMG tickets named on a PR, found by a
   tokenizer (never regex) in the body then the comments oldest first — the
   newest mention per prefix wins, its state the last `TICKET_STATE_WORDS` word

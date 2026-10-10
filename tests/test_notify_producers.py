@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from release_agent import session_creds
+from release_agent.session_creds import SessionCredentials, SessionCredentialStore
 from release_agent.tools import attribution, dataflow as DF, df_run, notifications as N, pr_reconcile as R
 from release_agent.tools import promotion as P, release_queue as RQ
 
@@ -262,7 +264,78 @@ def test_the_dispatch_hands_the_run_to_the_watcher_for_the_verified_caller_only(
     assert started == [], "nobody verified, nobody to tell"
     monkeypatch.setattr(attribution, "requester_email", lambda: ME)
     DF._follow_run(repo, {"id": 7, "url": RUN_URL}, "df-position-agg", "2.0.0", RUN_URL)
-    assert started == [(repo, 7, "df-position-agg", "2.0.0", ME, RUN_URL)]
+    assert started == [(repo, 7, "df-position-agg", "2.0.0", ME, RUN_URL, "")]   # the server's own token: no thread
+
+
+def test_the_dispatch_names_the_thread_whose_session_pat_the_repo_carries(monkeypatch):
+    started = []
+    monkeypatch.setattr(df_run, "watch_in_background", lambda *a: started.append(a) or True)
+    monkeypatch.setattr(attribution, "requester_email", lambda: ME)
+    store = SessionCredentialStore()
+    store.set("thread-1", SessionCredentials(pat_token="ghp_secret"))
+    monkeypatch.setattr(session_creds, "_store", store)
+    with store.activate("thread-1"):
+        DF._follow_run(SimpleNamespace(), {"id": 7}, "df-position-agg", "2.0.0", RUN_URL)
+    assert started[0][-1] == "thread-1"
+
+
+# ----- df_run: the watcher does not outlive the thread's PAT (invariant 5) ----------------
+
+@pytest.fixture
+def held(monkeypatch):
+    """A store in which thread-1 holds a PAT; the watcher reads it via get_store()."""
+    store = SessionCredentialStore()
+    store.set("thread-1", SessionCredentials(pat_token="ghp_secret"))
+    monkeypatch.setattr(session_creds, "_store", store)
+    return store
+
+
+def test_a_pat_swept_mid_watch_stops_the_polling_and_tells_nobody(sent, quick, held):
+    polls = []
+
+    def get_workflow_run(run_id):
+        polls.append(run_id)
+        held.sweep_idle(-1)            # the idle sweep drops the thread's PAT after the first read
+        return _run("in_progress")
+
+    out = df_run.watch(SimpleNamespace(get_workflow_run=get_workflow_run), 7, "df-position-agg", "2.0.0", ME,
+                       RUN_URL, thread_id="thread-1")
+    assert out == {"ok": False, "reason": "token dropped"}
+    assert polls == [7], "one read while it was held, none after"
+    assert sent.calls == []
+
+
+def test_a_pat_gone_before_the_first_poll_never_calls_github(sent, quick, held):
+    held.clear("thread-1")
+    repo = SimpleNamespace(get_workflow_run=lambda run_id: pytest.fail("GitHub was called with a dropped PAT"))
+    out = df_run.watch(repo, 7, "df-position-agg", "2.0.0", ME, RUN_URL, thread_id="thread-1")
+    assert out["reason"] == "token dropped" and sent.calls == []
+
+
+def test_a_held_pat_leaves_the_watch_unchanged(sent, quick, held):
+    out = df_run.watch(_repo(_run("queued"), _run("completed", "success")), 7, "df-position-agg", "2.0.0", ME,
+                       RUN_URL, thread_id="thread-1")
+    assert out["ok"] and out["conclusion"] == "success"
+    (call,) = sent.calls
+    assert call["title"] == "DF run finished: df-position-agg:2.0.0"
+
+
+def test_asking_whether_the_pat_is_held_does_not_keep_it_alive(held):
+    held._last_used["thread-1"] = 0.0
+    df_run._pat_gone("thread-1")
+    assert held._last_used["thread-1"] == 0.0
+    assert held.sweep_idle(10, now=100.0) == ["thread-1"]
+
+
+def test_a_run_dispatched_with_the_servers_token_has_no_thread_to_outlive(sent, quick, monkeypatch):
+    monkeypatch.setattr(session_creds, "_store", SessionCredentialStore())   # holds nothing
+    out = df_run.watch(_repo(_run("completed", "success")), 7, "df-position-agg", "2.0.0", ME, RUN_URL)
+    assert out["ok"] and len(sent.calls) == 1
+
+
+def test_the_watch_never_outlasts_the_time_a_pat_is_held():
+    assert df_run.MAX_MINUTES <= 90
+    assert df_run.MAX_MINUTES <= (df_run.settings.session_idle_minutes or 90)
 
 
 def test_a_watcher_that_cannot_start_never_fails_the_dispatch(monkeypatch):
