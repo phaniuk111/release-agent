@@ -44,6 +44,11 @@ def allowed(feature: str, caller) -> bool:
 _DISPLAY_NAMES = {"bq-cost": "The BigQuery cost report", "support-triage": "Support triage"}
 
 
+# Features the page itself offers (a bell, a strip) and so must be told about.
+# A feature the caller is refused is left out, and the page hides what needs it.
+UI_FEATURES = ("notifications",)
+
+
 def refusal(feature: str) -> str:
     name = _DISPLAY_NAMES.get(feature, feature.capitalize())
     return f"{name} is not available yet — it is a preview feature."
@@ -59,4 +64,6 @@ def ui_config(caller) -> dict[str, Any]:
         "preview": preview,
         # LLM_ENABLED=false: the page hides what needs the AI assistant.
         "llm": bool(settings.llm_enabled),
+        # window.PORTAL_UI.features: the UI_FEATURES this caller may use.
+        "features": [f for f in UI_FEATURES if allowed(f, caller)],
     }

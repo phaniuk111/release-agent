@@ -37,6 +37,10 @@ model only chooses which tool to call.
   rows and every read is the latest row per subject. Reads bind every value as a
   query parameter. Nothing raises — an outage is `{"ok": False, "error"}` — and
   an empty `PORTAL_EVENTS_DATASET` is a per-process memory store.
+- **Notifications** (`notifications.py`) sit on `events_store`: `notify` never
+  raises or waits on the caller's work; a scope that already has a notification
+  gets an `updated` row with the same subject; `mark` writes only the
+  recipient's own subjects.
 - **Support** (`tools/support/`): read-only L1 view of a control
   table. Generic ROLES only — the real table, columns, statuses and owners are
   config (`SUPPORT_*`; only `SUPPORT_TABLE` is required — `discover.py` maps the

@@ -102,6 +102,11 @@ from .support_api import router as _support_router  # noqa: E402
 
 app.include_router(_support_router)
 
+# The notification bell's routes (notifications_api.py).
+from .notifications_api import router as _notifications_router  # noqa: E402
+
+app.include_router(_notifications_router)
+
 # CORS (useful if you later want a separate frontend)
 app.add_middleware(
     CORSMiddleware,

@@ -47,6 +47,12 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   `_SCHEMA` in `release_queue.py` together, additive nullable columns only.
   `portal_events` (`tools/events_store.py`, `bigquery/portal_events.schema.json`)
   is a second append-only table under the same rules.
+- **Notifications** (`tools/notifications.py`, `notifications_api.py`, preview
+  feature `notifications`): per person, by the VERIFIED email — with identity on a
+  typed email never stands in for a failed sign-in; with it off the typed email is
+  used and the answer says `unverified`. A notification that changes is a new row
+  with the SAME subject (one bell item per `scope`); read/dismissed are new rows;
+  a notify call is best-effort and never raises.
 - **Secrets and identity.** GitHub PATs are memory-only and masked, and are
   dropped with a conversation idle for `SESSION_IDLE_MINUTES` (60); nothing
   sensitive in git, BigQuery or logs. The caller's identity comes only from a
