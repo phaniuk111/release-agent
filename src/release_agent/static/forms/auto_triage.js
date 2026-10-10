@@ -3,7 +3,7 @@ import {
     asInvestigation, askPrompt, counts, groupFindings, hhmm, lastRunText, metaLine, statusActions, statusText,
     watcherHealth,
 } from '../core/auto_triage.js';
-import { getAutoTriage, runAutoTriage, setAutoTriageStatus } from '../api.js';
+import { getAutoTriage, setAutoTriageStatus } from '../api.js';
 import { llmEnabled } from '../core/capabilities.js';
 import { renderMarkdown, sendMessage } from '../chat.js';
 import { opening, withDismiss } from './common.js';
@@ -142,7 +142,7 @@ function emptyText(res) {
     if (s.configured === false) return 'Auto-triage is off: set SUPPORT_TABLE — it reads what Support triage reads.';
     if (s.last_run_at && res.business_date) return 'Nothing open — Auto-triage found no new problems for ' + res.business_date + '.';
     if (s.last_run_at) return 'Nothing open — Auto-triage found no new problems.';
-    return 'Auto-triage has not run yet. Press Run now.';
+    return 'Auto-triage has not run yet — it checks the control table every few minutes on its own.';
 }
 
 async function render(wrap, state) {
@@ -165,10 +165,7 @@ async function render(wrap, state) {
         '<span class="text-[11px] text-slate-400">checks the control table on its own and investigates what is new' +
         (state.date ? ' — business date ' + esc(state.date) : '') + '</span>' +
         '<span class="flex-1"></span>' +
-        '<input type="date" data-at="date" value="' + esc(state.date) + '" ' +
-        'class="bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-200" title="Business date" aria-label="Business date">' +
-        '<button type="button" data-at="run" class="' + BUTTON + ' text-amber-300"' + (running ? ' disabled' : '') + '>' +
-        (running ? 'Running…' : 'Run now') + '</button>' +
+        (running ? '<span class="text-[11px] text-amber-300">Checking…</span>' : '') +
         '<button type="button" data-at="refresh" title="Read again now" aria-label="Read again now" class="text-slate-400 hover:text-white text-xs">' +
         '<i class="fa-solid fa-rotate-right"></i></button></div>' +
         '<div class="mb-2" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">' +
@@ -198,25 +195,7 @@ async function render(wrap, state) {
     wrap.appendChild(body);
 
     const reload = () => render(wrap, state);
-    const dateInput = body.querySelector('[data-at="date"]');
-    dateInput.addEventListener('change', () => { state.date = dateInput.value; state.focus = ''; reload(); });
     body.querySelector('[data-at="refresh"]').addEventListener('click', reload);
-    body.querySelector('[data-at="run"]').addEventListener('click', async (ev) => {
-        state.busy = true;
-        ev.currentTarget.disabled = true;
-        ev.currentTarget.textContent = 'Running…';
-        let out;
-        try { out = await runAutoTriage(state.date); } catch (e) { out = { ok: false, error: String((e && e.message) || e) }; }
-        state.busy = false;
-        if (out && out.business_date) state.date = out.business_date;
-        await reload();
-        if (out && out.ok === false) {
-            const note = document.createElement('div');
-            note.className = 'text-[11px] text-amber-400 mt-1';
-            note.textContent = out.error || 'Auto-triage could not run.';
-            wrap.querySelector('.at-body').appendChild(note);
-        }
-    });
     body.querySelectorAll('button[data-status]').forEach(btn => {
         btn.addEventListener('click', async () => {
             const f = index.get(+btn.dataset.i);

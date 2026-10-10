@@ -3,7 +3,7 @@
 // render() — no new layout code. Each section is a native <details> accordion.
 // Static sections render once on first expand; sections marked live:true
 // re-render every time they're opened (fresh data each look).
-import { getAutoTriage, releaseInsights, runAutoTriage, supportFeedbackStats } from './api.js';
+import { getAutoTriage, releaseInsights, supportFeedbackStats } from './api.js';
 import { counts, hhmm, lastRunText, watcherHealth } from './core/auto_triage.js';
 import { hasFeature } from './core/capabilities.js';
 import { escapeHtml as esc } from './core/format.js';
@@ -103,7 +103,7 @@ async function _renderStatsSection(body) {
 
 // Auto-triage at a glance: when it last looked, what is open, how right its
 // investigations have been (the "Was this right?" memory, when one is set),
-// and Run now. The card itself is forms/auto_triage.js; this opens it.
+// The card itself is forms/auto_triage.js; this opens it.
 async function _renderAutoTriageSection(body) {
     body.innerHTML = '<div class="text-[11px] text-slate-500">Loading…</div>';
     let feed, stats;
@@ -133,15 +133,8 @@ async function _renderAutoTriageSection(body) {
         '</div>' +
         '<div class="flex items-center gap-3 mt-2 text-[11px]">' +
         '<button type="button" data-ai="open" class="text-emerald-400 hover:text-emerald-300"><i class="fa-solid fa-eye mr-1"></i>Open Auto-triage</button>' +
-        '<button type="button" data-ai="run" class="text-amber-300 hover:underline"' + (status.running ? ' disabled' : '') + '>' +
-        (status.running ? 'Running…' : 'Run now') + '</button></div>';
+        (status.running ? '<span class="text-amber-300">Checking…</span>' : '') + '</div>';
     body.querySelector('[data-ai="open"]').addEventListener('click', () => showAutoTriage());
-    body.querySelector('[data-ai="run"]').addEventListener('click', async (ev) => {
-        ev.currentTarget.disabled = true;
-        ev.currentTarget.textContent = 'Running…';
-        try { await runAutoTriage(''); } catch (e) { /* the re-render below shows the status */ }
-        _renderAutoTriageSection(body);
-    });
 }
 
 const INSIGHT_SECTIONS = [

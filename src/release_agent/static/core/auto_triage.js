@@ -66,7 +66,7 @@ export function watcherHealth(status, now = Date.now()) {
         return {
             tone: 'off',
             text: since === null ? 'Not scheduled' : 'Ran ' + ago(since),
-            detail: 'Runs only when you press Run now (SUPPORT_WATCH_MINUTES is 0)',
+            detail: 'Not scheduled — set SUPPORT_WATCH_MINUTES (e.g. 10) to run it on a timer',
         };
     }
     if (since === null) return { tone: 'warn', text: 'Has not run yet', detail: 'Runs every ' + every + ' min' };

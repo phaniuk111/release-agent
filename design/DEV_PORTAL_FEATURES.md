@@ -173,9 +173,11 @@ same routes `/api/support/watch`, `/watch/run`, `/watch/status`), with:
   to "Auto-triage: Back — <title>" (`watch.returned`). Dismissed and resolved
   stay as the person left them;
 - a finding is stored and notified as EACH investigation completes;
-- "Run now" starts the pass in the background and answers `{ok, started}` at
-  once (the card polls the status); a pass cancelled mid-way releases the
-  watcher's lock (`error: "cancelled"`).
+- `POST /api/support/watch/run` (an operator's API, not a button: the card
+  offers no Run now and no date — Auto-triage runs on its own, Support triage is
+  the on-demand view) starts a pass in the background and answers `{ok,
+  started}` at once; a pass cancelled mid-way releases the watcher's lock
+  (`error: "cancelled"`).
 The name a person sees is **Auto-triage** everywhere: pill, strip, card, bell.
 
 UI: a pill `Auto-triage` in the Support group (`form: 'auto-triage'`); a strip
@@ -184,13 +186,13 @@ check HH:MM · N needs attention · M open · next HH:MM", amber/red by health);
 the feed card (`forms/auto_triage.js`, pure rules in `core/auto_triage.js` +
 `tests/js/auto_triage.test.mjs`: `groupFindings`, `watcherHealth`,
 `statusActions`, `statusText`, `ago` — ported from the plugin's
-`watchFormat.ts`): header + Run now + refresh; four tiles (Auto-triage health,
+`watchFormat.ts`): header + refresh; four tiles (Auto-triage health,
 Needs attention, Open, Notifications on/off + store); groups Needs attention /
 Open / Resolved, dismissed and cleared; each finding: priority badge, title,
 since/investigated, source · owner · category · rows, then Runbook / Finding /
 Do now lines, buttons Open in Support · Ask why · Mark resolved · Dismiss ·
 Was this right? (closed: Reopen + who). An Insights drawer section
-"Auto-triage" (last check, counts, accuracy, Run now). With LLM_ENABLED=false
+"Auto-triage" (last check, counts, accuracy). With LLM_ENABLED=false
 everything renders; Ask why is absent, the finding is the model-free one.
 
 ## 6. Tests and checks (every build)
