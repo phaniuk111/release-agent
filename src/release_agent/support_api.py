@@ -10,6 +10,8 @@ module-level import back into it would be circular.
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
@@ -165,14 +167,22 @@ class SupportWatchRunRequest(BaseModel):
     business_date: str = ""
 
 
+# The pass runs detached from the request (it can take minutes, past an ingress
+# timeout); the set keeps a reference so the task is not collected mid-flight.
+_watch_tasks: set[asyncio.Task] = set()
+
+
 @router.post("/api/support/watch/run")
 async def support_watch_run(req: SupportWatchRunRequest, request: Request):
-    """Run one Auto-triage pass now (the "Run now" button; the timer runs the
-    same). Read-only, but it spends model calls, so it is a write in identity
-    terms. Refused while a pass is already running."""
+    """Start one Auto-triage pass now (the "Run now" button; the timer runs the
+    same) and answer at once — the card polls the watcher's status. Read-only,
+    but it spends model calls, so it is a write in identity terms. Refused
+    while a pass is already running."""
     from adk_release_agent.support_watch import run_pass
 
     from .app_fastapi import _actor_or_refusal, _resolve_caller
+
+    from .tools.support import watch
 
     caller = await _resolve_caller(request)
     refused = _auto_triage_refusal(caller)
@@ -181,7 +191,12 @@ async def support_watch_run(req: SupportWatchRunRequest, request: Request):
     _, refused = _actor_or_refusal("", caller)
     if refused:
         return refused
-    return await run_pass(req.business_date.strip()[:10])
+    if watch.status().get("running"):
+        return {"ok": False, "error": "An Auto-triage pass is already running."}
+    task = asyncio.create_task(run_pass(req.business_date.strip()[:10]), name="auto-triage-run-now")
+    _watch_tasks.add(task)
+    task.add_done_callback(_watch_tasks.discard)
+    return {"ok": True, "started": True}
 
 
 class SupportWatchStatusRequest(BaseModel):

@@ -131,6 +131,11 @@ async def run_pass(business_date: str = "") -> dict[str, Any]:
         logger.info("Auto-triage pass | date=%s investigated=%d waiting=%d updated=%d cleared=%d notified=%d",
                     day, len(investigated), summary["waiting"], len(updated), len(cleared), notified)
         return summary
+    except asyncio.CancelledError:
+        # A BaseException, so the clause below misses it — and a lock left held
+        # would refuse every later pass and Run now until the process restarts.
+        watch.finish(business_date=day, error="cancelled")
+        raise
     except Exception as e:  # noqa: BLE001 — a pass that fails is reported, never raised
         logger.exception("Auto-triage pass failed")
         error = f"{type(e).__name__}: {str(e)[:300]}"
