@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 async def run_pass(business_date: str = "") -> dict[str, Any]:
     """{"ok", "business_date", "investigated", "waiting", "cleared", "notified"} or {"ok": False, "error"}."""
     if not watch.begin():
-        return {"ok": False, "error": "A watcher pass is already running."}
+        return {"ok": False, "error": "An auto-triage pass is already running."}
     day = ""
     try:
         report = await asyncio.to_thread(support_triage.triage, business_date)

@@ -261,7 +261,7 @@ export function WatcherFeed() {
         { business_date: date },
         { allowFailure: true },
       );
-      if (res.ok === false) setError(res.error ?? 'The watcher could not run.');
+      if (res.ok === false) setError(res.error ?? 'Auto-triage could not run.');
       await load(res.business_date ?? date);
       if (res.business_date) setDate(res.business_date);
     } catch (e) {
@@ -296,8 +296,8 @@ export function WatcherFeed() {
   return (
     <Card>
       <CardHeader
-        title="Support watcher"
-        subheader={`Investigates new problems in the control table on its own${date ? ` — business date ${date}` : ''}`}
+        title="Auto-triage"
+        subheader={`Checks the control table on its own and investigates what is new${date ? ` — business date ${date}` : ''}`}
         action={
           <Box display="flex" alignItems="center" style={{ gap: 8 }}>
             <Button variant="outlined" size="small" disabled={running || feed?.status?.running} onClick={runNow}>
@@ -347,8 +347,8 @@ export function WatcherFeed() {
         {feed && groups.length === 0 && !error && (
           <Box mt={2} className={classes.meta}>
             {feed.status?.last_run_at
-              ? 'Nothing open — the watcher found no new problems.'
-              : 'The watcher has not run for this date yet. Press Run now.'}
+              ? 'Nothing open — auto-triage found no new problems.'
+              : 'Auto-triage has not run for this date yet. Press Run now.'}
           </Box>
         )}
         {groups.map(g => (

@@ -298,7 +298,7 @@ def notification(finding: dict[str, Any]) -> dict[str, Any]:
     return {
         "recipients": recipients(),
         "payload": {
-            "title": f"{lead}{finding.get('title') or finding.get('incident_id')}",
+            "title": f"Auto-triage: {lead}{finding.get('title') or finding.get('incident_id')}",
             "description": description[:900],
             "link": f"/operations?view=support&incident={finding.get('incident_id')}&date={finding.get('business_date')}",
             "severity": _SEVERITY.get(str(finding.get("priority") or ""), "normal"),
