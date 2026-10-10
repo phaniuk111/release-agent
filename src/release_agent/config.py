@@ -735,6 +735,16 @@ class Settings(BaseSettings):
     portal_events_table: str = Field(default="portal_events", validation_alias=AliasChoices("PORTAL_EVENTS_TABLE"))
     portal_events_project: str = Field(default="", validation_alias=AliasChoices("PORTAL_EVENTS_PROJECT"))
 
+    # --- CHG / RMG tickets on a PR (tools/tickets.py) -----------------------------
+    # The ticket prefixes read from a PR's body and comments (case-insensitive;
+    # "CHG-12345" and "CHG12345" both count) and the words that give a ticket its
+    # state — the last one on the ticket's line wins.
+    ticket_prefixes: str = Field(default="CHG,RMG", validation_alias=AliasChoices("TICKET_PREFIXES"))
+    ticket_state_words: str = Field(
+        default="created,approved,rejected,closed,cancelled",
+        validation_alias=AliasChoices("TICKET_STATE_WORDS"),
+    )
+
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every
     # turn, model call and tool call — are exported to Langfuse; EMPTY = OFF, and

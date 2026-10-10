@@ -41,6 +41,13 @@ model only chooses which tool to call.
   raises or waits on the caller's work; a scope that already has a notification
   gets an `updated` row with the same subject; `mark` writes only the
   recipient's own subjects.
+- **Tickets** (`tickets.py`): the CHG / RMG tickets named on a PR, found by a
+  tokenizer (never regex) in the body then the comments oldest first — the
+  newest mention per prefix wins, its state the last `TICKET_STATE_WORDS` word
+  on its line. One GitHub read per (repo, PR) every ten minutes; a PR that
+  cannot be read is `{"error"}`, never a raise. `note_first_seen` appends a
+  `deploy`/`tickets` row only when something changed and rings the requester's
+  bell only for a CHG id not seen before.
 - **Support** (`tools/support/`): read-only L1 view of a control
   table. Generic ROLES only — the real table, columns, statuses and owners are
   config (`SUPPORT_*`; only `SUPPORT_TABLE` is required — `discover.py` maps the

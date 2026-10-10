@@ -296,6 +296,15 @@ config:
   PORTAL_EVENTS_DATASET: ""          # e.g. "release_agent" (the release log's dataset works)
   PORTAL_EVENTS_TABLE: "portal_events"
   PORTAL_EVENTS_PROJECT: ""          # empty = BQ_PROJECT (or GOOGLE_CLOUD_PROJECT)
+  # ==================== [FEATURE] CHG / RMG tickets on a PR ================
+  # The change tickets a release needs are written on its PR — "CHG-12345
+  # created" in the body or a comment, "CHG-12345 approved" later. The portal
+  # reads them (no regex: a tokenizer, tools/tickets.py) and shows them on the
+  # release-status banner after the PR number, "CHG pending" when one is missing.
+  # Prefixes are matched case-insensitively, with or without the dash; a ticket's
+  # state is the LAST of these words on its line. Read once per PR every 10 min.
+  TICKET_PREFIXES: "CHG,RMG"
+  TICKET_STATE_WORDS: "created,approved,rejected,closed,cancelled"
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token
   # usage, each tool call, the deploy Workflow's nodes — exported as

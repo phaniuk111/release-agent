@@ -53,6 +53,10 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   used and the answer says `unverified`. A notification that changes is a new row
   with the SAME subject (one bell item per `scope`); read/dismissed are new rows;
   a notify call is best-effort and never raises.
+- **Tickets on the banner** (`tools/tickets.py`, `static/core/tickets.js`):
+  `/api/release-status` adds `tickets` to `blocking_pr` and `df.release_pr`
+  only when a PR exists; the banner shows them after the PR number as links,
+  grey "CHG pending" for a prefix the PR does not name, nothing on a read error.
 - **Secrets and identity.** GitHub PATs are memory-only and masked, and are
   dropped with a conversation idle for `SESSION_IDLE_MINUTES` (60); nothing
   sensitive in git, BigQuery or logs. The caller's identity comes only from a
