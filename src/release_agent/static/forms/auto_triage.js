@@ -1,6 +1,6 @@
 import { escapeHtml as esc } from '../core/format.js';
 import {
-    asInvestigation, askPrompt, counts, groupFindings, hhmm, lastRunText, metaLine, statusActions, statusText,
+    asInvestigation, askPrompt, counts, groupFindings, hhmm, lastRunText, metaLine, rowsOf, statusActions, statusText,
     watcherHealth,
 } from '../core/auto_triage.js';
 import { getAutoTriage, setAutoTriageStatus } from '../api.js';
@@ -8,7 +8,6 @@ import { llmEnabled } from '../core/capabilities.js';
 import { renderMarkdown, sendMessage } from '../chat.js';
 import { opening, withDismiss } from './common.js';
 import { renderInvestigationFeedback } from './support_feedback.js';
-import { showSupportTriage } from './support_triage.js';
 
 // ---- Auto-triage -----------------------------------------------------------
 // What the portal found in the control table on its own: each new problem
@@ -68,6 +67,32 @@ function tile(label, value, note, cls) {
         '<div class="text-[10px] text-slate-500 truncate" title="' + esc(note) + '">' + esc(note) + '</div></div>';
 }
 
+// The deployment's Dataflow job link (SUPPORT_JOB_URL, with {job_id}); set from
+// each feed answer so a finding's jobs link to their console page.
+let jobUrl = '';
+
+// The rows behind the finding, on the card itself: how wide the incident is,
+// the error text, the runs and their times, the jobs. Open while it is the
+// incident the bell pointed at.
+function rowsHtml(f, url, open) {
+    const r = rowsOf(f, url);
+    if (r.empty) return '';
+    const n = Number(f.count) || r.runs.length;
+    const runs = r.runs.map(x => '<span class="font-mono">' + esc(x.id) + '</span>' +
+        (x.at ? ' <span class="text-slate-500">' + esc(x.at) + '</span>' : '')).join(' · ');
+    const jobs = r.jobs.map(j => j.href
+        ? '<a href="' + esc(j.href) + '" target="_blank" rel="noopener" class="text-sky-400 hover:underline font-mono">' + esc(j.id) + '</a>'
+        : '<span class="font-mono">' + esc(j.id) + '</span>').join(', ');
+    return '<details class="text-[11px] mt-1"' + (open ? ' open' : '') + '>' +
+        '<summary class="cursor-pointer text-slate-500 hover:text-slate-300">Rows' + (n ? ' (' + n + ')' : '') + '</summary>' +
+        '<div class="rounded-lg bg-slate-800 px-3 py-2 mt-1 text-slate-300">' +
+        r.facts.map(x => '<div>' + esc(x) + '</div>').join('') +
+        (r.error ? '<div class="font-mono text-[10px] text-slate-400 mt-1" style="white-space:pre-wrap">' + esc(r.error) + '</div>' : '') +
+        (runs ? '<div class="mt-1"><span class="text-slate-500">runs:</span> ' + runs + '</div>' : '') +
+        (jobs ? '<div class="mt-1"><span class="text-slate-500">jobs:</span> ' + jobs + '</div>' : '') +
+        '</div></details>';
+}
+
 function timelineHtml(f) {
     const items = Array.isArray(f.timeline) ? f.timeline : [];
     if (!items.length) return '';
@@ -105,6 +130,7 @@ function findingHtml(f, i, focused) {
         (f.fallback ? '<span class="text-slate-500 text-[10px]"> · without the model</span>' : '') + '</div>' +
         (doNow ? '<div class="text-[11px]"><span class="text-slate-500">Do now:</span> <span class="text-slate-200">' + esc(doNow) + '</span>' +
             '<span class="text-slate-500 text-[10px]"> (a proposal; nothing is changed for you)</span></div>' : '') +
+        rowsHtml(f, jobUrl, focused) +
         '<details class="text-[11px] mt-1"><summary class="cursor-pointer text-slate-500 hover:text-slate-300">Details</summary>' +
         '<div class="rounded-lg bg-slate-800 px-3 py-2 mt-1 text-slate-300">' + timelineHtml(f) +
         (f.answer ? '<div class="text-slate-500 mt-2">The investigation</div><div class="mt-1">' + renderMarkdown(f.answer) + '</div>' : '') +
@@ -113,7 +139,6 @@ function findingHtml(f, i, focused) {
             '<pre class="font-mono text-[10px] text-slate-400 mt-1" style="white-space:pre-wrap">' + esc(f.note) + '</pre>' : '') +
         '</div></details>' +
         '<div class="flex items-center gap-2 flex-wrap mt-2 text-[11px]">' +
-        '<button type="button" data-open="' + i + '" class="text-sky-400 hover:underline whitespace-nowrap"><i class="fa-solid fa-headset mr-1"></i>Open in Support</button>' +
         (llmEnabled(window.PORTAL_UI)
             ? '<button type="button" data-ask="' + i + '" class="text-sky-400 hover:underline whitespace-nowrap"><i class="fa-solid fa-comment-dots mr-1"></i>Ask why</button>' : '') +
         actions +
@@ -151,6 +176,7 @@ async function render(wrap, state) {
     if (!res || typeof res !== 'object') res = { ok: false, error: 'no answer' };
     const findings = Array.isArray(res.findings) ? res.findings.filter(f => f && typeof f === 'object') : [];
     const status = res.status && typeof res.status === 'object' ? res.status : {};
+    jobUrl = typeof res.job_url === 'string' ? res.job_url : '';
     if (!state.date && res.business_date) state.date = res.business_date;
     const health = watcherHealth(status);
     const n = counts(findings);
@@ -215,9 +241,6 @@ async function render(wrap, state) {
                 wrap.querySelector('.at-body').appendChild(note);
             }
         });
-    });
-    body.querySelectorAll('button[data-open]').forEach(btn => {
-        btn.addEventListener('click', () => showSupportTriage(state.date));
     });
     body.querySelectorAll('button[data-ask]').forEach(btn => {
         btn.addEventListener('click', () => sendMessage(askPrompt(index.get(+btn.dataset.ask))));

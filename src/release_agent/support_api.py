@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from . import features
+from .config import settings
 
 router = APIRouter()
 
@@ -157,7 +158,8 @@ def support_watch_feed(request: Request, date: str = ""):
     status = watch.status()
     day = (date or "").strip()[:10] or status.get("last_business_date") or ""
     res = watch.latest(day)
-    out = {"ok": bool(res.get("ok")), "business_date": day, "findings": res.get("findings") or [], "status": status}
+    out = {"ok": bool(res.get("ok")), "business_date": day, "findings": res.get("findings") or [], "status": status,
+           "job_url": settings.support_job_url}
     if res.get("error"):
         out["error"] = res["error"]
     return out

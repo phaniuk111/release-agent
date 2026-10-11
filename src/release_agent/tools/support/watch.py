@@ -160,6 +160,7 @@ def finding_from(incident: dict[str, Any], outcome: dict[str, Any], business_dat
         "priority": str(inc.get("priority") or ""),
         "count": int(inc.get("count") or 0),
         "jobs": job_signature(inc),
+        **rows_of(inc),
         # The source the incident's runs share (the control table's own value),
         # for the card's "source · owner · category" line.
         "source": str((inc.get("shared") or {}).get("source") or "") if isinstance(inc.get("shared"), dict) else "",
@@ -185,6 +186,22 @@ def finding_from(incident: dict[str, Any], outcome: dict[str, Any], business_dat
     }
 
 
+_MAX_FACTS = 6
+_MAX_RUNS = 10
+
+
+def rows_of(incident: dict[str, Any]) -> dict[str, Any]:
+    """PURE. What the incident's rows say, kept on the finding so the card shows
+    them itself — how wide it is (the triage's facts), the error text the rows
+    carry, and the runs with their times. Values from the control table, capped."""
+    inc = incident or {}
+    facts = [str(f)[:240] for f in (inc.get("facts") or []) if f][:_MAX_FACTS]
+    runs = [{"run_id": str(r.get("run_id") or ""), "at": str(r.get("at") or "")}
+            for r in (inc.get("runs") or []) if isinstance(r, dict) and r.get("run_id")][:_MAX_RUNS]
+    return {"facts": facts, "error_text": str(inc.get("error_text") or "")[:600], "runs": runs,
+            "job_ids": [str(j) for j in (inc.get("job_ids") or []) if j][:_MAX_JOBS]}
+
+
 def updated_from(finding: dict[str, Any], incident: dict[str, Any]) -> dict[str, Any]:
     """PURE. The finding again, as wide as the incident is now: its count, jobs
     and title move, the investigation stays — a wider incident is the same
@@ -194,7 +211,7 @@ def updated_from(finding: dict[str, Any], incident: dict[str, Any]) -> dict[str,
     row.update(count=int(inc.get("count") or 0), jobs=job_signature(inc),
                title=str(inc.get("title") or finding.get("title") or ""),
                previous_count=int(finding.get("count") or 0),
-               actor=WATCHER, event_type="updated", changed_at=_iso(_now()))
+               actor=WATCHER, event_type="updated", changed_at=_iso(_now()), **rows_of(inc))
     return row
 
 
@@ -262,7 +279,7 @@ def summary_line(finding: dict[str, Any]) -> str:
 # ----- rows <-> findings ------------------------------------------------------------
 
 _DETAIL_KEYS = ("do_now", "timeline", "note", "answer", "jobs", "source", "investigated_at", "changed_at",
-                "priority", "previous_count")
+                "priority", "previous_count", "facts", "error_text", "runs", "job_ids")
 
 
 def link_for(business_date: str, incident_id: str) -> str:
@@ -314,6 +331,10 @@ def from_row(row: dict[str, Any]) -> dict[str, Any]:
         "priority": str(details.get("priority") or row.get("severity") or ""),
         "count": int(row.get("count") or 0),
         "jobs": [str(j) for j in (details.get("jobs") or [])],
+        "facts": [str(x) for x in (details.get("facts") or []) if x],
+        "error_text": str(details.get("error_text") or ""),
+        "runs": [r for r in (details.get("runs") or []) if isinstance(r, dict)],
+        "job_ids": [str(j) for j in (details.get("job_ids") or []) if j],
         "source": str(details.get("source") or ""),
         "owner": str(row.get("owner") or ""),
         "runbook": str(row.get("runbook") or ""),

@@ -533,3 +533,17 @@ def test_the_feed_after_a_restart_reads_the_kept_date(monkeypatch):
     watch.record_pass("2026-10-11", {"ok": True, "business_date": "2026-10-11", "incidents": 1})
     out = TestClient(APP.app).get("/api/support/watch").json()
     assert out["business_date"] == "2026-10-11" and len(out["findings"]) == 1
+
+
+def test_a_finding_keeps_its_rows_and_they_survive_the_store():
+    inc = {"id": "e-9", "title": "2 failed", "priority": "low", "count": 2,
+           "facts": ["2 runs of REPORT-B failed"], "error_text": "quota exceeded",
+           "runs": [{"run_id": "run-003", "at": "2026-10-11T18:33:00+00:00"}, {"at": "no id"}], "job_ids": ["job-1"]}
+    f = watch.finding_from(inc, {"text": "Cause: x"}, "2026-10-11")
+    assert f["facts"] == ["2 runs of REPORT-B failed"] and f["error_text"] == "quota exceeded"
+    assert f["runs"] == [{"run_id": "run-003", "at": "2026-10-11T18:33:00+00:00"}] and f["job_ids"] == ["job-1"]
+    watch.append([f])
+    back = watch.latest("2026-10-11")["findings"][0]
+    assert (back["facts"], back["error_text"], back["runs"], back["job_ids"]) == (f["facts"], f["error_text"], f["runs"], f["job_ids"])
+    grown = watch.updated_from(f, {**inc, "count": 3, "runs": inc["runs"] + [{"run_id": "run-007", "at": "t"}]})
+    assert [r["run_id"] for r in grown["runs"]] == ["run-003", "run-007"], "a wider incident shows its new rows"

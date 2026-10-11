@@ -120,3 +120,19 @@ test('feedback and Ask why are recorded against the same incident and model', ()
     assert.match(prompt, /^Auto-triage finding for 2026-10-02: incident "3 failed · process" \(cause: schema change; do now: escalate\)/);
     assert.match(askPrompt({}), /incident "\?"/);
 });
+
+import { rowsOf } from '../../src/release_agent/static/core/auto_triage.js';
+
+test('rowsOf: the rows behind a finding, jobs linked only through a {job_id} template', () => {
+    const f = { facts: ['3 runs of REPORT-B failed', ''], error_text: 'quota exceeded',
+        runs: [{ run_id: 'run-003', at: '2026-10-11T18:33:00Z' }, { at: 'x' }], job_ids: ['j 1'] };
+    const r = rowsOf(f, 'https://console.example.com/jobs/{job_id}');
+    assert.deepEqual(r.facts, ['3 runs of REPORT-B failed']);
+    assert.equal(r.error, 'quota exceeded');
+    assert.deepEqual(r.runs.map(x => x.id), ['run-003'], 'a run without an id is left out');
+    assert.equal(r.jobs[0].href, 'https://console.example.com/jobs/j%201');
+    assert.equal(rowsOf(f, 'https://console.example.com/jobs').jobs[0].href, '', 'no template, no link');
+    assert.equal(r.empty, false);
+    assert.equal(rowsOf({}).empty, true);
+    assert.equal(rowsOf(null).empty, true);
+});

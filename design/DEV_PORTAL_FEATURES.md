@@ -190,7 +190,8 @@ the feed card (`forms/auto_triage.js`, pure rules in `core/auto_triage.js` +
 Needs attention, Open, Notifications on/off + store); groups Needs attention /
 Open / Resolved, dismissed and cleared; each finding: priority badge, title,
 since/investigated, source · owner · category · rows, then Runbook / Finding /
-Do now lines, buttons Open in Support · Ask why · Mark resolved · Dismiss ·
+Do now lines, a Rows section (the incident's facts, error text, runs, jobs — kept on the finding,
+so the card needs no trip to Support triage), buttons Ask why · Mark resolved · Dismiss ·
 Was this right? (closed: Reopen + who). An Insights drawer section
 "Auto-triage" (last check, counts, accuracy). With LLM_ENABLED=false
 everything renders; Ask why is absent, the finding is the model-free one.

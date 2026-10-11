@@ -114,6 +114,23 @@ export function metaLine(f) {
     return [x.source, x.owner, x.category, n ? n + (n === 1 ? ' row' : ' rows') : ''].filter(Boolean).join(' · ');
 }
 
+/** The rows behind a finding, as the card's "Rows" section shows them: how
+ *  wide (the triage's facts), the error text, the runs with their times, and
+ *  the jobs — each job linked when the deployment sets a job URL with {job_id}.
+ *  Values come from the control table; the caller escapes them. */
+export function rowsOf(f, jobUrl) {
+    const x = f && typeof f === 'object' ? f : {};
+    const list = (v) => (Array.isArray(v) ? v : []);
+    const tpl = typeof jobUrl === 'string' && jobUrl.indexOf('{job_id}') >= 0 ? jobUrl : '';
+    const runs = list(x.runs).filter(r => r && r.run_id).map(r => ({ id: String(r.run_id), at: hhmm(r.at) }));
+    const jobs = list(x.job_ids).filter(Boolean).map(id => ({
+        id: String(id), href: tpl ? tpl.split('{job_id}').join(encodeURIComponent(String(id))) : '',
+    }));
+    const facts = list(x.facts).filter(Boolean).map(String);
+    const error = String(x.error_text || '');
+    return { facts, error, runs, jobs, empty: !facts.length && !error && !runs.length && !jobs.length };
+}
+
 /** What a finding offers a person, by its status. */
 export function statusActions(status) {
     if (status === 'open') {
