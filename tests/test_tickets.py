@@ -203,3 +203,57 @@ def test_note_first_seen_never_raises(monkeypatch):
     monkeypatch.setattr(events_store, "history", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     out = T.note_first_seen(REPO, 7, _tickets(), requested_by="me@example.com", what="x")
     assert out["recorded"] is False and "down" in out["error"]
+
+
+# --- the banner lists every release PR in flight ------------------------------
+
+from types import SimpleNamespace as _NS  # noqa: E402
+
+from release_agent.tools import release_window as RW  # noqa: E402
+
+
+def _pr(number, base, head="release/x"):
+    return _NS(number=number, html_url=f"https://github.com/example-org/deploy/pull/{number}",
+               head=_NS(ref=head), base=_NS(ref=base))
+
+
+class _BannerRepo:
+    def __init__(self, open_by_base):
+        self.open_by_base = open_by_base
+
+    def get_pulls(self, state, base, sort, direction):
+        return iter(self.open_by_base.get(base, []))
+
+
+def test_the_status_lists_one_release_pr_per_guarded_branch(monkeypatch):
+    repo = _BannerRepo({"PRD": [_pr(312, "PRD", "UAT")], "PRL1": [_pr(313, "PRL1", "UAT")]})
+    monkeypatch.setattr(RW, "_get_github_client", lambda: _NS(get_repo=lambda full: repo))
+    monkeypatch.setattr(RW, "_charts", lambda repo, env: {})
+    monkeypatch.setattr("release_agent.tools.release_chain.guard_branches", lambda kind: ["PRD", "PRL1"])
+    s = RW.get_release_status("example-org/deploy")
+    assert [p["number"] for p in s["release_prs"]] == [312, 313]
+    assert s["blocking_pr"] is s["release_prs"][0], "one object: tickets added to it show on both"
+
+
+def test_no_open_release_pr_means_an_empty_list(monkeypatch):
+    monkeypatch.setattr(RW, "_get_github_client", lambda: _NS(get_repo=lambda full: _BannerRepo({})))
+    monkeypatch.setattr(RW, "_charts", lambda repo, env: {})
+    monkeypatch.setattr("release_agent.tools.release_chain.guard_branches", lambda kind: ["PRD", "PRL1"])
+    s = RW.get_release_status("example-org/deploy")
+    assert s["release_prs"] == [] and s["blocking_pr"] is None
+
+
+def test_each_release_pr_gets_its_own_tickets(monkeypatch):
+    from release_agent import app_fastapi as A
+    from release_agent.tools import tickets
+
+    asked = []
+    monkeypatch.setattr(tickets, "pr_tickets", lambda repo, n: asked.append(n) or {"chg": {"id": f"CHG-{n}"}, "rmg": None})
+    monkeypatch.setattr("release_agent.tools._common.active_deploy_repo", lambda: "example-org/deploy")
+    prd = {"number": 312, "url": "u", "head": "UAT", "base": "PRD"}
+    prl1 = {"number": 313, "url": "u", "head": "UAT", "base": "PRL1"}
+    status = {"blocking_pr": prd, "release_prs": [prd, prl1]}
+    A._add_tickets(status, "")
+    assert sorted(asked) == [312, 313]
+    assert status["blocking_pr"]["tickets"]["chg"]["id"] == "CHG-312"
+    assert status["release_prs"][1]["tickets"]["chg"]["id"] == "CHG-313"

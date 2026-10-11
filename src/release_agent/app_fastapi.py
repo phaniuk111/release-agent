@@ -807,8 +807,9 @@ def _add_tickets(status: dict, df_repo: str) -> None:
     from .tools._common import active_deploy_repo
 
     wanted = []
-    if status.get("blocking_pr"):
-        wanted.append((status["blocking_pr"], active_deploy_repo()))
+    care_prs = status.get("release_prs") or ([status["blocking_pr"]] if status.get("blocking_pr") else [])
+    for pr in care_prs:
+        wanted.append((pr, active_deploy_repo()))
     df_pr = (status.get("df") or {}).get("release_pr")
     if df_pr:
         wanted.append((df_pr, df_repo))

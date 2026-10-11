@@ -73,6 +73,26 @@ def _open_prd_pr_blocker(repo, exclude_head: str = "", branches: list[str] | Non
     return None
 
 
+def _open_release_prs(repo, branches: list[str], limit: int = 30) -> list:
+    """The newest open PR into EACH guard branch — PRD and PRL1 promotions run
+    side by side, each with its own CHG, so the banner shows every one, not
+    just the first. A branch that cannot be read is left out, never an error."""
+    found = []
+    for base in branches:
+        try:
+            pr = next(iter(itertools.islice(repo.get_pulls(state="open", base=base, sort="created",
+                                                           direction="desc"), limit)), None)
+        except Exception:
+            continue
+        if pr is not None:
+            found.append(pr)
+    return found
+
+
+def _pr_view(pr) -> dict:
+    return {"number": pr.number, "url": pr.html_url, "head": pr.head.ref, "base": pr.base.ref}
+
+
 def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
     """Current deploy status (UTC): charts live on UAT and PRD, and whether a release
     (CARE or DF) is currently in flight (an open PR into a guard branch). GitHub is
@@ -99,21 +119,23 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
         uat = _charts(repo, "uat")
         prd = _charts(repo, "prd")
         blocker = _open_prd_pr_blocker(repo, branches=guard_branches(kind))
+        open_prs = _open_release_prs(repo, guard_branches(kind)) if blocker is not None else []
     except Exception as e:
         return {
             **base, "error": str(e), "uat_charts": [], "prd_charts": [],
-            "blocking_pr": None, "reason": f"status unavailable: {e}",
+            "blocking_pr": None, "release_prs": [], "reason": f"status unavailable: {e}",
         }
 
     reason = "No release currently in flight."
     blocking_pr = None
+    release_prs: list[dict] = []
     if blocker is not None:
-        blocking_pr = {
-            "number": blocker.number,
-            "url": blocker.html_url,
-            "head": blocker.head.ref,
-            "base": blocker.base.ref,
-        }
+        # blocking_pr is the same object as its entry in release_prs, so what is
+        # added to one (the tickets) is on both.
+        release_prs = [_pr_view(pr) for pr in open_prs]
+        blocking_pr = next((p for p in release_prs if p["number"] == blocker.number), None) or _pr_view(blocker)
+        if blocking_pr not in release_prs:
+            release_prs.insert(0, blocking_pr)
         reason = (
             f"A release is in flight: PR #{blocker.number} "
             f"({blocker.head.ref} → {blocker.base.ref}) is open — one release at a time."
@@ -124,6 +146,7 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
         "uat_charts": [{"helm_chart_name": n, "helm_chart_version": v} for n, v in uat.items()],
         "prd_charts": [{"helm_chart_name": n, "helm_chart_version": v} for n, v in prd.items()],
         "blocking_pr": blocking_pr,
+        "release_prs": release_prs,
         "reason": reason,
     }
 

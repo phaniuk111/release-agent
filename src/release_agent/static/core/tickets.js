@@ -9,6 +9,19 @@
 // it has. An error, or no tickets object at all, is no parts: the banner then
 // shows the PR as it did before, rather than a wrong "pending".
 
+/**
+ * Every CARE release PR open on a guarded branch — UAT→PRD and UAT→PRL1 run
+ * side by side, each with its own CHG, so the banner lists each one. Falls back
+ * to the single `blocking_pr` from a server that does not send `release_prs`.
+ * @returns {{number, url, head, base, tickets?}[]}
+ */
+export function releasePrs(status) {
+    const s = status && typeof status === 'object' ? status : {};
+    const list = Array.isArray(s.release_prs) ? s.release_prs.filter(p => p && p.number) : [];
+    if (list.length) return list;
+    return s.blocking_pr && s.blocking_pr.number ? [s.blocking_pr] : [];
+}
+
 /** The prefixes shown, in banner order, when the server does not say. */
 export const TICKET_PREFIXES = ['CHG', 'RMG'];
 

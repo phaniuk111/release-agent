@@ -54,7 +54,7 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   with the SAME subject (one bell item per `scope`); read/dismissed are new rows;
   a notify call is best-effort and never raises.
 - **Tickets on the banner** (`tools/tickets.py`, `static/core/tickets.js`):
-  `/api/release-status` adds `tickets` to `blocking_pr` and `df.release_pr`
+  `/api/release-status` lists every CARE release PR open on a guarded branch in `release_prs` (PRD and PRL1 together; `blocking_pr` is the first, the same object) and adds `tickets` to each and to `df.release_pr`
   only when a PR exists; the banner shows them after the PR number as links,
   grey "CHG pending" for a prefix the PR does not name, nothing on a read error.
 - **Deployment tracking** (`adk_release_agent/deploy_tracker.py`, started in

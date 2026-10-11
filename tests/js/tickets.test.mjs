@@ -39,3 +39,13 @@ test('no tickets object, or an error reading the PR, says nothing rather than "p
 test('whitespace around what the server sent is not part of the ticket', () => {
     assert.equal(ticketText({ chg: { id: ' CHG-1 ', state: ' created ' } }, ['CHG']), 'CHG-1 created');
 });
+
+import { releasePrs } from '../../src/release_agent/static/core/tickets.js';
+
+test('releasePrs: every open release PR, else the single blocking_pr, else none', () => {
+    const prd = { number: 312, base: 'PRD' }, prl1 = { number: 313, base: 'PRL1' };
+    assert.deepEqual(releasePrs({ release_prs: [prd, prl1], blocking_pr: prd }), [prd, prl1]);
+    assert.deepEqual(releasePrs({ blocking_pr: prd }), [prd], 'an older server without release_prs');
+    assert.deepEqual(releasePrs({ release_prs: [], blocking_pr: null }), []);
+    assert.deepEqual(releasePrs(null), []);
+});
