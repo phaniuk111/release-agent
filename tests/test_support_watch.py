@@ -505,3 +505,31 @@ def test_with_identity_off_a_change_is_anonymous_and_with_it_required_refused(si
     assert body["ok"] is False and "Sign-in" in body["error"]
     assert "Sign-in" in client.post("/api/support/watch/run", json={}).json()["error"]
     assert client.get(f"/api/support/watch?date={DAY}").json()["ok"], "reading is open to a signed-out tester"
+
+
+def test_a_pod_that_has_not_run_yet_shows_the_last_kept_pass():
+    """A restarted pod has no pass of its own until its first one runs; the card
+    and the strip must not go blank meanwhile — they show the newest kept pass."""
+    assert watch.status().get("last_run_at") is None, "nothing kept, nothing run"
+    watch.record_pass("2026-10-10", {"ok": True, "business_date": "2026-10-10", "incidents": 1})
+    watch.record_pass("2026-10-11", {"ok": True, "business_date": "2026-10-11", "incidents": 2})
+    s = watch.status()
+    assert s["last_business_date"] == "2026-10-11" and s["last_run_at"] and s["error"] == ""
+    assert s["last_summary"]["incidents"] == 2
+    watch.finish(business_date="2026-10-12", summary={"ok": True})
+    assert watch.status()["last_business_date"] == "2026-10-12", "this pod's own pass wins once it ran"
+
+
+def test_a_kept_failed_pass_shows_its_error_after_a_restart():
+    watch.record_pass("2026-10-11", {"ok": False, "error": "table unreadable"})
+    s = watch.status()
+    assert s["error"] == "table unreadable" and s["last_summary"]["ok"] is False
+
+
+def test_the_feed_after_a_restart_reads_the_kept_date(monkeypatch):
+    monkeypatch.setattr(settings, "preview_features", "", raising=False)
+    watch.append([watch.finding_from({"id": "e-1", "title": "1 failed", "priority": "low"},
+                                     {"answer": "Cause: x", "established": False}, "2026-10-11")])
+    watch.record_pass("2026-10-11", {"ok": True, "business_date": "2026-10-11", "incidents": 1})
+    out = TestClient(APP.app).get("/api/support/watch").json()
+    assert out["business_date"] == "2026-10-11" and len(out["findings"]) == 1

@@ -484,9 +484,30 @@ _status: dict[str, Any] = {"running": False, "last_run_at": None, "next_at": Non
                            "error": "", "last_summary": None}
 
 
+def _stored_pass() -> dict[str, Any]:
+    """The newest kept "checked" row, as status fields — what a pod that has not
+    run a pass yet (just restarted) shows, so the card and the strip do not go
+    blank until its first pass. {} when nothing is kept or the read fails."""
+    res = events_store.latest(DOMAIN, since_days=7, subject=_PASS_SUBJECT, limit=1)
+    rows = res.get("rows") or [] if res.get("ok") else []
+    if not rows:
+        return {}
+    row = rows[0]
+    try:
+        summary = json.loads(row.get("details") or "{}")
+    except (TypeError, ValueError):
+        summary = {}
+    errored = row.get("status") == "error"
+    return {"last_run_at": _iso(row.get("event_ts")), "last_business_date": str(row.get("subject_version") or ""),
+            "error": str(row.get("body") or "") if errored else "",
+            "last_summary": {"ok": not errored, **summary} if isinstance(summary, dict) else None}
+
+
 def status() -> dict[str, Any]:
     with _status_lock:
         out = dict(_status)
+    if not out.get("last_run_at") and not out.get("running"):
+        out.update(_stored_pass())
     out["interval_minutes"] = settings.support_watch_minutes
     out["enabled"] = settings.support_watch_minutes > 0 and configured()
     out["configured"] = configured()
