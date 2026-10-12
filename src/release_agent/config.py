@@ -757,13 +757,8 @@ class Settings(BaseSettings):
 
     # --- CHG / RMG tickets on a PR (tools/tickets.py) -----------------------------
     # The ticket prefixes read from a PR's body and comments (case-insensitive;
-    # "CHG-12345" and "CHG12345" both count) and the words that give a ticket its
-    # state — the last one on the ticket's line wins.
+    # "CHG-12345" and "CHG12345" both count). Only the ticket is read, never a state.
     ticket_prefixes: str = Field(default="CHG,RMG", validation_alias=AliasChoices("TICKET_PREFIXES"))
-    ticket_state_words: str = Field(
-        default="created,approved,rejected,closed,cancelled",
-        validation_alias=AliasChoices("TICKET_STATE_WORDS"),
-    )
 
     # --- Deployment tracking (adk_release_agent/deploy_tracker.py) ------------------
     # A timed sweep that WATCHES the PRs the portal raised: when one merges it tells

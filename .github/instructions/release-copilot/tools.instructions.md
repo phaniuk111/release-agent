@@ -53,8 +53,8 @@ model only chooses which tool to call.
   never runs past `SESSION_IDLE_MINUTES`.
 - **Tickets** (`tickets.py`): the CHG / RMG tickets named on a PR, found by a
   tokenizer (never regex) in the body then the comments oldest first — the
-  newest mention per prefix wins, its state the last `TICKET_STATE_WORDS` word
-  on its line. One GitHub read per (repo, PR) every ten minutes; a PR that
+  newest mention per prefix wins. Only the ticket is read — never a state (the
+  comments do not say one). One GitHub read per (repo, PR) every ten minutes; a PR that
   cannot be read is `{"error"}`, never a raise. `note_first_seen` appends a
   `deploy`/`tickets` row only when something changed and rings the requester's
   bell only for a CHG id not seen before.

@@ -15,50 +15,45 @@ PR_URL = f"https://github.com/{REPO}/pull/7"
 @pytest.fixture(autouse=True)
 def _defaults(monkeypatch):
     monkeypatch.setattr(settings, "ticket_prefixes", "CHG,RMG", raising=False)
-    monkeypatch.setattr(settings, "ticket_state_words", "created,approved,rejected,closed,cancelled",
-                        raising=False)
     T.clear_cache()
     yield
     T.clear_cache()
 
 
 def _ids(text, prefixes=None):
-    return [(t.id, t.state) for t in T.tickets_in(text, prefixes)]
+    return [t.id for t in T.tickets_in(text, prefixes)]
 
 
 # ----- the tokenizer -----------------------------------------------------------------
 
-def test_a_ticket_is_prefix_dash_digits_or_prefix_digits_in_any_case():
-    assert _ids("CHG-12345 created") == [("CHG-12345", "created")]
-    assert _ids("chg-12345 created") == [("CHG-12345", "created")]
-    assert _ids("CHG12345 created") == [("CHG-12345", "created")]
-    assert _ids("Chg12345") == [("CHG-12345", "")]
+def test_a_ticket_is_read_with_or_without_its_dash_in_any_case():
+    assert _ids("CHG-12345 created") == ["CHG-12345"]
+    assert _ids("chg-12345") == ["CHG-12345"]
+    assert _ids("CHG12345") == ["CHG-12345"]
+    assert _ids("Chg12345") == ["CHG-12345"]
 
 
 def test_punctuation_around_a_ticket_is_not_part_of_it():
-    assert _ids("Change (CHG-12345), see #CHG-12346.") == [("CHG-12345", ""), ("CHG-12346", "")]
-    assert _ids("- CHG-12345: approved") == [("CHG-12345", "approved")]
-    assert _ids("ticket=CHG-1;RMG-2") == [("CHG-1", ""), ("RMG-2", "")]
-    assert _ids("[CHG-9]") == [("CHG-9", "")]
+    assert _ids("Change (CHG-12345), see #CHG-12346.") == ["CHG-12345", "CHG-12346"]
+    assert _ids("- CHG-12345: approved") == ["CHG-12345"]
+    assert _ids("ticket=CHG-1;RMG-2") == ["CHG-1", "RMG-2"]
+    assert _ids("[CHG-9]") == ["CHG-9"]
 
 
 def test_only_the_configured_prefixes_count_and_digits_must_follow():
-    assert _ids("CHG-12345 and INC-1 and CHGX-1 and CHG- and CHG-12a") == [("CHG-12345", "")]
-    assert _ids("INC-1 CHG-2", ["INC"]) == [("INC-1", "")]
+    assert _ids("CHG-12345 and INC-1 and CHGX-1 and CHG- and CHG-12a") == ["CHG-12345"]
+    assert _ids("INC-1 CHG-2", ["INC"]) == ["INC-1"]
     assert _ids("INC-1 CHG-2", []) == []
 
 
-def test_the_state_is_the_last_state_word_on_the_same_line():
-    assert _ids("CHG-12345 created then Approved") == [("CHG-12345", "approved")]
-    assert _ids("approved: CHG-12345 was rejected") == [("CHG-12345", "rejected")]
-    assert _ids("CHG-12345 created\nCHG-12345 approved") == [("CHG-12345", "created"),
-                                                           ("CHG-12345", "approved")]
-    assert _ids("CHG-12345\napproved") == [("CHG-12345", "")], "another line's word is not its state"
-    assert _ids("CHG-12345 recreated") == [("CHG-12345", "")], "a state word inside a word is not one"
+def test_no_state_is_ever_read_from_the_text():
+    (ticket,) = T.tickets_in("CHG-12345 created then approved")
+    assert not hasattr(ticket, "state"), "the comments do not say a state; none is guessed"
+    assert T.tickets_from("CHG-1 approved", PR_URL, [])["chg"] == {"id": "CHG-1", "source": "body", "url": PR_URL}
 
 
 def test_leading_zeros_are_part_of_the_name():
-    assert _ids("CHG-0001691") == [("CHG-0001691", "")]
+    assert _ids("CHG-0001691") == ["CHG-0001691"]
 
 
 # ----- a PR's tickets ------------------------------------------------------------------
@@ -69,8 +64,8 @@ def test_the_newest_mention_per_prefix_wins_body_then_comments_oldest_first():
         {"body": "CHG-2 approved", "html_url": PR_URL + "#issuecomment-2"},
     ])
     assert out == {
-        "chg": {"id": "CHG-2", "state": "approved", "source": "comment", "url": PR_URL + "#issuecomment-2"},
-        "rmg": {"id": "RMG-5", "state": "", "source": "body", "url": PR_URL},
+        "chg": {"id": "CHG-2", "source": "comment", "url": PR_URL + "#issuecomment-2"},
+        "rmg": {"id": "RMG-5", "source": "body", "url": PR_URL},
     }
 
 
@@ -108,8 +103,7 @@ def test_pr_tickets_reads_the_pr_once_per_ten_minutes(monkeypatch):
     t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
     gh = _GitHub("CHG-1 created", [_Comment("CHG-1 approved", 1, t0)])
     first = T.pr_tickets(REPO, 7, github=gh)
-    assert first["chg"] == {"id": "CHG-1", "state": "approved", "source": "comment",
-                            "url": PR_URL + "#issuecomment-1"}
+    assert first["chg"] == {"id": "CHG-1", "source": "comment", "url": PR_URL + "#issuecomment-1"}
     gh.body, gh.comments = "CHG-2 created", []
     assert T.pr_tickets(REPO, 7, github=gh)["chg"]["id"] == "CHG-1" and gh.reads == 1, "served from the cache"
     assert T.pr_tickets(REPO, 7, github=gh, fresh=True)["chg"]["id"] == "CHG-2" and gh.reads == 2
@@ -125,9 +119,9 @@ def test_pr_tickets_reads_the_pr_once_per_ten_minutes(monkeypatch):
 
 def test_comments_are_read_oldest_first_whatever_order_github_lists_them():
     t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
-    gh = _GitHub("", [_Comment("CHG-1 approved", 2, t0 + dt.timedelta(hours=1)),
-                      _Comment("CHG-1 created", 1, t0)])
-    assert T.pr_tickets(REPO, 7, github=gh)["chg"]["state"] == "approved"
+    gh = _GitHub("", [_Comment("CHG-2", 2, t0 + dt.timedelta(hours=1)),
+                      _Comment("CHG-1", 1, t0)])
+    assert T.pr_tickets(REPO, 7, github=gh)["chg"]["id"] == "CHG-2", "the newest comment's ticket wins"
 
 
 def test_a_pr_that_cannot_be_read_is_an_error_dict_never_a_raise_and_never_cached():
@@ -141,37 +135,35 @@ def test_a_pr_that_cannot_be_read_is_an_error_dict_never_a_raise_and_never_cache
 
 
 def test_columns_are_empty_strings_when_a_ticket_is_absent_or_the_read_failed():
-    assert T.columns({"chg": {"id": "CHG-1", "state": "approved"}, "rmg": None}) == {
-        "chg": "CHG-1", "chg_state": "approved", "rmg": "", "rmg_state": ""}
-    assert T.columns({"error": "x"}) == {"chg": "", "chg_state": "", "rmg": "", "rmg_state": ""}
-    assert T.columns(None) == {"chg": "", "chg_state": "", "rmg": "", "rmg_state": ""}
+    assert T.columns({"chg": {"id": "CHG-1"}, "rmg": None}) == {"chg": "CHG-1", "rmg": ""}
+    assert T.columns({"error": "x"}) == {"chg": "", "rmg": ""}
+    assert T.columns(None) == {"chg": "", "rmg": ""}
 
 
 # ----- the event-log note and the requester's bell --------------------------------------
 
-def _tickets(chg_id="CHG-1", state="created"):
-    return {"chg": {"id": chg_id, "state": state, "source": "comment", "url": PR_URL + "#issuecomment-1"},
-            "rmg": None}
+def _tickets(chg_id="CHG-1", rmg_id=""):
+    return {"chg": {"id": chg_id, "source": "comment", "url": PR_URL + "#issuecomment-1"},
+            "rmg": {"id": rmg_id, "source": "comment", "url": PR_URL} if rmg_id else None}
 
 
 def test_the_first_chg_on_a_pending_pr_is_recorded_and_told_to_the_requester():
     out = T.note_first_seen(REPO, 7, _tickets(), requested_by="me@example.com", what="svc-a:2.0.0")
     assert out == {"recorded": True, "notified": True}
     (row,) = events_store.history("deploy")["rows"]
-    assert (row["event_type"], row["scope"], row["chg"], row["chg_state"], row["pr_number"]) == (
-        "tickets", f"deploy:{REPO}#7", "CHG-1", "created", 7)
+    assert (row["event_type"], row["scope"], row["chg"], row["pr_number"]) == ("tickets", f"deploy:{REPO}#7", "CHG-1", 7)
     assert "rmg" not in row, "an absent ticket is a NULL column, not an empty string"
     (item,) = N.list_for("me@example.com")["items"]
-    assert item["kind"] == "chg" and item["title"] == "CHG-1 created for release svc-a:2.0.0"
+    assert item["kind"] == "chg" and item["title"] == "CHG-1 for release svc-a:2.0.0"
     assert item["link"] == PR_URL + "#issuecomment-1" and item["scope"] == f"chg:{REPO}#7"
 
 
-def test_a_state_change_is_a_new_row_but_not_a_new_bell_item():
+def test_an_rmg_appearing_later_is_a_new_row_but_not_a_new_bell_item():
     T.note_first_seen(REPO, 7, _tickets(), requested_by="me@example.com", what="svc-a:2.0.0")
-    out = T.note_first_seen(REPO, 7, _tickets(state="approved"), requested_by="me@example.com", what="svc-a:2.0.0")
+    out = T.note_first_seen(REPO, 7, _tickets(rmg_id="RMG-5"), requested_by="me@example.com", what="svc-a:2.0.0")
     assert out == {"recorded": True, "notified": False}
     rows = events_store.history("deploy", scope=f"deploy:{REPO}#7")["rows"]
-    assert [r["chg_state"] for r in rows] == ["approved", "created"]
+    assert [r.get("rmg") or "" for r in rows] == ["RMG-5", ""]
     assert N.unread_count("me@example.com") == 1
 
 

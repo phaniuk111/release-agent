@@ -71,8 +71,6 @@ _SCHEMA: list[tuple[str, str]] = [
     ("merge_sha", "STRING"),
     ("chg", "STRING"),
     ("rmg", "STRING"),
-    ("chg_state", "STRING"),
-    ("rmg_state", "STRING"),
     # watch (also: a notification's kind rides in `category`)
     ("category", "STRING"),
     ("count", "INT64"),

@@ -1,18 +1,16 @@
 """CHG / RMG tickets named on a PR — read from its body and comments, deterministically.
 
 The change-management tickets a release needs are not fields anywhere GitHub
-knows about: a bot or a person writes "CHG-12345 created" in the PR body or a
-comment, then "CHG-12345 approved" in a later one. This module finds those
-mentions with a tokenizer (no regex, like parsing.py) so the banner can show
-them and the deployment tracker can tell the requester when one appears.
+knows about: they are named in the PR body or its comments. This module finds
+those mentions with a tokenizer (no regex, like parsing.py) so the banner can
+show them and the deployment tracker can tell the requester when one appears.
 
 What counts: a token whose upper-cased form is <PREFIX>-<digits> or
 <PREFIX><digits> for one of TICKET_PREFIXES ("CHG,RMG"), normalised to
-PREFIX-digits. Its state is the LAST of TICKET_STATE_WORDS on the same line —
-"CHG-12345 created, now approved" reads approved — or "" when the line names
-none. Across a PR the body is read first, then the comments oldest to newest,
-and the newest mention per prefix wins: the state a ticket is in is whatever was
-said about it last.
+PREFIX-digits. Only the ticket itself is read — never a state: the comments do
+not say one, and a word guessed from them would be wrong. Across a PR the body
+is read first, then the comments oldest to newest, and the newest mention per
+prefix wins.
 
 GitHub is asked once per (repo, PR) every ten minutes: the banner already costs
 several calls per load and the tracker visits every pending PR each pass. Nothing
@@ -41,15 +39,10 @@ class Ticket:
     id: str        # "CHG-12345" — always PREFIX-digits, upper-cased
     prefix: str    # "CHG"
     number: str    # "12345" — digits as written (leading zeros kept: it is a name, not a count)
-    state: str     # "approved" | "" — the last state word on the ticket's line
 
 
 def configured_prefixes() -> list[str]:
     return _words(settings.ticket_prefixes, upper=True)
-
-
-def state_words() -> list[str]:
-    return _words(settings.ticket_state_words)
 
 
 def _words(raw: str, *, upper: bool = False) -> list[str]:
@@ -96,23 +89,17 @@ def _as_ticket(token: str, wanted: list[str]) -> tuple[str, str] | None:
 
 
 def tickets_in(text: str, prefixes: list[str] | None = None) -> list[Ticket]:
-    """Every ticket mention in ``text``, in reading order, with the state its line
-    gives it. Pure. ``prefixes`` defaults to TICKET_PREFIXES."""
+    """Every ticket mention in ``text``, in reading order. Pure. ``prefixes``
+    defaults to TICKET_PREFIXES."""
     wanted = [p.strip().upper() for p in (prefixes if prefixes is not None else configured_prefixes())
               if p and p.strip()]
-    states = state_words()
     found: list[Ticket] = []
     for line in str(text or "").splitlines():
-        tokens = _tokens(line)
-        state = ""
-        for token in tokens:
-            if token.lower() in states:
-                state = token.lower()
-        for token in tokens:
+        for token in _tokens(line):
             hit = _as_ticket(token, wanted)
             if hit:
                 prefix, digits = hit
-                found.append(Ticket(id=f"{prefix}-{digits}", prefix=prefix, number=digits, state=state))
+                found.append(Ticket(id=f"{prefix}-{digits}", prefix=prefix, number=digits))
     return found
 
 
@@ -121,12 +108,12 @@ def tickets_in(text: str, prefixes: list[str] | None = None) -> list[Ticket]:
 def _merge(found: dict[str, dict[str, Any]], text: str, source: str, url: str, wanted: list[str]) -> None:
     """Fold one text's mentions into ``found`` — a later mention replaces an earlier."""
     for ticket in tickets_in(text, wanted):
-        found[ticket.prefix.lower()] = {"id": ticket.id, "state": ticket.state, "source": source, "url": url}
+        found[ticket.prefix.lower()] = {"id": ticket.id, "source": source, "url": url}
 
 
 def tickets_from(body: str, pr_url: str, comments: list[dict[str, Any]], wanted: list[str] | None = None) -> dict:
     """The newest mention per prefix across ``body`` then ``comments`` (oldest
-    first, each {"body", "html_url"}). Pure: {"chg": {id, state, source, url} | None, ...}."""
+    first, each {"body", "html_url"}). Pure: {"chg": {id, source, url} | None, ...}."""
     wanted = wanted if wanted is not None else configured_prefixes()
     found: dict[str, dict[str, Any] | None] = {p.lower(): None for p in wanted}
     _merge(found, body, "body", pr_url, wanted)
@@ -184,14 +171,13 @@ def clear_cache() -> None:
 
 
 def columns(tickets: dict | None) -> dict[str, str]:
-    """The event-log columns for a PR's tickets: chg, rmg and their states (empty
-    strings when absent, so a row says "none" rather than "unknown")."""
+    """The event-log columns for a PR's tickets: chg and rmg (empty strings when
+    absent, so a row says "none" rather than "unknown")."""
     tickets = tickets if isinstance(tickets, dict) and not tickets.get("error") else {}
     out = {}
     for prefix in ("chg", "rmg"):
         hit = tickets.get(prefix) or {}
         out[prefix] = str(hit.get("id") or "")
-        out[f"{prefix}_state"] = str(hit.get("state") or "")
     return out
 
 
@@ -201,10 +187,9 @@ def note_first_seen(repo_full: str, pr_number: int, tickets: dict | None, *,
     requester the first time a CHG appears on it.
 
     Compares with the last `tickets` row of the deploy scope: a row is written
-    only when a ticket or state changed (append-only, latest wins), and the
-    notification goes out only for a CHG id not recorded before — a state change
-    is a new row, not a new bell item. {"recorded": bool, "notified": bool};
-    never raises."""
+    only when a ticket changed (append-only, latest wins), and the notification
+    goes out only for a CHG id not recorded before. {"recorded": bool,
+    "notified": bool}; never raises."""
     from . import events_store, notifications
 
     try:
@@ -224,9 +209,8 @@ def note_first_seen(repo_full: str, pr_number: int, tickets: dict | None, *,
         notified = False
         if new_chg and requested_by:
             hit = (tickets or {}).get("chg") or {}
-            state = f" {cols['chg_state']}" if cols["chg_state"] else ""
             out = notifications.notify(
-                requested_by, kind="chg", title=f"{cols['chg']}{state} for release {what}",
+                requested_by, kind="chg", title=f"{cols['chg']} for release {what}",
                 body=f"Named in the PR {hit.get('source') or 'comments'} of #{int(pr_number)}",
                 link=str(hit.get("url") or ""), scope=f"chg:{repo_full}#{int(pr_number)}",
                 repo=repo_full, pr_number=int(pr_number))

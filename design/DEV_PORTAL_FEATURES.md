@@ -51,7 +51,7 @@ recipient, scope, status, severity, title, body, link, repo, pr_number,
 environment, jira, model, model_calls, seconds` + typed domain columns:
 release/deploy `prl1_only, df_only, build_verified, build_run_url,
 target_envs, allowed_failures, note, run_id, run_url, workflow, conclusion,
-merge_sha, chg, rmg, chg_state, rmg_state`; watch `category, count, owner,
+merge_sha, chg, rmg`; watch `category, count, owner,
 runbook, cause, established, action, action_why, fallback, notified,
 business_date (DATE), incident_id`; overflow `details` (STRING, JSON text).
 
@@ -104,18 +104,18 @@ run outcome → `df_run`; `requeue_from_history` → `requeue`.
 Deterministic. `tickets_in(text, prefixes) -> list[Ticket]` tokenises on
 whitespace and punctuation (NO regex — a tokenizer like parsing.py's), keeps
 tokens `<PREFIX>-<digits>` or `<PREFIX><digits>` for the configured prefixes
-(`TICKET_PREFIXES: "CHG,RMG"`, case-insensitive), and reads the ticket's state
-from the words on the same line (`TICKET_STATE_WORDS: "created,approved,
-rejected,closed,cancelled"`; the last state word on the line wins).
-`pr_tickets(repo, pr_number) -> {chg: {id, state, source, url}, rmg: {...}}`
+(`TICKET_PREFIXES: "CHG,RMG"`, case-insensitive). Only the ticket is read —
+never a state: the PR comments do not say one.
+`pr_tickets(repo, pr_number) -> {chg: {id, source, url}, rmg: {...}}`
 reads the PR body then the comments oldest→newest; the newest mention per
 prefix wins; `source` is "body" or "comment"; `url` the comment's html_url.
 Cached per (repo, pr) for 10 minutes (the banner already costs GitHub calls).
 
-Surfaces: `/api/release-status` → `blocking_pr.tickets` and
-`df.release_pr.tickets`; the banner (`status.js`) shows `CHG-12345 ·
-RMG-678 approved` as links, grey "CHG pending" when none; recorded on the
-event log's pending row (`chg`, `rmg`, states) and as a `chg` notification to
+Surfaces: `/api/release-status` → `tickets` on every release PR in
+`release_prs` (UAT→PRD and UAT→PRL1 together) and on `df.release_pr`; the
+banner (`status.js`) shows `CHG-12345 · RMG-678` as links, grey "no CHG yet"
+when none; recorded on the event log's pending row (`chg`, `rmg`) and as a
+`chg` notification to
 the requester the first time a CHG appears.
 
 ## 4. Deployment tracking (adk_release_agent/deploy_tracker.py)

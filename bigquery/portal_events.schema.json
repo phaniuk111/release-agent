@@ -34,8 +34,6 @@
   {"name": "merge_sha", "type": "STRING", "mode": "NULLABLE", "description": "Deploy: the commit a merged PR produced; the runs it started carry the same head_sha"},
   {"name": "chg", "type": "STRING", "mode": "NULLABLE", "description": "Deploy: change-request ticket id found on the PR, as written"},
   {"name": "rmg", "type": "STRING", "mode": "NULLABLE", "description": "Deploy: release-management ticket id found on the PR, as written"},
-  {"name": "chg_state", "type": "STRING", "mode": "NULLABLE", "description": "Deploy: the change ticket's state word on its line (created | approved | ...)"},
-  {"name": "rmg_state", "type": "STRING", "mode": "NULLABLE", "description": "Deploy: the release ticket's state word on its line"},
   {"name": "category", "type": "STRING", "mode": "NULLABLE", "description": "watch: the incident's category; notification: its kind (release_pr | uat_pr | df_run | requeue | chg | deploy_started | deploy_finished | auto_triage)"},
   {"name": "count", "type": "INT64", "mode": "NULLABLE", "description": "Watch: rows (or jobs) the incident covers"},
   {"name": "owner", "type": "STRING", "mode": "NULLABLE", "description": "Watch: who owns the incident per the runbook"},

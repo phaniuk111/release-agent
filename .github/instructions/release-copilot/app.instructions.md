@@ -56,7 +56,7 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
 - **Tickets on the banner** (`tools/tickets.py`, `static/core/tickets.js`):
   `/api/release-status` lists every CARE release PR open on a guarded branch in `release_prs` (PRD and PRL1 together; `blocking_pr` is the first, the same object) and adds `tickets` to each and to `df.release_pr`
   only when a PR exists; the banner shows them after the PR number as links,
-  grey "CHG pending" for a prefix the PR does not name, nothing on a read error.
+  grey "no CHG yet" for a prefix the PR does not name (never a state), nothing on a read error.
 - **Deployment tracking** (`adk_release_agent/deploy_tracker.py`, started in
   `_lifespan` only with `DEPLOY_TRACKING_ENABLED=true`, preview feature
   `deploy-tracking`): watches the portal's pending PRs and their runs and tells

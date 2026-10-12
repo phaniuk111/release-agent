@@ -24,8 +24,7 @@ _REAL_RECONCILE = R.reconcile_pending      # the fixture below stubs it; one tes
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch):
     for name, value in (("track_open_minutes", 5), ("track_run_seconds", 60), ("track_run_max_minutes", 90),
-                        ("deploy_workflows", ""), ("notify_workflow", ""), ("ticket_prefixes", "CHG,RMG"),
-                        ("ticket_state_words", "created,approved,rejected,closed,cancelled")):
+                        ("deploy_workflows", ""), ("notify_workflow", ""), ("ticket_prefixes", "CHG,RMG")):
         monkeypatch.setattr(settings, name, value, raising=False)
     monkeypatch.setitem(R._state, "at", float("-inf"))
     monkeypatch.setattr(R, "reconcile_pending", lambda events, github=None, outcomes=None: 0)
@@ -226,13 +225,13 @@ def test_a_merge_is_recorded_with_its_sha_and_the_requester_is_told_the_deployme
     (row,) = _rows("merged")
     assert (row["subject"], row["scope"], row["merge_sha"], row["repo"], row["pr_number"], row["jira"], row["actor"]) == (
         f"deploy:{REPO}#7", f"deploy:{REPO}#7", SHA, REPO, 7, "REL-1", "portal")
-    assert (row["chg"], row["chg_state"], row["rmg"], row["rmg_state"]) == ("CHG-12345", "created", "RMG-678", "approved")
+    assert (row["chg"], row["rmg"]) == ("CHG-12345", "RMG-678")
     assert row["event_ts"] == (T0 - dt.timedelta(minutes=2)).isoformat(), "stamped with the merge time"
     started = [i for i in _items() if i["kind"] == "deploy_started"]
     assert [i["title"] for i in started] == ["Deployment starting: svc-a:2.0.0 — PR #7 merged"]
     assert started[0]["link"] == f"https://github.com/{REPO}/pull/7" and started[0]["scope"] == f"deploy:{REPO}#7"
     chg = [i for i in _items() if i["kind"] == "chg"]
-    assert [i["title"] for i in chg] == ["CHG-12345 created for release svc-a:2.0.0"]
+    assert [i["title"] for i in chg] == ["CHG-12345 for release svc-a:2.0.0"]
     assert gh.dispatches == [], "NOTIFY_WORKFLOW unset: nothing is dispatched"
 
 

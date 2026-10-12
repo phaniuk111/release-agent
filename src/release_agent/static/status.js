@@ -26,18 +26,17 @@ function _envLists(s) {
 }
 
 // The CHG / RMG tickets named on a release PR, after its number: each a link to
-// where it was said, with its state; a prefix the PR does not name yet reads
-// "CHG pending" in grey. Nothing when the server sent no tickets (no PR, or the
+// where it was named; a prefix the PR does not name yet reads "no CHG yet" in
+// grey. Never a state — the comments do not say one. Nothing when the server sent no tickets (no PR, or the
 // PR could not be read) — core/tickets.js decides.
 function _ticketsHtml(pr) {
     const parts = ticketParts(pr && pr.tickets);
     if (!parts.length) return '';
     return ' · ' + parts.map(function (p) {
-        if (p.pending) return '<span class="text-slate-500">' + esc(p.text) + '</span>';
-        const id = p.url
+        if (p.missing) return '<span class="text-slate-500">' + esc(p.text) + '</span>';
+        return p.url
             ? '<a href="' + esc(p.url) + '" target="_blank" class="underline">' + esc(p.id) + '</a>'
             : esc(p.id);
-        return id + (p.state ? ' ' + esc(p.state) : '');
     }).join(' · ');
 }
 
