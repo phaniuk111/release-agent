@@ -32,7 +32,7 @@ dependencies = [
     # the backend on.
     "google-cloud-aiplatform>=1.71",
     "dulwich>=1.2.15",
-    "pyjwt[crypto]>=2.8",
+    "pyjwt[crypto]>=2.15.1",   # security floor: 2.13.0 has critical/high advisories (fixed in 2.14.0, 2.15.0)
     # Agent observability (adk_release_agent/telemetry.py): OTLP export of ADK's
     # own spans — to Langfuse — plus the OpenInference instrumentors Langfuse
     # documents for ADK and google-genai. Off unless LANGFUSE_HOST is set.
@@ -53,6 +53,13 @@ dev = ["pytest>=8", "ruff>=0.6"]
 # don't try to build/install the `release_agent` package itself. The app is run
 # with `uvicorn ... --app-dir src`.
 package = false
+# Security floors for transitive dependencies the image scan flagged: a lock
+# can never resolve below these (urllib3 via requests/PyGithub/Dulwich,
+# Authlib via google-adk).
+constraint-dependencies = [
+    "urllib3>=2.8.0",
+    "authlib>=1.8.0",
+]
 
 [tool.ruff]
 line-length = 100
