@@ -41,3 +41,12 @@ test('only an explicit llm: false switches the model-only controls off', () => {
     assert.equal(llmEnabled({}), true);          // a page from before the flag
     assert.equal(llmEnabled(undefined), true);
 });
+
+import { isPreviewFeature } from '../../src/release_agent/static/core/capabilities.js';
+
+test('isPreviewFeature: only a feature the server lists as still in preview', () => {
+    assert.equal(isPreviewFeature({ previewFeatures: ['auto-triage'] }, 'auto-triage'), true);
+    assert.equal(isPreviewFeature({ previewFeatures: ['auto-triage'] }, 'notifications'), false);
+    assert.equal(isPreviewFeature({ features: ['auto-triage'] }, 'auto-triage'), false, 'an older page: no tag');
+    assert.equal(isPreviewFeature(undefined, 'auto-triage'), false);
+});

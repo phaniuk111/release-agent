@@ -4,7 +4,7 @@ import {
     watcherHealth,
 } from '../core/auto_triage.js';
 import { getAutoTriage, setAutoTriageStatus } from '../api.js';
-import { llmEnabled } from '../core/capabilities.js';
+import { isPreviewFeature, llmEnabled } from '../core/capabilities.js';
 import { renderMarkdown, sendMessage } from '../chat.js';
 import { opening, withDismiss } from './common.js';
 import { renderInvestigationFeedback } from './support_feedback.js';
@@ -188,6 +188,8 @@ async function render(wrap, state) {
     let html =
         '<div class="mb-1 flex items-center gap-2 pr-6 flex-wrap">' +
         '<span class="font-semibold text-amber-300"><i class="fa-solid fa-eye mr-1"></i>Auto-triage</span>' +
+        (isPreviewFeature(window.PORTAL_UI, 'auto-triage')
+            ? '<span class="text-[9px] text-amber-300/80" title="Visible only to preview users (PREVIEW_USERS) — not released">preview</span>' : '') +
         '<span class="text-[11px] text-slate-400">checks the control table on its own and investigates what is new' +
         (state.date ? ' — business date ' + esc(state.date) : '') + '</span>' +
         '<span class="flex-1"></span>' +

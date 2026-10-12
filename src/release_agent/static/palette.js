@@ -2,7 +2,7 @@
 // palette (⌘K / "/" / the header button). Every capability lists here; typing
 // in the palette only filters.
 import { sendMessage } from './chat.js';
-import { visibleCapabilities } from './core/capabilities.js';
+import { isPreviewFeature, visibleCapabilities } from './core/capabilities.js';
 import { showDeployForm } from './forms/deploy_form.js';
 
 // This person's view, baked into the page by the server (features.py): preview
@@ -129,7 +129,12 @@ export function showCapabilities() {
             btn.className = 'border border-slate-700/80 ' + style.border + ' ' +
                 'hover:bg-slate-800/60 rounded-full px-3 py-1 text-xs text-slate-300 ' +
                 'flex items-center gap-1.5 transition-colors';
-            btn.innerHTML = '<i class="fa-solid ' + c.icon + ' ' + style.icon + ' text-[11px]"></i>' + c.label;
+            btn.innerHTML = '<i class="fa-solid ' + c.icon + ' ' + style.icon + ' text-[11px]"></i>' + c.label +
+                // A preview feature in a released group (Auto-triage under Support):
+                // the pill itself says so, as a preview group's heading does.
+                (c.feature && isPreviewFeature(window.PORTAL_UI, c.feature)
+                    ? '<span class="text-[9px] text-amber-300/80" title="Visible only to preview users (PREVIEW_USERS) — not released">preview</span>'
+                    : '');
             btn.addEventListener('click', () => c.form ? showDeployForm(c.form) : runQuick(c.text, c.send));
             row.appendChild(btn);
         });

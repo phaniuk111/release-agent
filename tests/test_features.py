@@ -34,9 +34,9 @@ def test_the_check_group_is_hidden_by_default_for_everyone_else():
     assert features.hidden_groups(TESTER) == []
     on = ["notifications", "auto-triage", "deploy-tracking"]   # not gated in this test's settings: open to everyone
     assert features.ui_config(TESTER) == {"hiddenGroups": [], "previewGroups": ["Check"], "preview": True, "llm": True,
-                                          "features": on}
+                                          "features": on, "previewFeatures": []}
     assert features.ui_config(None) == {"hiddenGroups": ["Check"], "previewGroups": [], "preview": False, "llm": True,
-                                        "features": on}
+                                        "features": on, "previewFeatures": []}
 
 
 def test_monitoring_is_refused_server_side_not_just_hidden(monkeypatch):
@@ -68,7 +68,7 @@ def test_the_page_is_rendered_with_this_callers_view(monkeypatch):
     monkeypatch.setattr(APP, "_caller", lambda request: None)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
     assert ('window.PORTAL_UI = {"hiddenGroups": ["Check"], "previewGroups": [], "preview": false, "llm": true, '
-            '"features": ["notifications", "auto-triage", "deploy-tracking"]};') in html
+            '"features": ["notifications", "auto-triage", "deploy-tracking"], "previewFeatures": []};') in html
     monkeypatch.setattr(APP, "_caller", lambda request: TESTER)
     html = asyncio.run(APP.chat_page(SimpleNamespace(headers={}))).body.decode()
     assert '"preview": true' in html and "{PORTAL_UI}" not in html
@@ -128,3 +128,11 @@ def test_the_bq_cost_report_is_preview_by_default():
 def test_a_refusal_names_the_feature_like_a_person_would():
     assert features.refusal("monitoring") == "Monitoring is not available yet — it is a preview feature."
     assert features.refusal("bq-cost") == "The BigQuery cost report is not available yet — it is a preview feature."
+
+
+def test_a_preview_feature_is_listed_for_testers_only(monkeypatch):
+    monkeypatch.setattr(features.settings, "preview_features", "auto-triage", raising=False)
+    assert features.ui_config(TESTER)["previewFeatures"] == ["auto-triage"]
+    assert "auto-triage" in features.ui_config(TESTER)["features"]
+    assert features.ui_config(OTHER)["previewFeatures"] == [], "not allowed, so not shown at all"
+    assert "auto-triage" not in features.ui_config(OTHER)["features"]

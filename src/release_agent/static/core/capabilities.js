@@ -30,6 +30,16 @@ export function hasFeature(ui, name) {
 }
 
 /**
+ * Whether a page-level feature this person sees is still in preview (shown to
+ * testers only), so the page can tag it "preview" like a preview group.
+ * @param {{previewFeatures?: string[]}} ui
+ * @param {string} name
+ */
+export function isPreviewFeature(ui, name) {
+    return !!(ui && Array.isArray(ui.previewFeatures) && ui.previewFeatures.indexOf(name) !== -1);
+}
+
+/**
  * Whether the portal has a model behind it (LLM_ENABLED). Anything that only a
  * model can answer — the chat's free text, "Ask why", AI drafting — is offered
  * only when this is true. A page without the flag predates it: a model is on.

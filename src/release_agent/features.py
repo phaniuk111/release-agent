@@ -69,4 +69,8 @@ def ui_config(caller) -> dict[str, Any]:
         "llm": bool(settings.llm_enabled),
         # window.PORTAL_UI.features: the UI_FEATURES this caller may use.
         "features": [f for f in UI_FEATURES if allowed(f, caller)],
+        # Of those, the ones still in preview: a tester sees them tagged
+        # "preview", like a preview group, wherever their pill sits.
+        "previewFeatures": [f for f in UI_FEATURES
+                            if f in _names(settings.preview_features) and allowed(f, caller)],
     }
