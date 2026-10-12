@@ -1,6 +1,6 @@
 # Dev Portal — notifications, Auto-triage, deployment tracking
 
-Status: **being built** (2026-10-10). Read AGENTS.md first; every rule there
+Status: **built** (2026-10-10 → 2026-10-12); end-to-end tested on GKE (Auto-triage, bell, tickets, tracker) and against real GitHub (the NOTIFY_WORKFLOW dispatch). Section 7 is what a deployment sets to turn it on. Read AGENTS.md first; every rule there
 holds. This is the spec the parallel builds follow, so the pieces fit: the
 interfaces below are contracts, not suggestions. Anything not fixed here is
 the builder's call, following the nearest existing code.
@@ -229,3 +229,60 @@ everything renders; Ask why is absent, the finding is the model-free one.
   comment; `bigquery/README.md` mentions the fourth table.
 - Commit per feature on the build's branch, message in the repo's style, the
   Co-Authored-By trailer; never push.
+
+## 7. Turning it on — what a deployment must set
+
+Every feature is off until configured, and preview-gated: list testers in
+`PREVIEW_USERS` (or remove `notifications`, `auto-triage`, `deploy-tracking`
+from `PREVIEW_FEATURES` to open them to everyone). All settings go in the
+chart's `values.yaml` under `config:`.
+
+**Storage (all three features).** Create the `portal_events` table — the
+fourth block of `bigquery/terraform/main.tf`, or `bq mk` with
+`bigquery/portal_events.schema.json` (day partition on `event_ts`, clustering
+`domain, subject, recipient`) — and set `PORTAL_EVENTS_DATASET` to its dataset.
+The runtime identity needs `roles/bigquery.dataEditor` on that dataset (and
+`bigquery.jobUser` on the project, which the release log already needs).
+Without it everything runs from pod memory: a restart forgets findings,
+notifications and which merges were announced.
+
+**Notifications (the bell).** Nothing else to set. Recipients are VERIFIED
+emails (the mesh's RCToken, `IDENTITY_HEADER`); with identity off the bell
+asks for an email instead — for local testing only.
+
+**CHG / RMG on the banner.** `RELEASE_GUARD_BRANCHES` must list BOTH terminal
+branches (e.g. `"PRD,PRL1"`) so the banner shows every promotion PR in flight;
+`TICKET_PREFIXES` defaults to `CHG,RMG`. Only the ticket ids are shown.
+
+**Auto-triage.** `SUPPORT_TABLE` (already needed by Support triage),
+`SUPPORT_WATCH_MINUTES: "10"` (0 = off), `SUPPORT_NOTIFY_RECIPIENTS` (who gets
+the bell items). The loop runs inside the portal pod: keep `replicaCount: 1`
+(more replicas would each run it — see the scaling decision below).
+
+**Deployment tracking + the send-notification workflow.**
+- `DEPLOY_TRACKING_ENABLED: "true"`.
+- `NOTIFY_WORKFLOW: "<org>/<repo>:<workflow file>"` — the team's
+  send-notification workflow. It must have `workflow_dispatch` (GitHub
+  dispatches only from the default branch) with the inputs
+  `release_notification_type` (Start|Complete), `change_request`,
+  `environment` (PROD|PRL1), `create_release_draft`, `test_notification`.
+  The portal sends Start when a PR into a guard branch is merged and Complete
+  when every run on that merge commit succeeded; a failure sends nothing (the
+  bell still says where it failed). `environment` is PROD for the
+  `PRD_BRANCH` base and PRL1 for the `PRL1_BRANCH` base.
+- `NOTIFY_TEST: "true"` for a dry run (test Teams channel), then `"false"`.
+- `DEPLOY_REPO` — the deployment repo whose guard branches are watched.
+- Optional: `DEPLOY_WORKFLOWS` (only these workflow names count as "the
+  deployment" on the merge commit; empty = every run on it),
+  `TRACK_OPEN_MINUTES: "1"` (Start within ~1 minute of the merge; default 5).
+- GitHub token (`githubToken.existingSecret`, the bot): read on the deployment
+  repo (PRs, comments, Actions runs) and **Actions: write** on the
+  NOTIFY_WORKFLOW repo. The tracker has no chat session, so it always uses it.
+- Known limit: a guard PR opened AND merged between two checks is not seen
+  (only open PRs are discovered); promotion PRs normally wait for their CHG.
+
+**Scaling decision (2026-10-11).** One replica now. When the portal must run
+more than one: on Backstage, run Auto-triage and the tracker as scheduled tasks
+with `scope: 'global'`; for the Python portal alone, add Postgres and take a
+`pg_try_advisory_lock` per loop on a dedicated connection (chat sessions move
+there too). BigQuery stays for history, never as a live channel.
