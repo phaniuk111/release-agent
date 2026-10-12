@@ -355,6 +355,7 @@ config:
   # no dispatch. This is the ONE GitHub write that never pauses for a yes
   # (adk_release_agent/approvals.py): it changes no deployment.
   NOTIFY_WORKFLOW: ""
+  NOTIFY_TEST: "false"             # "true" = test_notification=true: the test Teams channel, for a dry run
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token
   # usage, each tool call, the deploy Workflow's nodes — exported as

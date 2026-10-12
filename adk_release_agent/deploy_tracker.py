@@ -362,7 +362,7 @@ def notify_inputs(stage: str, chg: str, base: str) -> dict[str, str] | None:
         return None
     environment = {settings.prd_branch: "PROD", settings.prl1_branch: "PRL1"}.get(base) or base
     return {"release_notification_type": word, "change_request": chg or "", "environment": environment,
-            "create_release_draft": "true", "test_notification": "false"}
+            "create_release_draft": "true", "test_notification": "true" if settings.notify_test else "false"}
 
 
 def dispatch_notify_workflow(github: Any, stage: str, *, chg: str, base: str) -> dict[str, Any]:

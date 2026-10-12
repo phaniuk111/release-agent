@@ -780,6 +780,9 @@ class Settings(BaseSettings):
     # dispatch. The ONE GitHub write that never pauses for a yes (approvals.py):
     # it changes no deployment.
     notify_workflow: str = Field(default="", validation_alias=AliasChoices("NOTIFY_WORKFLOW"))
+    # Sent as the workflow's test_notification input: true = the test Teams
+    # channel, for a dry run of the whole path.
+    notify_test: bool = Field(default=False, validation_alias=AliasChoices("NOTIFY_TEST"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every

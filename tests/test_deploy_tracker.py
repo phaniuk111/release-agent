@@ -24,7 +24,8 @@ _REAL_RECONCILE = R.reconcile_pending      # the fixture below stubs it; one tes
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch):
     for name, value in (("track_open_minutes", 5), ("track_run_seconds", 60), ("track_run_max_minutes", 90),
-                        ("deploy_workflows", ""), ("notify_workflow", ""), ("ticket_prefixes", "CHG,RMG")):
+                        ("deploy_workflows", ""), ("notify_workflow", ""), ("ticket_prefixes", "CHG,RMG"),
+                        ("notify_test", False)):
         monkeypatch.setattr(settings, name, value, raising=False)
     monkeypatch.setitem(R._state, "at", float("-inf"))
     monkeypatch.setattr(R, "reconcile_pending", lambda events, github=None, outcomes=None: 0)
@@ -743,3 +744,10 @@ def test_the_feature_is_registered_the_way_notifications_is():
     assert "deploy-tracking" in features.UI_FEATURES
     assert "deploy-tracking" in type(settings).model_fields["preview_features"].default.split(",")
     assert features.refusal("deploy-tracking") == "Deployment tracking is not available yet — it is a preview feature."
+
+
+def test_notify_test_sends_the_dry_run_to_the_test_channel(monkeypatch):
+    assert DT.notify_inputs("starting", "CHG-1", settings.prd_branch)["test_notification"] == "false"
+    monkeypatch.setattr(settings, "notify_test", True, raising=False)
+    assert DT.notify_inputs("starting", "CHG-1", settings.prd_branch)["test_notification"] == "true"
+    assert DT.notify_inputs("failed", "CHG-1", settings.prd_branch) is None, "a failure is still not announced"
