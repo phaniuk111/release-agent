@@ -203,8 +203,8 @@ check HH:MM · N needs attention · M open · next HH:MM", amber/red by health);
 the feed card (`forms/auto_triage.js`, pure rules in `core/auto_triage.js` +
 `tests/js/auto_triage.test.mjs`: `groupFindings`, `watcherHealth`,
 `statusActions`, `statusText`, `ago` — ported from the plugin's
-`watchFormat.ts`): header + refresh; four tiles (Auto-triage health,
-Needs attention, Open, Notifications on/off + store); groups Needs attention /
+`watchFormat.ts`): header + refresh; three tiles (Auto-triage health,
+Needs attention, Open — they wrap in a narrow window); groups Needs attention /
 Open / Resolved, dismissed and cleared; each finding: priority badge, title,
 since/investigated, source · owner · category · rows, then Runbook / Finding /
 Do now lines, a Rows section (the incident's facts, error text, runs, jobs — kept on the finding,

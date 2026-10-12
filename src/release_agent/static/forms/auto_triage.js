@@ -194,11 +194,11 @@ async function render(wrap, state) {
         (running ? '<span class="text-[11px] text-amber-300">Checking…</span>' : '') +
         '<button type="button" data-at="refresh" title="Read again now" aria-label="Read again now" class="text-slate-400 hover:text-white text-xs">' +
         '<i class="fa-solid fa-rotate-right"></i></button></div>' +
-        '<div class="mb-2" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">' +
+        // Wraps instead of cutting the text short in a narrow window.
+        '<div class="mb-2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">' +
         tile('Auto-triage', health.text, health.detail, TONE_CLASS[health.tone]) +
         tile('Needs attention', String(n.attention), 'open, high or critical', n.attention ? 'text-amber-300' : 'text-slate-100') +
         tile('Open', String(n.open), lastRunText(status.last_summary)) +
-        tile('Notifications', status.notifications ? 'On — the bell' : 'Off', 'findings kept in ' + (status.store || 'memory')) +
         '</div>';
     if (res.ok === false) {
         html += '<div class="text-[11px] text-amber-400">' + esc(res.error || 'The findings could not be read.') + '</div>';
