@@ -430,6 +430,8 @@ def signed_in(monkeypatch):
 def test_every_route_refuses_when_the_feature_is_off_for_the_caller(monkeypatch, client):
     monkeypatch.setattr(features.settings, "preview_features", "auto-triage", raising=False)
     monkeypatch.setattr(features.settings, "preview_users", "someone-else@example.com", raising=False)
+    monkeypatch.setattr(features.settings, "support_watch_minutes", 10, raising=False)
+    monkeypatch.setattr(features.settings, "support_table", "p.ops.control", raising=False)
     monkeypatch.setattr(APP, "_caller", lambda request: OTHER)
     for res in (client.get("/api/support/watch"),
                 client.post("/api/support/watch/run", json={}),

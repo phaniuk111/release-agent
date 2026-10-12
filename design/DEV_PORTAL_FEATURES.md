@@ -232,7 +232,7 @@ everything renders; Ask why is absent, the finding is the model-free one.
 
 ## 7. Turning it on — what a deployment must set
 
-Every feature is off until configured, and preview-gated: list testers in
+Every feature is off until configured — its pill, strip and bell do not even show until switched on, testers included — and preview-gated: list testers in
 `PREVIEW_USERS` (or remove `notifications`, `auto-triage`, `deploy-tracking`
 from `PREVIEW_FEATURES` to open them to everyone). All settings go in the
 chart's `values.yaml` under `config:`.

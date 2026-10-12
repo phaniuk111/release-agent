@@ -19,6 +19,10 @@ def defaults(monkeypatch):
     monkeypatch.setattr(s, "preview_users", "tester@example.com", raising=False)
     monkeypatch.setattr(s, "preview_groups", "Check", raising=False)
     monkeypatch.setattr(s, "preview_features", "monitoring", raising=False)
+    # The page features are switched on here; switched_on() has its own tests.
+    for k, v in {"support_watch_minutes": 10, "support_table": "p.ops.control", "portal_events_dataset": "events",
+                 "deploy_tracking_enabled": True}.items():
+        monkeypatch.setattr(s, k, v, raising=False)
 
 
 def test_only_listed_verified_users_are_testers(monkeypatch):
@@ -136,3 +140,21 @@ def test_a_preview_feature_is_listed_for_testers_only(monkeypatch):
     assert "auto-triage" in features.ui_config(TESTER)["features"]
     assert features.ui_config(OTHER)["previewFeatures"] == [], "not allowed, so not shown at all"
     assert "auto-triage" not in features.ui_config(OTHER)["features"]
+
+
+def test_a_page_feature_shows_only_when_the_deployment_switched_it_on(monkeypatch):
+    """Only the release log configured: a tester sees Support triage and none of
+    the bell, Auto-triage or tracking — being a tester is not enough."""
+    s = features.settings
+    for k, v in {"support_watch_minutes": 0, "portal_events_dataset": "", "deploy_tracking_enabled": False}.items():
+        monkeypatch.setattr(s, k, v, raising=False)
+    monkeypatch.setattr(s, "preview_users", "*", raising=False)
+    assert features.ui_config(TESTER)["features"] == [] and features.ui_config(TESTER)["previewFeatures"] == []
+    monkeypatch.setattr(s, "support_watch_minutes", 10, raising=False)
+    assert features.ui_config(TESTER)["features"] == ["auto-triage"], "the timer and a table turn Auto-triage on"
+    monkeypatch.setattr(s, "support_table", "", raising=False)
+    assert features.ui_config(TESTER)["features"] == [], "a timer with no table to watch is not on"
+    monkeypatch.setattr(s, "portal_events_dataset", "events", raising=False)
+    assert features.ui_config(TESTER)["features"] == ["notifications"], "a place to keep them turns the bell on"
+    monkeypatch.setattr(s, "deploy_tracking_enabled", True, raising=False)
+    assert features.ui_config(TESTER)["features"] == ["notifications", "deploy-tracking"]

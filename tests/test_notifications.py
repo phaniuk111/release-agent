@@ -230,6 +230,7 @@ def test_a_preview_user_gets_the_feature(monkeypatch, client):
 def test_the_page_is_told_the_feature_is_on(monkeypatch):
     monkeypatch.setattr(features.settings, "preview_features", "notifications,deploy-tracking", raising=False)
     monkeypatch.setattr(features.settings, "preview_users", "tester@example.com", raising=False)
+    monkeypatch.setattr(features.settings, "portal_events_dataset", "events", raising=False)   # the bell is on
     # Only notifications is gated in this test; the other UI features stay open.
     assert "notifications" in features.ui_config(TESTER)["features"]
     assert "notifications" not in features.ui_config(OTHER)["features"]

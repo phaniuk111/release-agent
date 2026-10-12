@@ -57,6 +57,20 @@ def refusal(feature: str) -> str:
     return f"{name} is not available yet — it is a preview feature."
 
 
+def switched_on(feature: str) -> bool:
+    """A page feature shows only when the deployment turned it on — being a
+    tester is not enough. Auto-triage needs its timer and a table, the bell a
+    place to keep notifications, tracking its own switch. So a deployment with
+    only the release log shows Support triage and none of these, testers too."""
+    if feature == "auto-triage":
+        return settings.support_watch_minutes > 0 and bool(str(settings.support_table or "").strip())
+    if feature == "notifications":
+        return bool(str(settings.portal_events_dataset or "").strip())
+    if feature == "deploy-tracking":
+        return bool(settings.deploy_tracking_enabled)
+    return True
+
+
 def ui_config(caller) -> dict[str, Any]:
     """What the page needs to render this caller's view — no secrets, no emails."""
     preview = is_preview_user(caller)
@@ -68,9 +82,9 @@ def ui_config(caller) -> dict[str, Any]:
         # LLM_ENABLED=false: the page hides what needs the AI assistant.
         "llm": bool(settings.llm_enabled),
         # window.PORTAL_UI.features: the UI_FEATURES this caller may use.
-        "features": [f for f in UI_FEATURES if allowed(f, caller)],
+        "features": [f for f in UI_FEATURES if allowed(f, caller) and switched_on(f)],
         # Of those, the ones still in preview: a tester sees them tagged
         # "preview", like a preview group, wherever their pill sits.
-        "previewFeatures": [f for f in UI_FEATURES
-                            if f in _names(settings.preview_features) and allowed(f, caller)],
+        "previewFeatures": [f for f in UI_FEATURES if f in _names(settings.preview_features)
+                            and allowed(f, caller) and switched_on(f)],
     }
