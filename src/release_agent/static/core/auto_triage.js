@@ -154,6 +154,23 @@ export function statusText(f) {
     }
 }
 
+/** What Auto-triage found about one incident, as Support triage shows it under
+ *  that incident on any business date — a past day's findings are never closed
+ *  or dropped, they are read back here. {incident_id: {head, cause, doNow}}. */
+export function findingNotes(findings) {
+    const out = {};
+    (Array.isArray(findings) ? findings : []).forEach(f => {
+        if (!f || typeof f !== 'object' || !f.incident_id) return;
+        const at = hhmm(f.investigated_at);
+        out[String(f.incident_id)] = {
+            head: 'Auto-triage' + (at ? ' ' + at : '') + ' · ' + statusText(f),
+            cause: String(f.cause || ''),
+            doNow: String(f.do_now || ''),
+        };
+    });
+    return out;
+}
+
 /** The finding as "Was this right?" records it (forms/support_feedback.js). */
 export function asInvestigation(f) {
     const x = f && typeof f === 'object' ? f : {};

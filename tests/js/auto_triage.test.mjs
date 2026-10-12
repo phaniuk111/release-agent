@@ -136,3 +136,18 @@ test('rowsOf: the rows behind a finding, jobs linked only through a {job_id} tem
     assert.equal(rowsOf({}).empty, true);
     assert.equal(rowsOf(null).empty, true);
 });
+
+import { findingNotes } from '../../src/release_agent/static/core/auto_triage.js';
+
+test('findingNotes: each incident\'s finding for Support triage, keyed by incident id', () => {
+    const notes = findingNotes([
+        { incident_id: 'e-1', status: 'open', cause: 'quota exceeded', do_now: 're-run after 11:00', investigated_at: '2026-10-12T09:16:00Z' },
+        { incident_id: 'e-2', status: 'dismissed', actor: 'someone@example.com', cause: '', do_now: '' },
+        { status: 'open' }, null,
+    ]);
+    assert.deepEqual(Object.keys(notes).sort(), ['e-1', 'e-2'], 'a finding without an incident id is left out');
+    assert.ok(notes['e-1'].head.startsWith('Auto-triage') && notes['e-1'].head.endsWith('· Open'));
+    assert.equal(notes['e-1'].cause, 'quota exceeded');
+    assert.equal(notes['e-2'].head, 'Auto-triage · Dismissed by someone@example.com');
+    assert.deepEqual(findingNotes(undefined), {});
+});

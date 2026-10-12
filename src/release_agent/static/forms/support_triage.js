@@ -2,8 +2,9 @@ import { escapeHtml as esc } from '../core/format.js';
 import {
     ENABLE_HINT, actionLabel, askPrompt, emptyText, investigatePrompt, jobHref, metaLine, summaryLine,
 } from '../core/support_triage.js';
-import { supportTriage } from '../api.js';
-import { llmEnabled } from '../core/capabilities.js';
+import { getAutoTriage, supportTriage } from '../api.js';
+import { findingNotes } from '../core/auto_triage.js';
+import { hasFeature, llmEnabled } from '../core/capabilities.js';
 import { sendMessage } from '../chat.js';
 import { opening, withDismiss } from './common.js';
 
@@ -163,5 +164,26 @@ async function render(wrap, date, fresh) {
     });
     body.querySelectorAll('button[data-investigate]').forEach(btn => {
         btn.addEventListener('click', () => sendMessage(investigatePrompt(incidents[+btn.dataset.investigate], res)));
+    });
+    if (incidents.length) showAutoTriageNotes(body, date || res.business_date || '');
+}
+
+// What Auto-triage found about each incident on this date, under the incident:
+// any day's findings stay readable here after it moves on to a new COB date.
+// Best-effort — no feature, no findings, or a failed read shows nothing.
+async function showAutoTriageNotes(body, date) {
+    if (!date || !hasFeature(window.PORTAL_UI, 'auto-triage')) return;
+    let feed;
+    try { feed = await getAutoTriage(date); } catch (e) { return; }
+    const notes = findingNotes(feed && feed.findings);
+    body.querySelectorAll('[data-incident]').forEach(el => {
+        const n = notes[el.dataset.incident];
+        if (!n) return;
+        const div = document.createElement('div');
+        div.className = 'text-[11px] mt-2 rounded-lg bg-slate-800 px-3 py-2 text-slate-300';
+        div.innerHTML = '<div class="text-slate-500"><i class="fa-solid fa-eye mr-1"></i>' + esc(n.head) + '</div>' +
+            (n.cause ? '<div><span class="text-slate-500">Finding:</span> ' + esc(n.cause) + '</div>' : '') +
+            (n.doNow ? '<div><span class="text-slate-500">Do now:</span> ' + esc(n.doNow) + '</div>' : '');
+        el.appendChild(div);
     });
 }
