@@ -17,7 +17,7 @@ and a bell item per stage for the requester:
 
 It watches and tells; it never merges, re-runs, retries or rolls anything back.
 The one GitHub write is dispatching the team's own send-notification workflow
-(NOTIFY_WORKFLOW) at each stage — named in approvals.py as the one write that
+(NOTIFY_WORKFLOW) when a deployment starts and when it completes — named in approvals.py as the one write that
 never pauses for a yes, because it changes no deployment.
 
 Cadence (next_delay, pure): nothing pending -> one event-log read per
@@ -302,16 +302,34 @@ def notify_workflow_target() -> tuple[str, str]:
     return repo.strip(), workflow.strip()
 
 
-def dispatch_notify_workflow(github: Any, stage: str, *, release: str, chg: str, rmg: str, pr: str,
-                             requested_by: str) -> dict[str, Any]:
+_STAGE_WORDS = {"starting": "Start", "completed": "Complete"}
+
+
+def notify_inputs(stage: str, chg: str, base: str) -> dict[str, str] | None:
+    """The inputs of the team's send-notification workflow for one stage, or None
+    when the stage is not announced there (a failure, a deployment still running).
+    The workflow's own input names, fixed here: the environment is PROD for the
+    PRD branch, PRL1 for the PRL1 branch, else the base branch as it is. Pure."""
+    word = _STAGE_WORDS.get(stage)
+    if word is None:
+        return None
+    environment = {settings.prd_branch: "PROD", settings.prl1_branch: "PRL1"}.get(base) or base
+    return {"release_notification_type": word, "change_request": chg or "", "environment": environment,
+            "create_release_draft": "true", "test_notification": "false"}
+
+
+def dispatch_notify_workflow(github: Any, stage: str, *, chg: str, base: str) -> dict[str, Any]:
     """Trigger the team's send-notification workflow with what the tracker saw.
-    {"ok": True, "run_id", "run_url"} ({"ok": True, "skipped": why} when unset),
-    or {"ok": False, "error"}; never raises. The run id comes from GitHub's
-    `return_run_details` (the DF dispatch's `_dispatch`), never a guess."""
+    {"ok": True, "run_id", "run_url"} ({"ok": True, "skipped": why} when unset or
+    when the stage is not announced), or {"ok": False, "error"}; never raises.
+    The run id comes from GitHub's `return_run_details` (the DF dispatch's
+    `_dispatch`), never a guess. ``base`` is the PR's base branch."""
     repo_full, workflow_file = notify_workflow_target()
     if not repo_full:
         return {"ok": True, "skipped": "NOTIFY_WORKFLOW is not set"}
-    inputs = {"stage": stage, "release": release, "chg": chg, "rmg": rmg, "pr": pr, "requested_by": requested_by}
+    inputs = notify_inputs(stage, chg, base)
+    if inputs is None:
+        return {"ok": True, "skipped": f"the workflow is not told of stage {stage}"}
     # The dispatch is made only while approvals.py names it as the write that
     # needs no yes: remove the rule there and the tracker stops dispatching
     # rather than writing without one.
@@ -355,6 +373,7 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
     repo_obj = github.get_repo(repo_full)
     pr = repo_obj.get_pull(pr_number)
     pr_url = str(getattr(pr, "html_url", "") or "")
+    base = str(getattr(getattr(pr, "base", None), "ref", "") or "")
     outcome = pr_reconcile.pr_outcome(pr)
     if outcomes is not None:
         outcomes[(repo_full, pr_number)] = outcome
@@ -388,8 +407,7 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
               "environment": _first(pending, "environment") or None, **cols}
 
     if last is None:
-        dispatched = dispatch_notify_workflow(github, "starting", release=what, chg=cols["chg"], rmg=cols["rmg"],
-                                              pr=str(pr_number), requested_by=requester)
+        dispatched = dispatch_notify_workflow(github, "starting", chg=cols["chg"], base=base)
         _record({**common, "event_type": _MERGED, "event_ts": merged_at,
                  "body": f"merged by {merged_by}" if merged_by else None,
                  "details": {"notify_run_id": dispatched.get("run_id"), "notify_error": dispatched.get("error")}})
@@ -427,8 +445,7 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
     ok = all(r["conclusion"] == "success" for r in runs)
     failed = [] if ok else failing_steps(run)
     stage = "completed" if ok else "failed"
-    dispatched = dispatch_notify_workflow(github, stage, release=what, chg=cols["chg"], rmg=cols["rmg"],
-                                          pr=str(pr_number), requested_by=requester)
+    dispatched = dispatch_notify_workflow(github, stage, chg=cols["chg"], base=base)
     _record({**common, "event_type": _FINISHED, "conclusion": "success" if ok else "failure",
              "run_id": run["id"] or None, "run_url": run["url"] or None, "workflow": run["workflow"] or run["name"],
              "details": {"attempts": _attempts(runs), "failed_steps": failed, "rerun": rerun,

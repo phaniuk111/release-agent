@@ -139,7 +139,10 @@ class _Run:
 
 
 class _PR:
-    def __init__(self, number, merged=False, state="open", when=None, by="approver", body="", comments=()):
+    def __init__(self, number, merged=False, state="open", when=None, by="approver", body="", comments=(),
+                 base=None, head="UAT"):
+        if base:
+            self.base, self.head = SimpleNamespace(ref=base), SimpleNamespace(ref=head)
         self.number, self.merged, self.state, self.html_url = number, merged, state, f"https://github.com/{REPO}/pull/{number}"
         self.merged_at = when if merged else None
         self.closed_at = when if state == "closed" else None
@@ -410,28 +413,60 @@ def test_no_requester_means_records_but_no_bell():
 
 # ----- the one GitHub write ------------------------------------------------------------
 
-def test_notify_workflow_is_dispatched_at_each_stage_with_exactly_these_inputs(monkeypatch):
+def _start(chg="CHG-12345", env="PROD"):
+    return {"release_notification_type": "Start", "change_request": chg, "environment": env,
+            "create_release_draft": "true", "test_notification": "false"}
+
+
+def test_the_inputs_are_the_workflows_own_fixed_names_and_the_environment_follows_the_base_branch(monkeypatch):
+    monkeypatch.setattr(settings, "prd_branch", "PRD")
+    monkeypatch.setattr(settings, "prl1_branch", "PRL1")
+    assert DT.notify_inputs("starting", "CHG-12345", "PRD") == _start()
+    assert DT.notify_inputs("completed", "CHG-12345", "PRD") == {**_start(), "release_notification_type": "Complete"}
+    assert DT.notify_inputs("starting", "CHG-1", "PRL1")["environment"] == "PRL1"
+    assert DT.notify_inputs("starting", "CHG-1", "RELEASE_UAT")["environment"] == "RELEASE_UAT", "any other base as it is"
+    assert DT.notify_inputs("starting", "", "PRD")["change_request"] == "", "no CHG yet: empty, not missing"
+    assert DT.notify_inputs("starting", "", "")["environment"] == ""
+    assert DT.notify_inputs("failed", "CHG-1", "PRD") is None and DT.notify_inputs("still_running", "", "PRD") is None
+    monkeypatch.setattr(settings, "prd_branch", "release-prd")           # the branch names are settings, not literals
+    assert DT.notify_inputs("starting", "", "release-prd")["environment"] == "PROD"
+
+
+def test_notify_workflow_is_dispatched_when_it_starts_and_when_it_completes_with_exactly_these_inputs(monkeypatch):
     monkeypatch.setattr(settings, "notify_workflow", "example-org/ops:send-notification.yml")
-    pr = _PR(7, merged=True, state="closed", when=T0, body="CHG-12345 approved\nRMG-678")
+    pr = _PR(7, merged=True, state="closed", when=T0, body="CHG-12345 approved\nRMG-678", base=settings.prd_branch)
     gh = _GitHub({7: pr}, runs={SHA: [_Run(1)]})
     DT.run_pass(github=gh, events=[_pending(7)], now=T0)
     gh.runs[SHA] = [_Run(1, status="completed", conclusion="success")]
     DT.run_pass(github=gh, events=[_pending(7)], now=T0 + dt.timedelta(minutes=1))
     assert [d[0] for d in gh.dispatches] == ["POST", "POST"]
     assert all(d[1].endswith("/dispatches") for d in gh.dispatches)
-    want = {"release": "svc-a:2.0.0", "chg": "CHG-12345", "rmg": "RMG-678", "pr": "7", "requested_by": ME}
-    assert gh.dispatches[0][2] == {"ref": "main", "return_run_details": True, "inputs": {"stage": "starting", **want}}
-    assert gh.dispatches[1][2] == {"ref": "main", "return_run_details": True, "inputs": {"stage": "completed", **want}}
+    assert gh.dispatches[0][2] == {"ref": "main", "return_run_details": True, "inputs": _start()}
+    assert gh.dispatches[1][2] == {"ref": "main", "return_run_details": True,
+                                   "inputs": {**_start(), "release_notification_type": "Complete"}}
     merged, finished = _rows("merged")[0], _rows("finished")[0]
     assert '"notify_run_id":4242' in merged["details"] and '"notify_run_id":4242' in finished["details"]
+    assert [i["title"] for i in _items() if i["kind"] == "deploy_started" or i["kind"] == "deploy_finished"] == [
+        "Deployment completed: svc-a:2.0.0"], "the requester's bell is as before"
 
 
-def test_a_failed_deployment_dispatches_stage_failed(monkeypatch):
+def test_a_failed_deployment_dispatches_nothing_but_is_still_told_and_recorded(monkeypatch):
     monkeypatch.setattr(settings, "notify_workflow", "example-org/ops:send-notification.yml")
-    gh = _GitHub({7: _PR(7, merged=True, state="closed", when=T0)},
+    gh = _GitHub({7: _PR(7, merged=True, state="closed", when=T0, base=settings.prd_branch)},
                  runs={SHA: [_Run(1, status="completed", conclusion="failure")]})
-    DT.run_pass(github=gh, events=[_pending(7)], now=T0)
-    assert [d[2]["inputs"]["stage"] for d in gh.dispatches] == ["starting", "failed"]
+    out = DT.run_pass(github=gh, events=[_pending(7)], now=T0)
+    assert out["finished"] == [f"deploy:{REPO}#7"]
+    assert [d[2]["inputs"]["release_notification_type"] for d in gh.dispatches] == ["Start"]
+    assert [i["title"] for i in _items() if i["kind"] == "deploy_finished"] == ["Deployment failed: svc-a:2.0.0"]
+    assert _rows("finished")[0]["conclusion"] == "failure"
+
+
+def test_a_prl1_or_other_base_names_its_environment(monkeypatch):
+    monkeypatch.setattr(settings, "notify_workflow", "example-org/ops:send-notification.yml")
+    gh = _GitHub({7: _PR(7, merged=True, state="closed", when=T0, base=settings.prl1_branch),
+                  8: _PR(8, merged=True, state="closed", when=T0, base="RELEASE_UAT")}, runs={SHA: [_Run(1)]})
+    DT.run_pass(github=gh, events=[_pending(7), _pending(8)], now=T0)
+    assert sorted(d[2]["inputs"]["environment"] for d in gh.dispatches) == ["PRL1", "RELEASE_UAT"]
 
 
 def test_a_dispatch_that_fails_is_recorded_beside_the_merge_never_raised(monkeypatch):
@@ -447,7 +482,7 @@ def test_a_dispatch_that_fails_is_recorded_beside_the_merge_never_raised(monkeyp
 
 def test_the_dispatch_is_the_one_write_approvals_allows_without_a_yes():
     assert "dispatch_notify_workflow" in approvals.ALLOWED_WITHOUT_YES
-    assert approvals.needs_approval("dispatch_notify_workflow", {"stage": "starting"}) is False
+    assert approvals.needs_approval("dispatch_notify_workflow", DT.notify_inputs("starting", "", "PRD")) is False
     assert approvals.needs_approval("promote_release", {"target": "prd"}) is True, "nothing else changed"
     assert approvals.ALLOWED_WITHOUT_YES == frozenset({"dispatch_notify_workflow"})
 
@@ -456,13 +491,13 @@ def test_the_dispatch_refuses_if_the_rule_is_ever_removed(monkeypatch):
     monkeypatch.setattr(settings, "notify_workflow", "example-org/ops:send-notification.yml")
     monkeypatch.setattr(approvals, "ALLOWED_WITHOUT_YES", frozenset())
     gh = _GitHub({})
-    out = DT.dispatch_notify_workflow(gh, "starting", release="x", chg="", rmg="", pr="1", requested_by=ME)
+    out = DT.dispatch_notify_workflow(gh, "starting", chg="", base="PRD")
     assert out["ok"] is False and "approval" in out["error"] and gh.dispatches == []
 
 
 def test_the_dispatch_is_skipped_when_notify_workflow_is_unset():
     gh = _GitHub({})
-    out = DT.dispatch_notify_workflow(gh, "starting", release="x", chg="", rmg="", pr="1", requested_by=ME)
+    out = DT.dispatch_notify_workflow(gh, "starting", chg="", base="PRD")
     assert out == {"ok": True, "skipped": "NOTIFY_WORKFLOW is not set"} and gh.dispatches == []
 
 

@@ -129,15 +129,17 @@ idle (one event-log read, no GitHub call); a pending PR open → every
 
 On merge (detected by `pr_reconcile`'s check, merge SHA kept): record
 `deploy/merged` with `merge_sha`; notify `deploy_started` to the requester;
-if `NOTIFY_WORKFLOW` (owner/repo + workflow file) is set, dispatch it with
-inputs `{stage: "starting", release, chg, rmg, pr, requested_by}` and keep its
-run id — `return_run_details`, never a guess. Then find the runs the merge
+if `NOTIFY_WORKFLOW` (owner/repo + workflow file) is set, dispatch it with the
+fixed inputs `{release_notification_type: "Start", change_request: <CHG>,
+environment, create_release_draft: "true", test_notification: "false"}`
+(`environment` is PROD for the PRD branch, PRL1 for the PRL1 branch, else the
+base branch as it is) and keep its run id — `return_run_details`, never a guess. Then find the runs the merge
 started: `head_sha == merge_sha` and workflow name in `DEPLOY_WORKFLOWS`
 (comma list; empty = every workflow run on that SHA). When every one has a
 conclusion: `deploy/finished` with `conclusion` (success | failure + the
 failing jobs/steps via controls.py), notify `deploy_finished` (same scope as
 `deploy_started`: ONE bell item that changes), dispatch `NOTIFY_WORKFLOW`
-with `stage: "completed" | "failed"`. A re-run on the same run id updates the
+with `release_notification_type: "Complete"` — a failure dispatches nothing. A re-run on the same run id updates the
 same scope ("completed (after re-run)"). Token: `_resolve_github_token` as
 is — the session PAT when a thread is active, else `GH_TOKEN` (the bot; the
 values.yaml comment says so). Nothing here merges, re-runs or rolls back.

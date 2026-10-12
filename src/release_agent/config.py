@@ -774,9 +774,10 @@ class Settings(BaseSettings):
     # of workflow names or file names); empty = every run on that commit.
     deploy_workflows: str = Field(default="", validation_alias=AliasChoices("DEPLOY_WORKFLOWS"))
     # The team's own send-notification workflow, "owner/repo:workflow-file.yml",
-    # dispatched at each stage (starting / completed / failed) with the release,
-    # tickets, PR and requester as inputs. Empty = no dispatch. The ONE GitHub
-    # write that never pauses for a yes (approvals.py): it changes no deployment.
+    # dispatched when a deployment starts and when it completes (a failure sends
+    # nothing) with inputs fixed in deploy_tracker.notify_inputs. Empty = no
+    # dispatch. The ONE GitHub write that never pauses for a yes (approvals.py):
+    # it changes no deployment.
     notify_workflow: str = Field(default="", validation_alias=AliasChoices("NOTIFY_WORKFLOW"))
 
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------

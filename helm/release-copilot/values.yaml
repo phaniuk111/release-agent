@@ -344,10 +344,13 @@ config:
   # names or file names ("Deploy to UAT,deploy-prd.yml"); empty = every run.
   DEPLOY_WORKFLOWS: ""
   # The team's own send-notification workflow, "owner/repo:workflow-file.yml",
-  # dispatched (workflow_dispatch on its default branch) at each stage with
-  # inputs {stage: starting|completed|failed, release, chg, rmg, pr, requested_by}.
-  # Empty = no dispatch. This is the ONE GitHub write that never pauses for a
-  # yes (adk_release_agent/approvals.py): it changes no deployment.
+  # dispatched (workflow_dispatch on its default branch) when a deployment
+  # starts ("Start") and completes ("Complete"); a failure sends nothing. Inputs
+  # are fixed: release_notification_type, change_request (the PR's CHG),
+  # environment (PROD for the PRD branch, PRL1 for the PRL1 branch, else the
+  # base branch), create_release_draft=true, test_notification=false. Empty =
+  # no dispatch. This is the ONE GitHub write that never pauses for a yes
+  # (adk_release_agent/approvals.py): it changes no deployment.
   NOTIFY_WORKFLOW: ""
   # ==================== [FEATURE] agent observability =====================
   # Every chat turn — the router's decision, each model call with its token
