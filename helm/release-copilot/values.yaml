@@ -330,7 +330,10 @@ config:
   # requester "Deployment starting", follows the workflow runs on the merge
   # commit and tells them "completed" or "failed at <job> > <step>" — one bell
   # item per PR that changes, the facts in portal_events (domain deploy). It
-  # never merges, re-runs or rolls back. Preview feature "deploy-tracking".
+  # also watches the PRs the mono repo's action raises into the deployment
+  # repo's guard branches (RELEASE_GUARD_BRANCHES, in DEPLOY_REPO): no one in the
+  # portal raised those, so no bell — only the NOTIFY_WORKFLOW dispatch below.
+  # It never merges, re-runs or rolls back. Preview feature "deploy-tracking".
   # TOKEN: a sweep has no chat session, so it reads GitHub (and dispatches
   # NOTIFY_WORKFLOW) as the bot — githubToken below (GH_TOKEN) — which needs
   # actions:read on the deployment repo and actions:write on the NOTIFY_WORKFLOW

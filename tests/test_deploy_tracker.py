@@ -173,6 +173,7 @@ class _GitHub:
 
     def __init__(self, prs, runs=None, workflow=None):
         self.prs, self.runs, self.dispatches, self.pulls = prs, runs or {}, [], []
+        self.list_error = None
         self.workflow = workflow or (lambda log: _Workflow(log))
 
     def get_repo(self, full):
@@ -187,6 +188,13 @@ class _GitHub:
                 if isinstance(pr, Exception):
                     raise pr
                 return pr
+
+            def get_pulls(self, state="open", base=None, **kw):
+                if gh.list_error:
+                    raise gh.list_error
+                found = [p for p in gh.prs.values() if not isinstance(p, Exception) and p.state == state
+                         and getattr(getattr(p, "base", None), "ref", None) == base]
+                return sorted(found, key=lambda p: -p.number)
 
             def get_workflow_runs(self, head_sha=None, **kw):
                 return list(gh.runs.get(head_sha, []))
@@ -400,7 +408,8 @@ def test_without_a_release_log_a_pass_is_one_empty_read(monkeypatch):
 
     monkeypatch.setattr(release_queue, "queue_enabled", lambda: False)
     out = DT.run_pass(github=_GitHub({}), now=T0)
-    assert out == {"ok": True, "open": 0, "in_flight": 0, "started": [], "finished": [], "abandoned": [], "errors": []}
+    assert out == {"ok": True, "open": 0, "in_flight": 0, "started": [], "finished": [], "abandoned": [],
+                   "watching": [], "errors": []}
 
 
 def test_no_requester_means_records_but_no_bell():
@@ -499,6 +508,212 @@ def test_the_dispatch_is_skipped_when_notify_workflow_is_unset():
     gh = _GitHub({})
     out = DT.dispatch_notify_workflow(gh, "starting", chg="", base="PRD")
     assert out == {"ok": True, "skipped": "NOTIFY_WORKFLOW is not set"} and gh.dispatches == []
+
+
+# ----- guard-branch PRs: raised by the mono repo's action, not by the portal ----------------
+
+@pytest.fixture
+def guard(monkeypatch):
+    """The deployment repo with PRD and PRL1 guard branches, and the team's
+    send-notification workflow set."""
+    for name, value in (("deploy_repo", REPO), ("prd_branch", "PRD"), ("prl1_branch", "PRL1"),
+                        ("release_guard_branches", ["PRD", "PRL1"]),
+                        ("notify_workflow", "example-org/ops:send-notification.yml")):
+        monkeypatch.setattr(settings, name, value, raising=False)
+
+
+def _merge(pr, when):
+    pr.merged, pr.state, pr.merged_at = True, "closed", when
+    pr.merged_by, pr.merge_commit_sha = SimpleNamespace(login="approver"), SHA
+
+
+def _close(pr, when):
+    pr.state, pr.closed_at = "closed", when
+
+
+def _complete(gh, conclusion="success"):
+    gh.runs[SHA] = [_Run(1, status="completed", conclusion=conclusion)]
+
+
+def _inputs(gh):
+    return [d[2]["inputs"] for d in gh.dispatches]
+
+
+def _bell():
+    return events_store.history(N.DOMAIN)["rows"]
+
+
+def _guard_pr(number=12, base="PRD", body="CHG-12345 approved"):
+    return _PR(number, base=base, head="UAT", body=body)
+
+
+def test_a_guard_branch_pr_first_seen_open_is_recorded_as_watching_and_nobody_is_told(guard):
+    gh = _GitHub({12: _guard_pr()})
+    out = DT.run_pass(github=gh, events=[], now=T0)
+    assert out["ok"] and out["open"] == 1 and out["watching"] == [f"deploy:{REPO}#12"] and not out["started"]
+    (row,) = _rows("watching")
+    assert (row["subject"], row["scope"], row["repo"], row["pr_number"], row["title"], row["actor"]) == (
+        f"deploy:{REPO}#12", f"deploy:{REPO}#12", REPO, 12, "UAT → PRD", "portal")
+    assert row["details"] == '{"base":"PRD"}'
+    assert gh.dispatches == [] and _bell() == [] and gh.pulls == [], "found by the listing: no extra fetch"
+    # the CHG on it is recorded as a ticket row, like any open PR
+    assert [r["chg"] for r in _rows("tickets")] == ["CHG-12345"]
+
+
+def test_a_watched_pr_is_fetched_once_per_pass_and_recorded_once(guard):
+    gh = _GitHub({12: _guard_pr()})
+    DT.run_pass(github=gh, events=[], now=T0)
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=5))
+    assert out["watching"] == [] and out["open"] == 1 and gh.pulls == [12]
+    assert len(_rows("watching")) == 1
+
+
+def test_a_watched_prs_merge_starts_the_dispatch_with_the_mapped_inputs_and_tells_nobody(guard):
+    pr = _guard_pr()
+    gh = _GitHub({12: pr}, runs={SHA: [_Run(1)]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0 + dt.timedelta(minutes=1))
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
+    assert out["started"] == [f"deploy:{REPO}#12"] and out["in_flight"] == 1
+    (row,) = _rows("merged")
+    assert (row["scope"], row["merge_sha"], row["chg"], row["title"]) == (f"deploy:{REPO}#12", SHA, "CHG-12345", "UAT → PRD")
+    assert _inputs(gh) == [{"release_notification_type": "Start", "change_request": "CHG-12345",
+                            "environment": "PROD", "create_release_draft": "true", "test_notification": "false"}]
+    assert '"notify_run_id":4242' in row["details"]
+    assert _bell() == [], "nobody in the portal raised it: no bell item"
+
+    _complete(gh)
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=3))
+    assert out["finished"] == [f"deploy:{REPO}#12"]
+    (done,) = _rows("finished")
+    assert (done["scope"], done["conclusion"]) == (f"deploy:{REPO}#12", "success")
+    assert _inputs(gh)[1] == {"release_notification_type": "Complete", "change_request": "CHG-12345",
+                              "environment": "PROD", "create_release_draft": "true", "test_notification": "false"}
+    assert _bell() == []
+
+
+def test_a_watched_prs_failed_runs_dispatch_nothing_and_are_still_recorded(guard):
+    pr = _guard_pr()
+    gh = _GitHub({12: pr}, runs={SHA: [_Run(1, status="completed", conclusion="failure")]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=1))
+    assert out["started"] and out["finished"]
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start"]
+    assert _rows("finished")[0]["conclusion"] == "failure" and _bell() == []
+
+
+def test_a_prl1_pr_dispatches_environment_prl1(guard):
+    pr = _guard_pr(13, base="PRL1")
+    gh = _GitHub({13: pr}, runs={SHA: [_Run(1)]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    assert _rows("watching")[0]["title"] == "UAT → PRL1"
+    _merge(pr, T0)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=1))
+    assert _inputs(gh)[0]["environment"] == "PRL1"
+
+
+def test_the_newest_open_pr_of_each_guard_branch_is_watched(guard):
+    gh = _GitHub({12: _guard_pr(12), 13: _guard_pr(13, base="PRL1"), 11: _guard_pr(11)})
+    out = DT.run_pass(github=gh, events=[], now=T0)
+    assert sorted(out["watching"]) == [f"deploy:{REPO}#12", f"deploy:{REPO}#13"]
+
+
+def test_a_watched_pr_closed_without_a_merge_is_recorded_closed_and_dropped(guard):
+    pr = _guard_pr()
+    gh = _GitHub({12: pr})
+    DT.run_pass(github=gh, events=[], now=T0)
+    _close(pr, T0)
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=1))
+    assert out["started"] == [] and out["ok"]
+    (row,) = _rows("closed")
+    assert row["scope"] == f"deploy:{REPO}#12" and row["pr_number"] == 12
+    assert gh.dispatches == [] and _bell() == []
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
+    assert gh.pulls == [12], "closed is final: it is not fetched again"
+    assert len(_rows("closed")) == 1
+
+
+def test_a_restart_carries_on_from_the_event_log(guard):
+    pr = _guard_pr()
+    gh = _GitHub({12: pr}, runs={SHA: [_Run(1)]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=1))
+    # A new process: nothing in memory but the event log.
+    DT._status.update(running=False, last_run_at=None, last_summary=None)
+    tickets.clear_cache()
+    gh2 = _GitHub({12: pr}, runs={SHA: [_Run(1)]})
+    out = DT.run_pass(github=gh2, events=[], now=T0 + dt.timedelta(minutes=2))
+    assert out["started"] == [] and out["watching"] == [] and out["in_flight"] == 1 and gh2.dispatches == []
+    _complete(gh2)
+    out = DT.run_pass(github=gh2, events=[], now=T0 + dt.timedelta(minutes=3))
+    assert out["finished"] == [f"deploy:{REPO}#12"]
+    assert [i["release_notification_type"] for i in _inputs(gh2)] == ["Complete"]
+    assert len(_rows("merged")) == 1 and len(_rows("watching")) == 1
+
+
+def test_a_finished_watched_pr_stops_being_fetched_after_its_window(guard):
+    pr = _guard_pr()
+    gh = _GitHub({12: pr}, runs={SHA: [_Run(1, status="completed", conclusion="success")]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=1))
+    assert gh.pulls == [12]
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=5))      # inside the window: a re-run is seen
+    assert gh.pulls == [12, 12]
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=95))
+    assert gh.pulls == [12, 12], "past the window: left alone"
+
+
+def test_a_pr_that_is_both_pending_and_on_a_guard_branch_is_tracked_once_as_pending(guard):
+    pr = _PR(7, base="PRD", head="UAT", body="CHG-12345")
+    gh = _GitHub({7: pr}, runs={SHA: [_Run(1)]})
+    DT.run_pass(github=gh, events=[_pending(7)], now=T0)
+    assert _rows("watching") == [] and gh.pulls == [7]
+    _merge(pr, T0 + dt.timedelta(minutes=1))
+    out = DT.run_pass(github=gh, events=[_pending(7)], now=T0 + dt.timedelta(minutes=2))
+    assert out["started"] == [f"deploy:{REPO}#7"] and len(_rows("merged")) == 1
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start"]
+    assert gh.pulls == [7, 7], "one fetch per pass"
+    assert [i["title"] for i in _items() if i["kind"] == "deploy_started"] == [
+        "Deployment starting: svc-a:2.0.0 — PR #7 merged"], "the requester is told, as always"
+    # Even if a watching row exists from before, the pending PR wins the scope.
+    events_store.record({"domain": "deploy", "event_type": "watching", "subject": f"deploy:{REPO}#7",
+                         "scope": f"deploy:{REPO}#7", "repo": REPO, "pr_number": 7})
+    DT.run_pass(github=gh, events=[_pending(7)], now=T0 + dt.timedelta(minutes=3))
+    assert gh.pulls == [7, 7, 7]
+
+
+def test_nothing_is_watched_without_a_deployment_repo(monkeypatch):
+    monkeypatch.setattr(settings, "deploy_repo", "")
+    gh = _GitHub({12: _guard_pr()})
+    gh.list_error = RuntimeError("must not list")
+    out = DT.run_pass(github=gh, events=[], now=T0)
+    assert out["ok"] and out["errors"] == [] and out["watching"] == []
+
+
+def test_a_guard_branch_that_cannot_be_listed_is_left_out_and_pending_prs_still_run(guard):
+    gh = _GitHub({8: _PR(8, merged=True, state="closed", when=T0)}, runs={SHA: [_Run(1)]})
+    gh.list_error = RuntimeError("502")                 # release_window._open_release_prs leaves such a branch out
+    out = DT.run_pass(github=gh, events=[_pending(8)], now=T0)
+    assert out["ok"] and out["started"] == [f"deploy:{REPO}#8"] and out["watching"] == [] and out["errors"] == []
+
+
+def test_watch_targets_leave_out_the_taken_the_closed_and_the_long_finished():
+    def row(kind, n, ts=T0, **more):
+        scope = f"deploy:{REPO}#{n}"
+        return {"event_type": kind, "scope": scope, "repo": REPO, "pr_number": n, "event_ts": ts.isoformat(), **more}
+
+    now = T0 + dt.timedelta(hours=3)
+    rows = [row("finished", 4), row("merged", 4), row("watching", 4),                # finished, window over
+            row("finished", 5, now), row("merged", 5, now - dt.timedelta(minutes=10)), row("watching", 5),
+            row("closed", 6), row("watching", 6), row("watching", 7), row("watching", 8),
+            row("abandoned_tracking", 9), row("watching", 9), row("merged", 10), row("watching", 10)]
+    known = DT.known_merges(rows)
+    out = DT.watch_targets(rows, known, {(REPO, 8)}, now)
+    assert sorted(k[1] for k in out) == [5, 7, 10]
+    assert out[(REPO, 7)]["pending"] == [] and out[(REPO, 7)]["watched"]["event_type"] == "watching"
 
 
 # ----- the app --------------------------------------------------------------------------

@@ -17,6 +17,11 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   concluded → `deploy/finished` on the SAME scope (one bell item that changes),
   a failure naming the job and step; a re-run → "(after re-run)"; past
   `TRACK_RUN_MAX_MINUTES` → one "still running" item then `abandoned_tracking`.
+  The same path follows guard-branch PRs nobody in the portal raised (listed
+  each pass via `release_window._open_release_prs`, recorded `deploy/watching`,
+  `deploy/closed` if closed unmerged; a pending PR of the same scope wins; no
+  requester, so no bell). The `NOTIFY_WORKFLOW` inputs are fixed in
+  `notify_inputs` (Start / Complete; a failure dispatches nothing).
   It never merges, re-runs or rolls back. The cadence is a pure function of the
   pass summary (`next_delay`); a pass never raises; what is known about a merge
   comes from the event log, not memory. With no session it is the bot's token.

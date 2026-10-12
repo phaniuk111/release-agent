@@ -121,8 +121,8 @@ the requester the first time a CHG appears.
 ## 4. Deployment tracking (adk_release_agent/deploy_tracker.py)
 
 A timed sweep, started in the app lifespan like the idle sweeper, never
-overlapping (`begin()` lock, like watch.py). Cadence: no portal PR open →
-idle (one event-log read, no GitHub call); a pending PR open → every
+overlapping (`begin()` lock, like watch.py). Cadence: nothing in flight →
+idle (one event-log read and one listing of the guard branches); a PR open → every
 `TRACK_OPEN_MINUTES` (5); a merge with runs in flight → every
 `TRACK_RUN_SECONDS` (60); give up with a "still running" notification after
 `TRACK_RUN_MAX_MINUTES` (90).
@@ -143,6 +143,21 @@ with `release_notification_type: "Complete"` — a failure dispatches nothing. A
 same scope ("completed (after re-run)"). Token: `_resolve_github_token` as
 is — the session PAT when a thread is active, else `GH_TOKEN` (the bot; the
 values.yaml comment says so). Nothing here merges, re-runs or rolls back.
+
+Guard-branch PRs. In the CARE mono flow, merging in the mono repo makes that
+repo's own action raise PRs in the DEPLOYMENT repo (`DEPLOY_REPO`) into the guard
+branches (`release_chain.guard_branches("care")`, UAT → PRD and UAT → PRL1). The
+portal did not raise them, so they have no `pending` event. Each pass lists the
+newest open PR into each guard branch (`release_window._open_release_prs`) and
+records an unseen one as `deploy/watching` (scope `deploy:<repo>#<n>`, `title`
+"UAT → PRD", the base branch in `details`). Every watched PR is then fetched once
+per pass until it merges — the same merged → runs → finished path, same scope —
+or closes unmerged (`deploy/closed`, nothing sent). Its window ends like a
+pending PR's. State is only the event log, so a restart carries on. A PR that is
+also a portal pending PR is followed once, as pending (the requester's bell).
+Nobody in the portal raised a watched PR, so it has no requester and no bell
+item; the `NOTIFY_WORKFLOW` dispatch is what tells people. A PR that opens and
+merges between two passes is never seen open and is missed.
 
 Cost per pass: each pending PR is fetched ONCE — the sweep hands what it read
 to `pr_reconcile.reconcile_pending(outcomes=…)` and to `tickets.pr_tickets(pr=…)`.
