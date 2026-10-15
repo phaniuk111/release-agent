@@ -8,7 +8,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 script="$here/../artifactory.sh"
 work="$(mktemp -d)"
 port="${STAND_IN_PORT:-18081}"
-trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$work"' EXIT
+trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$work"' EXIT
 
 python3 "$here/artifactory_stand_in.py" --root "$work/store" --port "$port" --user ci --token good-token \
   > "$work/server.log" 2>&1 &
