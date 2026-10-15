@@ -1,85 +1,97 @@
-# Backstage image built from RELEASE ARTIFACTS — the enterprise format.
+# Backstage image made from RELEASE ARTIFACTS, not from source.
 #
-# CI runs scripts/build-release-artifacts.sh <tag>, which produces
-#   <tag>-skeleton.tar.gz  every package.json (enough for the production install)
-#   <tag>-bundle.tar.gz    the built backend, with the frontend inside it
-# and uploads both to the artifact store. This image downloads them by tag,
-# installs production dependencies only, and runs the bundle — no source build
-# inside the image.
+# A CI job (.github/workflows/backstage-artifacts.yml) builds the two artifacts
+# on a runner — scripts/build-release-artifacts.sh — and puts them in an
+# Artifactory generic repo under a version (scripts/artifactory.sh upload):
+#   skeleton.tar.gz  every workspace package.json, for the production install
+#   bundle.tar.gz    the built backend, with the frontend inside it
+# Before `docker build`, the pipeline gets them back VERIFIED against their
+# SHA-256 into image-artifacts/ (scripts/artifactory.sh download), from the
+# same commit this context is checked out at:
 #
-# Two stages: INSTALL on a full Node image (curl, and the compilers the native
-# modules — better-sqlite3, isolated-vm — fall back to when no prebuilt binary
-# can be downloaded), then RUN on a slim one as a non-root user. Defaults are
-# the Docker Official Images, Node 24 (Backstage 1.54 supports 22 and 24; 24 is
-# supported upstream until April 2028). In an enterprise point both at the
-# platform team's Node 24 images; the same one for both stages works too.
-#
-# Nothing internal is written here: the images, the artifact store, the npm
-# registry and the proxy are all build args (Docker keeps HTTP(S)_PROXY and the
-# YARN_* args out of the final image's environment).
-#
+#   scripts/artifactory.sh download "$VERSION" image-artifacts
 #   docker build -f Dockerfile.release \
-#     --build-arg BUILD_IMAGE=<node 24 image with curl + compilers> \
-#     --build-arg RUNTIME_IMAGE=<node 24 slim image> \
-#     --build-arg ARTIFACT_BASE_URL=https://<artifact store>/<repo>/<path> \
-#     --build-arg ARTIFACT_API_KEY=... --build-arg RELEASE_TAG=<tag> \
-#     --build-arg YARN_NPM_REGISTRY_SERVER=https://<npm mirror> .
-ARG BUILD_IMAGE=node:24-bookworm
+#     --secret id=GCP_ARTIFACTORY_NPMRC,src="$NPMRC_FILE" \
+#     --build-arg BASE_REGISTRY=<registry of the Node images> \
+#     --build-arg NODE_IMAGE=<node 24 image> --build-arg RUNTIME_IMAGE=<same or slimmer> \
+#     --build-arg RUNTIME_USER=<the runtime image's non-root user> \
+#     --build-arg NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+#     --build-arg ARTIFACT_VERSION="$VERSION" -t <registry>/backstage:"$VERSION" .
+#
+# Why the download is outside the image: Artifactory needs a credential, and a
+# build arg is readable in the image's history; the curated Wolfi images also
+# have no curl and no tar. ADD unpacks a local .tar.gz itself (BuildKit does
+# it), so no tar binary is needed, and no credential enters any layer.
+#
+# What stays inside: the PRODUCTION install, so native modules are built for
+# this image's own libc and CPU, not the runner's. Packages come through the
+# .npmrc BuildKit secret (id GCP_ARTIFACTORY_NPMRC, never in a layer; Yarn 4
+# ignores .npmrc, scripts/npmrc-to-yarn-env.cjs turns it into YARN_* settings).
+# No secret → public npm, through --build-arg HTTPS_PROXY/HTTP_PROXY if given.
+#
+# SKIP_NATIVE=true (Postgres): better-sqlite3's install script never runs, so
+# no binary is fetched. On sqlite leave it false: it downloads a prebuilt
+# binary from GitHub (through the proxy), or from BETTER_SQLITE3_MIRROR.
+ARG BASE_REGISTRY=docker.io/library
+ARG NODE_IMAGE=node:24-bookworm-slim
 ARG RUNTIME_IMAGE=node:24-bookworm-slim
 
-# ---- install: download the artifacts, production dependencies only ----------
-FROM ${BUILD_IMAGE} AS install
+# ---- install: production dependencies + the bundle, in /app -----------------
+FROM ${BASE_REGISTRY}/${NODE_IMAGE} AS install
 
-ARG ARTIFACT_BASE_URL
-# Sent as the store's API-key header when set; empty = an open store.
-ARG ARTIFACT_API_KEY=""
-ARG ARTIFACT_API_HEADER="X-JFrog-Art-Api"
-ARG RELEASE_TAG
-# Yarn 4 reads its registry, auth and TLS settings from these — not .npmrc.
-ARG YARN_NPM_REGISTRY_SERVER
-ARG YARN_NPM_AUTH_IDENT
-ARG YARN_NPM_AUTH_TOKEN
-ARG YARN_ENABLE_STRICT_SSL
-ARG YARN_HTTPS_PROXY
-ARG YARN_HTTP_PROXY
-
+ARG SKIP_NATIVE=false
+ARG BETTER_SQLITE3_MIRROR=""
+# The company CA: curated images carry it in their bundle, Node's own list does
+# not — pass --build-arg NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt.
+# Empty (the default, for images without that file) = Node's list only.
+ARG NODE_EXTRA_CA_CERTS=""
+# Curated images run as non-root and keep npm's global bin off PATH.
+USER root
+ENV PATH=/usr/local/bin:$PATH \
+    NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS} \
+    CI=true \
+    npm_config_better_sqlite3_binary_host_mirror=${BETTER_SQLITE3_MIRROR}
 WORKDIR /app
-ENV NODE_ENV=production
 
-# Yarn itself comes from the repo (.yarnrc.yml yarnPath), so the base image's
-# own yarn version — or none — does not matter.
+# The root manifest and Yarn come from this checkout — the same commit the
+# artifacts were built from (the workflow checks it against manifest.env).
 COPY package.json yarn.lock backstage.json .yarnrc.yml ./
 COPY .yarn/releases ./.yarn/releases
+COPY scripts/npmrc-to-yarn-env.cjs /tmp/npmrc-to-yarn-env.cjs
+ADD image-artifacts/skeleton.tar.gz ./
 
-RUN curl -fSL ${ARTIFACT_API_KEY:+-H "${ARTIFACT_API_HEADER}:${ARTIFACT_API_KEY}"} \
-      -o skeleton.tar.gz "${ARTIFACT_BASE_URL}/${RELEASE_TAG}-skeleton.tar.gz" \
- && tar xzf skeleton.tar.gz && rm skeleton.tar.gz
+RUN --mount=type=secret,id=GCP_ARTIFACTORY_NPMRC,target=/root/.npmrc \
+    eval "$(node /tmp/npmrc-to-yarn-env.cjs /root/.npmrc)" \
+ && if [ "$SKIP_NATIVE" = "true" ]; then export YARN_ENABLE_SCRIPTS=false; fi \
+ && node .yarn/releases/yarn-*.cjs workspaces focus --all --production \
+ && rm -rf "$(node .yarn/releases/yarn-*.cjs config get cacheFolder)" /tmp/npmrc-to-yarn-env.cjs
 
-RUN node .yarn/releases/yarn-*.cjs workspaces focus --all --production \
- && rm -rf "$(node .yarn/releases/yarn-*.cjs config get cacheFolder)"
+ADD image-artifacts/bundle.tar.gz ./
+# backstage-data: sqlite's folder, writable by ANY non-root uid (sticky, like
+# /tmp) — the image's user and the chart's runAsUser need not match.
+RUN mkdir -p /app/backstage-data && chmod 1777 /app/backstage-data
 
-RUN curl -fSL ${ARTIFACT_API_KEY:+-H "${ARTIFACT_API_HEADER}:${ARTIFACT_API_KEY}"} \
-      -o bundle.tar.gz "${ARTIFACT_BASE_URL}/${RELEASE_TAG}-bundle.tar.gz" \
- && tar xzf bundle.tar.gz && rm bundle.tar.gz
+# ---- run: as a non-root user -------------------------------------------------
+FROM ${BASE_REGISTRY}/${RUNTIME_IMAGE}
 
-# ---- run: slim image, non-root ----------------------------------------------
-FROM ${RUNTIME_IMAGE}
-
-ARG RELEASE_TAG
-LABEL release_name=${RELEASE_TAG}
-ENV NODE_ENV=production
-# --no-node-snapshot: the scaffolder's isolated-vm needs it on Node 20+.
-ENV NODE_OPTIONS="--no-node-snapshot"
+ARG ARTIFACT_VERSION=unknown
+# node = uid 1000 in the official images; curated Wolfi images name theirs nonroot.
+ARG RUNTIME_USER=node
+ARG NODE_EXTRA_CA_CERTS=""
+LABEL org.opencontainers.image.version=${ARTIFACT_VERSION}
+ENV NODE_ENV=production \
+    NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS} \
+    NODE_OPTIONS="--no-node-snapshot"
 WORKDIR /app
-
-# uid 1000 is the official image's `node` user and the chart's runAsUser.
-# Files stay root-owned and read-only to it; only the sqlite folder is its own.
+# Root-owned, world-readable: the non-root user reads, never writes, the app.
 COPY --from=install /app /app
-COPY app-config*.yaml startBackstage.sh ./
+COPY app-config*.yaml ./
 COPY examples ./examples
-RUN mkdir -p /app/backstage-data && chown 1000:1000 /app/backstage-data \
- && chmod 755 /app /app/startBackstage.sh
-USER 1000
 
+USER ${RUNTIME_USER}
 EXPOSE 7007
-CMD ["./startBackstage.sh"]
+# node as the ENTRYPOINT on every base: Wolfi images already set one, so a CMD
+# starting with "node" would run `node node …`. The Helm chart passes its own
+# command and --config list.
+ENTRYPOINT ["node"]
+CMD ["packages/backend", "--config", "app-config.yaml"]

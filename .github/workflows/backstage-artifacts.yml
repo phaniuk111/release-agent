@@ -1,0 +1,274 @@
+name: backstage-artifacts
+
+# Backstage release artifacts, built once and kept in Artifactory, and the image
+# built from them.
+#
+#   artifacts  skeleton.tar.gz + bundle.tar.gz built on the runner
+#              (backstage/scripts/build-release-artifacts.sh) and uploaded under
+#              a version (backstage/scripts/artifactory.sh). A version that is
+#              already there is REUSED, never rebuilt or overwritten.
+#   image      the version downloaded and verified, from the commit it was built
+#              from → docker build -f backstage/Dockerfile.release → started once
+#              and health-checked → pushed when push_image is set.
+#
+# Settings — repository or organisation variables (vars.*) and secrets:
+#   ARTIFACTORY_URL           https://<host>/artifactory
+#   ARTIFACTORY_REPO          a generic repository the token can deploy to
+#   ARTIFACTORY_PATH          folder inside it (default: backstage)
+#   ARTIFACTORY_USER          optional: with it, basic auth user:token; without, Bearer
+#   secrets.ARTIFACTORY_TOKEN access or identity token
+#   secrets.GCP_ARTIFACTORY_NPMRC  the pipelines' .npmrc (none = public npm)
+#   BASE_REGISTRY, NODE_IMAGE, RUNTIME_IMAGE, RUNTIME_USER   the Node 24 images
+#                             (default: the official node:24-bookworm-slim, user node)
+#   NODE_EXTRA_CA_CERTS       /etc/ssl/certs/ca-certificates.crt on the curated images
+#   SKIP_NATIVE               "true" on Postgres (better-sqlite3 not installed)
+#   IMAGE_REPOSITORY          <registry host>/<path>/backstage — where push_image pushes
+#   secrets.REGISTRY_USERNAME / REGISTRY_PASSWORD   for that registry
+#                             (default: ARTIFACTORY_USER / ARTIFACTORY_TOKEN)
+#   BACKSTAGE_RUNNER          runner label (default: ubuntu-latest)
+#
+# stand_in: a test run against a throwaway store on the runner — nothing leaves
+# it, nothing is pushed (backstage-artifacts-test.yml runs it on every change).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Artifact version (empty = the commit's 12-character SHA). An existing version is reused."
+        type: string
+        default: ""
+      push_image:
+        description: "Push the image to IMAGE_REPOSITORY"
+        type: boolean
+        default: false
+      stand_in:
+        description: "Test run against a throwaway store on the runner (nothing is uploaded or pushed)"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      version: { type: string, default: "" }
+      push_image: { type: boolean, default: false }
+      stand_in: { type: boolean, default: false }
+    outputs:
+      version: { value: "${{ jobs.artifacts.outputs.version }}" }
+      image: { value: "${{ jobs.image.outputs.image }}" }
+
+permissions:
+  contents: read
+
+env:
+  ARTIFACTORY_URL: ${{ inputs.stand_in && 'http://127.0.0.1:8081/artifactory' || vars.ARTIFACTORY_URL }}
+  ARTIFACTORY_REPO: ${{ inputs.stand_in && 'generic-local' || vars.ARTIFACTORY_REPO }}
+  ARTIFACTORY_PATH: ${{ vars.ARTIFACTORY_PATH || 'backstage' }}
+  ARTIFACTORY_USER: ${{ inputs.stand_in && 'ci' || vars.ARTIFACTORY_USER }}
+  ARTIFACTORY_TOKEN: ${{ inputs.stand_in && 'stand-in-token' || secrets.ARTIFACTORY_TOKEN }}
+
+jobs:
+  artifacts:
+    runs-on: ${{ vars.BACKSTAGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    # Two runs for one version queue up; the second finds it and reuses it.
+    concurrency:
+      group: backstage-artifacts-${{ inputs.version || github.sha }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: backstage
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.exists.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check settings
+        run: |
+          missing=""
+          for v in ARTIFACTORY_URL ARTIFACTORY_REPO ARTIFACTORY_TOKEN; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not set:$missing — see the settings list at the top of this workflow."
+            exit 1
+          fi
+
+      - name: Start the stand-in store
+        if: inputs.stand_in
+        run: |
+          python3 scripts/test/artifactory_stand_in.py --root "$RUNNER_TEMP/store" --port 8081 \
+            --user ci --token stand-in-token > "$RUNNER_TEMP/stand-in.log" 2>&1 &
+          for _ in $(seq 50); do curl -s -o /dev/null http://127.0.0.1:8081/ && exit 0; sleep 0.2; done
+          cat "$RUNNER_TEMP/stand-in.log"; exit 1
+
+      - name: Version
+        id: version
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: echo "version=${REQUESTED:-$(git rev-parse --short=12 HEAD)}" >> "$GITHUB_OUTPUT"
+
+      - name: Already in Artifactory?
+        id: exists
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set +e
+          commit="$(scripts/artifactory.sh exists "$VERSION")"; code=$?
+          set -e
+          case "$code" in
+            0) echo "reuse=true" >> "$GITHUB_OUTPUT"
+               echo "commit=$commit" >> "$GITHUB_OUTPUT"
+               echo "::notice::$VERSION is already in Artifactory (built from $commit) — reused, not rebuilt." ;;
+            1) echo "reuse=false" >> "$GITHUB_OUTPUT"
+               echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$code" ;;
+          esac
+
+      - uses: actions/setup-node@v4
+        if: steps.exists.outputs.reuse == 'false'
+        with:
+          node-version: 24
+
+      - name: Yarn cache
+        if: steps.exists.outputs.reuse == 'false'
+        uses: actions/cache@v4
+        with:
+          path: ~/.yarn/berry/cache
+          key: yarn-${{ runner.os }}-${{ hashFiles('backstage/yarn.lock') }}
+          restore-keys: yarn-${{ runner.os }}-
+
+      - name: npm registry
+        if: steps.exists.outputs.reuse == 'false'
+        env:
+          NPMRC: ${{ secrets.GCP_ARTIFACTORY_NPMRC }}
+        run: |
+          f="$RUNNER_TEMP/.npmrc"; : > "$f"
+          [ -z "$NPMRC" ] || printf '%s\n' "$NPMRC" > "$f"
+          node scripts/npmrc-to-yarn-env.cjs "$f" --github-env
+          rm -f "$f"
+
+      - name: Build skeleton + bundle
+        if: steps.exists.outputs.reuse == 'false'
+        run: scripts/build-release-artifacts.sh dist-release
+
+      - name: Upload to Artifactory
+        if: steps.exists.outputs.reuse == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SOURCE_COMMIT: ${{ steps.exists.outputs.commit }}
+        run: scripts/artifactory.sh upload "$VERSION" dist-release
+
+      - name: Keep the stand-in store for the image job
+        if: inputs.stand_in
+        uses: actions/upload-artifact@v4
+        with:
+          name: stand-in-store
+          path: ${{ runner.temp }}/store
+          retention-days: 1
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ steps.exists.outputs.commit }}
+          REUSED: ${{ steps.exists.outputs.reuse }}
+          STAND_IN: ${{ inputs.stand_in }}
+        run: |
+          {
+            echo "### Backstage artifacts $VERSION"
+            [ "$STAND_IN" = "true" ] && echo "**Test run:** stand-in store on the runner; nothing was uploaded."
+            [ "$REUSED" = "true" ] && echo "Already in Artifactory — reused." || echo "Built and uploaded."
+            echo "Commit: \`$COMMIT\`"
+            echo "Path: \`$ARTIFACTORY_REPO/$ARTIFACTORY_PATH/$VERSION/\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    needs: artifacts
+    runs-on: ${{ vars.BACKSTAGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backstage
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    env:
+      VERSION: ${{ needs.artifacts.outputs.version }}
+    steps:
+      # The Docker context must be the commit the artifacts were built from:
+      # package.json, yarn.lock and the app-config files come from it.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.artifacts.outputs.commit }}
+
+      - name: Get the stand-in store
+        if: inputs.stand_in
+        uses: actions/download-artifact@v4
+        with:
+          name: stand-in-store
+          path: ${{ runner.temp }}/store
+
+      - name: Start the stand-in store
+        if: inputs.stand_in
+        run: |
+          python3 scripts/test/artifactory_stand_in.py --root "$RUNNER_TEMP/store" --port 8081 \
+            --user ci --token stand-in-token > "$RUNNER_TEMP/stand-in.log" 2>&1 &
+          for _ in $(seq 50); do curl -s -o /dev/null http://127.0.0.1:8081/ && exit 0; sleep 0.2; done
+          cat "$RUNNER_TEMP/stand-in.log"; exit 1
+
+      - name: Download and verify
+        run: |
+          scripts/artifactory.sh download "$VERSION" image-artifacts
+          built_from="$(grep '^SOURCE_COMMIT=' image-artifacts/manifest.env | cut -d= -f2)"
+          if [ "$built_from" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::$VERSION was built from $built_from, but this checkout is $(git rev-parse HEAD)."
+            exit 1
+          fi
+
+      - name: docker build
+        env:
+          NPMRC: ${{ secrets.GCP_ARTIFACTORY_NPMRC }}
+          BASE_REGISTRY: ${{ vars.BASE_REGISTRY || 'docker.io/library' }}
+          NODE_IMAGE: ${{ vars.NODE_IMAGE || 'node:24-bookworm-slim' }}
+          RUNTIME_IMAGE: ${{ vars.RUNTIME_IMAGE || vars.NODE_IMAGE || 'node:24-bookworm-slim' }}
+          RUNTIME_USER: ${{ vars.RUNTIME_USER || 'node' }}
+          CA_CERTS: ${{ vars.NODE_EXTRA_CA_CERTS }}
+          SKIP_NATIVE: ${{ vars.SKIP_NATIVE || 'false' }}
+        run: |
+          f="$RUNNER_TEMP/npmrc"; : > "$f"; chmod 600 "$f"
+          [ -z "$NPMRC" ] || printf '%s\n' "$NPMRC" > "$f"
+          DOCKER_BUILDKIT=1 docker build -f Dockerfile.release \
+            --secret id=GCP_ARTIFACTORY_NPMRC,src="$f" \
+            --build-arg BASE_REGISTRY="$BASE_REGISTRY" \
+            --build-arg NODE_IMAGE="$NODE_IMAGE" \
+            --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+            --build-arg RUNTIME_USER="$RUNTIME_USER" \
+            --build-arg NODE_EXTRA_CA_CERTS="$CA_CERTS" \
+            --build-arg SKIP_NATIVE="$SKIP_NATIVE" \
+            --build-arg ARTIFACT_VERSION="$VERSION" \
+            --label org.opencontainers.image.revision="$(git rev-parse HEAD)" \
+            -t "backstage:$VERSION" .
+          rm -f "$f"
+
+      - name: Start it once
+        run: |
+          docker run -d --name smoke -p 7007:7007 "backstage:$VERSION"
+          for _ in $(seq 90); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7007/.backstage/health/v1/readiness || true)"
+            if [ "$code" = 200 ]; then echo "ready"; docker rm -f smoke >/dev/null; exit 0; fi
+            sleep 2
+          done
+          echo "::error::The image did not become ready in 3 minutes."
+          docker logs smoke | tail -50
+          exit 1
+
+      - name: Push
+        id: push
+        if: inputs.push_image && !inputs.stand_in
+        env:
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME || vars.ARTIFACTORY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD || secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          [ -n "$IMAGE_REPOSITORY" ] || { echo "::error::IMAGE_REPOSITORY is not set."; exit 1; }
+          printf '%s' "$REGISTRY_PASSWORD" | docker login "${IMAGE_REPOSITORY%%/*}" -u "$REGISTRY_USERNAME" --password-stdin
+          docker tag "backstage:$VERSION" "$IMAGE_REPOSITORY:$VERSION"
+          docker push "$IMAGE_REPOSITORY:$VERSION"
+          echo "image=$IMAGE_REPOSITORY:$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Pushed \`$IMAGE_REPOSITORY:$VERSION\`" >> "$GITHUB_STEP_SUMMARY"

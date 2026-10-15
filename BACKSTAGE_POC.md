@@ -43,3 +43,23 @@ streams) goes through the Backstage proxy backend.
 cd backstage && yarn install && yarn start        # portal on :3000
 PYTHONPATH=src:. .venv/bin/uvicorn release_agent.app_fastapi:app --port 8000
 ```
+
+## Release image from Artifactory artifacts
+
+`.github/workflows/backstage-artifacts.yml` builds the image the enterprise way:
+the runner builds `skeleton.tar.gz` and `bundle.tar.gz` once
+(`backstage/scripts/build-release-artifacts.sh`), uploads them to an Artifactory
+generic repo under a version (`backstage/scripts/artifactory.sh`), and the image
+job downloads them, checks their SHA-256 and runs `docker build -f
+backstage/Dockerfile.release`. The Dockerfile unpacks them with `ADD`, so the
+curated Wolfi images need no curl or tar, and no credential becomes a build arg.
+
+- A version is written once; a version already in Artifactory is reused.
+- The manifest goes up last, so a half-finished upload is never used.
+- The image is built from the commit the artifacts came from, and started once
+  before it is pushed.
+- Settings (`ARTIFACTORY_*`, `GCP_ARTIFACTORY_NPMRC`, the Node images, the CA
+  bundle, `IMAGE_REPOSITORY`) are listed at the top of the workflow.
+
+`backstage-artifacts-test.yml` runs the whole pipeline against a stand-in store
+on the runner on every change (`backstage/scripts/test/`); nothing is uploaded.

@@ -1,0 +1,39 @@
+name: backstage-artifacts-test
+
+# Tests the Backstage artifact pipeline on every change to it, with no
+# Artifactory: the upload/download script's refusals, then the whole
+# backstage-artifacts workflow against a stand-in store on the runner
+# (build → upload → download + verify → docker build → health check). Nothing
+# is uploaded anywhere and no image is pushed.
+on:
+  push:
+    branches: [backstage_poc]
+    paths:
+      - backstage/Dockerfile.release
+      - backstage/scripts/**
+      - backstage/package.json
+      - backstage/yarn.lock
+      - .github/workflows/backstage-artifacts*.yml
+  pull_request:
+    paths:
+      - backstage/Dockerfile.release
+      - backstage/scripts/**
+      - .github/workflows/backstage-artifacts*.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: artifactory.sh round trip
+        run: backstage/scripts/test/artifactory_roundtrip.sh
+
+  pipeline:
+    needs: scripts
+    uses: ./.github/workflows/backstage-artifacts.yml
+    with:
+      stand_in: true
