@@ -34,9 +34,11 @@ import json
 import logging
 from typing import Any
 
-from . import attribution, json_splice
+from . import attribution, json_splice, progress
 from ._common import settings, _get_github_client
-from .release_fileset import _artifact_name_version, _slugify, partition_environments
+from .release_fileset import (
+    _artifact_name_version, _slugify, partition_environments, say_moving_charts,
+)
 from .release_window import _open_prd_pr_blocker
 
 logger = logging.getLogger("release_copilot")
@@ -165,6 +167,7 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     if details.get("df_images"):
         return _refuse("A CARE release cannot carry Dataflow images — raise them in the DF release.")
 
+    progress.say(f"Checking for an open release PR on {base}")
     try:
         gh_repo = _get_github_client().get_repo(repo)
         blocker = _open_prd_pr_blocker(gh_repo, branches=[base], head_prefix=prefix)
@@ -172,10 +175,12 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
         return _refuse(f"Could not reach {repo}: {e}")
     if blocker is not None:
         return _refuse(_in_flight(blocker))
+    progress.say(f"Reading {path} on {base}")
     try:
         head, old_text, blob_sha = _read_base(gh_repo, base, path)
     except Exception as e:
         return _refuse(f"Could not read {path} on {base} in {repo}: {e}")
+    progress.say("Working out the smallest change to the release file")
     try:
         new_text = json_splice.splice_top_level(old_text, file_doc(details))
     except ValueError as e:
@@ -189,6 +194,7 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     prev_old = prev_new = prev_blob = ""
     skipped: list[str] = []
     if prev_path:
+        progress.say(f"Reading {prev_path}")
         try:
             prev_old, prev_blob = _read_at(gh_repo, prev_path, head)
         except Exception as e:
@@ -338,6 +344,7 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
         raise _Stop("Prepared release is incomplete — start the release again.")
 
     gh_repo = _get_github_client().get_repo(repo)
+    progress.say(f"Checking {base} has not moved since the preview")
     try:
         head, old_text, blob_sha = _read_base(gh_repo, base, path)
     except Exception as e:
@@ -382,12 +389,18 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
 
     # The preview's guard is minutes old by now: another release PR may have
     # opened since, and two releases in flight is what the guard exists to stop.
+    progress.say(f"Checking for an open release PR on {base}")
     blocker = _open_prd_pr_blocker(gh_repo, branches=[base], head_prefix=prefix,
                                    skip=lambda open_pr: _carries_all(gh_repo, files, open_pr.head.ref))
     if blocker is not None:
         raise _Stop(_in_flight(blocker) + " Nothing was pushed.")
 
+    progress.say(f"Claiming branch {wanted}")
     branch, pr, created = _claim_branch(gh_repo, repo, wanted, base, head, files)
+    if branch != wanted:
+        progress.say(f"{wanted} was taken — using {branch}")
+    elif not created:
+        progress.say(f"{branch} already carries this release")
     committed = False
     if created:
         # Just cut from the head read above, so each file is exactly the blob
@@ -395,6 +408,8 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
         # so only a new one is ever written to — the previous tags first, then
         # the release file: two commits, in that order.
         for fpath, ftext, fblob, subject in commits:
+            progress.say("Committing the release file" if fpath == path
+                         else "Committing the previous release tags")
             try:
                 gh_repo.update_file(fpath, attribution.commit_message(subject), ftext, fblob,
                                     branch=branch, **attribution.author_kwargs())
@@ -409,6 +424,7 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
 
     action = "release_pr_exists"
     if pr is None:
+        progress.say(f"Raising the PR into {base} — a person merges it")
         try:
             pr = gh_repo.create_pull(title=attribution.titled(title),
                                      body=attribution.with_trailer(
@@ -435,12 +451,14 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
         try:
             from .release_queue import mark_released
 
+            say_moving_charts(prep.get("artifacts") or [])
             recorded = mark_released(prep.get("release_name") or title, pr.number,
                                      prep.get("artifacts") or [], deployment_repo=repo)
         except Exception as e:  # noqa: BLE001 — never fails a raised PR
             recorded = {"ok": False, "error": str(e)}
         untracked = not recorded.get("ok") and not recorded.get("disabled")
         if untracked:
+            progress.say("The release queue could not be updated — its charts still show there")
             logger.warning("care release: PR %s#%s raised but the queue was not drained: %s",
                            repo, pr.number, recorded.get("error"))
 
