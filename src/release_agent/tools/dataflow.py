@@ -21,9 +21,14 @@ import time
 
 from pydantic import BaseModel, Field
 
+from . import progress
 from ._common import settings, tool, _get_github_client
 
 logger = logging.getLogger("release_copilot")
+
+# How often the wait for the run says it is still waiting. The page reads these
+# lines as they arrive; a longer silence looks like a hung deploy.
+_HEARTBEAT_SECONDS = 15.0
 
 
 class DeployDataflowInput(BaseModel):
@@ -95,7 +100,13 @@ def _find_dispatched_run(workflow, before_ids: set, since=None, match: str = "",
     floor = since - _dt.timedelta(seconds=10) if since else None
     generic = str(getattr(workflow, "name", "") or "")
     lone = None
+    started = time.time()
+    last_said = None
     for i in range(tries):
+        now = time.time()
+        if last_said is None or now - last_said >= _HEARTBEAT_SECONDS:
+            progress.waiting("Waiting for GitHub to start the run", now - started, tries * delay)
+            last_said = now
         try:
             named, plain = [], []
             for run in itertools.islice(workflow.get_runs(), 10):
@@ -329,6 +340,7 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
     except ValueError as e:
         return f"ERROR deploying dataflow: {e}"
 
+    progress.say(f"Reading the DF deploy workflow {settings.df_deploy_workflow} in {repo_full}")
     try:
         repo = _get_github_client().get_repo(repo_full)
         workflow = repo.get_workflow(settings.df_deploy_workflow)
@@ -344,6 +356,8 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
                        ", ".join(dropped), settings.df_deploy_workflow, ref)
 
     since = _dt.datetime.now(_dt.timezone.utc)
+    progress.say(f"Deploying {image} at {tag} to {env.upper()} on {ref}")
+    progress.say("Dispatching the DF deploy workflow")
     try:
         # A refusal MUST raise: PyGithub's create_dispatch defaults to
         # throw=False, which swallows GitHub's rejection and returns False — we
@@ -352,6 +366,9 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
         # outside a choice input's options, or a ref without the workflow file).
         run = _dispatch(workflow, ref, inputs)
     except Exception as e:
+        status = getattr(e, "status", None)
+        progress.say(f"GitHub rejected the dispatch (HTTP {status}) — nothing was started"
+                     if isinstance(status, int) else "The dispatch could not be sent")
         return (
             f"ERROR deploying dataflow: dispatch of {settings.df_deploy_workflow} "
             f"in {repo_full} on ref '{ref}' with inputs {inputs} was rejected: {e}"
@@ -374,6 +391,13 @@ def deploy_dataflow(environment: str, image: str, tag: str, deployment_repo: str
     if run and not run.get("url") and base:
         run["url"] = f"{base}/actions/runs/{run['id']}"
     run_url = run["url"] if run else ""
+    if run:
+        progress.say(f"Run #{run['id']} started" + (f": {run_url}" if run_url else ""))
+    elif competing:
+        progress.say(f"{competing} runs of this workflow started at the same moment — "
+                     "not guessing which is yours")
+    else:
+        progress.say("GitHub has not registered the run yet — the result links the runs page")
     if run:
         _follow_run(repo, run, image, tag, run_url)
     note = (

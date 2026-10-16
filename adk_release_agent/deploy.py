@@ -117,7 +117,11 @@ def _build_preview(req: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         from release_agent.config import settings
         from release_agent.tools.dataflow import _dispatch_inputs
 
+        from release_agent.tools import progress
+
         image = req["images"][0]
+        progress.say(f"Preparing the {settings.df_deploy_workflow} dispatch for "
+                     f"{image['name']}:{image['tag']}")
         preview = {
             f"workflow_dispatch ({settings.df_deploy_workflow})": [
                 _dispatch_inputs(image["name"], image["tag"], env)

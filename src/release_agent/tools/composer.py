@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import attribution
+from . import attribution, progress
 from ._common import settings, _get_github_client
 
 # The expression that identifies OUR version fallback. Both quote styles occur
@@ -121,6 +121,9 @@ def preview_dag_bump(dag_files: list[str], new_version: str,
     """
     directory = _dag_dir(environment)
     changes, problems = [], []
+    if dag_files:
+        progress.say(f"Reading {len(dag_files)} Composer DAG file(s) on "
+                     f"{settings.composer_branch} in {_resolve_repo(repo) or '<unset>'}")
     for name in dag_files:
         path = f"{directory}/{name}"
         try:
@@ -160,20 +163,24 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
 
     directory = _dag_dir(environment)
     repo_full = _resolve_repo(repo)
+    progress.say("Opening the Composer DAG PR")
     try:
         gh_repo = _repo(repo)
         base = gh_repo.get_branch(settings.composer_branch)
     except Exception as e:
+        progress.say(f"Could not reach {repo_full or '<unset>'} for the DAG PR")
         return {"ok": False, "error": f"Could not reach {repo_full or '<unset>'}: {e}"}
 
     slug = "".join(c if c.isalnum() or c in "-._" else "-" for c in f"{image or 'df'}-{version}")
     branch = f"dag-version/{environment.strip().lower()}-{slug}"
+    progress.say(f"Creating branch {branch} from {settings.composer_branch}")
     try:
         gh_repo.create_git_ref(f"refs/heads/{branch}", base.commit.sha)
     except Exception as e:
         # An existing branch means a previous attempt for this exact version;
         # reuse it rather than failing the deploy that already dispatched.
         if "Reference already exists" not in str(e):
+            progress.say(f"Could not create branch {branch}")
             return {"ok": False, "error": f"Could not create {branch}: {e}"}
 
     # Idempotent by construction — this runs again whenever a deploy is resumed,
@@ -196,6 +203,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
             updated.append({"file": path, "from": replaced, "to": version, "unchanged": True})
             continue
         if branch_blob.decoded_content.decode() != desired:
+            progress.say(f"Bumping {image or name} to {version} in {name} on {branch}")
             try:
                 gh_repo.update_file(
                     path,
@@ -211,6 +219,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
         updated.append({"file": path, "from": replaced, "to": version, "unchanged": False})
 
     if not any(not u["unchanged"] for u in updated):
+        progress.say(f"No DAG needed a change to {version} — no PR to raise")
         # Nothing to propose, so leave no trace: the branch was created before we
         # knew that, and an empty dag-version/* branch per attempt would silt up
         # the repo and look like a half-finished bump to anyone browsing it.
@@ -231,6 +240,7 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
     # these edits may have opened it before failing further on. Return that one.
     existing = _open_pr_for(gh_repo, branch)
     if existing is not None:
+        progress.say(f"The DAG PR #{existing.number} is already open — merge it once the run is green")
         return {
             "ok": True, "action": "dag_bump_pr_exists", "branch": branch,
             "pr_number": existing.number, "pr_url": existing.html_url,
@@ -256,8 +266,10 @@ def apply_dag_bump(dag_files: list[str], new_version: str, environment: str = "u
         # Lost a race with another attempt opening the same PR: that is success.
         pr = _open_pr_for(gh_repo, branch)
         if pr is None:
+            progress.say(f"The DAG edits are on {branch} but the PR could not be opened")
             return {"ok": False, "error": f"DAGs updated on {branch} but the PR failed: {e}",
                     "branch": branch, "updated": updated, "problems": problems}
+    progress.say(f"Raised the DAG PR #{pr.number} — merge it once the run is green")
     return {
         "ok": True, "action": "dag_bump_pr_opened", "branch": branch,
         "pr_number": pr.number, "pr_url": pr.html_url,
