@@ -141,6 +141,9 @@ def _build_preview(req: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
                      for p in bump.get("problems") or []]
             preview[f"Composer DAG bump ({bump.get('repo')} @ {bump.get('branch')} → PR)"] = rows
         return preview
+    from release_agent.tools import progress
+
+    progress.say("Building the preview")
     entries = req.get("entries") or []
     if entries:
         target_entries = [_normalize_entry(entry, env) for entry in entries]
@@ -177,6 +180,9 @@ def _uat_deploy_blocked(req: dict[str, Any]) -> str:
     (an open PR changes uat/deployment.json, or someone is deploying right now).
     Best-effort: if GitHub cannot be asked, the confirm asks again — that is the
     check that counts (promotion.open_release_pr)."""
+    from release_agent.tools import progress
+
+    progress.say(f"Checking nothing else is deploying to {_settings.uat_branch}")
     try:
         from release_agent.tools._common import _get_github_client, active_deploy_repo
         from release_agent.tools.promotion import uat_deploy_blocker

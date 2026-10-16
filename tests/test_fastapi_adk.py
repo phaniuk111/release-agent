@@ -34,7 +34,7 @@ def test_chat_endpoint_uses_adk_deploy_preview_path():
     assert [p["type"] for p in payloads if p["type"] != "progress"] == [
         "token", "interrupt", "done",
     ]
-    assert "uat/deployment.json" in payloads[0]["content"]
+    assert "uat/deployment.json" in next(p for p in payloads if p["type"] == "token")["content"]
     assert _interrupt(payloads)["token"].startswith("CONFIRM-")
 
 
