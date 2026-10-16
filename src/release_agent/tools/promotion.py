@@ -27,6 +27,7 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+from . import progress
 from ._common import (
     settings,
     tool,
@@ -192,7 +193,11 @@ def _sit_to_uat_pr(repo, repo_full: str):
     change to uat/deployment.json lands on SIT. Waited for briefly — that
     workflow takes a few seconds — and never raised or merged here."""
     owner = (repo_full or "").split("/")[0]
-    deadline = time.time() + max(0.0, float(settings.uat_pr_wait_seconds or 0))
+    started = time.time()
+    limit = max(0.0, float(settings.uat_pr_wait_seconds or 0))
+    deadline = started + limit
+    what = f"Waiting for the {settings.sit_branch} → {settings.uat_branch} PR"
+    misses = 0
     while True:
         try:
             for pr in repo.get_pulls(state="open", base=settings.uat_branch,
@@ -202,6 +207,13 @@ def _sit_to_uat_pr(repo, repo_full: str):
             pass
         if time.time() >= deadline:
             return None
+        # The loop sleeps 5 s, so every third miss is a line every ~15 s — and
+        # one at once, so the page never goes quiet for the first quarter minute.
+        # Only said when a wait really follows: a PR found on the first look, or
+        # no wait configured, stays silent.
+        if misses % 3 == 0:
+            progress.waiting(what, time.time() - started, limit)
+        misses += 1
         time.sleep(5)
 
 
@@ -239,6 +251,7 @@ def _via_sit_outcome(repo, repo_full: str, prs: list, what: str, charts: str = "
     lead = f"{what}: merged into {sit} — {_pr_chain_note(prs)}"
     pr = _sit_to_uat_pr(repo, repo_full)
     if pr is not None:
+        progress.say(f"Found the {sit} → {uat} PR #{pr.number}")
         _notify_uat_pr(repo_full, pr, charts or what)
         return {
             "pending_prs": [{"number": pr.number, "url": pr.html_url, "stage": f"→{uat}",
@@ -247,6 +260,7 @@ def _via_sit_outcome(repo, repo_full: str, prs: list, what: str, charts: str = "
             "note": (f"{lead} Now merge [PR #{pr.number}]({pr.html_url}) {sit} → {uat} to finish — "
                      f"{uat} is unchanged until it is merged."),
         }
+    progress.say(f"The {sit} → {uat} PR has not appeared yet")
     pulls = f"{getattr(repo, 'html_url', '') or 'https://github.com/' + repo_full}/pulls"
     return {
         "pending_prs": [],
@@ -374,12 +388,14 @@ def _raise_hop_pr(repo, branch: str, file_mutations: list, extra_files: dict | N
             # the file; a stamp it left earlier goes with the next change.
             if doc.get("updated_by") == "release-copilot":
                 del doc["updated_by"]
+            progress.say(f"Writing {path} on a working branch")
             _upsert_json_file(repo, work, path, doc)
             changed = True
 
     # Whole-file docs (e.g. change-request.json): write verbatim, created if missing.
     for path, doc in (extra_files or {}).items():
         if _doc_changed(_read_json_file(repo, work, path), doc):
+            progress.say(f"Writing {path} on a working branch")
             _upsert_json_file(repo, work, path, doc)
             changed = True
 
@@ -391,6 +407,7 @@ def _raise_hop_pr(repo, branch: str, file_mutations: list, extra_files: dict | N
         return None, None
     from . import attribution
 
+    progress.say(f"Opening the PR into {branch}")
     return repo.create_pull(title=attribution.titled(f"{summary} (→ {branch})"),
                             body=attribution.with_trailer(summary),
                             head=work, base=branch), work
@@ -450,6 +467,7 @@ def _promote_targeted(
             pr, work = _raise_hop_pr(repo, branch, file_mutations, extra_files, summary)
             if pr is None:
                 break
+            progress.say(f"Merging into {branch}")
             ok, detail = _merge_pr(pr, "squash")
             if ok or detail != MERGE_CONFLICT or attempt == _CONFLICT_REBUILDS or not rebuild_on_conflict:
                 break
@@ -466,6 +484,8 @@ def _promote_targeted(
             try:
                 pr.update()
                 msha = pr.merge_commit_sha
+                if msha:
+                    progress.say("Finding the deploy run")
                 run = _find_deploy_run(repo, msha, branch) if msha else None
                 if run:
                     entry["deploy_run"] = run
@@ -714,6 +734,7 @@ def open_release_pr(
     repo_key = target_repo or active_deploy_repo()
     from . import attribution
 
+    progress.say(f"Checking nothing else is deploying to {settings.uat_branch}")
     running = _claim_uat_deploy(repo_key, attribution.requester_email(), chart_str)
     if running is not None:
         return json.dumps({"ok": False, "action": "blocked", "environment": "uat", "image_tags": chart_str,
@@ -726,6 +747,7 @@ def open_release_pr(
         # The override REPLACES the file: a chart on UAT now and not in `entries`
         # leaves UAT. Reported so it is logged as removed — otherwise the derived
         # per-environment state would show it deployed forever.
+        progress.say(f"Reading {settings.uat_branch}'s deployment file")
         before = _read_include(repo, settings.uat_branch, uat_path)
         kept = {e.get("helm_chart_name") for e in entries if isinstance(e, dict)}
         dropped = [{"name": b.get("helm_chart_name"), "tag": b.get("helm_chart_version")}
