@@ -47,7 +47,7 @@ from ._common import (
     _resolve_github_token,
     active_deploy_repo,
 )
-from . import git_snapshot, release_chain
+from . import git_snapshot, progress, release_chain
 from . import attribution
 from .promotion import _merge_pr
 from .release_window import _open_prd_pr_blocker
@@ -193,6 +193,22 @@ def _run(cmd: list[str], cwd: str, timeout: int = 120) -> tuple[int, str]:
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
+def say_moving_charts(artifacts: list) -> None:
+    """The queue line, said only when the queue will really be written: with
+    no BigQuery configured nothing moves, and the line would claim a step that
+    never happened. Shared with care_release; never raises (it sits in front
+    of a best-effort write that its own commentary must not skip)."""
+    try:
+        from . import release_queue
+
+        count = sum(1 for a in artifacts if isinstance(a, dict) and a.get("name"))
+        if count and release_queue.queue_enabled():
+            progress.say(f"Moving {count} chart{'' if count == 1 else 's'} "
+                         "from the queue to Release history")
+    except Exception:  # noqa: BLE001 — commentary only
+        pass
+
+
 def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
     """Generate the release file-set locally (no push). Returns preview or errors."""
     details, errors = validate_release(payload)
@@ -209,6 +225,7 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
     repo_full = str(payload.get("deployment_repo") or "").strip() or (
         (settings.df_release_repo if kind == "df" else "") or active_deploy_repo())
     landing = release_chain.landing(kind)
+    progress.say("Checking for an open release PR on " + ", ".join(release_chain.guard_branches(kind)))
     try:
         gh_repo = _get_github_client().get_repo(repo_full)
         blocker = _open_prd_pr_blocker(gh_repo, branches=release_chain.guard_branches(kind))
@@ -228,6 +245,7 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
     workdir = tempfile.mkdtemp(prefix="release-fileset-")
     repo_dir = os.path.join(workdir, "repo")
     try:
+        progress.say(f"Cloning {repo_full} at {landing}")
         git_snapshot.clone_branch(
             git_snapshot.repo_url(repo_full), landing, repo_dir,
             _resolve_github_token() or "",
@@ -259,6 +277,7 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
                 f"Point RELEASE_UPDATER_SCRIPT at the real path, or land the release "
                 f"on a branch that carries the script (DF_RELEASE_BRANCHES)."
             )
+        progress.say("Running the deployment repo's release updater")
         rc, script_output = _run(
             [sys.executable, script, "--release-details-file", details_path],
             cwd=repo_dir, timeout=180,
@@ -266,6 +285,7 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         if rc != 0:
             raise RuntimeError(f"updater script failed:\n{script_output[-800:]}")
 
+        progress.say("Collecting the changed files")
         changed_files = git_snapshot.changed_paths(git_snapshot.stage_all(repo_dir))
         if not changed_files:
             raise RuntimeError("updater script produced no file changes")
@@ -368,6 +388,7 @@ def apply_release_fileset(prep: dict) -> dict:
         # details is exactly release_details.json, which carries neither the
         # target repo nor the kind — found in testing: without them a DF release
         # in its own repo regenerated against the CARE repo.
+        progress.say("Checking the files have not moved since the preview")
         regenerated = prepare_release_fileset(
             {**details, "deployment_repo": prep.get("deployment_repo") or "",
              "release_kind": prep.get("kind") or "", "jira": prep.get("jira") or ""},
@@ -391,6 +412,9 @@ def apply_release_fileset(prep: dict) -> dict:
     repo_dir = os.path.join(workdir or "", "repo")
     if not workdir or not os.path.isdir(repo_dir):
         return {"ok": False, "error": "Prepared release workdir is gone — start the release again."}
+    kind = prep.get("kind") or "care"
+    landing = prep.get("landing_branch") or release_chain.landing(kind)
+    label = "DF" if kind == "df" else "CARE"
     try:
         repo_full = prep.get("deployment_repo") or active_deploy_repo()
         gh_repo = _get_github_client().get_repo(repo_full)
@@ -400,8 +424,12 @@ def apply_release_fileset(prep: dict) -> dict:
         author_name, author_email = attribution.author() or (
             initiator.split("@")[0] or "release-copilot", initiator or "release-copilot@localhost")
         try:
+            staged = git_snapshot.stage_all(repo_dir)
+            n_files = len(git_snapshot.changed_paths(staged))
+            progress.say(f"Committing {n_files} file{'' if n_files == 1 else 's'} to {branch} "
+                         "through the GitHub API")
             sha = git_snapshot.commit_via_api(
-                gh_repo, repo_dir, git_snapshot.stage_all(repo_dir),
+                gh_repo, repo_dir, staged,
                 git_snapshot.base_commit(repo_dir),
                 attribution.commit_message(prep.get("release_name") or branch),
                 author_name, author_email,
@@ -420,13 +448,15 @@ def apply_release_fileset(prep: dict) -> dict:
             f"{_FILES_MARKER} {json.dumps(preview.get('changed_files', []))}\n"
             + (f"{_JIRA_MARKER} {attribution.current_jira()}\n" if attribution.current_jira() else "")
         )
-        kind = prep.get("kind") or "care"
-        landing = prep.get("landing_branch") or release_chain.landing(kind)
+        progress.say(f"Opening the {label} release PR into {landing}")
         pr = gh_repo.create_pull(
             title=attribution.titled(prep.get("release_name") or branch), body=attribution.with_trailer(body),
             head=branch, base=landing,
         )
+        progress.say(f"Merging release PR #{pr.number} into {landing}")
         merged, detail = _merge_pr(pr, "merge")
+        if not merged:
+            progress.say(f"Release PR #{pr.number} is open, not merged — {str(detail)[:200]}")
         note = (
             f"Release PR #{pr.number} ({pr.html_url}) {'merged into' if merged else 'opened against'} "
             f"{landing}{'' if merged else f' — {detail}'}. {release_chain.next_steps(kind)}"
@@ -439,12 +469,15 @@ def apply_release_fileset(prep: dict) -> dict:
         try:
             from . import release_queue as _rq
 
+            say_moving_charts(prep.get("artifacts") or [])
             out = _rq.mark_released(
                 prep.get("release_name") or "", pr.number, prep.get("artifacts") or [],
                 deployment_repo=repo_full,
             )
         except Exception as e:  # noqa: BLE001 — never fails the release
             out = {"ok": False, "error": str(e)}
+        if not out.get("ok") and not out.get("disabled"):
+            progress.say("The release queue could not be updated — its charts still show there")
         if out.get("ok"):
             note += (" Its charts have moved from the release queue to Release history; if this "
                      "release does not go through, put them back from there.")
