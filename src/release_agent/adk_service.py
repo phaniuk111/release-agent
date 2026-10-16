@@ -48,6 +48,7 @@ from adk_release_agent import investigate_workflow
 
 from . import commands as release_commands
 from .config import settings
+from .tools import progress
 
 logger = logging.getLogger(__name__)
 
@@ -945,11 +946,17 @@ class AdkChatService:
         # another context: ADK then cancels the Workflow's leftover tasks there
         # and (2.11) logs "Failed to detach context" at ERROR for each — seen on
         # GKE on every paused preview. After the pause the run ends on its own.
-        async for event in self.deploy_runner.run_async(
+        # progress.stream: the step lines the preview says while it clones
+        # and runs the updater (tools/progress.py) arrive between the events.
+        async for event in progress.stream(self.deploy_runner.run_async(
             user_id=_user_id(),
             session_id=_session_id(thread_id, "deploy"),
             new_message=_content_from_text(message),
-        ):
+        )):
+            if isinstance(event, dict) and event.get("type") == "progress":
+                if not paused:
+                    yield event
+                continue
             if paused:
                 continue
             for label in _progress_events(event):
@@ -1016,8 +1023,29 @@ class AdkChatService:
     async def _stream_deploy_resume(
         self, thread_id: str, token: str, confirmed: bool
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Resume the paused deploy Workflow with the user's confirmation."""
-        result = await self._resume_deploy(thread_id, token, confirmed)
+        """Resume the paused deploy Workflow with the user's confirmation.
+
+        A confirmed apply runs for a minute or two (a merge, then the wait for
+        the repository's own SIT → UAT PR; a release's clone and updater). It
+        used to answer with one message at the end and nothing before it, so
+        the page showed typing dots for the whole time and people gave up on
+        it. The lines the tools say meanwhile (tools/progress.py) are
+        forwarded as they arrive, ahead of the result.
+        """
+        if confirmed:
+            yield {"type": "progress", "content": (
+                f"Confirmed `{token}` — working on it. This can take a minute or two; "
+                "each step shows here as it finishes.")}
+
+        async def resumed() -> AsyncGenerator[dict[str, Any], None]:
+            yield await self._resume_deploy(thread_id, token, confirmed)
+
+        result: dict[str, Any] = {}
+        async for item in progress.stream(resumed()):
+            if isinstance(item, dict) and item.get("type") == "progress":
+                yield item
+            else:
+                result = item or {}
         if confirmed:
             yield {"type": "token", "content": self._format_deploy_apply_result(result)}
         else:

@@ -81,3 +81,7 @@ model only chooses which tool to call.
   `notifications.notify` with one scope per incident; nothing here changes a job.
 - **Parsing**: no regex. Split, partition and loop (see `json_splice.py`,
   `release_chain.py`).
+- A deploy or release step that takes more than a moment says what it is doing with
+  `progress.say(...)` (tools/progress.py) — plain words, one line per step, the shared
+  `progress.waiting(...)` for a long wait. It is commentary: never let it block, fail or
+  change the work, and never put a token, a secret or a typed email in a line.

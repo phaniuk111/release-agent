@@ -57,7 +57,8 @@ def test_chat_endpoint_applies_confirmed_adk_deploy(monkeypatch):
     res = client.post("/api/chat", json={"thread_id": "fastapi-adk-apply", "message": token})
 
     assert res.status_code == 200
-    assert _sse_payloads(res.text) == [
+    # progress lines are advisory chatter (the apply's steps); the contract is the rest
+    assert [e for e in _sse_payloads(res.text) if e.get("type") != "progress"] == [
         {"type": "token", "content": "fastapi deployed"},
         {"type": "done", "mutated": True},
     ]
