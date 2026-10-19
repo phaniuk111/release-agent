@@ -70,6 +70,32 @@ If the rows carry neither timestamp, the log entry's own `timestamp` stands
 in for `updated_at` and the duration is from the first logged row — still
 right when every status change is logged as it happens.
 
+## Telling these rows apart from other services' logs
+
+Other services write JSON too, so every query keys on two markers that only
+these rows carry, and you need just one of them to hold:
+
+- **the log name** — the writer sends to `logs/control-table`
+  (`log_name = 'projects/P/logs/control-table'` in SQL,
+  `logName="projects/P/logs/control-table"` in Logs Explorer). Use this when
+  the writer can pick its log (the Cloud Logging client's `logger('control-table')`);
+- **a field in the payload** — `kind: "control-table-row"`
+  (`JSON_VALUE(json_payload.kind) = 'control-table-row'` / `jsonPayload.kind="control-table-row"`).
+  Use this when the rows ride a shared log, such as a container's stdout or
+  a Dataflow worker's log, where the log name is the platform's.
+
+A field another service might also use (`status`, `date`) is never the
+filter. If the rows should also live apart — their own retention, their own
+readers — route them with a sink into their own bucket and query that
+bucket's view instead:
+
+```bash
+gcloud logging buckets create control_table --location=global --enable-analytics --retention-days=400
+gcloud logging sinks create control-table-rows logging.googleapis.com/projects/$P/locations/global/buckets/control_table \
+  --log-filter='jsonPayload.kind="control-table-row"'
+# then FROM `P.global.control_table._AllLogs`
+```
+
 ## What each entry looks like
 
 ```json

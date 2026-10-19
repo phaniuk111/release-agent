@@ -14,7 +14,7 @@ SELECT
   COUNT(DISTINCT IF(JSON_VALUE(json_payload.status) = 'FAILED', JSON_VALUE(json_payload.unit), NULL)) AS books_hit,
   ANY_VALUE(IF(JSON_VALUE(json_payload.status) = 'FAILED', JSON_VALUE(json_payload.error), NULL))     AS example_error
 FROM `__PROJECT__.control_table_logs._AllLogs`
-WHERE log_name = 'projects/__PROJECT__/logs/control-table'
+WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND JSON_VALUE(json_payload.kind) = 'control-table-row'
   AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
 GROUP BY business_date, source, system
 HAVING failed > 0
