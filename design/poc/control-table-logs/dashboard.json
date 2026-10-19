@@ -95,6 +95,18 @@
                   "type": "sum"
                 }
               }
+            ],
+            "thresholds": [
+              {
+                "value": 0,
+                "color": "YELLOW",
+                "direction": "ABOVE"
+              },
+              {
+                "value": 4,
+                "color": "RED",
+                "direction": "ABOVE"
+              }
             ]
           }
         }
