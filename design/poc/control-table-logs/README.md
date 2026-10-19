@@ -17,6 +17,7 @@ deployment's table.
 |---|---|
 | `log_rows.py` | Writes rows as log entries (stdlib only, `entries:write` with your gcloud token). Generates a realistic two-day sample, or takes your own rows as JSON lines keyed by role. |
 | `query.sql` | The Log Analytics question: failed and running runs per business date × source × system, books hit, an example error. |
+| `control_table_log.py` | The writer every producer imports — a GKE service or a Dataflow step — so both send the same entry the same way: the Cloud Logging API, log `control-table`, the row keyed by role, the row's own write time as the entry's timestamp, a `service` label saying who wrote it. Needs `google-cloud-logging`. |
 | `dashboard.json` | A Cloud Monitoring dashboard built from SQL charts: failed runs, books hit, books processed and books still to process for the chosen COB, a donut by source, the books with their latest status (to-do first), failures per hour, the table above, and the failed rows themselves. `COB` and `Source` variables filter every widget; with no COB chosen the scorecards show the latest date. |
 
 `__PROJECT__` in `query.sql` and `dashboard.json` is substituted at use; the
@@ -69,6 +70,32 @@ last book done), and a `took_min` column in the books table.
 If the rows carry neither timestamp, the log entry's own `timestamp` stands
 in for `updated_at` and the duration is from the first logged row — still
 right when every status change is logged as it happens.
+
+## Writing from GKE and Dataflow
+
+Both produce rows, and scraped output differs by platform: on GKE a JSON
+line on stdout is parsed into `jsonPayload` under the platform's log name
+(`stdout`), while a Dataflow worker's `logging` lands as a *string* inside
+`jsonPayload.message`, which SQL would have to unpack. So neither scrapes.
+Both call `control_table_log.py`, which writes through the Cloud Logging API:
+
+- one log name (`control-table`) and one payload shape from either platform;
+- the entry's `timestamp` is the row's `updated_at`, so hour bins and "took"
+  reflect when the status really changed, not when the agent shipped it;
+- `resource` is `global` for both, and the `service` label (`labels.service`
+  in SQL) says which pod or pipeline wrote the row;
+- writes are batched off the caller's thread and never raise into the run.
+
+On GKE, call it from the service with its Workload Identity; in Dataflow,
+build it in a `DoFn.setup()` and `flush()` in `teardown()` — the worker's
+service account needs `roles/logging.logWriter`. Tested: one row written as
+a GKE service and one as a Dataflow step arrived in the same log, and the
+dashboard's SQL read both with their service label and timing.
+
+If a producer cannot use the client and must print to stdout, keep the
+`kind` marker in the line, and on GKE add `"time"` (the entry timestamp) and
+`"logging.googleapis.com/labels": {"service": …}` — the agent honours both —
+then the sink below gathers those entries with the rest.
 
 ## Telling these rows apart from other services' logs
 
