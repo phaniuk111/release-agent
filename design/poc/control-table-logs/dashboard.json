@@ -219,7 +219,7 @@
         "widget": {
           "title": "The failed rows themselves",
           "logsPanel": {
-            "filter": "logName=\"projects/__PROJECT__/logs/control-table\" AND jsonPayload.failed=true AND jsonPayload.date=~\"${COB}\" AND jsonPayload.source=~\"${Source}\"",
+            "filter": "logName=\"projects/__PROJECT__/logs/control-table\" AND jsonPayload.status=(\"FAILED\" OR \"ERROR\") AND jsonPayload.date=~\"${COB}\" AND jsonPayload.source=~\"${Source}\"",
             "resourceNames": [
               "projects/__PROJECT__"
             ]

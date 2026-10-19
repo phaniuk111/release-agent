@@ -49,8 +49,10 @@ reader that selects the day's rows and maps columns to roles the way
  "error": "Dataflow job failed: worker ran out of memory", "error_kind": "RESOURCE"}
 ```
 
-`severity` is ERROR for a failed row, WARNING for one still running, INFO
-otherwise, so Logs Explorer's severity filter works before any query.
+Every row is logged at INFO, as the pipeline logs them: the row's `status`
+says what failed, and nothing — the queries, the dashboard, the logs panel —
+reads the severity. (`failed` is a convenience flag the sample writer adds;
+nothing depends on it either.)
 
 ## What we learned
 

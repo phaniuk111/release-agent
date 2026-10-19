@@ -85,7 +85,9 @@ def entries(rows: list[dict], project: str, log: str, spread_minutes: float = 0.
         out.append({
             "logName": f"projects/{project}/logs/{log}",
             "resource": {"type": "global", "labels": {"project_id": project}},
-            "severity": "ERROR" if failed else ("WARNING" if row.get("status") == "RUNNING" else "INFO"),
+            # INFO for every row, as the pipeline logs them: what failed is in the
+            # row's status, and nothing downstream reads the severity.
+            "severity": "INFO",
             "jsonPayload": payload,
             "timestamp": (now - dt.timedelta(seconds=(spread_minutes * 60 or 1) * (len(rows) - n) / len(rows))
                           ).isoformat().replace("+00:00", "Z"),
