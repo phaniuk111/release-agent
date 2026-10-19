@@ -19,11 +19,14 @@ generated deterministically (seed) so a rerun is the same picture.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import json
 import random
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 import uuid
 
@@ -92,13 +95,22 @@ def entries(rows: list[dict], project: str, log: str, spread_minutes: float = 0.
 
 
 def write(batch: list[dict], token: str) -> None:
+    """One entries:write call; a 429 (the per-minute write quota) or a 5xx is
+    retried with a growing pause, so a big load slows down rather than fails."""
     req = urllib.request.Request(
         "https://logging.googleapis.com/v2/entries:write",
         data=json.dumps({"entries": batch, "partialSuccess": False}).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST")
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        resp.read()
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp.read()
+            return
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 504) or attempt == 5:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def main() -> int:
@@ -110,6 +122,8 @@ def main() -> int:
     ap.add_argument("--from", dest="source", help="JSON lines of rows keyed by role")
     ap.add_argument("--spread-minutes", type=float, default=0.0,
                     help="backdate the batch over this many minutes (see entries(); 0 = now)")
+    ap.add_argument("--batch", type=int, default=500, help="entries per API call")
+    ap.add_argument("--workers", type=int, default=8, help="parallel API calls")
     a = ap.parse_args()
     if a.source:
         rows = [json.loads(line) for line in open(a.source) if line.strip()]
@@ -118,10 +132,14 @@ def main() -> int:
     token = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True,
                            check=True).stdout.strip()
     todo = entries(rows, a.project, a.log, a.spread_minutes)
-    for i in range(0, len(todo), 100):
-        write(todo[i:i + 100], token)
+    started = time.monotonic()
+    batches = [todo[i:i + a.batch] for i in range(0, len(todo), a.batch)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as pool:
+        for _ in pool.map(lambda b: write(b, token), batches):
+            pass
     failed = sum(1 for r in rows if r.get("status") in ("FAILED", "ERROR"))
-    print(f"wrote {len(todo)} entries to projects/{a.project}/logs/{a.log} ({failed} failed rows)")
+    print(f"wrote {len(todo)} entries to projects/{a.project}/logs/{a.log} "
+          f"({failed} failed rows) in {time.monotonic() - started:.0f} s")
     return 0
 
 

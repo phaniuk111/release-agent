@@ -64,6 +64,18 @@ otherwise, so Logs Explorer's severity filter works before any query.
   `timeSeriesQuery.opsAnalyticsQuery.sql`, and a value-only dashboard
   variable can be filled by SQL and used as `@Source` with
   `IF(@Source = '*', TRUE, …)`, because SQL does not know the `*` wildcard.
+- **A SQL chart also needs `dimensions` and `measures`** naming the result
+  columns, or the widget says only "Request contains an invalid argument"
+  (the table widget needs neither). Found by letting the console save a
+  chart and reading the JSON back. The rules that held up:
+  - a scorecard needs a TIMESTAMP dimension — return the newest timestamp
+    beside the number (`TIMESTAMP_TRUNC(MAX(timestamp), MINUTE) AS ts`);
+  - a string dimension needs `columnType` and a `maxBinCount`;
+  - a measure is a `sum` of a numeric column, or a `count` of rows;
+  - one series per value (a breakdown) is only allowed with `count`, so a
+    per-source chart queries the raw rows and lets the chart bin them.
+- **100,000 rows is fine.** Loading them took 190 s (batches of 500, eight
+  in parallel); every widget's query over them answers in 3–6 s.
 - **Cost:** nothing above the free tier — Cloud Logging's first 50 GiB a
   month, Log Analytics and dashboards are free; the linked dataset is a view.
 
