@@ -55,6 +55,21 @@ run's status (retries share the book).
 The sample writer holds one book back on the latest date so the not-started
 case shows: 9 processed + 2 not done + 1 not started = 12 books.
 
+## Time taken per book
+
+Timing comes from the row, not from the log entry: `event_at` (the role for
+"when the triggering event arrived") and `updated_at` ("when the row was
+written"). A real writer copies both from the row. Per book on the chosen
+COB: **took** = latest successful row's `updated_at` − earliest `event_at`
+(retries included, so it is the time the business waited, not one run's
+duration); it is blank until the book's latest run is done. The dashboard
+shows the median and the slowest book, the COB end to end (first event in →
+last book done), and a `took_min` column in the books table.
+
+If the rows carry neither timestamp, the log entry's own `timestamp` stands
+in for `updated_at` and the duration is from the first logged row — still
+right when every status change is logged as it happens.
+
 ## What each entry looks like
 
 ```json

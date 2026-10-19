@@ -85,6 +85,13 @@ def entries(rows: list[dict], project: str, log: str, spread_minutes: float = 0.
     for n, row in enumerate(rows):
         failed = row.get("status") in ("FAILED", "ERROR")
         payload = {**row, "failed": failed, "kind": "control-table-row"}
+        # Timing comes from the row itself, not the log entry: event_at is when
+        # the triggering event arrived, updated_at when this status was written.
+        # A real writer copies both from the row; the sample backdates event_at.
+        written = now - dt.timedelta(seconds=(spread_minutes * 60 or 1) * (len(rows) - n) / len(rows))
+        payload.setdefault("updated_at", written.isoformat().replace("+00:00", "Z"))
+        payload.setdefault("event_at", (written - dt.timedelta(minutes=random.Random(n).randint(2, 45)))
+                           .isoformat().replace("+00:00", "Z"))
         out.append({
             "logName": f"projects/{project}/logs/{log}",
             "resource": {"type": "global", "labels": {"project_id": project}},
@@ -92,8 +99,7 @@ def entries(rows: list[dict], project: str, log: str, spread_minutes: float = 0.
             # row's status, and nothing downstream reads the severity.
             "severity": "INFO",
             "jsonPayload": payload,
-            "timestamp": (now - dt.timedelta(seconds=(spread_minutes * 60 or 1) * (len(rows) - n) / len(rows))
-                          ).isoformat().replace("+00:00", "Z"),
+            "timestamp": written.isoformat().replace("+00:00", "Z"),
             "labels": {"poc": "control-table"},
         })
     return out
