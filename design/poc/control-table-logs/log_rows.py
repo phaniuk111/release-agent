@@ -51,12 +51,15 @@ def synthetic(days: int, rows: int, seed: int = 7) -> list[dict]:
     out: list[dict] = []
     for d in range(days):
         date = (today - dt.timedelta(days=d)).isoformat()
+        # The latest date is still in flight: its last book has not started yet,
+        # so "still to process" has something to count.
+        units = UNITS[:-1] if d == 0 else UNITS
         for i in range(rows):
             system, source = rnd.choice(SYSTEMS), rnd.choice(SOURCES)
             row = {
                 "date": date, "run_id": str(uuid.UUID(int=rnd.getrandbits(128))),
                 "event_id": f"EVT-{date}-{i:04d}", "system": system, "source": source,
-                "process": rnd.choice(PROCESSES), "unit": rnd.choice(UNITS), "scope": rnd.choice(SCOPES),
+                "process": rnd.choice(PROCESSES), "unit": rnd.choice(units), "scope": rnd.choice(SCOPES),
                 "job_id": f"2026-{rnd.getrandbits(32):08x}", "members": rnd.randint(100, 5000),
                 "status": "SUCCEEDED", "error": "", "error_kind": "",
             }

@@ -17,7 +17,7 @@ deployment's table.
 |---|---|
 | `log_rows.py` | Writes rows as log entries (stdlib only, `entries:write` with your gcloud token). Generates a realistic two-day sample, or takes your own rows as JSON lines keyed by role. |
 | `query.sql` | The Log Analytics question: failed and running runs per business date × source × system, books hit, an example error. |
-| `dashboard.json` | A Cloud Monitoring dashboard built from SQL charts: two scorecards, a donut by source, failures per hour, the table above, and the failed rows themselves. A `Source` variable filters every widget. |
+| `dashboard.json` | A Cloud Monitoring dashboard built from SQL charts: failed runs, books hit, books processed and books still to process for the chosen COB, a donut by source, the books with their latest status (to-do first), failures per hour, the table above, and the failed rows themselves. `COB` and `Source` variables filter every widget; with no COB chosen the scorecards show the latest date. |
 
 `__PROJECT__` in `query.sql` and `dashboard.json` is substituted at use; the
 project id is never committed.
@@ -38,6 +38,22 @@ sed "s/__PROJECT__/$P/g" dashboard.json > /tmp/dash.json && gcloud monitoring da
 To log the real table, add one step to the job that writes it, or a small
 reader that selects the day's rows and maps columns to roles the way
 `SUPPORT_COLUMNS` does, then calls `log_rows.py --from rows.jsonl`.
+
+## Books processed and still to process
+
+The control table only holds runs that have started, so the dashboard works
+it out from the rows: one row per book on the chosen COB with its LATEST
+run's status (retries share the book).
+
+- **Processed** = books whose latest run is in a done status
+  (`SUCCEEDED`, `COMPLETED` — the values file's `done:` list).
+- **Still to process** = books seen on the COB whose latest run is not done
+  (failed, running) **plus** books that ran on the previous COB and have not
+  appeared yet today ("not started"). If the business keeps an expected list
+  of books, swap the previous-COB universe for that list.
+
+The sample writer holds one book back on the latest date so the not-started
+case shows: 9 processed + 2 not done + 1 not started = 12 books.
 
 ## What each entry looks like
 
