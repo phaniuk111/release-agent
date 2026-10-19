@@ -3,6 +3,16 @@
   "dashboardFilters": [
     {
       "filterType": "VALUE_ONLY",
+      "templateVariable": "COB",
+      "valueType": "STRING",
+      "timeSeriesQuery": {
+        "opsAnalyticsQuery": {
+          "sql": "SELECT DISTINCT JSON_VALUE(json_payload.date) AS cob FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) ORDER BY cob DESC LIMIT 1000"
+        }
+      }
+    },
+    {
+      "filterType": "VALUE_ONLY",
       "templateVariable": "Source",
       "valueType": "STRING",
       "timeSeriesQuery": {
@@ -21,11 +31,11 @@
         "width": 12,
         "height": 10,
         "widget": {
-          "title": "Failed runs \u2014 latest business date",
+          "title": "Failed runs \u2014 chosen COB (latest if none)",
           "scorecard": {
             "timeSeriesQuery": {
               "opsAnalyticsQuery": {
-                "sql": "SELECT TIMESTAMP_TRUNC(MAX(timestamp), MINUTE) AS ts, COUNTIF(JSON_VALUE(json_payload.status) = 'FAILED') AS failed FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND IF(@Source = '*', TRUE, JSON_VALUE(json_payload.source) = @Source) AND JSON_VALUE(json_payload.date) = (SELECT MAX(JSON_VALUE(json_payload.date)) FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY))"
+                "sql": "SELECT TIMESTAMP_TRUNC(MAX(timestamp), MINUTE) AS ts, COUNTIF(JSON_VALUE(json_payload.status) = 'FAILED') AS failed FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND IF(@Source = '*', TRUE, JSON_VALUE(json_payload.source) = @Source) AND JSON_VALUE(json_payload.date) = IF(@COB = '*', (SELECT MAX(JSON_VALUE(json_payload.date)) FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)), @COB)"
               }
             },
             "dimensions": [
@@ -64,11 +74,11 @@
         "width": 12,
         "height": 10,
         "widget": {
-          "title": "Books hit \u2014 latest business date",
+          "title": "Books hit \u2014 chosen COB (latest if none)",
           "scorecard": {
             "timeSeriesQuery": {
               "opsAnalyticsQuery": {
-                "sql": "SELECT TIMESTAMP_TRUNC(MAX(timestamp), MINUTE) AS ts, COUNT(DISTINCT IF(JSON_VALUE(json_payload.status) = 'FAILED', JSON_VALUE(json_payload.unit), NULL)) AS books_hit FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND IF(@Source = '*', TRUE, JSON_VALUE(json_payload.source) = @Source) AND JSON_VALUE(json_payload.date) = (SELECT MAX(JSON_VALUE(json_payload.date)) FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY))"
+                "sql": "SELECT TIMESTAMP_TRUNC(MAX(timestamp), MINUTE) AS ts, COUNT(DISTINCT IF(JSON_VALUE(json_payload.status) = 'FAILED', JSON_VALUE(json_payload.unit), NULL)) AS books_hit FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND IF(@Source = '*', TRUE, JSON_VALUE(json_payload.source) = @Source) AND JSON_VALUE(json_payload.date) = IF(@COB = '*', (SELECT MAX(JSON_VALUE(json_payload.date)) FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)), @COB)"
               }
             },
             "dimensions": [
@@ -95,7 +105,7 @@
         "width": 24,
         "height": 10,
         "widget": {
-          "title": "Failures by source \u2014 last 7 days",
+          "title": "Failures by source",
           "pieChart": {
             "chartType": "DONUT",
             "showLabels": true,
@@ -103,7 +113,7 @@
               {
                 "timeSeriesQuery": {
                   "opsAnalyticsQuery": {
-                    "sql": "SELECT JSON_VALUE(json_payload.source) AS source, COUNT(*) AS failed FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND JSON_VALUE(json_payload.status) = 'FAILED' GROUP BY source ORDER BY failed DESC"
+                    "sql": "SELECT JSON_VALUE(json_payload.source) AS source, COUNT(*) AS failed FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND JSON_VALUE(json_payload.status) = 'FAILED' AND IF(@COB = '*', TRUE, JSON_VALUE(json_payload.date) = @COB) GROUP BY source ORDER BY failed DESC"
                   }
                 },
                 "dimensions": [
@@ -147,7 +157,7 @@
               {
                 "timeSeriesQuery": {
                   "opsAnalyticsQuery": {
-                    "sql": "SELECT timestamp, JSON_VALUE(json_payload.source) AS source FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND JSON_VALUE(json_payload.status) = 'FAILED' AND IF(@Source = '*', TRUE, JSON_VALUE(json_payload.source) = @Source) ORDER BY timestamp DESC LIMIT 100000"
+                    "sql": "SELECT timestamp, JSON_VALUE(json_payload.source) AS source FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND JSON_VALUE(json_payload.status) = 'FAILED' AND IF(@Source = '*', TRUE, JSON_VALUE(json_payload.source) = @Source) AND IF(@COB = '*', TRUE, JSON_VALUE(json_payload.date) = @COB) ORDER BY timestamp DESC LIMIT 100000"
                   }
                 },
                 "plotType": "STACKED_BAR",
@@ -187,13 +197,13 @@
         "width": 48,
         "height": 16,
         "widget": {
-          "title": "Where it failed and how widely (business date \u00d7 source \u00d7 system)",
+          "title": "Where it failed and how widely (COB \u00d7 source \u00d7 system)",
           "timeSeriesTable": {
             "dataSets": [
               {
                 "timeSeriesQuery": {
                   "opsAnalyticsQuery": {
-                    "sql": "SELECT JSON_VALUE(json_payload.date) AS business_date, JSON_VALUE(json_payload.source) AS source, JSON_VALUE(json_payload.system) AS system, COUNTIF(JSON_VALUE(json_payload.status) = 'FAILED') AS failed, COUNTIF(JSON_VALUE(json_payload.status) = 'RUNNING') AS running, COUNT(*) AS runs, COUNT(DISTINCT IF(JSON_VALUE(json_payload.status) = 'FAILED', JSON_VALUE(json_payload.unit), NULL)) AS books_hit, ANY_VALUE(IF(JSON_VALUE(json_payload.status) = 'FAILED', JSON_VALUE(json_payload.error), NULL)) AS example_error FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND IF(@Source = '*', TRUE, JSON_VALUE(json_payload.source) = @Source) GROUP BY business_date, source, system HAVING failed > 0 ORDER BY business_date DESC, failed DESC LIMIT 200"
+                    "sql": "SELECT JSON_VALUE(json_payload.date) AS cob, JSON_VALUE(json_payload.source) AS source, JSON_VALUE(json_payload.system) AS system, COUNTIF(JSON_VALUE(json_payload.status) = 'FAILED') AS failed, COUNTIF(JSON_VALUE(json_payload.status) = 'RUNNING') AS running, COUNT(*) AS runs, COUNT(DISTINCT IF(JSON_VALUE(json_payload.status) = 'FAILED', JSON_VALUE(json_payload.unit), NULL)) AS books_hit, ANY_VALUE(IF(JSON_VALUE(json_payload.status) = 'FAILED', JSON_VALUE(json_payload.error), NULL)) AS example_error FROM `__PROJECT__.global._Default._AllLogs` WHERE log_name = 'projects/__PROJECT__/logs/control-table' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND IF(@Source = '*', TRUE, JSON_VALUE(json_payload.source) = @Source) AND IF(@COB = '*', TRUE, JSON_VALUE(json_payload.date) = @COB) GROUP BY cob, source, system HAVING failed > 0 ORDER BY cob DESC, failed DESC LIMIT 200"
                   }
                 }
               }
@@ -209,7 +219,7 @@
         "widget": {
           "title": "The failed rows themselves",
           "logsPanel": {
-            "filter": "logName=\"projects/__PROJECT__/logs/control-table\" AND jsonPayload.failed=true",
+            "filter": "logName=\"projects/__PROJECT__/logs/control-table\" AND jsonPayload.failed=true AND jsonPayload.date=~\"${COB}\" AND jsonPayload.source=~\"${Source}\"",
             "resourceNames": [
               "projects/__PROJECT__"
             ]
