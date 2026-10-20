@@ -18,6 +18,7 @@ deployment's table.
 | `log_rows.py` | Writes rows as log entries (stdlib only, `entries:write` with your gcloud token). Generates a realistic two-day sample, or takes your own rows as JSON lines keyed by role. |
 | `query.sql` | The Log Analytics question: failed and running runs per business date × source × system, books hit, an example error. |
 | `control_table_log.py` | `setup(service)` once, then plain `log.info(..., extra=row_fields(row))` per row — from a GKE service or a Dataflow step alike. Google's logging handler sends the row through the Logging API as the JSON payload of log `control-table`, with a `service` label. Needs `google-cloud-logging`. |
+| `otel_row.py` | The producer-side OpenTelemetry route for a Collector you cannot configure: the row is the OTLP log body and a `gcp.log_name` attribute names the log, so a plain Collector writes the JSON payload with no transform. |
 | `otel-collector.yaml` | The third way in: an OpenTelemetry Collector that takes OTLP logs and writes them to Cloud Logging as the same entries — a `transform` step copies the row's attributes into the body, which the Google exporter stores as the JSON payload. |
 | `dashboard.json` | A Cloud Monitoring dashboard built from SQL charts: failed runs, books hit, books processed and books still to process for the chosen COB, a donut by source, the books with their latest status (to-do first), failures per hour, the table above, and the failed rows themselves. `COB` and `Source` variables filter every widget; with no COB chosen the scorecards show the latest date. |
 
@@ -122,6 +123,16 @@ writes Cloud Logging. Two things learned by running it (`otel-collector.yaml`):
   `extra`; send it as `process_type` (or any other name) on this route. The
   Cloud Logging handler route has no such limit because the row travels
   inside `json_fields`.
+
+**A shared Collector you cannot configure** (the Google-built one a platform
+team runs in the cluster): make the entry right at the source instead —
+`otel_row.py` emits the row as the OTLP log *body* with a `gcp.log_name`
+attribute. Tested through a Collector with no transform at all: the row
+arrived as the JSON payload of log `control-table`, `process` included (no
+logging bridge, so no reserved name). The Collector only needs an OTLP
+receiver and a logs pipeline ending in the `googlecloud` exporter; look for
+`pipelines: logs:` in its ConfigMap. The Google-built Collector's GKE
+deployment carries traces, metrics and logs.
 
 Cost: a Collector to run (on GKE a DaemonSet or the managed one; a Dataflow
 worker can reach one over the network), against no extra moving part on the
