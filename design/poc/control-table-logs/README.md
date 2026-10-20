@@ -18,6 +18,7 @@ deployment's table.
 | `log_rows.py` | Writes rows as log entries (stdlib only, `entries:write` with your gcloud token). Generates a realistic two-day sample, or takes your own rows as JSON lines keyed by role. |
 | `query.sql` | The Log Analytics question: failed and running runs per business date × source × system, books hit, an example error. |
 | `control_table_log.py` | `setup(service)` once, then plain `log.info(..., extra=row_fields(row))` per row — from a GKE service or a Dataflow step alike. Google's logging handler sends the row through the Logging API as the JSON payload of log `control-table`, with a `service` label. Needs `google-cloud-logging`. |
+| `otel-collector.yaml` | The third way in: an OpenTelemetry Collector that takes OTLP logs and writes them to Cloud Logging as the same entries — a `transform` step copies the row's attributes into the body, which the Google exporter stores as the JSON payload. |
 | `dashboard.json` | A Cloud Monitoring dashboard built from SQL charts: failed runs, books hit, books processed and books still to process for the chosen COB, a donut by source, the books with their latest status (to-do first), failures per hour, the table above, and the failed rows themselves. `COB` and `Source` variables filter every widget; with no COB chosen the scorecards show the latest date. |
 
 `__PROJECT__` in `query.sql` and `dashboard.json` is substituted at use; the
@@ -101,6 +102,30 @@ setup line per producer, `google-cloud-logging` on the worker, and
 Both work today. 2 keeps the queries simple and the timestamps the row's own;
 1 keeps producers untouched. The queries support both at once, so you can
 start with 1 and move producers to 2 one at a time.
+
+## OpenTelemetry instead
+
+Works too, and fits a shop that already runs the Collector (the portal sends
+its traces that way). The producer keeps plain `log.info` with the row in
+`extra`; the OpenTelemetry logging bridge (`LoggingHandler`) turns `extra`
+into attributes and sends OTLP to a Collector, whose `googlecloud` exporter
+writes Cloud Logging. Two things learned by running it (`otel-collector.yaml`):
+
+- **Attributes become entry labels, not the payload.** Out of the box the
+  row arrived as `labels.status`, `labels.unit`, … with the message as
+  `textPayload`, and `resource.type` `generic_task`. The Collector's
+  `transform` processor fixes that in one statement —
+  `set(body, attributes) where attributes["kind"] == "control-table-row"` —
+  and the Google exporter then writes the body as the JSON payload: the
+  dashboard read the row with no query change.
+- **`process` is a reserved name on a Python log record**, so it cannot go in
+  `extra`; send it as `process_type` (or any other name) on this route. The
+  Cloud Logging handler route has no such limit because the row travels
+  inside `json_fields`.
+
+Cost: a Collector to run (on GKE a DaemonSet or the managed one; a Dataflow
+worker can reach one over the network), against no extra moving part on the
+other two routes.
 
 ## Telling these rows apart from other services' logs
 

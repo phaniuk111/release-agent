@@ -1,0 +1,26 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+processors:
+  # The row's fields arrive as attributes (that is what the logging bridge
+  # makes of `extra`); as the body they become the entry's jsonPayload.
+  transform/row-as-body:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(body, attributes) where attributes["kind"] == "control-table-row"
+  batch: {}
+exporters:
+  googlecloud:
+    project: __PROJECT__
+    log:
+      default_log_name: control-table
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [transform/row-as-body, batch]
+      exporters: [googlecloud]
