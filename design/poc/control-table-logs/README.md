@@ -76,10 +76,20 @@ right when every status change is logged as it happens.
 ## Writing from GKE and Dataflow
 
 Both produce rows. Dataflow does write a JSON payload for every worker log
-line — but its fields are the worker's (`message`, `worker`, `stage`,
-`step`), and a row you `log.info` lands as a *string* inside
-`jsonPayload.message`. GKE parses a printed JSON line into real fields, but
-under its own log name. Two ways to one dashboard:
+line — but its fields are the worker's (`job`, `step`, `worker`, `logger`,
+`thread`), and the row you log lands as a *string* inside
+`jsonPayload.message`. Proved on a real one-worker job (2026-10-20), where
+the same row was logged three ways from a `DoFn`:
+
+| In the worker | What arrived |
+|---|---|
+| `log.info(json.dumps(row))` | `jsonPayload.message` = the JSON **string** |
+| `log.info("…", extra=row_fields)` | the message text only — the `extra` fields were **dropped** |
+| `print(json_line)` on stdout | `jsonPayload.message` = the line as a string — **not** parsed into fields as GKE would |
+
+So nothing a worker does with normal logging makes the row's fields payload
+fields. GKE is the opposite: its agent parses a printed JSON line into real
+fields, under its own log name. Two ways to one dashboard:
 
 **1. Keep each platform's default logging (no code change beyond the line).**
 Every query here reads both shapes: a field, else the same field parsed out
