@@ -71,34 +71,36 @@ If the rows carry neither timestamp, the log entry's own `timestamp` stands
 in for `updated_at` and the duration is from the first logged row — still
 right when every status change is logged as it happens.
 
-## Writing from GKE and Dataflow — plain log.info
+## Writing from GKE and Dataflow
 
-Both produce rows, and both can log them with the standard library. The one
-thing that must be the same on both is the handler: `setup(service)` attaches
-Google's Cloud Logging handler, which sends through the Logging API, so
+Both produce rows. Dataflow does write a JSON payload for every worker log
+line — but its fields are the worker's (`message`, `worker`, `stage`,
+`step`), and a row you `log.info` lands as a *string* inside
+`jsonPayload.message`. GKE parses a printed JSON line into real fields, but
+under its own log name. Two ways to one dashboard:
 
-```python
-setup(service="risk-fetcher")                               # once: start-up, or DoFn.setup()
-log.info("control-table row", extra=row_fields(row))        # per row, as it is written
-flush()                                                      # before the worker exits
-```
+**1. Keep each platform's default logging (no code change beyond the line).**
+Every query here reads both shapes: a field, else the same field parsed out
+of the worker's message —
+`COALESCE(JSON_VALUE(json_payload.status), JSON_VALUE(PARSE_JSON(JSON_VALUE(json_payload.message)), '$.status'))`
+— and looks in both logs (`control-table` and `dataflow.googleapis.com%2Fworker`).
+Tested with a worker-shaped row under the real Dataflow log name: every
+widget read it. Costs: `PARSE_JSON` on every worker line that carries the
+`kind` marker, the entry's time is the worker's (log the row when you write
+it and it is the same to the second), and a change to the row's fields means
+touching both halves of each `COALESCE`.
 
-gives the same entry from a pod and from a Dataflow worker: log
-`control-table`, the row as the JSON payload (`jsonPayload.status`, …), a
-`service` label (`labels.service` in SQL) saying who wrote it, the entry
-timestamp = the moment of the call. Tested from a process standing in for a
-Dataflow step: the row arrived as a JSON payload with its label.
+**2. One handler on both (`control_table_log.py`).** `setup(service)` attaches
+Google's Cloud Logging handler, then plain `log.info("…", extra=row_fields(row))`
+sends the row through the Logging API as the JSON payload of log
+`control-table` from a pod or a Dataflow worker alike, with a `service`
+label. Tested from a process standing in for a Dataflow step. Costs: one
+setup line per producer, `google-cloud-logging` on the worker, and
+`roles/logging.logWriter` for the Dataflow worker's service account.
 
-Why not the platforms' own capture: on GKE a printed JSON line is parsed, but
-under the platform's log name (`stdout`); a Dataflow worker's default logging
-lands the row as a *string* inside `jsonPayload.message`, which SQL would
-have to unpack (`JSON_VALUE(PARSE_JSON(JSON_VALUE(json_payload.message)), '$.status')`)
-and whose timestamp is the worker's. The handler bypasses both. The Dataflow
-worker's service account needs `roles/logging.logWriter`.
-
-If a producer really must print to stdout, keep the `kind` marker in the
-line, on GKE add `"time"` and `"logging.googleapis.com/labels": {"service": …}`
-(the agent honours both), and let the sink below gather those entries.
+Both work today. 2 keeps the queries simple and the timestamps the row's own;
+1 keeps producers untouched. The queries support both at once, so you can
+start with 1 and move producers to 2 one at a time.
 
 ## Telling these rows apart from other services' logs
 
