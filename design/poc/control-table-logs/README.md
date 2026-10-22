@@ -20,6 +20,7 @@ deployment's table.
 | `control_table_log.py` | `setup(service)` once, then plain `log.info(..., extra=row_fields(row))` per row — from a GKE service or a Dataflow step alike. Google's logging handler sends the row through the Logging API as the JSON payload of log `control-table`, with a `service` label. Needs `google-cloud-logging`. |
 | `otel_row.py` | The producer-side OpenTelemetry route for a Collector you cannot configure: the row is the OTLP log body and a `gcp.log_name` attribute names the log, so a plain Collector writes the JSON payload with no transform. |
 | `otel-collector.yaml` | The third way in: an OpenTelemetry Collector that takes OTLP logs and writes them to Cloud Logging as the same entries — a `transform` step copies the row's attributes into the body, which the Google exporter stores as the JSON payload. |
+| `workflow_state_dashboard.py` | The dashboard for a workflow that logs each status change of a row as a JSON **string** in `jsonPayload.message` (GKE `stdout` and Dataflow worker logs alike). Generic: the column names come as `role=column` (the `SUPPORT_COLUMNS` form) with the logger class and status words, from your own values. |
 | `dashboard.json` | A Cloud Monitoring dashboard built from SQL charts: failed runs, books hit, books processed and books still to process for the chosen COB, a donut by source, the books with their latest status (to-do first), failures per hour, the table above, and the failed rows themselves. `COB` and `Source` variables filter every widget; with no COB chosen the scorecards show the latest date. |
 
 `__PROJECT__` in `query.sql` and `dashboard.json` is substituted at use; the
@@ -147,6 +148,30 @@ deployment carries traces, metrics and logs.
 Cost: a Collector to run (on GKE a DaemonSet or the managed one; a Dataflow
 worker can reach one over the network), against no extra moving part on the
 other two routes.
+
+## When the row is logged as a string by your own logger
+
+Many teams already log the row — every status change, as it happens — with
+one logger whose `message` is the row serialised to JSON text. Then nothing
+needs to change in GKE or Dataflow: `workflow_state_dashboard.py` builds a
+dashboard that parses that text in SQL. Every widget starts from one block —
+
+```sql
+WITH r AS (
+  SELECT timestamp, SAFE.PARSE_JSON(JSON_VALUE(json_payload.message)) AS m
+  FROM `PROJECT.global._Default._AllLogs`
+  WHERE log_name IN ('projects/PROJECT/logs/stdout', 'projects/PROJECT/logs/dataflow.googleapis.com%2Fworker')
+    AND JSON_VALUE(json_payload.logger) = '<logger class>')
+```
+
+— then renames the columns to roles from the `--columns` mapping, keeps each
+run's latest status and each book's latest run (one line per status change
+would otherwise count a run several times), and works out the books that ran
+on the previous COB but have not started on the chosen one. Widgets: failed
+runs, books processed, books still to process, median minutes per book, runs
+by status, the books table (to-do first), where it failed, and the failed
+lines. Tested in a sandbox with 148 lines from two GKE containers and one
+Dataflow-shaped source: every query, and the console, agreed with the data.
 
 ## Telling these rows apart from other services' logs
 
