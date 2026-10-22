@@ -29,6 +29,18 @@ Log Analytics switched on (free):
 gcloud logging buckets update _Default --location=global --enable-analytics
 ```
 
+## Or start from the template
+
+`dashboard.template.json` is the same dashboard already built, with
+placeholders: `__PROJECT__`, `__LOGGER__`, one `*_COLUMN` per role
+(`COB_COLUMN`, `RUN_ID_COLUMN`, `STATUS_COLUMN`, `BOOK_COLUMN`,
+`SYSTEM_COLUMN`, `SOURCE_COLUMN`, `PROCESS_COLUMN`, `ENTITY_COLUMN`,
+`ERROR_COLUMN`, `MEMBERS_COLUMN`, `EVENT_TIME_COLUMN`, `WRITE_TIME_COLUMN`)
+and the status words (`DONE_STATUS_1/2`, `FAILED_STATUS_1/2`). Replace them,
+for example with one `sed -e "s/COB_COLUMN/<your column>/g" -e …` per name,
+then `gcloud monitoring dashboards create --config-from-file=dash.json`. The
+builder above does the same in one step and checks the names.
+
 ## How the SQL reads the logs
 
 Every widget starts from one block:
