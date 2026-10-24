@@ -26,6 +26,10 @@ model only chooses which tool to call.
   the deployment repo's own updater script from a transient
   `release_details.json` written outside the repo. Keep that JSON's shape
   exactly — extra inputs (target repo, JIRA) travel beside it, not in it.
+  A mono-mode CARE release file (`care_release.py`) can also carry a Dataflow
+  block when `CARE_RELEASE_DF_KEY_PREFIX` is set (`df_block`: four keys, added
+  if missing); its key names come from that setting, never from code, and the
+  DF images it lists stay out of the change-request prose and the CARE queue drain.
 - **BigQuery** (`release_queue.py`, `bq_cost.py`): INSERT only. Every cost
   statement passes `bq_guard.py`. An empty `BQ_DATASET` disables the queue
   cleanly; check `queue_enabled()` before reading.

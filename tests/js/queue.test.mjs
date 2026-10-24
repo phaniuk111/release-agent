@@ -137,3 +137,27 @@ test('history ticks: a chart that qualified goes back directly; one that never q
     assert.match(skipped[2].reason, /JIRA ticket/);
     assert.deepEqual(requeuePlan([]), { direct: [], gated: [], skipped: [] });
 });
+
+import { artifactName, dataflowFields } from '../../src/release_agent/static/core/queue.js';
+
+test('an artifact line names its service, typed or as a registry URL', () => {
+    assert.equal(artifactName('order-enrichment:1.4.2'), 'order-enrichment');
+    assert.equal(artifactName('https://artifactory.example.com/docker/example-ds/df-agg:2.1.0/'), 'df-agg');
+    assert.equal(artifactName('no-version-here'), null);
+    assert.equal(artifactName(''), null);
+});
+
+test('the Dataflow block of a CARE release: queued choice first, the form box for typed images', () => {
+    const queued = { 'df-agg': { prl1_only: true }, 'df-pnl': { prl1_only: false } };
+    const out = dataflowFields(
+        ['https://artifactory.example.com/docker/example-ds/df-agg:0.0.561', 'df-pnl:1.2.0', ' df-new:3.0.0 ', ''],
+        queued, new Set(['df-new', 'df-pnl']));
+    assert.deepEqual(out.dataflow_artefact, [
+        'https://artifactory.example.com/docker/example-ds/df-agg:0.0.561', 'df-pnl:1.2.0', 'df-new:3.0.0']);
+    // df-pnl is queued for PRD too, so the stray manual tick does not make it PRL1-only.
+    assert.deepEqual(out.dataflow_prl1_only, ['df-agg', 'df-new']);
+});
+
+test('no Dataflow lines means an empty block', () => {
+    assert.deepEqual(dataflowFields([], {}, new Set()), { dataflow_artefact: [], dataflow_prl1_only: [] });
+});

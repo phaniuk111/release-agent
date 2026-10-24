@@ -528,6 +528,14 @@ config:
   # strftime pattern for the release name in mono mode, dated by the release's
   # start, e.g. "<TEAM> CARE Release - %Y.%m.%d". Empty keeps today's naming.
   CARE_RELEASE_NAME_FORMAT: ""
+  # The Dataflow block of the release file (mono mode). Set it to your file's key
+  # prefix and every CARE release file also carries the release's DF images under
+  # <prefix>_release ("Yes"/"No"), <prefix>_components, <prefix>_prl1_only and
+  # <prefix>_artefact — for the team's notification workflow. The CARE form lists
+  # the queued DF images for it; they stay out of the change-request prose, and
+  # the DF release still raises and drains them. Keys missing from the file are
+  # added after its last key. Empty = no block (the file keeps today's keys).
+  CARE_RELEASE_DF_KEY_PREFIX: ""
   # ADK runtime (leave true).
   ADK_CONTEXT_CACHE: "true"
   ADK_EVENT_COMPACTION: "true"

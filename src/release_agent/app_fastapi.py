@@ -917,6 +917,10 @@ def release_queue_get():
     result["care_release_mode"] = app_settings.care_release_mode
     result["care_release_repo"] = app_settings.care_release_repo
     result["care_release_file"] = app_settings.care_release_file
+    # Mono mode with a Dataflow block: the CARE form also lists the queued DF
+    # images, for the release file only (never the change-request prose).
+    result["care_release_dataflow"] = (app_settings.care_release_mode == "mono"
+                                       and bool(app_settings.care_release_df_key_prefix.strip()))
     result["known_charts"] = _known_charts()
     return result
 

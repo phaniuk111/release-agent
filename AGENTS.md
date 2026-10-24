@@ -109,7 +109,14 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    charts updated, a new one added, others untouched; empty setting = off): the
    PR carries two commits in that order, previous tags then release file, and the
    preview shows both diffs. Same CONFIRM token; apply refuses if either file on
-   the base moved since the preview. The PR names who
+   the base moved since the preview. With `CARE_RELEASE_DF_KEY_PREFIX` set, the
+   file also carries the release's Dataflow images as a block of four keys
+   (`<prefix>_release` "Yes"/"No", `_components`, `_prl1_only`, `_artefact`;
+   `care_release.df_block`), added after the last key when the file lacks them —
+   for the team's notification workflow. The CARE form lists the queued DF images
+   for it; they never enter the change-request prose, and they are NOT drained by
+   the CARE release (the DF release raises and drains them as before). Outside
+   mono mode a payload carrying them is refused. The PR names who
    raised it (the verified email, else the typed one marked unverified). Its guard
    counts only open PRs into the base whose branch has the prefix, and runs at
    preview AND again at apply; apply reuses an open PR only when its branch

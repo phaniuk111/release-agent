@@ -221,6 +221,12 @@ def prepare_release_fileset(payload: dict, _keep_workdir: bool = False) -> dict:
         from . import care_release
 
         return care_release.prepare(payload, details)
+    # Only a mono-mode CARE release file has a Dataflow block. Anywhere else
+    # the artefacts would be dropped without a word, so they are refused.
+    if payload.get("dataflow_artefact") or payload.get("dataflow_prl1_only"):
+        return {"ok": False, "errors": [
+            "Dataflow artefacts ride a CARE release only in mono mode (CARE_RELEASE_MODE=mono) — "
+            "raise them in the DF release."]}
     # Form-supplied target repo wins; empty falls back to this kind's repo.
     repo_full = str(payload.get("deployment_repo") or "").strip() or (
         (settings.df_release_repo if kind == "df" else "") or active_deploy_repo())

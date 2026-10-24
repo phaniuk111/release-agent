@@ -61,13 +61,76 @@ def file_doc(details: dict[str, Any]) -> dict[str, Any]:
     return {key: details[key] for key in FILE_KEYS}
 
 
-def carried_tags(release_text: str) -> tuple[dict[str, str], list[str]]:
+# The Dataflow block's keys, each <CARE_RELEASE_DF_KEY_PREFIX>_<suffix>, in
+# the order they are appended to a file that lacks them.
+DF_SUFFIXES = ("release", "components", "prl1_only", "artefact")
+
+
+def df_keys(prefix: str) -> dict[str, str]:
+    """{suffix: key} for a prefix; {} when the block is off. Only a plain
+    identifier: the names become keys of a committed file."""
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return {}
+    if not all(ch.isalnum() or ch == "_" for ch in prefix):
+        raise ValueError(f"CARE_RELEASE_DF_KEY_PREFIX must be letters, digits and _ (got {prefix!r})")
+    return {s: f"{prefix}_{s}" for s in DF_SUFFIXES}
+
+
+def df_block(payload: dict[str, Any], care_names: list[str], prefix: str) -> tuple[dict[str, Any], list[str]]:
+    """PURE. ``(block, errors)``: the release's Dataflow artefacts as the release
+    file's four keys — "Yes" with the components, the PRL1-only ones and the
+    URLs, or "No" and empty lists when the release has none. ``{}`` with no
+    errors when the block is off and nothing was asked for."""
+    from .release_fileset import normalize_artifact
+
+    keys = df_keys(prefix)
+    urls = [normalize_artifact(a) for a in (payload.get("dataflow_artefact") or []) if str(a).strip()]
+    prl1 = [s.strip() for s in (payload.get("dataflow_prl1_only") or []) if str(s).strip()]
+    if not keys:
+        if urls or prl1:
+            return {}, ["This release carries Dataflow artefacts, but CARE_RELEASE_DF_KEY_PREFIX is not "
+                        "set — the release file has no keys for them."]
+        return {}, []
+    errors: list[str] = []
+    names: list[str] = []
+    for url in urls:
+        nv = _artifact_name_version(url)
+        if nv is None:
+            errors.append(f"Dataflow artefact has no ':version': {url}")
+        elif nv[0] in names:
+            errors.append(f"Duplicate Dataflow component: {nv[0]}")
+        elif nv[0] in care_names:
+            errors.append(f"{nv[0]} is both a CARE artefact and a Dataflow artefact — pick one.")
+        else:
+            names.append(nv[0])
+    for svc in prl1:
+        if svc not in names:
+            errors.append(f"PRL1-only Dataflow component {svc!r} is not in the Dataflow artefacts "
+                          "(a typo here would silently misroute it).")
+    if errors:
+        return {}, errors
+    return {keys["release"]: "Yes" if urls else "No", keys["components"]: names,
+            keys["prl1_only"]: [n for n in names if n in prl1], keys["artefact"]: urls}, []
+
+
+def release_text(old_text: str, details: dict[str, Any], dataflow: dict[str, Any]) -> str:
+    """The release file with this release spliced in: the CARE keys the file
+    already has (never added — a missing one is a wrong file), then the
+    Dataflow block, which is added after the last key when the file lacks it."""
+    text = json_splice.splice_top_level(old_text, file_doc(details))
+    if dataflow:
+        text = json_splice.splice_top_level(text, dataflow, add_missing=True)
+    return text
+
+
+def carried_tags(text: str) -> tuple[dict[str, str], list[str]]:
     """PURE. ``({chart: version}, entries skipped)`` of a release file's
     artefacts — what the previous release tags file takes before the release
     file is overwritten. An entry with no ``name:version`` is skipped, and said."""
     tags: dict[str, str] = {}
     skipped: list[str] = []
-    for entry in json.loads(release_text).get("artefact") or []:
+    for entry in json.loads(text).get("artefact") or []:
         nv = _artifact_name_version(str(entry))
         if nv:
             tags[nv[0]] = nv[1]
@@ -166,6 +229,13 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
         return _refuse(f"A CARE release is raised in {repo} (CARE_RELEASE_REPO), not {asked}.")
     if details.get("df_images"):
         return _refuse("A CARE release cannot carry Dataflow images — raise them in the DF release.")
+    care_names = [nv[0] for a in details["artefact"] if (nv := _artifact_name_version(a))]
+    try:
+        dataflow, df_errors = df_block(payload, care_names, settings.care_release_df_key_prefix)
+    except ValueError as e:
+        return _refuse(str(e))
+    if df_errors:
+        return {"ok": False, "errors": df_errors}
 
     progress.say(f"Checking for an open release PR on {base}")
     try:
@@ -182,7 +252,7 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
         return _refuse(f"Could not read {path} on {base} in {repo}: {e}")
     progress.say("Working out the smallest change to the release file")
     try:
-        new_text = json_splice.splice_top_level(old_text, file_doc(details))
+        new_text = release_text(old_text, details, dataflow)
     except ValueError as e:
         return _refuse(f"{path} on {base} cannot take this release: {e}")
     if new_text == old_text:
@@ -224,6 +294,7 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
         "branch": branch,
         "branch_prefix": prefix,        # apply runs the same guard again
         "details": details,             # apply splices again from these
+        "dataflow": dataflow,           # ...and this block ({} when off)
         "deployment_repo": repo,
         "landing_branch": base,
         "file": path,
@@ -247,12 +318,20 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
             "file": path,
             "branch": branch,
             "environments": partition_environments(details),
+            **({"dataflow": _df_preview(dataflow)} if dataflow else {}),
             **({"previous_tags_file": prev_path, "previous_tags": previous_note} if prev_path else {}),
             # What CONFIRM approves: the exact bytes the PR will carry — the
             # previous tags' diff first (first commit), then the release file's.
             "file_diff": diff,
         },
     }
+
+
+def _df_preview(block: dict[str, Any]) -> dict[str, Any]:
+    """The Dataflow block as the preview shows it, under plain names."""
+    keys = df_keys(settings.care_release_df_key_prefix)
+    return {"keys": list(block), "release": block.get(keys["release"]),
+            "components": block.get(keys["components"]) or [], "prl1_only": block.get(keys["prl1_only"]) or []}
 
 
 def _already_exists(error: Exception) -> bool:
@@ -353,7 +432,7 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
         raise _Stop(f"The release file on {base} changed since the preview — start the release "
                     "again. Nothing was pushed.")
     try:
-        text = json_splice.splice_top_level(old_text, file_doc(details))
+        text = release_text(old_text, details, prep.get("dataflow") or {})
     except ValueError as e:
         raise _Stop(f"{path} on {base} cannot take this release: {e}. Nothing was pushed.") from None
     if _content_hash(text) != prep["content_hash"]:

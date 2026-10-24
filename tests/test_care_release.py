@@ -578,3 +578,106 @@ def test_queued_1_2_over_released_1_1_moves_1_1_into_the_previous_tags(prev, pen
     assert json.loads(prev.files[BRANCH][PREV]) == {"svc-a": "1.1"}
     assert json.loads(prev.files[BRANCH][FILE])["artefact"] == [f"{ART}/svc-a:1.2"]
     assert prev.files["main"][PREV] == '{\n  "svc-a": "1.0"\n}\n', "main unchanged until merged"
+
+
+# --- the Dataflow block (CARE_RELEASE_DF_KEY_PREFIX) ---------------------------
+# A neutral prefix: a real deployment names its own in its values file.
+DFP = "dataflow"
+DF_ART = f"{ART}/df-agg:0.0.561"
+
+
+@pytest.fixture
+def with_df(monkeypatch):
+    monkeypatch.setattr(CR.settings, "care_release_df_key_prefix", DFP, raising=False)
+
+
+def _file_after(prep):
+    """The release file the preview approves, rebuilt from the base text."""
+    return json.loads(CR.release_text(COMMITTED, prep["details"], prep["dataflow"]))
+
+
+def test_the_dataflow_block_is_added_after_the_last_key_in_its_order(repo, with_df, monkeypatch):
+    monkeypatch.setattr(CR.settings, "artifactory_base_url", ART + "/")
+    prep = _prepare(dataflow_artefact=["df-agg:0.0.561"], dataflow_prl1_only=["df-agg"])
+    assert prep["ok"], prep
+    doc = _file_after(prep)
+    assert list(doc)[-5:] == ["artefact", f"{DFP}_release", f"{DFP}_components", f"{DFP}_prl1_only", f"{DFP}_artefact"]
+    assert doc[f"{DFP}_release"] == "Yes"
+    assert doc[f"{DFP}_components"] == ["df-agg"]
+    assert doc[f"{DFP}_prl1_only"] == ["df-agg"]
+    assert doc[f"{DFP}_artefact"] == [DF_ART], "a typed name:version becomes the full URL, like artefact"
+    assert doc["artefact"] == [f"{ART}/svc-a:5.0.470", f"{ART}/svc-c:1.2.3"], "DF never joins the CARE artefacts"
+    added = [line for line in prep["preview"]["file_diff"].splitlines() if line.startswith("+") and DFP in line]
+    assert len(added) == 4, prep["preview"]["file_diff"]
+    assert prep["preview"]["dataflow"] == {"keys": [f"{DFP}_release", f"{DFP}_components", f"{DFP}_prl1_only",
+                                                    f"{DFP}_artefact"],
+                                           "release": "Yes", "components": ["df-agg"], "prl1_only": ["df-agg"]}
+
+
+def test_no_dataflow_image_writes_no_and_empty_lists(repo, with_df):
+    prep = _prepare()
+    assert prep["ok"], prep
+    doc = _file_after(prep)
+    assert (doc[f"{DFP}_release"], doc[f"{DFP}_components"], doc[f"{DFP}_prl1_only"], doc[f"{DFP}_artefact"]) == (
+        "No", [], [], [])
+
+
+def test_a_file_that_already_has_the_block_is_updated_in_place(repo, with_df, monkeypatch):
+    monkeypatch.setattr(CR.settings, "artifactory_base_url", ART + "/")
+    with_block = CR.release_text(COMMITTED, RF.validate_release(_payload())[0],
+                                 CR.df_block({"dataflow_artefact": [f"{ART}/df-old:0.0.1"]}, [], DFP)[0])
+    repo.files["main"][FILE] = with_block
+    prep = _prepare(dataflow_artefact=["df-agg:0.0.561"])
+    assert prep["ok"], prep
+    text = CR.release_text(with_block, prep["details"], prep["dataflow"])
+    assert text.count(f'"{DFP}_artefact"') == 1, "updated where it is, never added twice"
+    assert json.loads(text)[f"{DFP}_artefact"] == [DF_ART]
+    changed = [line for line in prep["preview"]["file_diff"].splitlines()
+               if line[:1] in "+-" and line[:3] not in ("+++", "---") and DFP in line or "df-" in line]
+    assert any("df-old" in line for line in changed) and any("df-agg" in line for line in changed)
+
+
+@pytest.mark.parametrize("over, says", [
+    ({"dataflow_artefact": ["df-agg"]}, "has no ':version'"),
+    ({"dataflow_artefact": ["df-agg:1.0.0", "df-agg:1.0.1"]}, "Duplicate Dataflow component"),
+    ({"dataflow_artefact": ["svc-a:9.9.9"]}, "both a CARE artefact and a Dataflow artefact"),
+    ({"dataflow_artefact": ["df-agg:1.0.0"], "dataflow_prl1_only": ["df-agx"]}, "not in the Dataflow artefacts"),
+])
+def test_a_wrong_dataflow_block_is_refused_with_the_reason(repo, with_df, over, says):
+    out = _prepare(**over)
+    assert out["ok"] is False and any(says in e for e in out["errors"]), out
+    assert repo.writes == [] and repo.prs == []
+
+
+def test_dataflow_artefacts_without_a_prefix_are_refused_not_dropped(repo):
+    out = _prepare(dataflow_artefact=["df-agg:0.0.561"])
+    assert out["ok"] is False and "CARE_RELEASE_DF_KEY_PREFIX" in out["errors"][0]
+
+
+def test_a_prefix_that_is_not_an_identifier_is_refused(repo, monkeypatch):
+    monkeypatch.setattr(CR.settings, "care_release_df_key_prefix", "bad-prefix", raising=False)
+    out = _prepare()
+    assert out["ok"] is False and "letters, digits and _" in out["errors"][0]
+
+
+def test_raising_the_pr_commits_the_block_and_leaves_df_images_queued_for_the_df_release(repo, with_df, pending):
+    prep, out = _raise_pr(dataflow_artefact=["df-agg:0.0.561"], dataflow_prl1_only=["df-agg"])
+    assert out["ok"], out
+    committed = json.loads(repo.files[BRANCH][FILE])
+    assert committed[f"{DFP}_components"] == ["df-agg"] and committed[f"{DFP}_release"] == "Yes"
+    assert [a["name"] for a in pending[0]["artifacts"]] == ["svc-a", "svc-c"], \
+        "only the CARE charts move to Release history; the DF release still raises and drains df-agg"
+
+
+def test_apply_reproduces_exactly_the_approved_block(repo, with_df, pending):
+    prep = _prepare(dataflow_artefact=["df-agg:0.0.561"])
+    prep["dataflow"][f"{DFP}_components"] = ["tampered"]
+    out = RF.apply_release_fileset(prep)
+    assert out["ok"] is False and "no longer matches what you approved" in json.dumps(out)
+    assert repo.prs == []
+
+
+def test_outside_mono_mode_dataflow_artefacts_are_refused(monkeypatch, with_df):
+    monkeypatch.setattr(CR.settings, "care_release_mode", "fileset")
+    out = RF.prepare_release_fileset(_payload(dataflow_artefact=["df-agg:0.0.561"]))
+    assert out["ok"] is False and "only in mono mode" in out["errors"][0]

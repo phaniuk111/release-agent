@@ -1,5 +1,5 @@
 import { escapeHtml as esc, shortName } from '../core/format.js';
-import { buildSummary, forRelease, releaseRouteText } from '../core/queue.js';
+import { artifactName, buildSummary, dataflowFields, forRelease, releaseRouteText } from '../core/queue.js';
 import { CHIPS, DF_DRAFT_FIELDS, PROSE_FIELDS, canReplace, chipState, itemsKey, monoReleaseNote } from '../core/chg.js';
 import { getContext, QUEUE_PATH, releaseDefaults, releaseDraft, whoami } from '../api.js';
 import { llmEnabled } from '../core/capabilities.js';
@@ -35,6 +35,11 @@ export async function showReleaseForm(kind) {
           care_release_mode: 'fileset', care_release_repo: '', care_release_file: '' });
     _ph.remove();
     const mono = !isDf && qctx.care_release_mode === 'mono';
+    // Mono mode with a Dataflow block (CARE_RELEASE_DF_KEY_PREFIX): the CARE
+    // release FILE also lists the queued DF images. They are read here, before
+    // the queue is narrowed to CARE items, and never reach the prose below.
+    const withDf = mono && !!qctx.care_release_dataflow;
+    const dfQueue = withDf ? forRelease(qctx.queue, true) : [];
     // The two releases are independent: a DF release carries only df_only items
     // and is raised in its own repo (DF_RELEASE_REPO), so it neither picks up
     // CARE artifacts nor targets the CARE repo.
@@ -114,7 +119,79 @@ export async function showReleaseForm(kind) {
           placeholder: isDf ? 'order-enrichment:1.4.2\nhttps://artifactory…/df-position-agg:2.1.0'
                             : 'acme-workflow-service:4.0.66\nhttps://artifactory…/acme-risk-fetcher:4.0.153' });
     artEl.rows = 5; artEl.spellcheck = false; artEl.classList.add('font-mono');
+    // The Dataflow block: in the release file only — the change request is
+    // drafted from the CARE artifacts above, never from these.
+    const dfArtEl = withDf ? mk('Dataflow artefacts — one per line (full URL or name:version); ' +
+            'release file only, not the change request',
+        { id: 'rel-df-artifacts', tag: 'textarea', placeholder: 'df-position-agg:2.1.0' }) : null;
+    if (dfArtEl) { dfArtEl.rows = 3; dfArtEl.spellcheck = false; dfArtEl.classList.add('font-mono'); }
     wrap.appendChild(grid);
+
+    const dfQueuedByName = {};
+    dfQueue.forEach(q => { dfQueuedByName[q.artifact_name] = q; });
+    const dfManualPrl1 = new Set();
+    const dfLines = () => dfArtEl ? dfArtEl.value.split('\n').map(l => l.trim()).filter(Boolean) : [];
+    if (dfArtEl) {
+        // Queued DF images arrive ticked, like the CARE checklist; untick to
+        // leave one out of this release file. Routing is the developer's own
+        // choice from the queue; a typed image gets a PRL1-only box.
+        const dfBox = document.createElement('div');
+        dfBox.className = 'border border-sky-700/40 bg-sky-500/5 rounded-lg px-3 py-2 mb-2 text-[11px]';
+        const head = document.createElement('div');
+        head.className = 'text-sky-300 mb-1';
+        head.innerHTML = '<i class="fa-solid fa-water mr-1"></i>Dataflow in this release file (' + dfQueue.length +
+            ' queued) — the DF release still raises and ships them';
+        dfBox.appendChild(head);
+        const dfRows = document.createElement('div');
+        const renderDf = () => {
+            dfRows.innerHTML = '';
+            const seen = new Set();
+            dfLines().forEach(l => {
+                const n = artifactName(l);
+                if (!n || seen.has(n)) return; seen.add(n);
+                const q = dfQueuedByName[n];
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-3 font-mono';
+                const name = '<span class="w-44 shrink-0 truncate text-slate-300">' + esc(n) + '</span>';
+                if (q) {
+                    row.innerHTML = name + '<span class="flex-1 text-slate-400">' +
+                        (q.prl1_only ? 'PRL1 only' : 'PRD + PRL1') + '</span><span class="text-slate-600">from the queue</span>';
+                } else {
+                    row.innerHTML = name + '<span class="flex-1 text-amber-300/80">not queued</span>' +
+                        '<label class="flex items-center gap-1 text-slate-400"><input type="checkbox"' +
+                        (dfManualPrl1.has(n) ? ' checked' : '') + '> PRL1-only</label>';
+                    row.querySelector('input').addEventListener('change', (e) => {
+                        if (e.target.checked) dfManualPrl1.add(n); else dfManualPrl1.delete(n);
+                    });
+                }
+                dfRows.appendChild(row);
+            });
+        };
+        dfQueue.forEach(q => {
+            const row = document.createElement('label');
+            row.className = 'flex items-center gap-2 text-slate-300 font-mono py-0.5 cursor-pointer';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.checked = true; cb.dataset.dfq = q.artifact_name;
+            const span = document.createElement('span');
+            span.className = 'flex-1 truncate';
+            span.innerHTML = esc(q.artifact_name) + ':' + esc(q.artifact_version) +
+                (q.prl1_only ? ' <span class="text-violet-400">PRL1</span>' : '');
+            cb.addEventListener('change', () => {
+                const line = q.artifact_name + ':' + q.artifact_version;
+                const lines = dfLines().filter(l => artifactName(l) !== q.artifact_name);
+                if (cb.checked) lines.push(line);
+                dfArtEl.value = lines.join('\n');
+                renderDf();
+            });
+            row.appendChild(cb); row.appendChild(span);
+            dfBox.appendChild(row);
+        });
+        dfBox.appendChild(dfRows);
+        wrap.insertBefore(dfBox, grid.nextSibling);
+        dfArtEl.value = dfQueue.map(q => q.artifact_name + ':' + q.artifact_version).join('\n');
+        dfArtEl.addEventListener('input', renderDf);
+        renderDf();
+    }
 
     const artifactLines = () => artEl.value.split('\n').map(l => l.trim()).filter(Boolean);
 
@@ -527,6 +604,9 @@ export async function showReleaseForm(kind) {
             // mono-repo file in mono mode; DF: its own chain).
             release_kind: isDf ? 'df' : 'care',
         };
+        // The Dataflow block (mono mode, CARE_RELEASE_DF_KEY_PREFIX set) — the
+        // release file only; sent even when empty, so the file says "No".
+        if (withDf) Object.assign(payload, dataflowFields(dfLines(), dfQueuedByName, dfManualPrl1));
         sendMessage(JSON.stringify(payload));
     });
     row.appendChild(submit); row.appendChild(err);

@@ -343,6 +343,17 @@ class Settings(BaseSettings):
     care_release_name_format: str = Field(
         default="", validation_alias=AliasChoices("CARE_RELEASE_NAME_FORMAT"),
     )
+    # The Dataflow block of a mono-mode CARE release file. Set, and the release
+    # file also carries the release's DF artefacts under four keys named from
+    # it — <prefix>_release ("Yes"/"No"), <prefix>_components (names),
+    # <prefix>_prl1_only (names) and <prefix>_artefact (URLs) — which the team's
+    # notification workflow reads; added to the file if it lacks them. The DF
+    # artefacts never enter the change-request prose, and the DF release still
+    # raises and drains them as before. Empty = no Dataflow block (the file
+    # keeps today's keys and a CARE release carries no DF artefact).
+    care_release_df_key_prefix: str = Field(
+        default="", validation_alias=AliasChoices("CARE_RELEASE_DF_KEY_PREFIX"),
+    )
     # The model that drafts change-request prose, and where Vertex serves it.
     # Empty = GEMINI_MODEL / GOOGLE_CLOUD_LOCATION. A draft summarises what
     # developers wrote, so a fast model with thinking off is enough; newer

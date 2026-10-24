@@ -81,6 +81,37 @@ export function forRelease(queue, isDf) {
 }
 
 /**
+ * The name in an artifact line — "name:version" or a full registry URL ending
+ * in one — or null. Trailing slashes off, then the last path segment; no regex.
+ * @param {string} line
+ */
+export function artifactName(line) {
+    let l = String(line || '').trim();
+    while (l.endsWith('/')) l = l.slice(0, -1);
+    const last = l.split('/').pop();
+    const i = last.indexOf(':');
+    return i > 0 ? last.slice(0, i) : null;
+}
+
+/**
+ * The Dataflow block a mono-mode CARE release sends: every typed DF line as
+ * an artefact, and the PRL1-only ones — a queued image's own choice (PRL1
+ * without PRD), else the box ticked on the form for an image typed in by hand.
+ * It goes to the release file only; the change-request prose never sees it.
+ * @param {string[]} lines            the Dataflow artefact lines on the form
+ * @param {Object<string, {prl1_only?: boolean}>} queuedByName
+ * @param {Set<string>} manualPrl1    names ticked PRL1-only on the form
+ * @returns {{dataflow_artefact: string[], dataflow_prl1_only: string[]}}
+ */
+export function dataflowFields(lines, queuedByName, manualPrl1) {
+    const artefacts = (lines || []).map(l => String(l).trim()).filter(Boolean);
+    const names = Array.from(new Set(artefacts.map(artifactName).filter(Boolean)));
+    const prl1 = names.filter(n => (queuedByName && queuedByName[n])
+        ? !!queuedByName[n].prl1_only : !!(manualPrl1 && manualPrl1.has(n)));
+    return { dataflow_artefact: artefacts, dataflow_prl1_only: prl1 };
+}
+
+/**
  * Everything wrong with a queue submission, as sentences — every bad row at
  * once, named by chart, so one attempt tells the developer everything to fix.
  * Rows with nothing typed are not part of the submission.
