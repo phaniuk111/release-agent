@@ -6,8 +6,11 @@ those mentions with a tokenizer (no regex, like parsing.py) so the banner can
 show them and the deployment tracker can tell the requester when one appears.
 
 What counts: a token whose upper-cased form is <PREFIX>-<digits> or
-<PREFIX><digits> for one of TICKET_PREFIXES ("CHG,RMG"), normalised to
-PREFIX-digits. Only the ticket itself is read — never a state: the comments do
+<PREFIX><digits> for one of TICKET_PREFIXES ("CHG,RMG"). The id is kept as
+written, upper-cased — "CHG0012345" stays "CHG0012345", "chg-12" becomes
+"CHG-12" — because it is handed on as it is (the release notification's
+change_request): a hyphen the change system never wrote would name a ticket
+that does not exist. Only the ticket itself is read — never a state: the comments do
 not say one, and a word guessed from them would be wrong. Across a PR the body
 is read first, then the comments oldest to newest, and the newest mention per
 prefix wins.
@@ -36,7 +39,7 @@ _cache_lock = threading.Lock()
 
 @dataclass(frozen=True)
 class Ticket:
-    id: str        # "CHG-12345" — always PREFIX-digits, upper-cased
+    id: str        # as written, upper-cased: "CHG0012345" or "CHG-12345"
     prefix: str    # "CHG"
     number: str    # "12345" — digits as written (leading zeros kept: it is a name, not a count)
 
@@ -99,7 +102,7 @@ def tickets_in(text: str, prefixes: list[str] | None = None) -> list[Ticket]:
             hit = _as_ticket(token, wanted)
             if hit:
                 prefix, digits = hit
-                found.append(Ticket(id=f"{prefix}-{digits}", prefix=prefix, number=digits))
+                found.append(Ticket(id=token.upper(), prefix=prefix, number=digits))
     return found
 
 

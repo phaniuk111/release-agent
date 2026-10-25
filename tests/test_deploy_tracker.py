@@ -751,3 +751,14 @@ def test_notify_test_sends_the_dry_run_to_the_test_channel(monkeypatch):
     monkeypatch.setattr(settings, "notify_test", True, raising=False)
     assert DT.notify_inputs("starting", "CHG-1", settings.prd_branch)["test_notification"] == "true"
     assert DT.notify_inputs("failed", "CHG-1", settings.prd_branch) is None, "a failure is still not announced"
+
+
+def test_the_change_request_is_sent_exactly_as_written_on_the_pr():
+    """Found live (2026-10-25): a PR saying CHG0099001 dispatched the release
+    notification with CHG-0099001 — a ticket the change system does not have."""
+    from release_agent.tools import tickets as TK
+
+    found = TK.tickets_from("Promote UAT to PRD.\n\nCHG: CHG0099001\nRMG: RMG0042001", "https://example/pr/4", [])
+    cols = TK.columns(found)
+    assert (cols["chg"], cols["rmg"]) == ("CHG0099001", "RMG0042001")
+    assert DT.notify_inputs("starting", cols["chg"], settings.prd_branch)["change_request"] == "CHG0099001"

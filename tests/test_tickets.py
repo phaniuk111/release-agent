@@ -26,11 +26,14 @@ def _ids(text, prefixes=None):
 
 # ----- the tokenizer -----------------------------------------------------------------
 
-def test_a_ticket_is_read_with_or_without_its_dash_in_any_case():
+def test_a_ticket_is_read_with_or_without_its_dash_in_any_case_and_kept_as_written():
+    """Recognised either way, handed on as written (upper-cased): the release
+    notification's change_request must name the ticket the change system has —
+    a hyphen it never wrote would not."""
     assert _ids("CHG-12345 created") == ["CHG-12345"]
     assert _ids("chg-12345") == ["CHG-12345"]
-    assert _ids("CHG12345") == ["CHG-12345"]
-    assert _ids("Chg12345") == ["CHG-12345"]
+    assert _ids("CHG0012345") == ["CHG0012345"], "no hyphen added, leading zeros kept"
+    assert _ids("Chg12345") == ["CHG12345"]
 
 
 def test_punctuation_around_a_ticket_is_not_part_of_it():
