@@ -331,7 +331,8 @@ config:
   # commit and tells them "completed" or "failed at <job> > <step>" — one bell
   # item per PR that changes, the facts in portal_events (domain deploy). It
   # also watches the PRs the mono repo's action raises into the deployment
-  # repo's guard branches (RELEASE_GUARD_BRANCHES, in DEPLOY_REPO): no one in the
+  # repo's PRD_BRANCH and PRL1_BRANCH (in DEPLOY_REPO — never the SIT/UAT entries
+  # of RELEASE_GUARD_BRANCHES, which is only the release guard): no one in the
   # portal raised those, so no bell — only the NOTIFY_WORKFLOW dispatch below.
   # It never merges, re-runs or rolls back. Preview feature "deploy-tracking".
   # TOKEN: a sweep has no chat session, so it reads GitHub (and dispatches

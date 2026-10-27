@@ -59,7 +59,7 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   grey "no CHG yet" for a prefix the PR does not name (never a state), nothing on a read error.
 - **Deployment tracking** (`adk_release_agent/deploy_tracker.py`, started in
   `_lifespan` only with `DEPLOY_TRACKING_ENABLED=true`, preview feature
-  `deploy-tracking`): watches the portal's pending PRs and the guard-branch PRs the mono repo's
+  `deploy-tracking`): watches the portal's pending PRs and the PRD/PRL1 PRs the mono repo's
   action raises in the deployment repo (recorded `deploy/watching`; no
   requester, so no bell) and their runs, and tells the requester of a
   portal-raised one; never merges, re-runs or rolls back. Its `NOTIFY_WORKFLOW`

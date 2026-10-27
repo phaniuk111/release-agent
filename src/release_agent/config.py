@@ -775,7 +775,8 @@ class Settings(BaseSettings):
     # A timed sweep that WATCHES the PRs the portal raised: when one merges it tells
     # the requester, follows the workflow runs the merge started and tells them how
     # those ended. The PRs the mono repo's action raises into the deployment repo's
-    # guard branches are watched too, without a bell (no requester). It never merges, re-runs or rolls back. Off by default; preview
+    # PRD_BRANCH / PRL1_BRANCH are watched too, without a bell (no requester); only merges into those two are
+    # release notifications. It never merges, re-runs or rolls back. Off by default; preview
     # feature "deploy-tracking" decides who sees it. With no session in play it
     # reads GitHub as the bot (GH_TOKEN).
     deploy_tracking_enabled: bool = Field(default=False, validation_alias=AliasChoices("DEPLOY_TRACKING_ENABLED"))

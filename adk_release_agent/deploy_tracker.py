@@ -22,7 +22,7 @@ approvals.py as the one write that never pauses for a yes, because it changes no
 deployment.
 
 Cadence (next_delay, pure): nothing in flight -> one event-log read and one
-listing of the guard branches per TRACK_OPEN_MINUTES; a PR open -> every TRACK_OPEN_MINUTES; a
+listing of PRD_BRANCH / PRL1_BRANCH per TRACK_OPEN_MINUTES; a PR open -> every TRACK_OPEN_MINUTES; a
 merge with runs in flight -> every TRACK_RUN_SECONDS; a pass that failed -> the
 slow cadence, never the fast one. One pass at a time per process (begin/finish,
 like the Auto-triage watcher), started from the app lifespan only when
@@ -32,8 +32,9 @@ line in the pass summary and the log, and the next pass tries again.
 Which PRs, two sources, one path. The PRs the portal raised and could not merge
 (below); and the PRs that nobody in the portal raised: in the team's CARE mono
 flow a merge in the mono repo makes ITS action raise PRs in the deployment repo
-into the guard branches (release_chain.guard_branches("care")), and the portal
-never saw them. Each pass lists the newest open PR into each guard branch and
+into PRD_BRANCH and PRL1_BRANCH (notify_branches — never RELEASE_GUARD_BRANCHES, the
+release guard, which may hold SIT and UAT), and the portal never saw them. Each pass
+lists the newest open PR into each of the two and
 records a new one as deploy/watching; every watched PR is then fetched once per
 pass until it is merged — the same merged -> runs -> finished path — or closed
 unmerged (deploy/closed, nothing sent). The state is the event log, so a restart
@@ -220,7 +221,7 @@ def _first(pending: list[dict[str, Any]], field: str) -> str:
 
 def watch_targets(rows: list[dict[str, Any]], known: dict[str, dict[str, Any]], taken: set[tuple[str, int]],
                   now: _dt.datetime) -> dict[tuple[str, int], dict[str, Any]]:
-    """The watched (guard-branch) PRs to visit this pass, from a newest-first
+    """The watched (PRD/PRL1) PRs to visit this pass, from a newest-first
     history read. Pure. Left out: one already followed as a portal pending PR
     (``taken`` — same scope, followed once), one closed or given up on, and one
     whose runs finished and whose window after the merge is over."""
@@ -340,6 +341,19 @@ def is_rerun(runs: list[dict[str, Any]], last_finished: dict[str, Any]) -> bool:
 
 # ----- the one GitHub write --------------------------------------------------------
 
+def notify_branches() -> list[str]:
+    """The branches whose merges are release notifications: PRD_BRANCH and
+    PRL1_BRANCH, the two the team's workflow can name (environment PROD /
+    PRL1). Not RELEASE_GUARD_BRANCHES — that list is the one-release-at-a-time
+    guard and may hold SIT and UAT, whose merges are not releases."""
+    out: list[str] = []
+    for branch in (settings.prd_branch, settings.prl1_branch):
+        branch = str(branch or "").strip()
+        if branch and branch not in out:
+            out.append(branch)
+    return out
+
+
 def notify_workflow_target() -> tuple[str, str]:
     """("owner/repo", "workflow-file.yml") from NOTIFY_WORKFLOW, or ("", "")."""
     raw = str(settings.notify_workflow or "").strip()
@@ -374,6 +388,9 @@ def dispatch_notify_workflow(github: Any, stage: str, *, chg: str, base: str) ->
     repo_full, workflow_file = notify_workflow_target()
     if not repo_full:
         return {"ok": True, "skipped": "NOTIFY_WORKFLOW is not set"}
+    if base not in notify_branches():
+        # A merge into SIT or UAT (a portal PR stopped at review) is not a release.
+        return {"ok": True, "skipped": f"{base or 'that branch'} is not PRD_BRANCH or PRL1_BRANCH"}
     inputs = notify_inputs(stage, chg, base)
     if inputs is None:
         return {"ok": True, "skipped": f"the workflow is not told of stage {stage}"}
@@ -407,7 +424,7 @@ def _record(row: dict[str, Any]) -> None:
 def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict[str, dict[str, Any]],
             now: _dt.datetime, summary: dict[str, Any],
             outcomes: dict[tuple[str, int], Any] | None = None) -> None:
-    """Follow one PR: a portal pending PR, or (``cand["watched"]``) a guard-branch
+    """Follow one PR: a portal pending PR, or (``cand["watched"]``) a PRD/PRL1
     PR nobody in the portal raised, which has no requester and so no bell item.
     ``outcomes``, when given, is filled with this
     pass's reading of the PR (``pr_reconcile.pr_outcome``) so the settlement that
@@ -522,7 +539,7 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
 
 
 def _watch_repo() -> str:
-    """The deployment repo whose guard branches are watched; '' watches none."""
+    """The deployment repo whose PRD/PRL1 branches are watched; '' watches none."""
     from release_agent.tools._common import active_deploy_repo
 
     return str(active_deploy_repo() or settings.deploy_repo or "").strip()
@@ -530,13 +547,12 @@ def _watch_repo() -> str:
 
 def _watch_new(github: Any, repo_full: str, watched_scopes: set[str], taken: set[tuple[str, int]],
                summary: dict[str, Any]) -> None:
-    """Record every open guard-branch PR not seen before as deploy/watching. The
-    listing is the pass's one read of the branch, so the PR it hands over is read
-    for its tickets as it is — no second fetch."""
+    """Record every open PR into PRD_BRANCH / PRL1_BRANCH not seen before as
+    deploy/watching. The listing is the pass's one read of the branch, so the PR
+    it hands over is read for its tickets as it is — no second fetch."""
     from release_agent.tools import release_window
-    from release_agent.tools.release_chain import guard_branches
 
-    for pr in release_window._open_release_prs(github.get_repo(repo_full), guard_branches("care")):
+    for pr in release_window._open_release_prs(github.get_repo(repo_full), notify_branches()):
         number = int(pr.number)
         scope = scope_for(repo_full, number)
         if (repo_full, number) in taken or scope in watched_scopes:
@@ -596,7 +612,7 @@ def run_pass(*, github: Any = None, events: list[dict[str, Any]] | None = None,
                 seen = {row.get("scope") for row in rows if row.get("event_type") == _WATCHING}
                 _watch_new(github, watch_repo, seen, set(cands), summary)
             except Exception as e:  # noqa: BLE001 — the listing failing must not stop the PRs already followed
-                line = f"{watch_repo}: guard branches: {type(e).__name__}: {str(e)[:200]}"
+                line = f"{watch_repo}: PRD/PRL1 branches: {type(e).__name__}: {str(e)[:200]}"
                 summary["errors"].append(line)
                 logger.warning("deploy_tracker: %s", line)
         outcomes: dict[tuple[str, int], Any] = {}

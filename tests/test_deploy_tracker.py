@@ -471,12 +471,16 @@ def test_a_failed_deployment_dispatches_nothing_but_is_still_told_and_recorded(m
     assert _rows("finished")[0]["conclusion"] == "failure"
 
 
-def test_a_prl1_or_other_base_names_its_environment(monkeypatch):
+def test_only_merges_into_prd_or_prl1_are_release_notifications(monkeypatch):
+    """A portal PR stopped at review in SIT or UAT is followed for its own
+    requester, but its merge is not a release: the team's workflow can only
+    name PROD or PRL1, and GitHub would refuse anything else."""
     monkeypatch.setattr(settings, "notify_workflow", "example-org/ops:send-notification.yml")
     gh = _GitHub({7: _PR(7, merged=True, state="closed", when=T0, base=settings.prl1_branch),
-                  8: _PR(8, merged=True, state="closed", when=T0, base="RELEASE_UAT")}, runs={SHA: [_Run(1)]})
-    DT.run_pass(github=gh, events=[_pending(7), _pending(8)], now=T0)
-    assert sorted(d[2]["inputs"]["environment"] for d in gh.dispatches) == ["PRL1", "RELEASE_UAT"]
+                  8: _PR(8, merged=True, state="closed", when=T0, base="SIT"),
+                  9: _PR(9, merged=True, state="closed", when=T0, base="UAT")}, runs={SHA: [_Run(1)]})
+    DT.run_pass(github=gh, events=[_pending(7), _pending(8), _pending(9)], now=T0)
+    assert [d[2]["inputs"]["environment"] for d in gh.dispatches] == ["PRL1"]
 
 
 def test_a_dispatch_that_fails_is_recorded_beside_the_merge_never_raised(monkeypatch):
@@ -484,7 +488,8 @@ def test_a_dispatch_that_fails_is_recorded_beside_the_merge_never_raised(monkeyp
     class _Broken(_Workflow):
         def requestJsonAndCheck(self, *a, **k):
             raise RuntimeError("403 resource not accessible")
-    gh = _GitHub({7: _PR(7, merged=True, state="closed", when=T0)}, runs={SHA: [_Run(1)]}, workflow=_Broken)
+    gh = _GitHub({7: _PR(7, merged=True, state="closed", when=T0, base=settings.prd_branch)},
+                 runs={SHA: [_Run(1)]}, workflow=_Broken)
     out = DT.run_pass(github=gh, events=[_pending(7)], now=T0)
     assert out["ok"] and out["started"]
     assert '"notify_error":"RuntimeError: 403 resource not accessible"' in _rows("merged")[0]["details"]
@@ -762,3 +767,20 @@ def test_the_change_request_is_sent_exactly_as_written_on_the_pr():
     cols = TK.columns(found)
     assert (cols["chg"], cols["rmg"]) == ("CHG0099001", "RMG0042001")
     assert DT.notify_inputs("starting", cols["chg"], settings.prd_branch)["change_request"] == "CHG0099001"
+
+
+def test_the_notification_branches_are_prd_and_prl1_whatever_the_guard_lists(monkeypatch):
+    """RELEASE_GUARD_BRANCHES is the release guard and may list SIT and UAT; the
+    notifications watch PRD_BRANCH and PRL1_BRANCH only."""
+    monkeypatch.setattr(settings, "release_guard_branches", ["SIT", "UAT", "PRD", "PRL1"])
+    assert DT.notify_branches() == [settings.prd_branch, settings.prl1_branch]
+    monkeypatch.setattr(settings, "prd_branch", "production")
+    assert DT.notify_branches() == ["production", settings.prl1_branch]
+
+
+def test_a_dispatch_for_a_branch_that_is_not_prd_or_prl1_is_skipped_not_sent(monkeypatch):
+    monkeypatch.setattr(settings, "notify_workflow", "example-org/ops:send-notification.yml")
+    gh = _GitHub({})
+    out = DT.dispatch_notify_workflow(gh, "starting", chg="CHG0000001", base="UAT")
+    assert out["ok"] and "not PRD_BRANCH or PRL1_BRANCH" in out["skipped"] and gh.dispatches == []
+
