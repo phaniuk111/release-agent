@@ -90,7 +90,10 @@ def _open_release_prs(repo, branches: list[str], limit: int = 30) -> list:
 
 
 def _pr_view(pr) -> dict:
-    return {"number": pr.number, "url": pr.html_url, "head": pr.head.ref, "base": pr.base.ref}
+    from .release_chain import env_of
+
+    return {"number": pr.number, "url": pr.html_url, "head": pr.head.ref, "base": pr.base.ref,
+            "env": env_of(pr.base.ref)}
 
 
 def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
@@ -106,7 +109,7 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
     raised in different repos, so each has its own PRs, branches and guard.
     Empty = the configured CARE repo. ``kind`` "df" watches the DF chain
     (DF_RELEASE_BRANCHES)."""
-    from .release_chain import guard_branches
+    from .release_chain import guard_branches, production_branches
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
@@ -119,7 +122,11 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
         uat = _charts(repo, "uat")
         prd = _charts(repo, "prd")
         blocker = _open_prd_pr_blocker(repo, branches=guard_branches(kind))
-        open_prs = _open_release_prs(repo, guard_branches(kind)) if blocker is not None else []
+        # What the banner lists: for CARE, the release PR into PRL1 and into PRD
+        # whatever the guard holds (its default is PRD alone, and a UAT→PRL1
+        # PR with its own CHG went unseen); for DF, its own chain.
+        shown = production_branches() if kind == "care" else guard_branches(kind)
+        open_prs = _open_release_prs(repo, shown)
     except Exception as e:
         return {
             **base, "error": str(e), "uat_charts": [], "prd_charts": [],
@@ -128,11 +135,10 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
 
     reason = "No release currently in flight."
     blocking_pr = None
-    release_prs: list[dict] = []
+    release_prs: list[dict] = [_pr_view(pr) for pr in open_prs]
     if blocker is not None:
         # blocking_pr is the same object as its entry in release_prs, so what is
         # added to one (the tickets) is on both.
-        release_prs = [_pr_view(pr) for pr in open_prs]
         blocking_pr = next((p for p in release_prs if p["number"] == blocker.number), None) or _pr_view(blocker)
         if blocking_pr not in release_prs:
             release_prs.insert(0, blocking_pr)

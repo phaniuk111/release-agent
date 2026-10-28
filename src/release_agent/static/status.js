@@ -9,7 +9,7 @@ import { getAutoTriage, releaseStatus } from './api.js';
 import { stripLine } from './core/auto_triage.js';
 import { hasFeature } from './core/capabilities.js';
 import { escapeHtml as esc } from './core/format.js';
-import { releasePrs, ticketParts } from './core/tickets.js';
+import { releaseLine, releasePrs, releaseTitle, ticketParts } from './core/tickets.js';
 import { showAutoTriage } from './forms/auto_triage.js';
 
 function _chartList(arr) {
@@ -173,22 +173,24 @@ export async function loadReleaseStatus(fresh) {
         // flight, each with its own CHG); one line each in the details. An open
         // PR is BOTH the release in flight and the reason adds are blocked, so
         // the title names each number once.
+        // One line per CARE release in flight — UAT→PRL1 and UAT→PRD each with
+        // its own CHG and RMG ("CARE PRL1 · CHG… · RMG…"). Adds are blocked only
+        // while the release guard holds (blocking_pr), not by every listed PR.
         const prs = releasePrs(s);
-        const blk = prs.length ? prs[0] : null;
-        const careTitle = prs.length
-            ? 'CARE: PR ' + prs.map(p => '#' + p.number).join(', ') + ' open · adds blocked'
-            : 'CARE: no release PR open';
+        const blk = s.blocking_pr && s.blocking_pr.number ? s.blocking_pr : null;
+        const careTitle = releaseTitle(prs, !!blk);
         // Intake-queue awareness: how many charts devs have registered for the
         // NEXT release (absent when the BQ queue is disabled).
         const qTitle = (typeof s.queued_next === 'number' && s.queued_next > 0)
             ? ' · ' + s.queued_next + ' queued for next release' : '';
-        const blkDetail = prs.length
-            ? '<br><span class="text-amber-400">⚠ Adds to the release are blocked until ' +
-              (prs.length > 1 ? 'these are' : 'this is') + ' merged or closed:</span>' +
-              prs.map(p => '<br><span class="text-amber-400">· <a href="' + esc(p.url) +
-                  '" target="_blank" class="underline">PR #' + esc(p.number) + '</a> (' + esc(p.head) +
-                  ' → ' + esc(p.base) + ')' + _ticketsHtml(p) + '</span>').join('')
-            : '';
+        const blkDetail = prs.map(p => {
+                const line = releaseLine(p);
+                return '<br><span class="text-slate-200 font-medium">' + esc(line.label) + '</span>' + _ticketsHtml(p) +
+                    ' <span class="text-slate-500">— <a href="' + esc(line.url) + '" target="_blank" class="underline">PR #' +
+                    esc(line.number) + '</a> (' + esc(line.head) + ' → ' + esc(line.base) + ')</span>';
+            }).join('') +
+            (blk ? '<br><span class="text-amber-400">⚠ Adds to the release are blocked until PR #' + esc(blk.number) +
+                   ' is merged or closed.</span>' : '');
         const df = _dfSummary(s);
         dot.className = blk
             ? 'w-2 h-2 rounded-full bg-amber-400 inline-block'

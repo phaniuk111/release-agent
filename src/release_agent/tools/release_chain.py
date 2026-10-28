@@ -54,6 +54,29 @@ def targets(kind: str) -> dict[str, str]:
     return out
 
 
+def production_branches() -> list[str]:
+    """The two CARE release targets, PRL1_BRANCH then PRD_BRANCH: what the
+    banner lists a release PR for and what a release notification is sent for.
+    Not guard_branches — that list is the one-release-at-a-time guard, may be
+    just PRD (its default) or hold SIT and UAT, and neither suits either use."""
+    out: list[str] = []
+    for branch in (settings.prl1_branch, settings.prd_branch):
+        branch = str(branch or "").strip()
+        if branch and branch not in out:
+            out.append(branch)
+    return out
+
+
+def env_of(base: str) -> str:
+    """How a release target reads to a person: PRD or PRL1 for those two
+    branches, the branch name otherwise."""
+    if base and base == settings.prd_branch:
+        return "PRD"
+    if base and base == settings.prl1_branch:
+        return "PRL1"
+    return base
+
+
 def guard_branches(kind: str) -> list[str]:
     """Branches where an open PR means this kind's release is already in flight."""
     if kind == "df" and parse(settings.df_release_branches):

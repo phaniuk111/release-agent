@@ -45,3 +45,27 @@ test('releasePrs: every open release PR, else the single blocking_pr, else none'
     assert.deepEqual(releasePrs({ release_prs: [], blocking_pr: null }), []);
     assert.deepEqual(releasePrs(null), []);
 });
+
+import { releaseLabel, releaseLine, releaseTitle } from '../../src/release_agent/static/core/tickets.js';
+
+test('a release PR reads as its kind and environment', () => {
+    assert.equal(releaseLabel({ env: 'PRL1', base: 'PRL1' }), 'CARE PRL1');
+    assert.equal(releaseLabel({ env: 'PRD', base: 'production' }), 'CARE PRD');
+    assert.equal(releaseLabel({ base: 'PRD' }), 'CARE PRD', 'an older server without env');
+    assert.equal(releaseLabel({}), 'CARE');
+});
+
+test('one line per release: label, then each ticket', () => {
+    const line = releaseLine({ number: 102, url: 'u', head: 'UAT', base: 'PRL1', env: 'PRL1',
+        tickets: { chg: { id: 'CHG0099006', url: 'c' }, rmg: null } });
+    assert.equal(line.label, 'CARE PRL1');
+    assert.deepEqual(line.parts.map(p => p.text), ['CHG0099006', 'no RMG yet']);
+    assert.equal(releaseLine({ number: 101, env: 'PRD' }).parts.length, 0, 'unread tickets: label only');
+});
+
+test('the banner title names every release and says when adds are blocked', () => {
+    const prs = [{ number: 102, env: 'PRL1' }, { number: 101, env: 'PRD' }];
+    assert.equal(releaseTitle(prs, true), 'CARE PRL1 #102 · CARE PRD #101 · adds blocked');
+    assert.equal(releaseTitle([prs[0]], false), 'CARE PRL1 #102');
+    assert.equal(releaseTitle([], false), 'CARE: no release PR open');
+});

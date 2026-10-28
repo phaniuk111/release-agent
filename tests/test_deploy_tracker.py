@@ -773,9 +773,9 @@ def test_the_notification_branches_are_prd_and_prl1_whatever_the_guard_lists(mon
     """RELEASE_GUARD_BRANCHES is the release guard and may list SIT and UAT; the
     notifications watch PRD_BRANCH and PRL1_BRANCH only."""
     monkeypatch.setattr(settings, "release_guard_branches", ["SIT", "UAT", "PRD", "PRL1"])
-    assert DT.notify_branches() == [settings.prd_branch, settings.prl1_branch]
+    assert DT.notify_branches() == [settings.prl1_branch, settings.prd_branch]
     monkeypatch.setattr(settings, "prd_branch", "production")
-    assert DT.notify_branches() == ["production", settings.prl1_branch]
+    assert DT.notify_branches() == [settings.prl1_branch, "production"]
 
 
 def test_a_dispatch_for_a_branch_that_is_not_prd_or_prl1_is_skipped_not_sent(monkeypatch):

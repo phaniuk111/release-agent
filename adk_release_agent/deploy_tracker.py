@@ -346,12 +346,9 @@ def notify_branches() -> list[str]:
     PRL1_BRANCH, the two the team's workflow can name (environment PROD /
     PRL1). Not RELEASE_GUARD_BRANCHES — that list is the one-release-at-a-time
     guard and may hold SIT and UAT, whose merges are not releases."""
-    out: list[str] = []
-    for branch in (settings.prd_branch, settings.prl1_branch):
-        branch = str(branch or "").strip()
-        if branch and branch not in out:
-            out.append(branch)
-    return out
+    from release_agent.tools.release_chain import production_branches
+
+    return production_branches()
 
 
 def notify_workflow_target() -> tuple[str, str]:

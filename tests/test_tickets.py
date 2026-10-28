@@ -226,8 +226,29 @@ def test_the_status_lists_one_release_pr_per_guarded_branch(monkeypatch):
     monkeypatch.setattr(RW, "_charts", lambda repo, env: {})
     monkeypatch.setattr("release_agent.tools.release_chain.guard_branches", lambda kind: ["PRD", "PRL1"])
     s = RW.get_release_status("example-org/deploy")
-    assert [p["number"] for p in s["release_prs"]] == [312, 313]
-    assert s["blocking_pr"] is s["release_prs"][0], "one object: tickets added to it show on both"
+    assert [(p["number"], p["env"]) for p in s["release_prs"]] == [(313, "PRL1"), (312, "PRD")]
+    assert s["blocking_pr"] is s["release_prs"][1], "one object: tickets added to it show on both"
+
+
+def test_a_uat_to_prl1_pr_is_listed_even_when_the_guard_is_just_prd(monkeypatch):
+    """Found live (2026-10-28): with RELEASE_GUARD_BRANCHES empty the guard is
+    PRD alone, and the banner showed the UAT→PRD CHG but never the UAT→PRL1 one."""
+    repo = _BannerRepo({"PRD": [_pr(312, "PRD", "UAT")], "PRL1": [_pr(313, "PRL1", "UAT")]})
+    monkeypatch.setattr(RW, "_get_github_client", lambda: _NS(get_repo=lambda full: repo))
+    monkeypatch.setattr(RW, "_charts", lambda repo, env: {})
+    monkeypatch.setattr("release_agent.tools.release_chain.guard_branches", lambda kind: ["PRD"])
+    s = RW.get_release_status("example-org/deploy")
+    assert [(p["number"], p["env"]) for p in s["release_prs"]] == [(313, "PRL1"), (312, "PRD")]
+    assert s["blocking_pr"]["number"] == 312, "the guard (PRD) still decides what blocks adds"
+
+
+def test_a_prl1_pr_alone_is_shown_without_blocking_adds(monkeypatch):
+    repo = _BannerRepo({"PRL1": [_pr(313, "PRL1", "UAT")]})
+    monkeypatch.setattr(RW, "_get_github_client", lambda: _NS(get_repo=lambda full: repo))
+    monkeypatch.setattr(RW, "_charts", lambda repo, env: {})
+    monkeypatch.setattr("release_agent.tools.release_chain.guard_branches", lambda kind: ["PRD"])
+    s = RW.get_release_status("example-org/deploy")
+    assert [p["number"] for p in s["release_prs"]] == [313] and s["blocking_pr"] is None
 
 
 def test_no_open_release_pr_means_an_empty_list(monkeypatch):

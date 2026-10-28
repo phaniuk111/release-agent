@@ -50,3 +50,37 @@ export function ticketParts(tickets, prefixes = TICKET_PREFIXES) {
 export function ticketText(tickets, prefixes = TICKET_PREFIXES) {
     return ticketParts(tickets, prefixes).map((p) => p.text).join(' · ');
 }
+
+/**
+ * Where a release PR goes, as a person reads it: "CARE PRL1", "CARE PRD" —
+ * from the server's `env` (PRD/PRL1 for those two branches), else its base.
+ * @param {{env?: string, base?: string}} pr
+ * @param {string} [kind]
+ */
+export function releaseLabel(pr, kind = 'CARE') {
+    const env = norm(pr && (pr.env || pr.base));
+    return env ? kind + ' ' + env : kind;
+}
+
+/**
+ * One banner line per release PR: "CARE PRL1 · CHG0099006 · RMG0042006", then
+ * the PR it is read from. `parts` are ticketParts (empty when the PR could not
+ * be read), so the label still shows.
+ * @returns {{label: string, parts: object[], number: number, url: string, head: string, base: string}}
+ */
+export function releaseLine(pr, kind = 'CARE') {
+    const p = pr && typeof pr === 'object' ? pr : {};
+    return { label: releaseLabel(p, kind), parts: ticketParts(p.tickets), number: p.number,
+             url: norm(p.url), head: norm(p.head), base: norm(p.base) };
+}
+
+/**
+ * The banner title for the CARE releases in flight: "CARE PRL1 #102 · CARE PRD #101"
+ * plus " · adds blocked" while the release guard holds; "CARE: no release PR open"
+ * when there is none.
+ */
+export function releaseTitle(prs, blocked, kind = 'CARE') {
+    const list = Array.isArray(prs) ? prs.filter(p => p && p.number) : [];
+    if (!list.length) return kind + ': no release PR open';
+    return list.map(p => releaseLabel(p, kind) + ' #' + p.number).join(' · ') + (blocked ? ' · adds blocked' : '');
+}
