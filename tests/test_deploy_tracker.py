@@ -730,6 +730,120 @@ def test_watch_targets_leave_out_the_taken_the_closed_and_the_long_finished():
     assert out[(REPO, 7)]["pending"] == [] and out[(REPO, 7)]["watched"]["event_type"] == "watching"
 
 
+# ----- a guard-branch PR opened and merged between two passes -----------------------------
+
+def _caught_up(monkeypatch, started):
+    """This process started at ``started`` (the catch-up floor with the memory store)."""
+    monkeypatch.setattr(DT, "_STARTED_AT", started)
+
+
+def _starts_and_completes(gh):
+    return [(i["release_notification_type"], i["environment"]) for i in _inputs(gh)]
+
+
+def test_a_pr_opened_and_merged_between_two_passes_gets_start_then_complete_once(guard, monkeypatch):
+    _caught_up(monkeypatch, T0 - dt.timedelta(hours=1))
+    gh = _GitHub({}, runs={SHA: [_Run(1)]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    pr = _guard_pr()
+    _merge(pr, T0 + dt.timedelta(minutes=2))          # opened and merged before the next pass
+    gh.prs[12] = pr
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=5))
+    scope = f"deploy:{REPO}#12"
+    assert out["watching"] == [scope] and out["started"] == [scope] and out["in_flight"] == 1 and out["open"] == 0
+    assert _starts_and_completes(gh) == [("Start", "PROD")]
+    assert _inputs(gh)[0]["change_request"] == "CHG-12345"
+    (row,) = _rows("watching")
+    assert (row["title"], row["details"]) == ("UAT → PRD", '{"base":"PRD"}')
+    _complete(gh)
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=6))
+    assert out["finished"] == [scope] and out["watching"] == []
+    for minutes in (7, 8):                             # the rows remember: nothing goes out twice
+        out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=minutes))
+        assert out["watching"] == [] and out["started"] == [] and out["finished"] == []
+    assert _starts_and_completes(gh) == [("Start", "PROD"), ("Complete", "PROD")]
+    assert [len(_rows(k)) for k in ("watching", "merged", "finished")] == [1, 1, 1]
+    assert _bell() == [], "nobody in the portal raised it: no bell item"
+
+
+def test_a_merge_before_the_bound_sends_nothing_and_stays_in_the_report_as_unseen(guard, monkeypatch):
+    _caught_up(monkeypatch, T0 - dt.timedelta(minutes=2))
+    old, before_start = _guard_pr(12), _guard_pr(13, base="PRL1")
+    _merge(old, T0 - dt.timedelta(minutes=20))         # more than CATCH_UP_PASSES × 5 min ago
+    _merge(before_start, T0 - dt.timedelta(minutes=4))  # recent, but before this process started
+    gh = _GitHub({12: old, 13: before_start}, runs={SHA: [_Run(1, status="completed", conclusion="success")]})
+    out = DT.run_pass(github=gh, events=[], now=T0)
+    assert out["ok"] and out["watching"] == [] and out["started"] == [] and out["errors"] == []
+    assert gh.dispatches == [] and _rows() == [] and gh.pulls == []
+    assert sorted(e["pr_number"] for e in DT.report(github=gh, now=T0)["prs"] if e["state"] == "unseen") == [12, 13]
+
+
+def test_the_catch_up_bound_is_pure_and_never_reaches_past_its_floor(monkeypatch):
+    now, started = T0, T0 - dt.timedelta(hours=2)
+    assert DT.catch_up_since([], now, "memory", started) == now - dt.timedelta(minutes=15)
+    assert DT.catch_up_since([], now, "memory", now - dt.timedelta(minutes=3)) == now - dt.timedelta(minutes=3)
+    rows = [{"event_type": "finished", "event_ts": (now - dt.timedelta(minutes=9)).isoformat()},
+            {"event_type": "tickets", "event_ts": (now - dt.timedelta(minutes=1)).isoformat()}]
+    just_started = now - dt.timedelta(minutes=1)
+    assert DT.catch_up_since(rows, now, "memory", just_started) == just_started, "memory forgets: the start holds"
+    assert DT.catch_up_since(rows, now, "bigquery", just_started) == now - dt.timedelta(minutes=9), \
+        "BigQuery remembers: back to the tracker's latest row, not its ticket rows"
+    assert DT.catch_up_since([], now, "bigquery", just_started) == just_started, "no row yet: just switched on"
+    monkeypatch.setattr(settings, "track_open_minutes", 10)
+    assert DT.catch_up_since([], now, "memory", started) == now - dt.timedelta(minutes=30)
+
+
+def test_a_restart_with_the_memory_store_does_not_resend(guard, monkeypatch):
+    _caught_up(monkeypatch, T0 - dt.timedelta(hours=1))
+    pr = _guard_pr()
+    _merge(pr, T0 - dt.timedelta(minutes=1))
+    gh = _GitHub({12: pr}, runs={SHA: [_Run(1, status="completed", conclusion="success")]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    assert _starts_and_completes(gh) == [("Start", "PROD"), ("Complete", "PROD")]
+    # A new process: the memory store is empty, so the merge is behind its start.
+    events_store.clear_memory()
+    tickets.clear_cache()
+    DT._status.update(running=False, last_run_at=None, last_summary=None)
+    _caught_up(monkeypatch, T0 + dt.timedelta(minutes=1))
+    gh2 = _GitHub({12: pr}, runs={SHA: [_Run(1, status="completed", conclusion="success")]})
+    out = DT.run_pass(github=gh2, events=[], now=T0 + dt.timedelta(minutes=2))
+    assert out["ok"] and out["watching"] == [] and out["started"] == [] and out["finished"] == []
+    assert gh2.dispatches == [] and _rows() == []
+
+
+def test_a_restart_with_bigquery_does_not_resend_and_still_catches_a_merge_made_while_it_was_down(
+        guard, monkeypatch):
+    # Near the real clock: the rows the store stamps itself are the floor here.
+    t = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    monkeypatch.setattr(events_store, "store_name", lambda: "bigquery")
+    _caught_up(monkeypatch, t - dt.timedelta(hours=1))
+    first = _guard_pr(12)
+    _merge(first, t - dt.timedelta(minutes=2))
+    gh = _GitHub({12: first}, runs={SHA: [_Run(1, status="completed", conclusion="success")]})
+    DT.run_pass(github=gh, events=[], now=t)
+    assert _starts_and_completes(gh) == [("Start", "PROD"), ("Complete", "PROD")]
+    # A new process; the rows are kept. PR 13 merged while the pod was down.
+    DT._status.update(running=False, last_run_at=None, last_summary=None)
+    tickets.clear_cache()
+    _caught_up(monkeypatch, t + dt.timedelta(minutes=10))
+    during = _guard_pr(13, base="PRL1")
+    _merge(during, t + dt.timedelta(minutes=5))
+    gh2 = _GitHub({12: first, 13: during}, runs={SHA: [_Run(1, status="completed", conclusion="success")]})
+    out = DT.run_pass(github=gh2, events=[], now=t + dt.timedelta(minutes=11))
+    assert out["watching"] == [f"deploy:{REPO}#13"] and out["started"] == [f"deploy:{REPO}#13"]
+    assert _starts_and_completes(gh2) == [("Start", "PRL1"), ("Complete", "PRL1")], "nothing again for #12"
+
+
+def test_a_pending_pr_merged_between_passes_is_followed_once_as_pending(guard, monkeypatch):
+    _caught_up(monkeypatch, T0 - dt.timedelta(hours=1))
+    pr = _PR(7, base="PRD", head="UAT", body="CHG-12345")
+    _merge(pr, T0 - dt.timedelta(minutes=1))
+    gh = _GitHub({7: pr}, runs={SHA: [_Run(1)]})
+    out = DT.run_pass(github=gh, events=[_pending(7)], now=T0)
+    assert out["started"] == [f"deploy:{REPO}#7"] and out["watching"] == [] and _rows("watching") == []
+    assert _starts_and_completes(gh) == [("Start", "PROD")] and gh.pulls == [7]
+
+
 # ----- the app --------------------------------------------------------------------------
 
 def test_the_loop_starts_only_when_tracking_is_enabled(monkeypatch):

@@ -20,7 +20,12 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   The same path follows PRD/PRL1 PRs nobody in the portal raised (listed
   each pass via `release_window._open_release_prs`, recorded `deploy/watching`,
   `deploy/closed` if closed unmerged; a pending PR of the same scope wins; no
-  requester, so no bell). The `NOTIFY_WORKFLOW` inputs are fixed in
+  requester, so no bell). One opened and merged between two passes is caught
+  from the newest closed PRs: merged since `catch_up_since` (at most
+  CATCH_UP_PASSES × TRACK_OPEN_MINUTES back, never before the process started
+  unless the BigQuery store keeps its rows) with no tracker row, recorded
+  `deploy/watching` and followed in the same pass — Start/Complete once; an
+  older merge is only "unseen" in the report, never sent late. The `NOTIFY_WORKFLOW` inputs are fixed in
   `notify_inputs` (Start / Complete; a failure dispatches nothing).
   `report()` is the read-only "why was nothing sent" view: live checks (switch,
   loop, NOTIFY_WORKFLOW reachable with its five inputs, open PRs per branch), each

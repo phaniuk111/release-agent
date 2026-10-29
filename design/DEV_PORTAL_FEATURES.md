@@ -157,7 +157,13 @@ pending PR's. State is only the event log, so a restart carries on. A PR that is
 also a portal pending PR is followed once, as pending (the requester's bell).
 Nobody in the portal raised a watched PR, so it has no requester and no bell
 item; the `NOTIFY_WORKFLOW` dispatch is what tells people. A PR that opens and
-merges between two passes is never seen open and is missed.
+merges between two passes is never seen open, so each pass also reads the newest
+closed PRs into the two branches and takes one merged since `catch_up_since`
+with no tracker row: recorded `deploy/watching`, followed in the same pass. The
+bound is at most CATCH_UP_PASSES (3) × TRACK_OPEN_MINUTES back and never before
+the process started with the memory store (a restart forgot what was sent); with
+BigQuery it may reach back to the tracker's latest row, so a merge during a
+restart is still caught. Switching tracking on never announces an old merge.
 
 Cost per pass: each pending PR is fetched ONCE — the sweep hands what it read
 to `pr_reconcile.reconcile_pending(outcomes=…)` and to `tickets.pr_tickets(pr=…)`.
@@ -278,8 +284,9 @@ the bell items). The loop runs inside the portal pod: keep `replicaCount: 1`
 - GitHub token (`githubToken.existingSecret`, the bot): read on the deployment
   repo (PRs, comments, Actions runs) and **Actions: write** on the
   NOTIFY_WORKFLOW repo. The tracker has no chat session, so it always uses it.
-- Known limit: a guard PR opened AND merged between two checks is not seen
-  (only open PRs are discovered); promotion PRs normally wait for their CHG.
+- Known limit: a guard PR opened AND merged between two checks is caught only
+  inside `catch_up_since` (a few passes, and not across a restart with the memory
+  store); older ones show as "unseen" in the Release notifications card.
 
 **Scaling decision (2026-10-11).** One replica now. When the portal must run
 more than one: on Backstage, run Auto-triage and the tracker as scheduled tasks
