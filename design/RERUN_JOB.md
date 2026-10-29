@@ -153,13 +153,33 @@ refused.
   primary and secondary limits mid-start, a permission refusal in one repo of
   two, a run going too old, already running, a network drop, a limit while
   following, the token dropping mid-follow, and a restart.
-- Live (public sandbox repo with neutral names): 30 queued images over 25
-  runs of a workflow whose control job fails on attempt 1 and passes on
-  attempt 2, except where `-stuck` is in the tag. The sandbox also has a
-  matrix run building three images, and a workflow whose control is a step
-  inside `build-and-publish`.
-- Live API limit: the engine runs **inside GitHub Actions** with the repo's
-  `GITHUB_TOKEN`, which allows 1,000 calls an hour per repo. One job burns the
-  token down to a handful of calls and then previews and starts a batch: the
-  real primary-limit answers. Another job runs with `permissions: actions:
-  read`: the real permission refusal.
+- Live at scale (private sandbox repo, neutral names): 27 queued images over
+  25 runs of a workflow whose control job fails on attempt 1 and passes on
+  attempt 2, except the `-stuck` ones; a matrix run building three images; a
+  workflow whose control is a step inside `build-and-publish`; one gated by a
+  dependent `publish`. Result: 23 started a second apart, 22 passed and were
+  re-verified, 2 failed again, one image re-run by hand first answered GitHub's
+  real "already running" (403 with budget left) and the batch went on, the two
+  protected ones were refused at preview. About 60 API calls in all.
+- Live API limits, **inside GitHub Actions** with the job's own
+  `GITHUB_TOKEN` (sandbox workflow `rerun-e2e-limits`, driver
+  `.github/rerun-e2e/limit_driver.py`). The token had 5,000 calls an hour
+  there, not the documented 1,000. One job burns it down in steps (kept under
+  the secondary limit of 900 points a minute) and checks each answer; another
+  runs with `permissions: actions: read`. What GitHub really did:
+  - `actions: read`: the first re-run is refused ("Resource not accessible by
+    integration"); the rest of the repo is skipped — one write sent, each
+    image says the token needs Actions: write.
+  - A batch started with 25 calls left, then drained to 0 while it followed:
+    the reads are refused with `x-ratelimit-remaining: 0`; the reset is past
+    the follow deadline, so it stops and each image says "stopped following —
+    GitHub API limit reached — it resets at HH:MM UTC; the runs carry on".
+  - Budget 0 and readable: nothing is sent; each image says not enough calls
+    left, with the reset.
+  - **GitHub's counter is not exact**: a preview at 4 calls left read 4 runs
+    and their jobs (~10 calls). Never rely on a call failing just below 0.
+  - **Re-runs are accepted at 0**: with the budget unreadable (so the start
+    does not hold back), all four POSTs got 201 at `remaining: 0`; only the
+    reads after them were refused. The engine starts them, says each was not
+    followed and why, and does not re-verify what it could not read — which is
+    why the start checks the budget first instead of waiting for a refusal.
