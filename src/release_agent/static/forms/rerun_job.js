@@ -34,11 +34,14 @@ function safeUrl(url) {
 function chip(row, t) {
     const url = safeUrl(row.job_url || row.run_url);
     const cls = 'rr-chip rr-' + tone(t);
-    const title = esc(row.detail || row.artifact) + (row.new_attempt ? ' · attempt ' + esc(row.new_attempt) : '') +
+    const opens = row.result === 'failed_again' ? 'Open the failed job on GitHub — '
+        : row.job_url ? 'Open the job on GitHub — ' : url ? 'Open the run on GitHub — ' : '';
+    const title = opens + esc(row.detail || row.artifact) + (row.new_attempt ? ' · attempt ' + esc(row.new_attempt) : '') +
         (row.queue ? ' — ' + esc(row.queue) : '');
+    // A linked chip carries the open-in-new-tab icon: it is clickable, and should look it.
     return url
         ? '<a href="' + esc(url) + '" target="_blank" rel="noopener" title="' + title + '" class="' + cls +
-          ' hover:underline">' + esc(row.artifact) + '</a>'
+          ' rr-link">' + esc(row.artifact) + '<i class="fa-solid fa-arrow-up-right-from-square rr-ext"></i></a>'
         : '<span title="' + title + '" class="' + cls + '">' + esc(row.artifact) + '</span>';
 }
 
@@ -57,7 +60,8 @@ function groupHtml(g) {
         chips(r.rows, g.tone)).join('');
     const head = '<span class="rr-dot ' + tone(g.tone) + '"></span>' +
         '<span class="text-xs text-slate-200">' + esc(g.label) + '</span>' +
-        '<span class="text-[11px] text-slate-500">' + g.count + '</span>';
+        '<span class="text-[11px] text-slate-500">' + g.count + '</span>' +
+        (g.key === 'failed_again' ? '<span class="rr-small text-slate-500">· click an image to open its failed step</span>' : '');
     if (g.quiet) {
         return '<details class="py-1.5 border-t border-slate-800"><summary class="flex items-center gap-2 cursor-pointer">' + head + '<span class="text-[11px] text-sky-400">show</span></summary>' + body + '</details>';
     }

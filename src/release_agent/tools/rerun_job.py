@@ -716,9 +716,13 @@ def _job_result(jobs: list[dict], job_name: str) -> tuple[str, str, str]:
     concl = job.get("conclusion")
     if concl == _PASS:
         return "passed", "passed on the new attempt", job.get("html_url") or ""
-    step = next((s.get("name") for s in job.get("steps") or [] if s.get("conclusion") in _FAIL), "")
+    failed = next((s for s in job.get("steps") or [] if s.get("conclusion") in _FAIL), {})
+    step = failed.get("name") or ""
     detail = (concl or "unknown") + (f" · step “{step}”" if step else "")
-    return "failed_again", detail, job.get("html_url") or ""
+    url = job.get("html_url") or ""
+    if url and failed.get("number"):
+        url += f"#step:{failed['number']}:1"      # GitHub opens the job log at that step
+    return "failed_again", detail, url
 
 
 def _follow(batch: dict, api: GitHubApi, pat_gone: Callable[[], bool], sleep: Callable[[float], None],

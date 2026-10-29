@@ -566,3 +566,15 @@ def test_the_real_already_running_answer_is_not_read_as_a_limit():
     c = R.classify(Resp(403, {"message": "The workflow run containing this job is already running"},
                         {"x-ratelimit-remaining": "4822", "x-ratelimit-resource": "core"}))
     assert c["kind"] == "already_running"
+
+
+def test_a_failed_again_link_opens_the_failed_step():
+    jobs = [{"name": "sdlc-peer-review", "conclusion": "failure", "run_attempt": 3,
+             "html_url": "https://github.com/o/r/actions/runs/1/job/9",
+             "steps": [{"name": "checkout", "conclusion": "success", "number": 1},
+                       {"name": "RCTLDEF0001691 peer review evidence", "conclusion": "failure", "number": 2}]}]
+    result, detail, url = R._job_result(jobs, "sdlc-peer-review")
+    assert result == "failed_again" and "peer review evidence" in detail
+    assert url == "https://github.com/o/r/actions/runs/1/job/9#step:2:1"
+    jobs[0]["steps"][1].pop("number")
+    assert R._job_result(jobs, "sdlc-peer-review")[2] == "https://github.com/o/r/actions/runs/1/job/9", "no number: the job"

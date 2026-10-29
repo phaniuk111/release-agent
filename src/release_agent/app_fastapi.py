@@ -299,6 +299,8 @@ async def chat_page(request: Request):
         .rr-list { max-height: 9.5rem; overflow-y: auto; }
         .rr-log { max-height: 12rem; overflow-y: auto; }
         .rr-card summary { list-style: none; } .rr-card summary::-webkit-details-marker { display: none; }
+        .rr-link { cursor: pointer; } .rr-link:hover { text-decoration: underline; filter: brightness(1.25); }
+        .rr-ext { font-size: 8px; opacity: .7; }
         .rr-small { font-size: 10px; } .rr-input { width: 14rem; max-width: 100%; }
         @keyframes blink { 0%,80%,100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
         #input { transition: box-shadow .15s, border-color .15s; }
