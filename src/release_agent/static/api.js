@@ -74,6 +74,8 @@ export const monitoring = (fresh) => get('/api/monitoring' + (fresh ? '?fresh=1'
 export const monitoringAlertPolicy = (name) => get('/api/monitoring/alert-policy?' + query({ name }));
 
 // ---- BigQuery cost ------------------------------------------------------------
+// The release-notification tracker's report: checks, each PRD/PRL1 PR's steps.
+export const deployTracking = () => get('/api/deploy-tracking');
 export const bqCostReport = (fresh) => get('/api/bq-cost/report?' + query({ fresh: fresh ? 1 : 0 }));
 /** The workbook download — a link's href, so the browser saves it (same cache as the JSON). */
 export const bqCostReportXlsx = () => API_BASE + '/api/bq-cost/report.xlsx';

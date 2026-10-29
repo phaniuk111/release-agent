@@ -64,7 +64,12 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   requester, so no bell) and their runs, and tells the requester of a
   portal-raised one; never merges, re-runs or rolls back. Its `NOTIFY_WORKFLOW`
   dispatch (fixed inputs, Start/Complete only) is the one write `approvals.py`
-  allows without a yes.
+  allows without a yes. Each dispatch's outcome (run id + link, error, or why
+  skipped) is kept on its `merged`/`finished` row; `deploy_tracker.report()` reads
+  it back, read-only, for the Check pill "Release notifications"
+  (`/api/deploy-tracking`, `static/forms/deploy_tracking.js`, wording in
+  `static/core/deploy_tracking.js`) — not gated on the switch, since a
+  switched-off tracker is one of the things it shows.
 - **Auto-triage** (`tools/support/watch.py`, `adk_release_agent/support_watch.py`,
   routes in `support_api.py`, preview feature `auto-triage`): Support triage and
   the Investigate pipeline on a timer. Findings live in `portal_events` (domain

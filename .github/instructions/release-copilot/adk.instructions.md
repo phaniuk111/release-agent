@@ -22,6 +22,10 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   `deploy/closed` if closed unmerged; a pending PR of the same scope wins; no
   requester, so no bell). The `NOTIFY_WORKFLOW` inputs are fixed in
   `notify_inputs` (Start / Complete; a failure dispatches nothing).
+  `report()` is the read-only "why was nothing sent" view: live checks (switch,
+  loop, NOTIFY_WORKFLOW reachable with its five inputs, open PRs per branch), each
+  PR's steps with what every dispatch returned, the runs a merged PR waits on and
+  whether DEPLOY_WORKFLOWS counts them, and merges it never saw. It never raises.
   It never merges, re-runs or rolls back. The cadence is a pure function of the
   pass summary (`next_delay`); a pass never raises; what is known about a merge
   comes from the event log, not memory. With no session it is the bot's token.

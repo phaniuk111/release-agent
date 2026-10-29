@@ -174,7 +174,8 @@ class _GitHub:
 
     def __init__(self, prs, runs=None, workflow=None):
         self.prs, self.runs, self.dispatches, self.pulls = prs, runs or {}, [], []
-        self.list_error = None
+        self.list_error = self.workflow_error = None
+        self.files = {}
         self.workflow = workflow or (lambda log: _Workflow(log))
 
     def get_repo(self, full):
@@ -201,7 +202,14 @@ class _GitHub:
                 return list(gh.runs.get(head_sha, []))
 
             def get_workflow(self, file):
+                if gh.workflow_error:
+                    raise gh.workflow_error
                 return gh.workflow(gh.dispatches)
+
+            def get_contents(self, path, ref=None):
+                if path not in gh.files:
+                    raise Exception("404 Not Found")
+                return SimpleNamespace(decoded_content=gh.files[path].encode())
         return _Repo()
 
 
@@ -784,3 +792,119 @@ def test_a_dispatch_for_a_branch_that_is_not_prd_or_prl1_is_skipped_not_sent(mon
     out = DT.dispatch_notify_workflow(gh, "starting", chg="CHG0000001", base="UAT")
     assert out["ok"] and "not PRD_BRANCH or PRL1_BRANCH" in out["skipped"] and gh.dispatches == []
 
+
+
+# ----- the report a person reads: why a notification did or did not go out ---------------
+
+_WORKFLOW_YAML = """on:
+  workflow_dispatch:
+    inputs:
+      release_notification_type: {type: choice}
+      change_request: {type: string}
+      environment: {type: choice}
+      create_release_draft: {type: boolean}
+      test_notification: {type: boolean}
+"""
+
+
+@pytest.fixture
+def reportable(guard, monkeypatch):
+    monkeypatch.setattr(settings, "deploy_tracking_enabled", True)
+    DT._status.update(last_run_at=None, last_error="", last_summary=None)
+
+
+def _gh_with_workflow(prs, **kw):
+    gh = _GitHub(prs, **kw)
+    gh.files[".github/workflows/send-notification.yml"] = _WORKFLOW_YAML
+    return gh
+
+
+def _check(out, name):
+    return next(c for c in out["checks"] if c["name"] == name)
+
+
+def test_the_report_names_a_switched_off_tracker_and_an_unset_workflow_and_never_raises(monkeypatch):
+    monkeypatch.setattr(settings, "deploy_tracking_enabled", False)
+    DT._status.update(last_run_at=None, last_error="")
+    out = DT.report(github=_GitHub({}), now=T0)
+    assert out["ok"] and _check(out, "Tracking switched on")["ok"] is False
+    assert _check(out, "Notification workflow setting")["ok"] is False
+    assert _check(out, "Notification workflow reachable")["ok"] is None, "nothing to reach: skipped, not failed"
+    assert _check(out, "Where it remembers what it sent")["ok"] is None, "pod memory is a warning"
+
+
+def test_the_report_checks_the_workflow_file_the_token_can_see(reportable):
+    gh = _gh_with_workflow({})
+    assert _check(DT.report(github=gh, now=T0), "Notification workflow reachable")["ok"] is True
+    gh.files[".github/workflows/send-notification.yml"] = _WORKFLOW_YAML.replace("change_request", "chg")
+    detail = _check(DT.report(github=gh, now=T0), "Notification workflow reachable")
+    assert detail["ok"] is False and "change_request" in detail["detail"]
+    gh.workflow_error = Exception("404 Not Found")
+    detail = _check(DT.report(github=gh, now=T0), "Notification workflow reachable")
+    assert detail["ok"] is False and "cannot see the repo" in detail["detail"]
+
+
+def test_the_report_follows_one_pr_from_open_to_complete(reportable, monkeypatch):
+    monkeypatch.setattr(settings, "deploy_workflows", "deploy-uat.yml")
+    pr = _guard_pr(body="CHG0099001 approved")
+    lint = _Run(9, name="Lint", path=".github/workflows/lint.yml", status="completed", conclusion="success")
+    gh = _gh_with_workflow({12: pr}, runs={SHA: [lint]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    DT.finish(summary={})
+    out = DT.report(github=gh, now=T0)
+    (entry,) = out["prs"]
+    assert (entry["state"], entry["env"], entry["pr_number"]) == ("watching", "PRD", 12)
+    assert "#12 (UAT → PRD)" in _check(out, "Release PRs open now")["detail"]
+    assert _check(out, "Tracker running in this pod")["ok"] is True
+
+    _merge(pr, T0 + dt.timedelta(minutes=1))
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
+    (entry,) = DT.report(github=gh, now=T0)["prs"]
+    assert entry["state"] == "merged" and entry["chg"] == "CHG0099001" and entry["merge_sha"] == SHA
+    assert entry["start"] == {"run_id": 4242, "error": "", "skipped": "",
+                              "run_url": "https://github.com/example-org/ops/actions/runs/4242"}
+    assert entry["runs_now"] == [{"name": "Lint", "workflow": "lint.yml", "status": "completed",
+                                  "conclusion": "success", "url": lint.html_url, "counts": False}], \
+        "the only run there is not a deployment run: why Complete never comes"
+
+    gh.runs[SHA] = [lint, _Run(1, status="completed", conclusion="success")]
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=3))
+    (entry,) = DT.report(github=gh, now=T0)["prs"]
+    assert entry["state"] == "finished" and entry["complete"]["run_id"] == 4242
+    assert [s["type"] for s in entry["steps"]] == ["watching", "merged", "finished"]
+    assert entry["link"] == pr.html_url, "the watching row's link, kept once it merged"
+
+
+def test_a_failed_dispatch_and_a_skipped_one_are_both_kept_for_the_report(reportable, monkeypatch):
+    pr = _guard_pr()
+    gh = _gh_with_workflow({12: pr}, runs={SHA: [_Run(1)]})
+    gh.workflow_error = Exception("403 Resource not accessible by integration")
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=1))
+    (entry,) = DT.report(github=gh, now=T0)["prs"]
+    assert "403" in entry["start"]["error"] and entry["start"]["run_id"] is None
+
+    monkeypatch.setattr(settings, "notify_workflow", "")
+    _complete(gh)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
+    (entry,) = DT.report(github=gh, now=T0)["prs"]
+    assert entry["complete"]["skipped"] == "NOTIFY_WORKFLOW is not set"
+
+
+def test_a_merge_the_tracker_never_saw_is_listed_as_unseen(reportable):
+    pr = _guard_pr(14, base="PRL1")
+    _merge(pr, T0 - dt.timedelta(days=1))
+    old = _guard_pr(15)
+    _merge(old, T0 - dt.timedelta(days=20))
+    out = DT.report(github=_gh_with_workflow({14: pr, 15: old}), now=T0)
+    assert [(e["state"], e["pr_number"], e["env"]) for e in out["prs"]] == [("unseen", 14, "PRL1")], \
+        "only the last two weeks"
+
+
+def test_the_report_survives_github_being_down(reportable):
+    gh = _gh_with_workflow({})
+    gh.list_error = Exception("502 Bad Gateway")
+    gh.workflow_error = Exception("502 Bad Gateway")
+    out = DT.report(github=gh, now=T0)
+    assert out["ok"] and _check(out, "Release PRs open now")["ok"] is False and out["prs"] == []

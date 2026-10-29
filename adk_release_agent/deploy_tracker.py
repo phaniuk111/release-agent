@@ -411,6 +411,13 @@ def dispatch_notify_workflow(github: Any, stage: str, *, chg: str, base: str) ->
 
 # ----- one PR -----------------------------------------------------------------------
 
+def _sent(dispatched: dict[str, Any]) -> dict[str, Any]:
+    """What a dispatch returned, as the row keeps it: sent (run id + link),
+    skipped (why), or failed (the error) — the report reads it back."""
+    return {"notify_run_id": dispatched.get("run_id"), "notify_run_url": dispatched.get("run_url") or None,
+            "notify_error": dispatched.get("error"), "notify_skipped": dispatched.get("skipped")}
+
+
 def _record(row: dict[str, Any]) -> None:
     out = events_store.record({"domain": DOMAIN, "actor": "portal", **row})
     if not out.get("ok"):
@@ -477,7 +484,7 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
         dispatched = dispatch_notify_workflow(github, "starting", chg=cols["chg"], base=base)
         _record({**common, "event_type": _MERGED, "event_ts": merged_at,
                  "body": f"merged by {merged_by}" if merged_by else None,
-                 "details": {"notify_run_id": dispatched.get("run_id"), "notify_error": dispatched.get("error")}})
+                 "details": {"base": base, **_sent(dispatched)}})
         if requester:
             notifications.notify(
                 requester, kind="deploy_started", title=f"Deployment starting: {what} — PR #{pr_number} merged",
@@ -517,7 +524,7 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
              "run_id": run["id"] or None, "run_url": run["url"] or None, "workflow": run["workflow"] or run["name"],
              "details": {"attempts": _attempts(runs), "failed_steps": failed, "rerun": rerun,
                          "runs": [{"id": r["id"], "name": r["name"], "conclusion": r["conclusion"]} for r in runs],
-                         "notify_run_id": dispatched.get("run_id"), "notify_error": dispatched.get("error")}})
+                         "base": base, **_sent(dispatched)}})
     if requester:
         after = " (after re-run)" if rerun else ""
         if ok:
@@ -642,3 +649,256 @@ async def track_forever() -> None:
     while True:
         summary = await asyncio.to_thread(run_pass)
         await asyncio.sleep(next_delay(state_of(summary)))
+
+
+# ----- what a person can see: the tracker's own report (read-only) -----------------
+
+# The inputs the team's notification workflow must declare for a dispatch to land.
+_NOTIFY_INPUTS = ("release_notification_type", "change_request", "environment",
+                  "create_release_draft", "test_notification")
+
+
+def _check(name: str, ok: bool | None, detail: str) -> dict[str, Any]:
+    """One line of the report: ok True (fine), False (this is why), None (a warning)."""
+    return {"name": name, "ok": ok, "detail": detail}
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        out = json.loads(value or "{}")
+        return out if isinstance(out, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _workflow_check(github: Any) -> dict[str, Any]:
+    """Can the bot token see NOTIFY_WORKFLOW, and does it declare workflow_dispatch
+    with the five inputs? Reads only — the same token the dispatch uses."""
+    repo_full, workflow_file = notify_workflow_target()
+    if not repo_full:
+        return _check("Notification workflow reachable", None, "skipped — NOTIFY_WORKFLOW is not set")
+    try:
+        repo = github.get_repo(repo_full)
+        workflow = repo.get_workflow(workflow_file)
+        text = repo.get_contents(str(getattr(workflow, "path", "") or f".github/workflows/{workflow_file}"),
+                                 ref=repo.default_branch).decoded_content.decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001 — the reason IS the report
+        why = ("not found — a wrong file name, or the bot token cannot see the repo"
+               if "404" in str(e) else "cannot be read with the bot token")
+        return _check("Notification workflow reachable", False,
+                      f"{repo_full}:{workflow_file} {why} ({type(e).__name__}: {str(e)[:120]})")
+    missing = [name for name in _NOTIFY_INPUTS if name not in text]
+    if "workflow_dispatch" not in text:
+        return _check("Notification workflow reachable", False,
+                      f"{workflow_file} on {repo.default_branch} has no workflow_dispatch trigger")
+    if missing:
+        return _check("Notification workflow reachable", False,
+                      f"{workflow_file} does not declare: {', '.join(missing)}")
+    state = str(getattr(workflow, "state", "") or "")
+    return _check("Notification workflow reachable", state in ("", "active"),
+                  f"{repo_full}:{workflow_file} on {repo.default_branch}, state {state or 'unknown'}, "
+                  "all five inputs declared")
+
+
+def _open_prs_check(github: Any) -> dict[str, Any]:
+    """Every open PR into PRL1_BRANCH and PRD_BRANCH, read the way the tracker
+    reads them — but a branch that cannot be read is said, not skipped."""
+    repo_full = _watch_repo()
+    if not repo_full:
+        return _check("Release PRs open now", False, "no deployment repo — set DEPLOY_REPO")
+    parts, failed = [], False
+    try:
+        repo_obj = github.get_repo(repo_full)
+        for base in notify_branches():
+            try:
+                prs = list(itertools.islice(repo_obj.get_pulls(state="open", base=base, sort="created",
+                                                               direction="desc"), 10))
+            except Exception as e:  # noqa: BLE001
+                failed = True
+                parts.append(f"{base}: cannot be read ({type(e).__name__}: {str(e)[:120]})")
+                continue
+            parts.append(f"{base}: " + (", ".join(f"#{p.number} ({p.head.ref} → {p.base.ref})" for p in prs)
+                                        or "none open"))
+    except Exception as e:  # noqa: BLE001
+        return _check("Release PRs open now", False, f"{repo_full}: {type(e).__name__}: {str(e)[:200]}")
+    return _check("Release PRs open now", not failed, f"{repo_full} — " + "; ".join(parts))
+
+
+_STEP_ORDER = {_WATCHING: 0, _MERGED: 1, _FINISHED: 2, _ABANDONED: 2, _CLOSED: 2}
+
+
+def _timelines(rows: list[dict[str, Any]], limit: int = 20) -> list[dict[str, Any]]:
+    """PURE. One entry per PR (scope), newest activity first: every step the
+    tracker recorded, and what each notification dispatch returned."""
+    from release_agent.tools import release_chain
+
+    notify_repo = notify_workflow_target()[0]
+    by_scope: dict[str, list[dict[str, Any]]] = {}
+    steps = (_WATCHING, *_TRACKED_TYPES)
+    tickets_of: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not row.get("scope"):
+            continue
+        if row.get("event_type") in steps:
+            by_scope.setdefault(row["scope"], []).append(row)
+        elif row.get("chg") or row.get("rmg"):       # tickets.note_first_seen's rows share the domain
+            tickets_of[row["scope"]] = row
+    out = []
+    for scope, items in by_scope.items():
+        # A merged row is stamped with the merge time, which can be earlier than
+        # the watching row's: order by how far the PR got, then by time.
+        items.sort(key=lambda r: (_STEP_ORDER.get(r.get("event_type"), 0), str(r.get("event_ts") or "")))
+        last = items[-1]
+        base = ""
+        entry: dict[str, Any] = {"scope": scope, "repo": last.get("repo"), "pr_number": last.get("pr_number"),
+                                 "title": last.get("title"),
+                                 "link": next((r["link"] for r in items if r.get("link")), "")
+                                 or (f"https://github.com/{last.get('repo')}/pull/{last.get('pr_number')}"
+                                     if last.get("repo") and last.get("pr_number") else ""),
+                                 "chg": (tickets_of.get(scope) or {}).get("chg") or "",
+                                 "rmg": (tickets_of.get(scope) or {}).get("rmg") or "",
+                                 "state": last.get("event_type"),
+                                 "updated_at": max(str(r.get("event_ts") or "") for r in items),
+                                 "start": None, "complete": None, "steps": []}
+        for row in items:
+            details = _as_dict(row.get("details"))
+            base = base or str(details.get("base") or "")
+            entry["chg"] = row.get("chg") or entry["chg"]
+            entry["rmg"] = row.get("rmg") or entry["rmg"]
+            kind = row.get("event_type")
+            step = {"type": kind, "at": row.get("event_ts")}
+            entry["merge_sha"] = row.get("merge_sha") or entry.get("merge_sha") or ""
+            if kind in (_MERGED, _FINISHED):
+                run_id = details.get("notify_run_id")
+                sent = {"run_id": run_id, "error": details.get("notify_error") or "",
+                        "skipped": details.get("notify_skipped") or "",
+                        "run_url": details.get("notify_run_url") or (
+                            f"https://github.com/{notify_repo}/actions/runs/{run_id}"
+                            if run_id and notify_repo else "")}
+                if kind == _MERGED:
+                    entry["start"] = sent
+                else:
+                    step.update(conclusion=row.get("conclusion"), run_url=row.get("run_url"),
+                                workflow=row.get("workflow"), failed_steps=details.get("failed_steps") or [])
+                    if row.get("conclusion") == "success":
+                        entry["complete"] = sent
+            if kind in (_ABANDONED, _CLOSED):
+                step["note"] = row.get("body") or ""
+            entry["steps"].append(step)
+        entry["base"] = base or str(last.get("environment") or "")
+        entry["env"] = release_chain.env_of(entry["base"]) if entry["base"] else ""
+        out.append(entry)
+    out.sort(key=lambda e: str(e.get("updated_at") or ""), reverse=True)
+    return out[:limit]
+
+
+def report(github: Any = None, now: _dt.datetime | None = None) -> dict[str, Any]:
+    """What the release notifications look like right now, for a person to read:
+    the settings, live checks of everything a dispatch needs, and each tracked
+    PR's steps with what every dispatch returned. Reads only; never raises."""
+    now = now or _now()
+    repo_full, workflow_file = notify_workflow_target()
+    proc = status()
+    config = {"enabled": bool(settings.deploy_tracking_enabled), "notify_repo": repo_full,
+              "notify_workflow": workflow_file, "notify_test": bool(settings.notify_test),
+              "deploy_repo": _watch_repo(), "branches": notify_branches(),
+              "deploy_workflows": sorted(_wanted_workflows()), "store": events_store.store_name(),
+              "check_every_minutes": int(settings.track_open_minutes)}
+    checks = [_check("Tracking switched on", config["enabled"],
+                     "DEPLOY_TRACKING_ENABLED is true" if config["enabled"]
+                     else "DEPLOY_TRACKING_ENABLED is not true — nothing is watched or sent")]
+    last = proc.get("last_run_at")
+    if not last:
+        checks.append(_check("Tracker running in this pod", False if config["enabled"] else None,
+                             "no check has run since this pod started"))
+    else:
+        try:
+            age = (now - _dt.datetime.fromisoformat(str(last))).total_seconds() / 60
+        except ValueError:
+            age = None
+        fresh = age is not None and age <= max(3, 3 * config["check_every_minutes"])
+        checks.append(_check("Tracker running in this pod", fresh,
+                             f"last check {int(age)} min ago" if age is not None else f"last check {last}"))
+    checks.append(_check("Notification workflow setting", bool(repo_full),
+                         f"{repo_full}:{workflow_file}" if repo_full
+                         else "NOTIFY_WORKFLOW is empty or not '<owner>/<repo>:<file>'"))
+    checks.append(_check("Where it remembers what it sent", config["store"] == "bigquery" or None,
+                         "the portal_events table" if config["store"] == "bigquery"
+                         else "pod memory — a restart forgets watched PRs (set PORTAL_EVENTS_DATASET)"))
+    try:
+        if github is None:
+            from release_agent.tools._common import _get_github_client
+
+            github = _get_github_client()
+        checks.append(_workflow_check(github))
+        checks.append(_open_prs_check(github))
+    except Exception as e:  # noqa: BLE001
+        checks.append(_check("GitHub reachable", False, f"{type(e).__name__}: {str(e)[:200]}"))
+    rows = events_store.history(DOMAIN, since_days=14)
+    prs = _timelines(rows.get("rows") or []) if rows.get("ok") else []
+    if github is not None:
+        _waiting_runs(github, prs)
+        prs = sorted(_unseen_merges(github, prs, now) + prs,
+                     key=lambda e: str(e.get("updated_at") or ""), reverse=True)
+    return {"ok": True, "config": config, "checks": checks,
+            "last_error": proc.get("last_error") or "", "last_summary": proc.get("last_summary"),
+            "last_run_at": last, "prs": prs,
+            "history_error": "" if rows.get("ok") else str(rows.get("error") or "")}
+
+
+def _waiting_runs(github: Any, prs: list[dict[str, Any]]) -> None:
+    """A merged PR whose Complete has not gone out is waiting on the runs on its
+    merge commit. Say which runs are there and which of them count
+    (DEPLOY_WORKFLOWS) — "none match" is the usual reason Complete never comes."""
+    wanted = _wanted_workflows()
+    for entry in prs:
+        if entry.get("state") != _MERGED or not entry.get("merge_sha") or not entry.get("repo"):
+            continue
+        try:
+            repo_obj = github.get_repo(entry["repo"])
+            seen = [_run_dict(r) for r in itertools.islice(
+                repo_obj.get_workflow_runs(head_sha=entry["merge_sha"]), _MAX_RUNS)]
+        except Exception as e:  # noqa: BLE001
+            entry["runs_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+            continue
+        entry["runs_now"] = [{"name": r["name"] or r["workflow"], "workflow": r["workflow"],
+                              "status": r.get("status") or "", "conclusion": r["conclusion"] or "",
+                              "url": r["url"], "counts": run_matches(r, wanted)} for r in seen]
+
+
+def _unseen_merges(github: Any, prs: list[dict[str, Any]], now: _dt.datetime,
+                   days: int = 14) -> list[dict[str, Any]]:
+    """PRs merged into PRD/PRL1 in the last two weeks that the tracker holds no
+    row for: no notification was ever sent for them. Usually tracking was off
+    (or the pod restarted with the memory store) while the PR was open."""
+    from release_agent.tools import release_chain
+
+    repo_full = _watch_repo()
+    if not repo_full:
+        return []
+    known = {(e.get("repo"), int(e.get("pr_number") or 0)) for e in prs}
+    out = []
+    try:
+        repo_obj = github.get_repo(repo_full)
+        for base in notify_branches():
+            pulls = repo_obj.get_pulls(state="closed", base=base, sort="updated", direction="desc")
+            for pr in itertools.islice(pulls, 10):
+                merged_at = getattr(pr, "merged_at", None)
+                if not merged_at:
+                    continue
+                if merged_at.tzinfo is None:
+                    merged_at = merged_at.replace(tzinfo=_dt.timezone.utc)
+                if now - merged_at > _dt.timedelta(days=days) or (repo_full, int(pr.number)) in known:
+                    continue
+                head = str(getattr(getattr(pr, "head", None), "ref", "") or "")
+                out.append({"scope": scope_for(repo_full, int(pr.number)), "repo": repo_full,
+                            "pr_number": int(pr.number), "title": f"{head} → {base}" if head else pr.title,
+                            "link": str(getattr(pr, "html_url", "") or ""), "base": base,
+                            "env": release_chain.env_of(base), "chg": "", "rmg": "",
+                            "state": "unseen", "updated_at": merged_at.isoformat(),
+                            "start": None, "complete": None, "steps": []})
+    except Exception as e:  # noqa: BLE001 — the rest of the report still stands
+        logger.warning("deploy tracker report: listing merged PRs failed: %s", e)
+    return out

@@ -53,6 +53,8 @@ export const CAPABILITIES = [
     {group:'Check',   icon:'fa-images',            label:'List allowed images',  desc:'what I can promote',                          send:true,  text:'what images can I promote?'},
     {group:'Check',   icon:'fa-clock-rotate-left', label:'Recent workflow runs', desc:'status of the latest runs',                   send:true,  text:'show me the 5 most recent workflow runs and their status'},
     // Still a preview feature (the server refuses it for non-testers), so it stays in the preview row.
+    // Not gated on DEPLOY_TRACKING_ENABLED: the card is where a switched-off tracker shows.
+    {group:'Check',   icon:'fa-bell',              label:'Release notifications', desc:'what the tracker saw and sent for each PRL1/PRD release PR — and why not', form:'deploy-tracking'},
     {group:'Check',   icon:'fa-heart-pulse',       label:'PromQL checks',        desc:"the team's PromQL checks, run now — what is firing, and ask the chat why", form:'monitoring'},
     {group:'Monitoring', icon:'fa-coins',          label:'BQ cost report',       desc:"the most expensive BigQuery queries this fortnight, why, and what they'd cost after a fix — measured, not guessed", form:'bq-cost'},
     {group:'Support', icon:'fa-headset',        label:'Support triage',       desc:'L1 view of the pipelines’ control table: what failed, got stuck or never ran, known issue or not, what to do now and who owns it', form:'support-triage'},

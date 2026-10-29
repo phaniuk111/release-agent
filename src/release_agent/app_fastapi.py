@@ -1353,6 +1353,21 @@ def df_template_endpoint(env: str = "uat"):
     }
 
 
+@app.get("/api/deploy-tracking")
+async def deploy_tracking_report(request: Request):
+    """The release notifications, for a person to read: settings, live checks of
+    what a dispatch needs, and each tracked PRD/PRL1 PR's steps with what every
+    dispatch returned. Read-only; uses the server's GitHub token, as the tracker
+    does. Gated like the tracker's other surfaces (preview feature deploy-tracking)."""
+    from fastapi.responses import JSONResponse
+
+    if not features.allowed("deploy-tracking", _caller(request)):
+        return JSONResponse(status_code=403, content={"ok": False, "error": features.refusal("deploy-tracking")})
+    from adk_release_agent import deploy_tracker
+
+    return await asyncio.to_thread(deploy_tracker.report)
+
+
 @app.get("/api/deploy-template")
 def deploy_template_endpoint(env: str = "uat", name: str = "", version: str = ""):
     """Pre-fill the UI's editable JSON box with the ACTUAL current uat/deployment.json,

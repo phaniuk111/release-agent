@@ -7,6 +7,7 @@ import { showSupportTriage } from './support_triage.js';
 import { ctxNote, labeledField, opening, withDismiss } from './common.js';
 import { showDfDeployForm } from './df_deploy_form.js';
 import { showMonitoring } from './monitoring.js';
+import { showDeployTracking } from './deploy_tracking.js';
 import { parseDeployInclude } from './parse.js';
 import { showQueueForm } from './queue_form.js';
 import { showQueueTable } from './queue_table.js';
@@ -32,6 +33,7 @@ export async function showDeployForm(target, name, version) {
     if (target === 'queue-table') { showQueueTable(); return; }
     if (target === 'release-history') { showReleaseHistory(); return; }
     if (target === 'monitoring') { showMonitoring(); return; }
+    if (target === 'deploy-tracking') { showDeployTracking(); return; }
     if (target === 'bq-cost') { showBqCost(); return; }
     if (target === 'support-triage') { showSupportTriage(); return; }
     if (target === 'auto-triage') { showAutoTriage(); return; }
