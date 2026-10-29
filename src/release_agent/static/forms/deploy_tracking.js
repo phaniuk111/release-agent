@@ -70,7 +70,6 @@ async function render(wrap) {
     if (res && res.ok !== false) {
         html += '<div class="text-[11px] text-slate-500 uppercase tracking-wide mt-2">Checks</div>' +
             (res.checks || []).map(c => lineHtml(checkLine(c))).join('');
-        if (res.last_error) html += lineHtml({ state: 'problem', text: 'Last check failed: ' + res.last_error });
         if (res.history_error) html += lineHtml({ state: 'warn', text: 'Could not read what was sent: ' + res.history_error });
         const prs = res.prs || [];
         html += '<div class="text-[11px] text-slate-500 uppercase tracking-wide mt-3">Release PRs — last 14 days</div>' +

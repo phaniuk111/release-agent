@@ -908,3 +908,23 @@ def test_the_report_survives_github_being_down(reportable):
     gh.workflow_error = Exception("502 Bad Gateway")
     out = DT.report(github=gh, now=T0)
     assert out["ok"] and _check(out, "Release PRs open now")["ok"] is False and out["prs"] == []
+
+
+def test_an_events_table_that_cannot_be_read_is_the_named_reason(reportable, monkeypatch):
+    monkeypatch.setattr(events_store, "store_name", lambda: "bigquery")
+    monkeypatch.setattr(events_store, "_table_id", lambda: "proj.ds.events")
+    monkeypatch.setattr(events_store, "history", lambda *a, **k: {
+        "ok": False, "error": "NotFound: 404 Table proj.ds.events not found", "hint": "Create it."})
+    out = DT.report(github=_gh_with_workflow({}), now=T0)
+    check = _check(out, "Where it remembers what it sent")
+    assert check["ok"] is False and "proj.ds.events cannot be read" in check["detail"] and "Create it." in check["detail"]
+
+
+def test_the_last_pass_errors_are_shown(reportable):
+    DT.finish(error="RuntimeError: the event log could not be read: 403")
+    assert "403" in _check(DT.report(github=_gh_with_workflow({}), now=T0), "Last pass")["detail"]
+    DT.finish(summary={"open": 1, "in_flight": 0, "errors": ["org/deploy#12: GithubException: 502"]})
+    check = _check(DT.report(github=_gh_with_workflow({}), now=T0), "Last pass")
+    assert check["ok"] is False and "#12" in check["detail"]
+    DT.finish(summary={"open": 1, "in_flight": 0, "errors": []})
+    assert _check(DT.report(github=_gh_with_workflow({}), now=T0), "Last pass")["ok"] is True

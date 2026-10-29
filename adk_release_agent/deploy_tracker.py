@@ -40,8 +40,13 @@ pass until it is merged — the same merged -> runs -> finished path — or clos
 unmerged (deploy/closed, nothing sent). The state is the event log, so a restart
 carries on. A PR that is also a portal pending PR is followed once, as pending
 (same scope; the requester's bell). A watched PR has no requester, so it gets no
-bell item: only the NOTIFY_WORKFLOW dispatch. A PR merged between two passes
-without ever being seen open is missed — only open PRs are listed.
+bell item: only the NOTIFY_WORKFLOW dispatch. A PR opened and merged between two
+passes is never listed open, so each pass also lists the newest closed PRs into
+the two and takes one MERGED since `catch_up_since` with no tracker row: recorded
+as deploy/watching and followed in the same pass, Start then Complete once. The
+bound is what keeps old merges quiet — never more than CATCH_UP_PASSES passes
+back, and never before this process started unless the BigQuery store remembers
+what was sent; an older merge is only shown, as "unseen", by the report.
 
 The portal-raised ones: the ones with a `pending` event in the release log — read the way
 pr_reconcile reads them — while unresolved, and for TRACK_RUN_MAX_MINUTES after
@@ -77,6 +82,8 @@ _PENDING_DAYS = 30      # how far back a pending PR is still looked for
 _HISTORY_DAYS = 30      # how far back the tracker's own rows are read: a guard PR can wait days for its merge
 _MAX_RUNS = 50
 _MAX_CHARTS_NAMED = 3
+CATCH_UP_PASSES = 3     # how many TRACK_OPEN_MINUTES back a merge never seen open is still picked up
+_MERGED_LISTED = 10     # newest closed PRs read per branch for those merges
 
 # ----- the sweep's own state (this process) ----------------------------------------
 
@@ -138,6 +145,11 @@ def scope_for(repo_full: str, pr_number: int) -> str:
 
 def _now() -> _dt.datetime:
     return _dt.datetime.now(_dt.timezone.utc)
+
+
+# With the memory store everything sent before this moment is forgotten, so no
+# merge from before it is picked up without having been seen open.
+_STARTED_AT = _now()
 
 
 def _when(value: Any) -> _dt.datetime | None:
@@ -260,6 +272,27 @@ def known_merges(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if scope and row.get("event_type") in _TRACKED_TYPES and scope not in out:
             out[scope] = row
     return out
+
+
+def catch_up_since(rows: list[dict[str, Any]], now: _dt.datetime, store: str,
+                   started: _dt.datetime) -> _dt.datetime:
+    """The earliest merge a pass picks up without having seen the PR open. Pure.
+
+    Never more than CATCH_UP_PASSES × TRACK_OPEN_MINUTES back: a late or failed
+    pass is covered, an old merge is not. Never before ``started`` (this process)
+    with the memory store — a restart forgot what was sent, so an earlier merge
+    may already have had its notifications. The BigQuery store keeps the rows, so
+    a PR already sent is known by its row and the floor may go back to the
+    tracker's latest row (a merge while the pod restarted is still caught); with
+    no row at all, tracking was just switched on and ``started`` holds."""
+    floor = started
+    if store == "bigquery":
+        stamps = [_when(r.get("event_ts")) for r in rows if r.get("event_type") in (_WATCHING, *_TRACKED_TYPES)]
+        latest = max((t for t in stamps if t is not None), default=None)
+        if latest is not None:
+            floor = min(floor, latest)
+    lookback = _dt.timedelta(minutes=CATCH_UP_PASSES * max(1, int(settings.track_open_minutes)))
+    return max(floor, now - lookback)
 
 
 # ----- the runs a merge started ---------------------------------------------------
@@ -549,28 +582,66 @@ def _watch_repo() -> str:
     return str(active_deploy_repo() or settings.deploy_repo or "").strip()
 
 
+def _watching_row(repo_full: str, pr: Any) -> dict[str, Any]:
+    number = int(pr.number)
+    scope = scope_for(repo_full, number)
+    base = str(getattr(getattr(pr, "base", None), "ref", "") or "")
+    head = str(getattr(getattr(pr, "head", None), "ref", "") or "")
+    return {"event_type": _WATCHING, "subject": scope, "scope": scope, "repo": repo_full,
+            "pr_number": number, "title": f"{head} → {base}" if head else f"PR #{number}",
+            "link": str(getattr(pr, "html_url", "") or "") or None, "details": {"base": base}}
+
+
+def _merged_since(repo_obj: Any, branches: list[str], since: _dt.datetime) -> list[Any]:
+    """The PRs merged into the branches at or after ``since``, from the newest
+    closed ones. A branch that cannot be read is left out, as the open listing
+    leaves it out — the next pass reads it again while the bound still holds."""
+    found = []
+    for base in branches:
+        try:
+            pulls = repo_obj.get_pulls(state="closed", base=base, sort="updated", direction="desc")
+            for pr in itertools.islice(pulls, _MERGED_LISTED):
+                merged_at = _when(getattr(pr, "merged_at", None))
+                if merged_at is not None and merged_at >= since:
+                    found.append(pr)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("deploy_tracker: listing PRs merged into %s failed: %s", base, e)
+    return found
+
+
 def _watch_new(github: Any, repo_full: str, watched_scopes: set[str], taken: set[tuple[str, int]],
-               summary: dict[str, Any]) -> None:
+               since: _dt.datetime, summary: dict[str, Any]) -> dict[tuple[str, int], dict[str, Any]]:
     """Record every open PR into PRD_BRANCH / PRL1_BRANCH not seen before as
     deploy/watching. The listing is the pass's one read of the branch, so the PR
-    it hands over is read for its tickets as it is — no second fetch."""
+    it hands over is read for its tickets as it is — no second fetch.
+
+    A PR merged into them since ``since`` with no tracker row was opened and
+    merged between two passes: it is recorded as deploy/watching too, and handed
+    back to be followed in this pass — the merged path sends Start (and Complete
+    once its runs conclude), and its row keeps any later pass from sending again."""
     from release_agent.tools import release_window
 
-    for pr in release_window._open_release_prs(github.get_repo(repo_full), notify_branches()):
-        number = int(pr.number)
-        scope = scope_for(repo_full, number)
-        if (repo_full, number) in taken or scope in watched_scopes:
+    repo_obj = github.get_repo(repo_full)
+    branches = notify_branches()
+    for pr in release_window._open_release_prs(repo_obj, branches):
+        row = _watching_row(repo_full, pr)
+        if (repo_full, row["pr_number"]) in taken or row["scope"] in watched_scopes:
             continue
-        base = str(getattr(getattr(pr, "base", None), "ref", "") or "")
-        head = str(getattr(getattr(pr, "head", None), "ref", "") or "")
-        title = f"{head} → {base}" if head else f"PR #{number}"
-        _record({"event_type": _WATCHING, "subject": scope, "scope": scope, "repo": repo_full,
-                 "pr_number": number, "title": title, "link": str(getattr(pr, "html_url", "") or "") or None,
-                 "details": {"base": base}})
-        tk = tickets.pr_tickets(repo_full, number, github=github, pr=pr)
-        tickets.note_first_seen(repo_full, number, tk, requested_by="", what=title)
+        _record(row)
+        tk = tickets.pr_tickets(repo_full, row["pr_number"], github=github, pr=pr)
+        tickets.note_first_seen(repo_full, row["pr_number"], tk, requested_by="", what=row["title"])
         summary["open"] += 1
-        summary["watching"].append(scope)
+        summary["watching"].append(row["scope"])
+    caught: dict[tuple[str, int], dict[str, Any]] = {}
+    for pr in _merged_since(repo_obj, branches, since):
+        row = _watching_row(repo_full, pr)
+        key = (repo_full, row["pr_number"])
+        if key in taken or key in caught or row["scope"] in watched_scopes:
+            continue
+        _record(row)
+        caught[key] = {"pending": [], "settled": "", "watched": {**row, "details": json.dumps(row["details"])}}
+        summary["watching"].append(row["scope"])
+    return caught
 
 
 # ----- one pass ---------------------------------------------------------------------
@@ -613,8 +684,9 @@ def run_pass(*, github: Any = None, events: list[dict[str, Any]] | None = None,
         watched = watch_targets(rows, known, set(cands), now)
         if watch_repo:
             try:
-                seen = {row.get("scope") for row in rows if row.get("event_type") == _WATCHING}
-                _watch_new(github, watch_repo, seen, set(cands), summary)
+                seen = {row.get("scope") for row in rows if row.get("event_type") == _WATCHING} | set(known)
+                since = catch_up_since(rows, now, events_store.store_name(), _STARTED_AT)
+                watched.update(_watch_new(github, watch_repo, seen, set(cands), since, summary))
             except Exception as e:  # noqa: BLE001 — the listing failing must not stop the PRs already followed
                 line = f"{watch_repo}: PRD/PRL1 branches: {type(e).__name__}: {str(e)[:200]}"
                 summary["errors"].append(line)
@@ -824,9 +896,26 @@ def report(github: Any = None, now: _dt.datetime | None = None) -> dict[str, Any
     checks.append(_check("Notification workflow setting", bool(repo_full),
                          f"{repo_full}:{workflow_file}" if repo_full
                          else "NOTIFY_WORKFLOW is empty or not '<owner>/<repo>:<file>'"))
-    checks.append(_check("Where it remembers what it sent", config["store"] == "bigquery" or None,
-                         "the portal_events table" if config["store"] == "bigquery"
-                         else "pod memory — a restart forgets watched PRs (set PORTAL_EVENTS_DATASET)"))
+    # Every pass reads this first: a table it cannot read stops every pass before
+    # any PR is looked at, and only the pod log would otherwise say so.
+    rows = events_store.history(DOMAIN, since_days=14)
+    if config["store"] != "bigquery":
+        checks.append(_check("Where it remembers what it sent", None,
+                             "pod memory — a restart forgets watched PRs (set PORTAL_EVENTS_DATASET)"))
+    elif rows.get("ok"):
+        checks.append(_check("Where it remembers what it sent", True, f"{events_store._table_id()}, readable"))
+    else:
+        checks.append(_check("Where it remembers what it sent", False,
+                             f"{events_store._table_id()} cannot be read, so every pass stops before looking at "
+                             f"any PR — {rows.get('error')}" + (f". {rows['hint']}" if rows.get("hint") else "")))
+    passed = proc.get("last_summary") or {}
+    if proc.get("last_error") or passed.get("errors"):
+        problems = ([proc["last_error"]] if proc.get("last_error") else []) + list(passed.get("errors") or [])
+        checks.append(_check("Last pass", False, "; ".join(str(x) for x in problems)[:600]))
+    elif last:
+        checks.append(_check("Last pass", True,
+                             f"{int(passed.get('open') or 0)} release PR(s) open, "
+                             f"{int(passed.get('in_flight') or 0)} merge(s) waiting for runs, no errors"))
     try:
         if github is None:
             from release_agent.tools._common import _get_github_client
@@ -836,7 +925,6 @@ def report(github: Any = None, now: _dt.datetime | None = None) -> dict[str, Any
         checks.append(_open_prs_check(github))
     except Exception as e:  # noqa: BLE001
         checks.append(_check("GitHub reachable", False, f"{type(e).__name__}: {str(e)[:200]}"))
-    rows = events_store.history(DOMAIN, since_days=14)
     prs = _timelines(rows.get("rows") or []) if rows.get("ok") else []
     if github is not None:
         _waiting_runs(github, prs)
@@ -872,7 +960,8 @@ def _unseen_merges(github: Any, prs: list[dict[str, Any]], now: _dt.datetime,
                    days: int = 14) -> list[dict[str, Any]]:
     """PRs merged into PRD/PRL1 in the last two weeks that the tracker holds no
     row for: no notification was ever sent for them. Usually tracking was off
-    (or the pod restarted with the memory store) while the PR was open."""
+    (or the pod restarted with the memory store) while the PR was open, or no
+    pass ran between its merge and `catch_up_since` moving past it."""
     from release_agent.tools import release_chain
 
     repo_full = _watch_repo()
