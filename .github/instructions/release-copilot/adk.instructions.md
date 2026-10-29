@@ -11,8 +11,8 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   agent and `commands_workflow.py`. Do not add approval rules anywhere else.
   `ALLOWED_WITHOUT_YES` names the ONE write that never asks: the deployment
   tracker dispatching the team's `NOTIFY_WORKFLOW` (it changes no deployment).
-- **Deployment tracking** (`deploy_tracker.py`, `DEPLOY_TRACKING_ENABLED`, preview
-  feature `deploy-tracking`): a timed sweep that only WATCHES and tells — merged
+- **Deployment tracking** (`deploy_tracker.py`, `DEPLOY_TRACKING_ENABLED`; feature
+  `deploy-tracking`, out of preview by default): a timed sweep that only WATCHES and tells — merged
   → `deploy/merged` + "Deployment starting"; every run on the merge SHA
   concluded → `deploy/finished` on the SAME scope (one bell item that changes),
   a failure naming the job and step; a re-run → "(after re-run)"; past

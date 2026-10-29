@@ -864,11 +864,11 @@ def test_the_loop_starts_only_when_tracking_is_enabled(monkeypatch):
     assert started == ["tracker"]
 
 
-def test_the_feature_is_registered_the_way_notifications_is():
+def test_the_feature_is_registered_and_out_of_preview_by_default():
     from release_agent import features
 
     assert "deploy-tracking" in features.UI_FEATURES
-    assert "deploy-tracking" in type(settings).model_fields["preview_features"].default.split(",")
+    assert "deploy-tracking" not in type(settings).model_fields["preview_features"].default.split(",")
     assert features.refusal("deploy-tracking") == "Deployment tracking is not available yet — it is a preview feature."
 
 

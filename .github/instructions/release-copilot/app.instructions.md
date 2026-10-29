@@ -58,15 +58,15 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   only when a PR exists; the banner shows them after the PR number as links,
   grey "no CHG yet" for a prefix the PR does not name (never a state), nothing on a read error.
 - **Deployment tracking** (`adk_release_agent/deploy_tracker.py`, started in
-  `_lifespan` only with `DEPLOY_TRACKING_ENABLED=true`, preview feature
-  `deploy-tracking`): watches the portal's pending PRs and the PRD/PRL1 PRs the mono repo's
+  `_lifespan` only with `DEPLOY_TRACKING_ENABLED=true`; feature `deploy-tracking`,
+  out of preview by default): watches the portal's pending PRs and the PRD/PRL1 PRs the mono repo's
   action raises in the deployment repo (recorded `deploy/watching`; no
   requester, so no bell) and their runs, and tells the requester of a
   portal-raised one; never merges, re-runs or rolls back. Its `NOTIFY_WORKFLOW`
   dispatch (fixed inputs, Start/Complete only) is the one write `approvals.py`
   allows without a yes. Each dispatch's outcome (run id + link, error, or why
   skipped) is kept on its `merged`/`finished` row. `deploy_tracker.report()` is the
-  read-only Check pill "Release notifications": live checks of what a dispatch
+  read-only Release pill "Release notifications" (out of preview by default): live checks of what a dispatch
   needs and this week's open PRL1/PRD release PRs, each watched or not — no history
   (`/api/deploy-tracking`, `static/forms/deploy_tracking.js`, wording in
   `static/core/deploy_tracking.js`) — not gated on the switch, since a

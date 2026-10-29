@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # server side too (API + chat tools), so a hidden pill is not one question away.
     preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
     preview_groups: str = Field(default="Check,Monitoring", validation_alias=AliasChoices("PREVIEW_GROUPS"))
-    preview_features: str = Field(default="monitoring,bq-cost,notifications,auto-triage,deploy-tracking", validation_alias=AliasChoices("PREVIEW_FEATURES"))
+    preview_features: str = Field(default="monitoring,bq-cost,notifications,auto-triage", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
     identity_required: bool = Field(
@@ -776,8 +776,9 @@ class Settings(BaseSettings):
     # the requester, follows the workflow runs the merge started and tells them how
     # those ended. The PRs the mono repo's action raises into the deployment repo's
     # PRD_BRANCH / PRL1_BRANCH are watched too, without a bell (no requester); only merges into those two are
-    # release notifications. It never merges, re-runs or rolls back. Off by default; preview
-    # feature "deploy-tracking" decides who sees it. With no session in play it
+    # release notifications. It never merges, re-runs or rolls back. Off by default; its
+    # card is out of preview (list "deploy-tracking" in PREVIEW_FEATURES to gate it
+    # again). With no session in play it
     # reads GitHub as the bot (GH_TOKEN).
     deploy_tracking_enabled: bool = Field(default=False, validation_alias=AliasChoices("DEPLOY_TRACKING_ENABLED"))
     track_open_minutes: int = Field(default=5, validation_alias=AliasChoices("TRACK_OPEN_MINUTES"))

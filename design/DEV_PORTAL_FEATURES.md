@@ -6,7 +6,8 @@ interfaces below are contracts, not suggestions. Anything not fixed here is
 the builder's call, following the nearest existing code.
 
 Every feature ships behind a preview feature (`features.py`): `notifications`,
-`auto-triage`, `deploy-tracking`. Nothing here is a mutation of a deployment.
+`auto-triage`, `deploy-tracking` (its Release notifications card is out of
+preview by default; list it in `PREVIEW_FEATURES` to gate it again). Nothing here is a mutation of a deployment.
 The one GitHub write (triggering the team's send-notification workflow) is an
 allowed-without-yes rule in `approvals.py`, named explicitly.
 
@@ -239,7 +240,7 @@ everything renders; Ask why is absent, the finding is the model-free one.
 ## 7. Turning it on — what a deployment must set
 
 Every feature is off until configured — its pill, strip and bell do not even show until switched on, testers included — and preview-gated: list testers in
-`PREVIEW_USERS` (or remove `notifications`, `auto-triage`, `deploy-tracking`
+`PREVIEW_USERS` (or remove `notifications`, `auto-triage`
 from `PREVIEW_FEATURES` to open them to everyone). All settings go in the
 chart's `values.yaml` under `config:`.
 
