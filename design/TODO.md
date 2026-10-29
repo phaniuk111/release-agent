@@ -111,7 +111,7 @@ deploy Workflow graph already uses it.
 ## Built — 2026-10-29
 
 ### Re-run a job — `design/RERUN_JOB.md`
-Preview feature `rerun-job`. Live-tested on the private sandbox at 27 images
+Out of preview (feature `rerun-job`). Live-tested on the private sandbox at 27 images
 (23 re-runs, real already-running answers) and in GitHub Actions against the
 repo token's real API limits (see the design's testing section).
 

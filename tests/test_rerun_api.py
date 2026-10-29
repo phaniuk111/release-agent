@@ -1,4 +1,4 @@
-"""The Re-run a job routes: gated by the rerun-job preview feature; the plan a
+"""The Re-run a job routes: refused when rerun-job is gated again; the plan a
 preview returns is single-use and bound to who asked for it."""
 import pytest
 from fastapi.testclient import TestClient

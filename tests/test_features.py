@@ -158,3 +158,21 @@ def test_a_page_feature_shows_only_when_the_deployment_switched_it_on(monkeypatc
     assert features.ui_config(TESTER)["features"] == ["notifications"], "a place to keep them turns the bell on"
     monkeypatch.setattr(s, "deploy_tracking_enabled", True, raising=False)
     assert features.ui_config(TESTER)["features"] == ["notifications", "deploy-tracking"]
+
+
+def test_rerun_a_job_is_out_of_preview_by_default(monkeypatch):
+    """Everyone sees it once the release log is configured; listing it in
+    PREVIEW_FEATURES gates it again."""
+    from release_agent.config import Settings
+    from release_agent.tools import release_queue
+
+    assert "rerun-job" not in Settings.model_fields["preview_features"].default
+    monkeypatch.setattr(release_queue, "queue_enabled", lambda: True)
+    assert "rerun-job" in features.ui_config(OTHER)["features"]
+    assert "rerun-job" not in features.ui_config(TESTER)["previewFeatures"], "not tagged preview"
+    monkeypatch.setattr(release_queue, "queue_enabled", lambda: False)
+    assert "rerun-job" not in features.ui_config(OTHER)["features"], "no release log, nothing to re-run"
+    monkeypatch.setattr(features.settings, "preview_features", "rerun-job", raising=False)
+    monkeypatch.setattr(release_queue, "queue_enabled", lambda: True)
+    assert "rerun-job" not in features.ui_config(OTHER)["features"]
+    assert features.ui_config(TESTER)["previewFeatures"] == ["rerun-job"]

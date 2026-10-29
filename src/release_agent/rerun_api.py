@@ -1,6 +1,7 @@
 """The "Re-run a job" routes (design/RERUN_JOB.md), included by app_fastapi.
 
-Gated by the `rerun-job` feature (a preview feature by default). The GitHub
+Gated by the `rerun-job` feature — out of preview by default (list it in
+PREVIEW_FEATURES to gate it again). The GitHub
 token is the chat's: the thread's connected session PAT when the request names
 a thread its caller owns, else the server's token. Helpers come from
 app_fastapi inside each handler — a module-level import would be circular.

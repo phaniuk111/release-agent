@@ -1,7 +1,8 @@
 # Re-run a job — design
 
-Status: built behind the preview feature `rerun-job` (Release group pill
-"Re-run a job"). Code: `src/release_agent/tools/rerun_job.py`,
+Status: built, out of preview — the Release group pill "Re-run a job" shows
+to everyone once the release log is configured (feature `rerun-job`; list it
+in `PREVIEW_FEATURES` to gate it again). Code: `src/release_agent/tools/rerun_job.py`,
 `src/release_agent/rerun_api.py`, `static/forms/rerun_job.js`,
 `static/core/rerun.js`.
 
