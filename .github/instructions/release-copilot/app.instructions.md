@@ -65,8 +65,9 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   portal-raised one; never merges, re-runs or rolls back. Its `NOTIFY_WORKFLOW`
   dispatch (fixed inputs, Start/Complete only) is the one write `approvals.py`
   allows without a yes. Each dispatch's outcome (run id + link, error, or why
-  skipped) is kept on its `merged`/`finished` row; `deploy_tracker.report()` reads
-  it back, read-only, for the Check pill "Release notifications"
+  skipped) is kept on its `merged`/`finished` row. `deploy_tracker.report()` is the
+  read-only Check pill "Release notifications": live checks of what a dispatch
+  needs and this week's open PRL1/PRD release PRs, each watched or not — no history
   (`/api/deploy-tracking`, `static/forms/deploy_tracking.js`, wording in
   `static/core/deploy_tracking.js`) — not gated on the switch, since a
   switched-off tracker is one of the things it shows.

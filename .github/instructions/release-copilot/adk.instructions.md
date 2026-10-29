@@ -25,12 +25,13 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   CATCH_UP_PASSES × TRACK_OPEN_MINUTES back, never before the process started
   unless the BigQuery store keeps its rows) with no tracker row, recorded
   `deploy/watching` and followed in the same pass — Start/Complete once; an
-  older merge is only "unseen" in the report, never sent late. The `NOTIFY_WORKFLOW` inputs are fixed in
+  older merge is never sent late. The `NOTIFY_WORKFLOW` inputs are fixed in
   `notify_inputs` (Start / Complete; a failure dispatches nothing).
-  `report()` is the read-only "why was nothing sent" view: live checks (switch,
-  loop, NOTIFY_WORKFLOW reachable with its five inputs, open PRs per branch), each
-  PR's steps with what every dispatch returned, the runs a merged PR waits on and
-  whether DEPLOY_WORKFLOWS counts them, and merges it never saw. It never raises.
+  `report()` is the read-only "would a notification go out now" view: live checks
+  (switch, loop, events table readable, last pass's errors, NOTIFY_WORKFLOW
+  reachable with its five inputs, release branches readable) and the release PRs
+  into PRL1/PRD opened this week (Monday UTC) that are still open, each with
+  whether it is watched. No history — what was sent stays on the rows. It never raises.
   It never merges, re-runs or rolls back. The cadence is a pure function of the
   pass summary (`next_delay`); a pass never raises; what is known about a merge
   comes from the event log, not memory. With no session it is the bot's token.

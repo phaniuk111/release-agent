@@ -1,12 +1,13 @@
 import { escapeHtml as esc } from '../core/format.js';
-import { checkLine, overall, prHeading, prStory } from '../core/deploy_tracking.js';
+import { checkLine, openPrLine, overall, prHeading, weekLabel } from '../core/deploy_tracking.js';
 import { deployTracking } from '../api.js';
 import { opening, withDismiss } from './common.js';
 
 // ---- Release notifications --------------------------------------------------
-// What the deployment tracker saw and sent for each release PR into PRL1/PRD,
-// and why a notification did not go out — straight from /api/deploy-tracking
-// (adk_release_agent/deploy_tracker.report). Read-only: it sends nothing.
+// Whether a release notification can go out right now, and this week's open
+// release PRs into PRL1/PRD with whether the tracker is watching each — straight
+// from /api/deploy-tracking (adk_release_agent/deploy_tracker.report). No
+// history. Read-only: it sends nothing.
 const LOOK = {
     ok:      { cls: 'text-emerald-400', icon: 'fa-circle-check' },
     warn:    { cls: 'text-amber-400',   icon: 'fa-triangle-exclamation' },
@@ -28,14 +29,11 @@ export async function showDeployTracking() {
 function lineHtml(l) {
     const look = LOOK[l.state] || LOOK.info;
     return '<div class="text-[12px] flex gap-2 items-start py-0.5"><i class="fa-solid ' + look.icon + ' ' + look.cls +
-        ' mt-0.5"></i><span class="text-slate-300">' + esc(l.text) +
-        (l.url ? ' <a href="' + esc(l.url) + '" target="_blank" rel="noopener" class="text-sky-400 hover:underline">' +
-                 'run <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i></a>' : '') +
-        '</span></div>';
+        ' mt-0.5"></i><span class="text-slate-300">' + esc(l.text) + '</span></div>';
 }
 
-function prHtml(p) {
-    const when = p.updated_at ? String(p.updated_at).replace('T', ' ').slice(0, 16) + ' UTC' : '';
+function prHtml(p, everyMinutes) {
+    const when = p.created_at ? 'opened ' + String(p.created_at).replace('T', ' ').slice(0, 16) + ' UTC' : '';
     return '<div class="border-t border-slate-800 py-2">' +
         '<div class="flex items-center gap-2 flex-wrap">' +
         '<span class="text-slate-200 font-medium">' + esc(prHeading(p)) + '</span>' +
@@ -43,7 +41,7 @@ function prHtml(p) {
                   'hover:underline">open PR</a>' : '') +
         '<span class="text-[11px] text-slate-500">' + esc(p.title || '') + '</span>' +
         '<span class="flex-1"></span><span class="text-[10px] text-slate-500">' + esc(when) + '</span></div>' +
-        prStory(p).map(lineHtml).join('') + '</div>';
+        lineHtml(openPrLine(p, everyMinutes)) + '</div>';
 }
 
 async function render(wrap) {
@@ -70,12 +68,13 @@ async function render(wrap) {
     if (res && res.ok !== false) {
         html += '<div class="text-[11px] text-slate-500 uppercase tracking-wide mt-2">Checks</div>' +
             (res.checks || []).map(c => lineHtml(checkLine(c))).join('');
-        if (res.history_error) html += lineHtml({ state: 'warn', text: 'Could not read what was sent: ' + res.history_error });
         const prs = res.prs || [];
-        html += '<div class="text-[11px] text-slate-500 uppercase tracking-wide mt-3">Release PRs — last 14 days</div>' +
-            (prs.length ? prs.map(prHtml).join('')
-                : '<div class="text-[12px] text-slate-500 py-1">No release PR into ' +
-                  esc((cfg.branches || []).join(' or ') || 'PRL1 or PRD') + ' in the last 14 days.</div>');
+        const branches = (cfg.branches || []).join(' or ') || 'PRL1 or PRD';
+        html += '<div class="text-[11px] text-slate-500 uppercase tracking-wide mt-3">Open release PRs — since ' +
+            esc(weekLabel(cfg.since)) + '</div>' +
+            (prs.length ? prs.map(p => prHtml(p, cfg.check_every_minutes)).join('')
+                : '<div class="text-[12px] text-slate-500 py-1">No open PR into ' + esc(branches) +
+                  ' opened this week.</div>');
         html += '<div class="text-[10px] text-slate-600 mt-2">Sends to ' +
             esc(cfg.notify_repo ? cfg.notify_repo + ':' + cfg.notify_workflow : 'nothing (NOTIFY_WORKFLOW empty)') +
             (cfg.notify_test ? ' as a test' : '') + ' · watches ' + esc(cfg.deploy_repo || '—') +

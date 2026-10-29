@@ -766,7 +766,7 @@ def test_a_pr_opened_and_merged_between_two_passes_gets_start_then_complete_once
     assert _bell() == [], "nobody in the portal raised it: no bell item"
 
 
-def test_a_merge_before_the_bound_sends_nothing_and_stays_in_the_report_as_unseen(guard, monkeypatch):
+def test_a_merge_before_the_bound_sends_nothing(guard, monkeypatch):
     _caught_up(monkeypatch, T0 - dt.timedelta(minutes=2))
     old, before_start = _guard_pr(12), _guard_pr(13, base="PRL1")
     _merge(old, T0 - dt.timedelta(minutes=20))         # more than CATCH_UP_PASSES × 5 min ago
@@ -775,7 +775,6 @@ def test_a_merge_before_the_bound_sends_nothing_and_stays_in_the_report_as_unsee
     out = DT.run_pass(github=gh, events=[], now=T0)
     assert out["ok"] and out["watching"] == [] and out["started"] == [] and out["errors"] == []
     assert gh.dispatches == [] and _rows() == [] and gh.pulls == []
-    assert sorted(e["pr_number"] for e in DT.report(github=gh, now=T0)["prs"] if e["state"] == "unseen") == [12, 13]
 
 
 def test_the_catch_up_bound_is_pure_and_never_reaches_past_its_floor(monkeypatch):
@@ -958,62 +957,36 @@ def test_the_report_checks_the_workflow_file_the_token_can_see(reportable):
     assert detail["ok"] is False and "cannot see the repo" in detail["detail"]
 
 
-def test_the_report_follows_one_pr_from_open_to_complete(reportable, monkeypatch):
-    monkeypatch.setattr(settings, "deploy_workflows", "deploy-uat.yml")
-    pr = _guard_pr(body="CHG0099001 approved")
-    lint = _Run(9, name="Lint", path=".github/workflows/lint.yml", status="completed", conclusion="success")
-    gh = _gh_with_workflow({12: pr}, runs={SHA: [lint]})
-    DT.run_pass(github=gh, events=[], now=T0)
-    DT.finish(summary={})
-    out = DT.report(github=gh, now=T0)
-    (entry,) = out["prs"]
-    assert (entry["state"], entry["env"], entry["pr_number"]) == ("watching", "PRD", 12)
-    assert "#12 (UAT → PRD)" in _check(out, "Release PRs open now")["detail"]
-    assert _check(out, "Tracker running in this pod")["ok"] is True
-
-    _merge(pr, T0 + dt.timedelta(minutes=1))
-    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
-    (entry,) = DT.report(github=gh, now=T0)["prs"]
-    assert entry["state"] == "merged" and entry["chg"] == "CHG0099001" and entry["merge_sha"] == SHA
-    assert entry["start"] == {"run_id": 4242, "error": "", "skipped": "",
-                              "run_url": "https://github.com/example-org/ops/actions/runs/4242"}
-    assert entry["runs_now"] == [{"name": "Lint", "workflow": "lint.yml", "status": "completed",
-                                  "conclusion": "success", "url": lint.html_url, "counts": False}], \
-        "the only run there is not a deployment run: why Complete never comes"
-
-    gh.runs[SHA] = [lint, _Run(1, status="completed", conclusion="success")]
-    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=3))
-    (entry,) = DT.report(github=gh, now=T0)["prs"]
-    assert entry["state"] == "finished" and entry["complete"]["run_id"] == 4242
-    assert [s["type"] for s in entry["steps"]] == ["watching", "merged", "finished"]
-    assert entry["link"] == pr.html_url, "the watching row's link, kept once it merged"
+def _opened(pr, when):
+    pr.created_at, pr.title = when, "release"
+    return pr
 
 
-def test_a_failed_dispatch_and_a_skipped_one_are_both_kept_for_the_report(reportable, monkeypatch):
-    pr = _guard_pr()
-    gh = _gh_with_workflow({12: pr}, runs={SHA: [_Run(1)]})
-    gh.workflow_error = Exception("403 Resource not accessible by integration")
-    DT.run_pass(github=gh, events=[], now=T0)
-    _merge(pr, T0)
-    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=1))
-    (entry,) = DT.report(github=gh, now=T0)["prs"]
-    assert "403" in entry["start"]["error"] and entry["start"]["run_id"] is None
+def test_the_report_lists_only_this_weeks_open_release_prs_and_whether_each_is_watched(reportable):
+    now = dt.datetime(2026, 10, 29, 12, tzinfo=dt.timezone.utc)          # a Thursday
+    assert DT.week_start(now) == dt.datetime(2026, 10, 26, tzinfo=dt.timezone.utc)
+    this_week = _opened(_guard_pr(12, body="CHG0099001 RMG0099001"), now - dt.timedelta(days=1))
+    prl1 = _opened(_guard_pr(13, base="PRL1"), now - dt.timedelta(hours=2))
+    last_week = _opened(_guard_pr(11), now - dt.timedelta(days=6))
+    merged = _opened(_guard_pr(14), now - dt.timedelta(days=1))
+    _merge(merged, now)
+    gh = _gh_with_workflow({12: this_week, 13: prl1, 11: last_week, 14: merged})
+    DT.run_pass(github=gh, events=[], now=T0)              # watches the newest open PR of each branch
+    out = DT.report(github=gh, now=now)
+    assert [(e["pr_number"], e["env"], e["watched"]) for e in out["prs"]] == [(13, "PRL1", True), (12, "PRD", True)]
+    assert (out["prs"][1]["chg"], out["prs"][1]["rmg"]) == ("CHG0099001", "RMG0099001")
+    assert out["config"]["since"] == "2026-10-26T00:00:00+00:00"
+    assert _check(out, "Release branches readable")["ok"] is True
+    assert "steps" not in out["prs"][0] and "history_error" not in out, "no history on the card"
 
-    monkeypatch.setattr(settings, "notify_workflow", "")
-    _complete(gh)
-    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
-    (entry,) = DT.report(github=gh, now=T0)["prs"]
-    assert entry["complete"]["skipped"] == "NOTIFY_WORKFLOW is not set"
 
-
-def test_a_merge_the_tracker_never_saw_is_listed_as_unseen(reportable):
-    pr = _guard_pr(14, base="PRL1")
-    _merge(pr, T0 - dt.timedelta(days=1))
-    old = _guard_pr(15)
-    _merge(old, T0 - dt.timedelta(days=20))
-    out = DT.report(github=_gh_with_workflow({14: pr, 15: old}), now=T0)
-    assert [(e["state"], e["pr_number"], e["env"]) for e in out["prs"]] == [("unseen", 14, "PRL1")], \
-        "only the last two weeks"
+def test_an_open_pr_not_yet_seen_or_with_tracking_off_says_so(reportable, monkeypatch):
+    now = dt.datetime(2026, 10, 29, 12, tzinfo=dt.timezone.utc)
+    gh = _gh_with_workflow({12: _opened(_guard_pr(12), now)})
+    (entry,) = DT.report(github=gh, now=now)["prs"]
+    assert (entry["watched"], entry["tracking"]) == (False, True)
+    monkeypatch.setattr(settings, "deploy_tracking_enabled", False)
+    assert DT.report(github=gh, now=now)["prs"][0]["tracking"] is False
 
 
 def test_the_report_survives_github_being_down(reportable):
@@ -1021,7 +994,24 @@ def test_the_report_survives_github_being_down(reportable):
     gh.list_error = Exception("502 Bad Gateway")
     gh.workflow_error = Exception("502 Bad Gateway")
     out = DT.report(github=gh, now=T0)
-    assert out["ok"] and _check(out, "Release PRs open now")["ok"] is False and out["prs"] == []
+    check = _check(out, "Release branches readable")
+    assert out["ok"] and check["ok"] is False and "PRD: cannot be read" in check["detail"] and out["prs"] == []
+
+
+def test_a_failed_dispatch_and_a_skipped_one_are_both_kept_on_the_row(reportable, monkeypatch):
+    pr = _guard_pr()
+    gh = _gh_with_workflow({12: pr}, runs={SHA: [_Run(1)]})
+    gh.workflow_error = Exception("403 Resource not accessible by integration")
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=1))
+    (merged,) = _rows("merged")
+    assert '"notify_error":"Exception: 403' in merged["details"] and '"base":"PRD"' in merged["details"]
+    monkeypatch.setattr(settings, "notify_workflow", "")
+    _complete(gh)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
+    (finished,) = _rows("finished")
+    assert '"notify_skipped":"NOTIFY_WORKFLOW is not set"' in finished["details"]
 
 
 def test_an_events_table_that_cannot_be_read_is_the_named_reason(reportable, monkeypatch):

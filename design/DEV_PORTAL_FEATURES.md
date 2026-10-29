@@ -286,7 +286,7 @@ the bell items). The loop runs inside the portal pod: keep `replicaCount: 1`
   NOTIFY_WORKFLOW repo. The tracker has no chat session, so it always uses it.
 - Known limit: a guard PR opened AND merged between two checks is caught only
   inside `catch_up_since` (a few passes, and not across a restart with the memory
-  store); older ones show as "unseen" in the Release notifications card.
+  store); older ones are never announced late.
 
 **Scaling decision (2026-10-11).** One replica now. When the portal must run
 more than one: on Backstage, run Auto-triage and the tracker as scheduled tasks
