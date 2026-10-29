@@ -86,7 +86,7 @@ resource "google_bigquery_table" "release_intents" {
   project     = var.project_id
   dataset_id  = google_bigquery_dataset.release_agent.dataset_id
   table_id    = var.table_id
-  description = "Append-only release events (queued | withdrawn | released | deployed | removed); state is derived by the app — never UPDATE/DELETE"
+  description = "Append-only release events (queued | withdrawn | released | deployed | removed | reverified); state is derived by the app — never UPDATE/DELETE"
 
   # Guard the audit log against accidental `terraform destroy`.
   deletion_protection = true

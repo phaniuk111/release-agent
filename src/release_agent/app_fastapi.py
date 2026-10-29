@@ -124,6 +124,11 @@ from .notifications_api import router as _notifications_router  # noqa: E402
 
 app.include_router(_notifications_router)
 
+# Re-run a job across the queued images' build runs (rerun_api.py).
+from .rerun_api import router as _rerun_router  # noqa: E402
+
+app.include_router(_rerun_router)
+
 # CORS (useful if you later want a separate frontend)
 app.add_middleware(
     CORSMiddleware,
@@ -280,6 +285,21 @@ async def chat_page(request: Request):
         .dots span { display: inline-block; width: 6px; height: 6px; margin: 0 2px; border-radius: 99px; background: #64748b; animation: blink 1.2s infinite; }
         .dots span:nth-child(2) { animation-delay: .2s; }
         .dots span:nth-child(3) { animation-delay: .4s; }
+        /* Re-run a job (forms/rerun_job.js): images as chips, answers as tinted groups. */
+        .rr-chip { display: inline-flex; align-items: center; gap: 4px; font: 11px/1.4 ui-monospace, Menlo, monospace; padding: 1px 6px; border-radius: 5px; border: 1px solid rgba(100,116,139,.45); color: #94a3b8; }
+        .rr-ok { color: #6ee7b7; border-color: rgba(16,185,129,.35); background: rgba(16,185,129,.08); }
+        .rr-info { color: #7dd3fc; border-color: rgba(14,165,233,.35); background: rgba(14,165,233,.08); }
+        .rr-warn { color: #fcd34d; border-color: rgba(245,158,11,.35); background: rgba(245,158,11,.08); }
+        .rr-bad { color: #fca5a5; border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.08); }
+        .rr-pick input { position: absolute; opacity: 0; pointer-events: none; }
+        .rr-pick input:checked + .rr-chip { color: #e0f2fe; border-color: rgba(14,165,233,.6); background: rgba(14,165,233,.12); }
+        .rr-pick input:focus-visible + .rr-chip { outline: 2px solid #38bdf8; }
+        .rr-dot { width: 7px; height: 7px; border-radius: 99px; display: inline-block; flex: none; }
+        .rr-dot.ok { background: #34d399; } .rr-dot.info { background: #38bdf8; } .rr-dot.warn { background: #fbbf24; } .rr-dot.bad { background: #f87171; } .rr-dot.muted { background: #64748b; }
+        .rr-list { max-height: 9.5rem; overflow-y: auto; }
+        .rr-log { max-height: 12rem; overflow-y: auto; }
+        .rr-card summary { list-style: none; } .rr-card summary::-webkit-details-marker { display: none; }
+        .rr-small { font-size: 10px; } .rr-input { width: 14rem; max-width: 100%; }
         @keyframes blink { 0%,80%,100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
         #input { transition: box-shadow .15s, border-color .15s; }
         #input:focus { box-shadow: 0 0 0 3px rgba(16,185,129,.18); }

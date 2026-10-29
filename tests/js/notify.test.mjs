@@ -75,6 +75,8 @@ test('the body line is the first line, cut with an ellipsis', () => {
 
 test('portal links route to the page action, chat links to the chat, URLs to a tab', () => {
     assert.deepEqual(routeLink('portal:queue'), { kind: 'queue' });
+    assert.deepEqual(routeLink('portal:rerun:abc123'), { kind: 'rerun', batchId: 'abc123' });
+    assert.deepEqual(routeLink('portal:rerun:'), { kind: 'none' });
     assert.deepEqual(routeLink('portal:support:abc123:2026-10-09'),
         { kind: 'auto-triage', incidentId: 'abc123', date: '2026-10-09' });
     assert.deepEqual(routeLink('portal:support:stuck'), { kind: 'auto-triage', incidentId: 'stuck', date: '' });

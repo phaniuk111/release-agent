@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # JSON schema in sync when adding columns.
 _SCHEMA = [
     ("event_id", "STRING"),
-    ("event_type", "STRING"),  # queued | withdrawn | released | deployed
+    ("event_type", "STRING"),  # queued | withdrawn | released | deployed | reverified
     ("event_ts", "TIMESTAMP"),
     ("requested_by", "STRING"),
     ("artifact_name", "STRING"),
@@ -255,6 +255,32 @@ def add_intent(
     if result.get("ok"):
         result["intent"] = {k: v for k, v in row.items() if v is not None}
     return result
+
+
+def reverify(artifact: str, actor: str, still_failing: list[str], build_run_url: str = "",
+             note: str = "") -> dict[str, Any]:
+    """Record that a re-run of the chart's build run left only ``still_failing``
+    (allowed controls) failing — the queue's Controls column then shows those
+    open, or "all passed" when none are. An event of its own, read only by
+    `reduce_queue`: the chart keeps its place, requester and routing, and it is
+    not re-gated (the re-run made a control pass; it cannot make one fail that
+    was not already let in). Never raises."""
+    name, version = _split_artifact(artifact)
+    if not name or not version:
+        return {"ok": False, "error": f"Need chart:version (got {artifact!r})."}
+    row = {
+        "event_id": uuid.uuid4().hex,
+        "event_type": "reverified",
+        "event_ts": _now_iso(),
+        "requested_by": str(actor or "").strip() or None,
+        "artifact_name": name,
+        "artifact_version": version,
+        "note": str(note or "").strip() or None,
+        "build_run_url": str(build_run_url or "").strip() or None,
+    }
+    if still_failing:
+        row["allowed_failures"] = ", ".join(still_failing)
+    return _insert([row])
 
 
 def withdraw_intent(artifact_name: str, actor: str, expected_version: str = "") -> dict[str, Any]:
@@ -570,6 +596,15 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "target_envs": ev.get("target_envs") or "",
                 "allowed_failures": allowed,
             }
+        elif etype == "reverified":
+            # A re-run of the chart's build run settled what failed on it
+            # (tools/rerun_job.py): only the controls still failing stay open.
+            # Same version only — a newer queued version has its own run.
+            cur = state.get(name)
+            if cur is not None and cur.get("artifact_version") == ev.get("artifact_version"):
+                allowed, _ = _allowed_and_note(ev)
+                cur["allowed_failures"] = allowed
+                cur["reverified_at"] = ev.get("event_ts")
         elif etype in ("withdrawn", "released"):
             state.pop(name, None)
     return sorted(state.values(), key=lambda x: x.get("requested_at") or "")

@@ -17,6 +17,7 @@ import {
 import { sendMessage } from './chat.js';
 import { showQueueTable } from './forms/queue_table.js';
 import { showAutoTriage } from './forms/auto_triage.js';
+import { showRerunBatch } from './forms/rerun_job.js';
 import { showNotificationsCard } from './forms/notifications.js';
 
 const EMAIL_KEY = 'notify_email';
@@ -94,6 +95,7 @@ export function followLink(link) {
     const route = routeLink(link);
     if (route.kind === 'queue') showQueueTable();
     else if (route.kind === 'auto-triage') showAutoTriage({ date: route.date, incident: route.incidentId });
+    else if (route.kind === 'rerun') showRerunBatch(route.batchId);
     else if (route.kind === 'chat') sendMessage(route.message);
     else if (route.kind === 'url') window.open(route.url, '_blank', 'noopener');
     return route.kind;

@@ -42,6 +42,8 @@ export const CAPABILITIES = [
     {group:'Release', icon:'fa-water',             label:'Promote DF release to PRD',   desc:'promote the Dataflow release file-set to its PRD branch — the DF chain has its own repo and guard', send:true,  text:'promote the DF release to prd'},
     // Not gated on DEPLOY_TRACKING_ENABLED: the card is where a switched-off tracker shows.
     {group:'Release', icon:'fa-bell',              label:'Release notifications', desc:'would a release notification go out now — and this week\'s open PRL1/PRD release PRs', form:'deploy-tracking'},
+    // Gated by its own preview feature: absent unless the server lists rerun-job.
+    {group:'Release', icon:'fa-rotate-right',      label:'Re-run a job',         desc:'re-run one job (any name — e.g. a control) across the queued images\' build runs: preview, yes, one notification when done', form:'rerun-job', feature:'rerun-job'},
     {group:'Deploy',  icon:'fa-flask',             label:'Deploy to CARE UAT',   desc:'deploy a Helm chart to CARE UAT',             form:'uat'},
     {group:'Deploy',  icon:'fa-water',             label:'Deploy to DF UAT',     desc:'trigger the Dataflow flex-template deploy workflow', form:'df-uat'},
     // No PROD deploy pill and no PROD deploy form: PROD is reached by promoting

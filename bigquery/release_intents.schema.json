@@ -1,6 +1,6 @@
 [
   {"name": "event_id", "type": "STRING", "mode": "NULLABLE", "description": "UUID per event; used as insertId for best-effort dedup on retries"},
-  {"name": "event_type", "type": "STRING", "mode": "NULLABLE", "description": "queued | withdrawn | released | deployed | removed"},
+  {"name": "event_type", "type": "STRING", "mode": "NULLABLE", "description": "queued | withdrawn | released | deployed | removed | reverified (a re-run settled which allowed controls still fail; read by the queue only)"},
   {"name": "event_ts", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "UTC time the event was written"},
   {"name": "requested_by", "type": "STRING", "mode": "NULLABLE", "description": "requester email (queued/withdrawn events)"},
   {"name": "artifact_name", "type": "STRING", "mode": "NULLABLE", "description": "chart / image name"},

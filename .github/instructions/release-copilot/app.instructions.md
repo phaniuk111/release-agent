@@ -77,6 +77,13 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   `watch`), the bell is told per incident, a person's resolve/dismiss/reopen is
   recorded against the VERIFIED caller, and the loop runs only when
   `SUPPORT_WATCH_MINUTES > 0` and `SUPPORT_TABLE` is set. Read-only throughout.
+- **Re-run a job** (`tools/rerun_job.py`, `rerun_api.py`, preview feature
+  `rerun-job`; design/RERUN_JOB.md): re-runs ONE job by any name in the picked
+  queued images' build runs — preview, a single-use plan bound to (owner,
+  thread), then a yes. Never a build/publish job or one whose dependents build;
+  the GitHub budget is checked before any start; an API limit stops the batch,
+  a permission refusal the repo; no write is ever retried. A passed re-run
+  appends a `reverified` event; one bell per batch.
 - **Secrets and identity.** GitHub PATs are memory-only and masked, and are
   dropped with a conversation idle for `SESSION_IDLE_MINUTES` (60); nothing
   sensitive in git, BigQuery or logs. The caller's identity comes only from a

@@ -76,6 +76,12 @@ export const monitoringAlertPolicy = (name) => get('/api/monitoring/alert-policy
 // ---- BigQuery cost ------------------------------------------------------------
 // The release-notification tracker's report: checks, each PRD/PRL1 PR's steps.
 export const deployTracking = () => get('/api/deploy-tracking');
+// Re-run a job (design/RERUN_JOB.md): candidates and a batch are reads; the
+// preview reads GitHub only; start spends the single-use plan id.
+export const rerunCandidates = () => get('/api/rerun/candidates');
+export const rerunPreview = (body) => post('/api/rerun/preview', body);
+export const rerunStart = (body) => post('/api/rerun/start', body);
+export const rerunBatch = (id) => get('/api/rerun/' + encodeURIComponent(id));
 export const bqCostReport = (fresh) => get('/api/bq-cost/report?' + query({ fresh: fresh ? 1 : 0 }));
 /** The workbook download — a link's href, so the browser saves it (same cache as the JSON). */
 export const bqCostReportXlsx = () => API_BASE + '/api/bq-cost/report.xlsx';

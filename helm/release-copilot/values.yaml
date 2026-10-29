@@ -164,6 +164,12 @@ config:
   # RCTL-1691, "Control 1691: …" — not RCTLDEF0016910); "*1691*" = wildcard
   # over the name; other text = the name contains it. Comma list; empty = none.
   QUEUE_ALLOWED_FAILING_CONTROLS: "1691"
+  # "Re-run a job" (design/RERUN_JOB.md, preview feature rerun-job): words that
+  # mark a job that builds or publishes — never re-run, on its own or as a job
+  # that depends on the one asked for. Matched as words of the job's name.
+  RERUN_PROTECTED_JOBS: "build,publish,release,deploy"
+  # The most distinct build runs one re-run batch may take.
+  RERUN_MAX_RUNS: "50"
   # ...and only with the run that built exactly that chart:version — read from
   # the tag that triggered the run, or the line its tag step logs (below).
   QUEUE_REQUIRE_RUN_MATCH: "true"
@@ -414,7 +420,7 @@ config:
   #        --set-string config.PREVIEW_USERS='*'
   PREVIEW_USERS: ""                  # e.g. "alice@example.com,bob@example.com" or "*"
   PREVIEW_GROUPS: "Check,Monitoring"  # comma list of pill groups (palette.js GROUPS); Monitoring = BQ cost. Support triage is out of preview: add "Support" here to hide it again
-  PREVIEW_FEATURES: "monitoring,bq-cost,notifications,auto-triage"  # gated server features: their API + chat tools refuse non-preview users ("support-triage" or "deploy-tracking" to gate Support or the Release notifications card again; drop "notifications" to open the bell to everyone)
+  PREVIEW_FEATURES: "monitoring,bq-cost,notifications,auto-triage,rerun-job"  # gated server features: their API + chat tools refuse non-preview users ("support-triage" or "deploy-tracking" to gate Support or the Release notifications card again; drop "notifications" to open the bell to everyone)
   # ============================ [FEATURE] identity =========================
   # Who is calling, from Cloud Service Mesh user auth's signed RCToken. Set
   # IDENTITY_HEADER to switch it on: the token is VERIFIED against authservice's

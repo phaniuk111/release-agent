@@ -108,6 +108,13 @@ deploy Workflow graph already uses it.
 - **Not recommended:** unattended production in a bank — it removes the change
   approval and segregation of duties.
 
+## Built — 2026-10-29
+
+### Re-run a job — `design/RERUN_JOB.md`
+Preview feature `rerun-job`. Live-tested on the private sandbox at 27 images
+(23 re-runs, real already-running answers) and in GitHub Actions against the
+repo token's real API limits (see the design's testing section).
+
 ## Built — 2026-09-19
 
 ### BigQuery cost report — `design/BQ_COST.md`

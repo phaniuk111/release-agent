@@ -43,13 +43,13 @@ def allowed(feature: str, caller) -> bool:
 # config token ("bq-cost"), not a sentence.
 _DISPLAY_NAMES = {"bq-cost": "The BigQuery cost report", "support-triage": "Support triage",
                   "auto-triage": "Auto-triage",
-                  "deploy-tracking": "Deployment tracking"}
+                  "deploy-tracking": "Deployment tracking", "rerun-job": "Re-run a job"}
 
 
 # Features the page itself offers (a bell, a strip, a pill) and so must be told
 # about. A feature the caller is refused is left out, and the page hides what
 # needs it.
-UI_FEATURES = ("notifications", "auto-triage", "deploy-tracking")
+UI_FEATURES = ("notifications", "auto-triage", "deploy-tracking", "rerun-job")
 
 
 def refusal(feature: str) -> str:
@@ -61,13 +61,19 @@ def switched_on(feature: str) -> bool:
     """A page feature shows only when the deployment turned it on — being a
     tester is not enough. Auto-triage needs its timer and a table, the bell a
     place to keep notifications, tracking its own switch. So a deployment with
-    only the release log shows Support triage and none of these, testers too."""
+    only the release log shows Support triage and none of these, testers too.
+    Re-run a job needs the release queue it acts on."""
     if feature == "auto-triage":
         return settings.support_watch_minutes > 0 and bool(str(settings.support_table or "").strip())
     if feature == "notifications":
         return bool(str(settings.portal_events_dataset or "").strip())
     if feature == "deploy-tracking":
         return bool(settings.deploy_tracking_enabled)
+    if feature == "rerun-job":
+        # It acts on queued images: no release queue, nothing to re-run.
+        from .tools import release_queue
+
+        return release_queue.queue_enabled()
     return True
 
 

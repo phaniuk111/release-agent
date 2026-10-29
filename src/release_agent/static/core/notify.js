@@ -101,6 +101,10 @@ export function routeLink(link) {
         const date = cut < 0 ? '' : rest.slice(cut + 1);
         return { kind: 'auto-triage', incidentId, date };
     }
+    if (raw.startsWith('portal:rerun:')) {
+        const batchId = raw.slice('portal:rerun:'.length).trim();
+        return batchId ? { kind: 'rerun', batchId } : { kind: 'none' };
+    }
     if (raw.startsWith('portal:deploy:')) {
         const what = raw.slice('portal:deploy:'.length).trim();
         return what
@@ -127,7 +131,7 @@ export function emptyText(res) {
 // tools/notifications.py; an unknown one shows as itself.
 const KIND_LABELS = {
     release_pr: 'Release PR', uat_pr: 'UAT PR', df_run: 'DF run', requeue: 'Queue',
-    chg: 'CHG', deploy_started: 'Deploy', deploy_finished: 'Deploy', auto_triage: 'Auto-triage',
+    chg: 'CHG', deploy_started: 'Deploy', deploy_finished: 'Deploy', auto_triage: 'Auto-triage', rerun: 'Re-run',
 };
 
 export function kindLabel(kind) {

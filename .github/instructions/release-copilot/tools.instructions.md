@@ -83,6 +83,12 @@ model only chooses which tool to call.
   finding's cause is what code established (`finding_from`, PURE); a timed-out
   investigation is a finding that says so. The bell goes through
   `notifications.notify` with one scope per incident; nothing here changes a job.
+- **Re-run a job** (`rerun_job.py`): its own small `GitHubApi` (requests, not
+  PyGithub) so it can send conditional requests (ETag → a 304 costs no budget)
+  and read the limit headers; `call` never raises. `classify` turns every
+  answer into a kind — a primary/secondary limit stops the batch, a permission
+  refusal the repo, already-running and too-old are per run — and no write is
+  retried. Tests patch the module's `_sleep`/`_clock`, never real time.
 - **Parsing**: no regex. Split, partition and loop (see `json_splice.py`,
   `release_chain.py`).
 - A deploy or release step that takes more than a moment says what it is doing with

@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # server side too (API + chat tools), so a hidden pill is not one question away.
     preview_users: str = Field(default="", validation_alias=AliasChoices("PREVIEW_USERS"))
     preview_groups: str = Field(default="Check,Monitoring", validation_alias=AliasChoices("PREVIEW_GROUPS"))
-    preview_features: str = Field(default="monitoring,bq-cost,notifications,auto-triage", validation_alias=AliasChoices("PREVIEW_FEATURES"))
+    preview_features: str = Field(default="monitoring,bq-cost,notifications,auto-triage,rerun-job", validation_alias=AliasChoices("PREVIEW_FEATURES"))
     # true = queue/withdraw writes are REFUSED without a verified caller, instead
     # of falling back to the typed email.
     identity_required: bool = Field(
@@ -434,6 +434,16 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("QUEUE_ALLOWED_FAILING_CONTROLS"),
     )
+    # Re-run a job (design/RERUN_JOB.md). Words: a job whose name — its last
+    # " / " segment — holds one of them as a word is never re-run, neither on its
+    # own nor because it depends on the job asked for: re-running it would build
+    # or publish the image again.
+    rerun_protected_jobs: str = Field(
+        default="build,publish,release,deploy",
+        validation_alias=AliasChoices("RERUN_PROTECTED_JOBS"),
+    )
+    # The most distinct runs one batch may re-run.
+    rerun_max_runs: int = Field(default=50, validation_alias=AliasChoices("RERUN_MAX_RUNS"))
     queue_require_run_match: bool = Field(
         default=True,
         validation_alias=AliasChoices("QUEUE_REQUIRE_RUN_MATCH"),
