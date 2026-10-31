@@ -24,12 +24,11 @@ through deterministic Python tools and explicit human confirmation.
 ## Safety Boundaries
 
 - The LLM may select read tools, summarize tool results, and guide operators.
-- Low-level release-defining mutations are not exposed as free-form chat tools:
-  `apply_json_update`, `dispatch_workflow`, and `open_release_pr`.
+- Release-defining mutations are not exposed as free-form chat tools:
+  `open_release_pr`, `apply_confirmed_deploy`, and `deploy_dataflow`.
 - Deploy/add requests must use the deterministic deploy facade.
 - A real deploy mutation requires an exact `CONFIRM-*` token for a pending preview.
-- Scoped ops are limited to remove/unstage, retrigger workflow, and release the
-  staged PRD batch after cutoff.
+- Scoped ops are limited to promoting a release; PRD and PRL1 pause on a yes/no.
 
 ## Deployment
 

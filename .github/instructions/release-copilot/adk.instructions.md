@@ -3,8 +3,9 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
 ---
 # ADK app and chat router
 
-- **Router order** (`adk_service.stream_chat`): a pending yes/no approval or
-  CONFIRM token on this (owner, thread) first → the deterministic deploy parser
+- **Router order** (`adk_service.stream_chat`): "Investigate incident <id> …"
+  first (read-only; it neither consumes nor answers what is pending) → a pending
+  yes/no approval or CONFIRM token on this (owner, thread) → the deterministic deploy parser
   → (model on) the classifier → the chat agent; (model off, `LLM_ENABLED=false`)
   the commands Workflow.
 - **What needs a yes** is defined once, in `approvals.py`, and shared by the chat

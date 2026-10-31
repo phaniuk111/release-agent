@@ -15,8 +15,7 @@ This folder contains the current planning and specification artifacts for the
 
 These documents describe the code living in the parent directory:
 
-- `adk_release_agent/` - ADK root agent, specialist sub-agents, skills, and
-  deterministic deploy facade.
+- `adk_release_agent/` - ADK chat agent, skills, and deterministic deploy facade.
 - `src/release_agent/` - FastAPI/CLI adapter, static UI, config, parser, and
   GitHub tool layer.
 - `helm/`, `k8s/`, and `Dockerfile` - deployment packaging.

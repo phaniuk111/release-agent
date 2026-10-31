@@ -10,8 +10,8 @@ Renders:
 
 ## Prerequisites
 - A GKE cluster with **ASM enabled** (managed or in-cluster Istio) and an ingress gateway.
-- The image pushed to a registry (default `ghcr.io/phaniuk111/release-copilot`). The image
-  must include `git` (the release flow clones the deploy repo — already in the Dockerfile).
+- The image pushed to a registry (default `ghcr.io/phaniuk111/release-copilot`). It has no
+  `git` binary: the release flow checks out the deploy repo with Dulwich.
 - A **GCP service account** with Vertex AI access, bound to this chart's KSA via
   **Workload Identity**. For the optional release queue/analytics, the same GSA also needs
   BigQuery access (see below).
@@ -59,8 +59,9 @@ BigQuery access — or let the terraform module in [`bigquery/`](../../bigquery/
 ## Corporate egress proxy
 
 GitHub traffic from GKE usually goes through a corporate proxy. This is pure
-configuration — every client in the stack (requests/PyGithub, httpx/Vertex, the
-`git` binary) honors the standard env vars the chart sets:
+configuration — every client in the stack (requests/PyGithub, httpx/Vertex, and the
+release flow's Dulwich checkout, which is handed them explicitly) uses the standard env
+vars the chart sets:
 
 ```yaml
 proxy:
@@ -170,14 +171,12 @@ config:
   BQ_COST_DATASET: ""                     # findings memory across runs; empty = off
 ```
 
-Released to everyone by default — its pill sits in the *Monitoring* group and
-nothing gates the routes or the chat tools. To restrict it to testers during a
-rollout, add `bq-cost` to `PREVIEW_FEATURES` (API and chat tools then refuse
-everyone but `PREVIEW_USERS`) and `Monitoring` to `PREVIEW_GROUPS` (the pill is
-hidden from them too). Leave `BQ_COST_REGION` empty to disable it cleanly — the
+Preview by default — `bq-cost` is in `PREVIEW_FEATURES` (API and chat tools refuse
+everyone but `PREVIEW_USERS`) and `Monitoring` is in `PREVIEW_GROUPS` (the pill is
+hidden from them too). Drop both to release it to everyone. Leave `BQ_COST_REGION` empty to disable it cleanly — the
 wrong region would otherwise silently report nothing.
 
-## Support triage — L1 view of a control table (optional, preview)
+## Support triage — L1 view of a control table (optional)
 
 A **Support triage** pill (and chat skill) reads a pipelines' workflow control
 table — one row per run or per status change — and turns one business date into
@@ -187,7 +186,8 @@ process / unit / single / spread); whether it is a known issue; one action
 note to copy. Read-only: a few fixed, partition-filtered queries in which BigQuery
 does the counting — only counts and problem rows come back, so a COB with a
 million runs costs the portal what one with a thousand does; it never re-runs
-or changes a job. Behind the preview gate (`Support` / `support-triage`).
+or changes a job. Out of preview by default; list `support-triage` in
+`PREVIEW_FEATURES` and `Support` in `PREVIEW_GROUPS` to gate it again.
 
 Write the table once, readably, as the chart's `supportTable:` block (one column
 per line; the chart flattens it into the `SUPPORT_*` strings). Draft it from the

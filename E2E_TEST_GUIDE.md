@@ -1,5 +1,11 @@
 # End-to-End Test Guide (Local UI → Real GitHub)
 
+> **Retired — do not follow this guide.** It describes the original prototype flow
+> (chat → manifest commit → dispatched workflow → PR). The portal no longer works this
+> way, and the tools named below (`apply_json_update`, `dispatch_workflow`,
+> `retrigger_deployment_workflow`) no longer exist. It is kept for history only. See
+> [TESTING.md](TESTING.md) for testing, and [AGENTS.md](AGENTS.md) for how the portal works now.
+
 This guide walks you through testing the full flow locally:
 
 1. Chat in the UI with image name + tag.
@@ -170,7 +176,6 @@ Go back to the PR — you should see a new "**Current State**" comment that refl
 - **No GCP project error** → make sure `gcloud config set project your-gcp-project` and ADC login done.
 - **Workflow not creating PR** → ensure `create-deployment-pr.yml` is in the source repo and you dispatched the correct workflow name.
 - **No comments on merge** → check that the deployment repo has `on-merge-deploy.yml` and that you actually merged the PR.
-- **Budget warning** → the agent has £10 protection. Confirm when it asks or it will stop.
 
 ---
 

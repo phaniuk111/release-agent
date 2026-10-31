@@ -14,7 +14,7 @@ Browser / CLI
   -> release_agent.app_fastapi or release_agent.cli
   -> release_agent.adk_service.AdkChatService
   -> adk_release_agent.agent.root_agent
-  -> ADK specialist agents + ADK skills
+  -> ADK chat agent + ADK skills
   -> adk_release_agent.tools wrappers
   -> src/release_agent/tools PyGithub facade
   -> GitHub repos, PRs, workflow runs, deployment JSON
@@ -22,16 +22,16 @@ Browser / CLI
 
 ## 3. ADK Runtime
 
-`adk_release_agent/agent.py` builds the ADK root agent and five specialist
-sub-agents:
+`adk_release_agent/agent.py` builds one ADK chat agent, routed by filesystem
+skills that unlock each domain's tools:
 
 - status: read-only release state, allowed images, recent runs, workflow status.
 - PR: find/read PRs and summarize comments/control metadata.
 - controls: verify image tags and build controls.
-- ops: remove/unstage, retrigger workflow, release staged PRD batch.
-- deploy: prepare exact deploy previews and apply only confirmed previews.
+- ops: promote a CARE or DF release to the next environment.
+- deploy: a tool-less guard; deploys run in the deterministic Workflow.
 
-Filesystem skills in `adk_release_agent/skills/` document each specialist's
+Skills in `adk_release_agent/skills/` document each domain's
 responsibilities and safety limits. The root agent loads those skills through ADK
 `SkillToolset`.
 
@@ -58,9 +58,9 @@ receives plain Python wrappers with typed signatures and dictionary results.
 Free-form ADK chat may use read tools and scoped ops tools. It must not directly
 receive release-defining mutation tools:
 
-- `apply_json_update`
-- `dispatch_workflow`
 - `open_release_pr`
+- `apply_confirmed_deploy`
+- `deploy_dataflow`
 
 Those remain reachable only through the deterministic deploy facade or direct
 operator tool testing.
@@ -83,7 +83,7 @@ values:
 - Vertex AI: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GEMINI_MODEL`.
 - Repos: `BUILD_REPO`, `DEPLOY_REPO`.
 - Branch/path/workflow settings: SIT/UAT/PRD branch names, deployment path pattern,
-  allowed workflows, cutoff hour, namespaces, chart directory, values file pattern.
+  allowed workflows, namespaces, chart directory, values file pattern.
 
 ## 8. Interfaces
 
@@ -99,8 +99,8 @@ values:
 - No arbitrary shell execution in the GitHub tool layer.
 - Exact preview before mutation.
 - Exact same-thread confirmation token before deploy apply.
-- PRD deploy staging uses the configured protected-branch PR flow.
-- PRD release is a separate scoped operation governed by cutoff/config controls.
+- There is no PRD deploy: PROD is reached only by promoting a release, and
+  promoting to PRD or PRL1 pauses on a yes/no approval.
 
 ## 10. Validation Gates
 
@@ -111,5 +111,5 @@ Before considering the refactor complete:
 - Helm chart lints and renders.
 - Dependency lock/export does not include the retired agent framework stack.
 - Runtime source/tests/current docs do not reference the retired framework stack.
-- ADK root agent imports and exposes the expected specialists.
+- ADK root agent imports and exposes the expected skills.
 - Deploy preview/apply tests prove the mutation path is token-gated.

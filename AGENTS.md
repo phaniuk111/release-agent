@@ -27,8 +27,8 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
 ## Core invariants (do not break)
 
 1. **Two confirmation flows, never mixed**: chart:version deploys and releases run a
-   deterministic preview → exact `CONFIRM-XXXXXX` token. High-impact ops tools
-   (merge_prod_release, terminal promotions) pause on a yes/no approval. The portal
+   deterministic preview → exact `CONFIRM-XXXXXX` token. High-impact ops
+   (promoting a release to PRD or PRL1) pause on a yes/no approval. The portal
    has NO removals: a chart leaves the next release only by being withdrawn from
    the release queue; a UAT deploy overwrites the file with what is submitted.
    Free-form chat can NEVER mutate deployments (MutationGuardPlugin enforces).

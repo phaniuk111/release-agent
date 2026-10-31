@@ -39,7 +39,6 @@ _BY_NAME = {t.name: t for t in GH_TOOLS}
 # the runner prints the call it would make. Read-only tools always run.
 _MUTATING = {
     "open_release_pr",
-    "retrigger_deployment_workflow",
 }
 
 

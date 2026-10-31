@@ -104,22 +104,22 @@ from config. Entries are keyed by `helm_chart_name` (one per chart per env file)
 **The env branches (SIT → UAT → PRD) are protected — the agent never commits to them
 directly; every change is a PR chain.**
 
-- **Deploy to UAT** OVERRIDES `uat/deployment.json` with the submitted `include[]` via
-  the chain `working → SIT → UAT` — a complete file replace, **no upsert/merge**, so the
-  file always reflects exactly the desired set.
-- **Deploy to PROD** does NOT write PRD directly. It **adds the chart to today's PRD
-  release PR** — a single day-long PR on a `release/prd/<date>` branch that **accumulates**
-  (upsert by chart name) **both** `uat/deployment.json` and `prd/deployment.json`. Every
-  prod deploy through the day adds to the same open PR (the staging view).
-- **Release to PROD.** Production is **never written directly and never
-  skips SIT/UAT.** There is no time-of-day gate — a release can ship at any hour, and
-  only when asked — say *"release prod"* (→ `merge_prod_release`, also a UI quick-action) —
-  the staged charts are **promoted through the full chain `… → SIT → UAT → PRD`** (a fresh
-  branch cut from current SIT, upserted so existing prod charts are preserved — no
-  stale-merge conflict against intraday UAT deploys). Before the cutoff it's refused and
-  the PR stays open; if a protected hop needs review the staging PR stays open until PRD
-  merges.
-- **Editable JSON, multi-chart.** The UI "Deploy to UAT / PROD" buttons open the **whole
+- **Deploy to UAT** OVERRIDES `uat/deployment.json` with the submitted `include[]` — a
+  complete file replace, **no upsert/merge**, so the file always reflects exactly the
+  desired set. The portal merges into SIT only; the deployment repo's own workflow raises
+  `SIT → UAT`, which the portal waits for, shows and records as the pending PR. It never
+  raises or merges that PR. Deploys run one at a time: one is refused while an open PR
+  into SIT or UAT changes that file, or another portal deploy is still running.
+- **There is no single-chart deploy to PROD.** A typed *"deploy X to prod"* is refused
+  before anything is written or a token is made.
+- **Release to PROD.** Production is **never written directly and never skips SIT/UAT.**
+  A chart is queued, goes out in a CARE or DF release, and that release is promoted: say
+  *"release prod"* (→ `promote_release` target `prd` or `prl1`, or `promote_df_release` for
+  a Dataflow release), which pauses on a yes/no. In CARE mono mode the release is instead
+  one PR that a person merges. There is no time-of-day gate — a release can ship at any
+  hour, and only when asked. Charts added after a release is promoted belong to the next
+  one.
+- **Editable JSON, multi-chart.** The UI "Deploy to CARE UAT" form opens the **whole
   `{"include":[...]}` file as an editable JSON box** — add entries to deploy several
   charts at once. Typing a deploy command in chat (e.g. `abc:1.2.3 promote to uat`) opens
   the **same editor pre-filled**. Submit is deterministic (no LLM, no NL ambiguity): the
@@ -137,11 +137,10 @@ directly; every change is a PR chain.**
   UAT by deploying UAT without it.
 
 This is **shared across sessions** because the state lives in **GitHub itself** (the
-deployment JSONs + the open PRD release PR), not in any in-process memory. The side panel
-reads `GET /api/release-status` live and shows what's live on UAT/PRD and **today's PRD
-release PR** (the charts staged for prod + whether it can be merged yet), refreshed on
-load, after each turn, and every 60s. Ask in chat: *"what's deployed to prod?"* or *"what's
-in today's PRD release PR?"* (`check_release_window`).
+deployment JSONs + the open release PRs), not in any in-process memory. The status banner
+reads `GET /api/release-status` live and shows what's live on UAT/PRD and the **open
+release PRs** (with the CHG/RMG tickets they name), refreshed on load, after each turn, and
+every 60s. Ask in chat: *"what's deployed to prod?"* (`check_release_window`).
 
 - **Config:** `SIT_BRANCH`/`UAT_BRANCH`/`PRD_BRANCH`, `DEPLOYMENT_PATH_PATTERN`
   (`{env}/deployment.json`), `HELM_CHART_DIR`, `HELM_VALUES_PATTERN`
@@ -176,15 +175,14 @@ Two clearly separated lanes run on **Google ADK 2.x**:
    **Skills** as the router: each `SKILL.md` declares its `adk_additional_tools`, so a
    domain's tools are surfaced to the model **only when that skill activates**:
    - `release-status` / `release-pr` / `release-controls` — **read-only**
-   - `release-ops` — scoped mutations only: `merge_prod_release`,
-     `promote_release` / `promote_df_release`
+   - `release-ops` — scoped mutations only: `promote_release` / `promote_df_release`
    - `release-deploy` — **tool-less guard**; defers to the deterministic Workflow
 
    The agent is wrapped in an ADK `App` with a **`MutationGuardPlugin`** that blocks the
    release-defining mutations (`open_release_pr`, `apply_confirmed_deploy`,
    `deploy_dataflow`) from the free-form chat path **in code** — not just by prompt.
-   High-impact prod ops (`merge_prod_release`, a PRD/PRL1 release promotion) require an
-   ADK tool-confirmation before they run.
+   High-impact prod ops (a PRD/PRL1 release promotion) require an ADK tool-confirmation
+   before they run.
 
 - **PyGithub** for all GitHub operations — no `gh` subprocess in the tool layer; the
   token is resolved from `GH_TOKEN`/`GITHUB_TOKEN`, falling back to `gh auth token`.
@@ -245,7 +243,7 @@ apply sequence. Deploy intent never reaches the LLM.
 | **Context caching** (`ContextCacheConfig`) | Caches the static prefix (root instruction + skill catalog) to cut latency/cost. `ADK_CONTEXT_CACHE`. |
 | **Event compaction** (`EventsCompactionConfig`) | Summarizes older events on long chats to avoid context overflow. `ADK_EVENT_COMPACTION`. |
 | **Memory** (`preload_memory` + `add_session_to_memory`) | Recalls relevant context each turn; persists finished sessions to the **in-memory** memory service. `ADK_MEMORY_ENABLED`. |
-| **Conditional confirmation** (`require_confirmation`) | `merge_prod_release` always confirms; a release promotion confirms **only for PRD/PRL1**. `ADK_CONFIRM_PROD_OPS`. |
+| **Conditional confirmation** (`require_confirmation`) | A release promotion confirms **only for PRD/PRL1**. `ADK_CONFIRM_PROD_OPS`. |
 
 Memory and sessions are **in-memory (per-pod, ephemeral)** by design — see the scaling
 note below. A PVC does not persist the in-memory memory service (it is pure RAM); durable
@@ -333,9 +331,9 @@ PYTHONPATH=src python -m release_agent.tools_cli get_build_report image=payments
 PYTHONPATH=src python -m release_agent.tools_cli find_prs '{"search_term":"payments-api"}'
 ```
 
-Read/query tools are safe to run. The mutating tools (`open_release_pr`,
-`merge_prod_release`) **execute for real** — this runner bypasses the
-human-confirmation gate by design. Add `--dry-run` to simulate them without executing
+Read/query tools are safe to run. The one mutating tool here (`open_release_pr`)
+**executes for real** — this runner bypasses the human-confirmation gate by design.
+Add `--dry-run` to simulate it without executing
 (read-only tools still run), so you can sweep the whole toolset safely:
 
 ```bash
