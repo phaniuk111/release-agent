@@ -11,7 +11,13 @@ and a bell item per stage for the requester:
                              failing jobs and steps), "Deployment completed" or
                              "Deployment failed at <job> > <step>" — the SAME
                              scope, so the bell shows one item whose text changed
-    a run re-run later    -> a new deploy/finished, "… (after re-run)"
+    a run re-run later    -> a new deploy/finished, "… (after re-run)" — the
+                             Re-run button (same run, higher attempt) or the
+                             pipeline triggered again (the newest run per
+                             workflow counts, latest_runs); a FAILED
+                             deployment is followed TRACK_RERUN_HOURS after the
+                             failure (rerun_open), past the window after the
+                             merge, so its re-run still sends Complete
     TRACK_RUN_MAX_MINUTES -> one "still running" item, deploy/abandoned_tracking,
     with no conclusion       and the merge is left alone
 
@@ -172,14 +178,35 @@ def window() -> _dt.timedelta:
     return _dt.timedelta(minutes=max(1, int(settings.track_run_max_minutes)))
 
 
-def candidates(events: list[dict[str, Any]], now: _dt.datetime | None = None) -> dict[tuple[str, int], dict[str, Any]]:
+def rerun_window() -> _dt.timedelta:
+    """How long after a FAILED deployment it is still followed for a re-run."""
+    return _dt.timedelta(hours=max(0, int(settings.track_rerun_hours)))
+
+
+def rerun_open(last: dict[str, Any] | None, now: _dt.datetime) -> bool:
+    """Is this PR's latest tracker row a failure recent enough that a re-run is
+    still followed? Pure. A deployment that failed is usually re-run after
+    someone has read why — often well past TRACK_RUN_MAX_MINUTES after the
+    merge — and its Complete must still be sent. Measured from the latest
+    failure, so each failed re-run restarts it; a success ends it."""
+    if not last or last.get("event_type") != _FINISHED or (last.get("conclusion") or "success") == "success":
+        return False
+    at = _when(last.get("event_ts"))
+    return at is not None and now - at <= rerun_window()
+
+
+def candidates(events: list[dict[str, Any]], now: _dt.datetime | None = None,
+               horizon: _dt.timedelta | None = None) -> dict[tuple[str, int], dict[str, Any]]:
     """The PRs to visit this pass, from the release log's events. Pure.
 
     A PR with a `pending` event is followed while nothing settles it, and for
     the tracking window after a `deployed`/`removed` event settles it as merged
     (pr_reconcile may have noticed the merge first). A PR settled as abandoned,
-    or merged longer ago than the window, is not."""
+    or merged longer ago than the window, is not. ``horizon`` widens the window
+    for merged ones (run_pass then keeps only those whose deployment failed —
+    `rerun_open` — which needs the tracker's own rows)."""
     now = now or _now()
+    horizon = window() if horizon is None else max(window(), horizon)
     unresolved = pr_reconcile.unresolved_pending(events)
     pending_by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
     settled: dict[tuple[str, int], tuple[str, _dt.datetime | None]] = {}
@@ -200,9 +227,18 @@ def candidates(events: list[dict[str, Any]], now: _dt.datetime | None = None) ->
             out[key] = {"pending": pending, "settled": ""}
             continue
         outcome, when = settled.get(key, ("", None))
-        if outcome == "merged" and when is not None and now - when <= window():
-            out[key] = {"pending": pending, "settled": "merged"}
+        if outcome == "merged" and when is not None and now - when <= horizon:
+            out[key] = {"pending": pending, "settled": "merged", "settled_at": when}
     return out
+
+
+def still_followed(cand: dict[str, Any], last: dict[str, Any] | None, now: _dt.datetime) -> bool:
+    """A candidate settled as merged past the window stays only while its failed
+    deployment may still be re-run. Pure."""
+    when = cand.get("settled_at")
+    if cand.get("settled") != "merged" or when is None:
+        return True
+    return now - when <= window() or rerun_open(last, now)
 
 
 def describe(pending: list[dict[str, Any]], pr_number: int) -> str:
@@ -257,7 +293,8 @@ def watch_targets(rows: list[dict[str, Any]], known: dict[str, dict[str, Any]], 
             continue
         last = (known.get(scope) or {}).get("event_type")
         when = merged_at.get(scope)
-        if last in (_ABANDONED, _CLOSED) or (last == _FINISHED and when is not None and now - when > window()):
+        if last in (_ABANDONED, _CLOSED) or (last == _FINISHED and when is not None and now - when > window()
+                                             and not rerun_open(known.get(scope), now)):
             continue
         out[key] = {"pending": [], "settled": "", "watched": row}
     return out
@@ -312,15 +349,33 @@ def run_matches(run: dict[str, Any], wanted: set[str]) -> bool:
 def _run_dict(run: Any) -> dict[str, Any]:
     path = str(getattr(run, "path", "") or "")
     return {"id": int(getattr(run, "id", 0) or 0), "name": str(getattr(run, "name", "") or ""),
-            "workflow": path.split("/")[-1], "status": str(getattr(run, "status", "") or ""),
+            "workflow": path.split("/")[-1], "title": str(getattr(run, "display_title", "") or ""),
+            "status": str(getattr(run, "status", "") or ""),
             "conclusion": str(getattr(run, "conclusion", "") or ""),
             "url": str(getattr(run, "html_url", "") or ""),
             "attempt": int(getattr(run, "run_attempt", 1) or 1), "obj": run}
 
 
+def run_key(run: dict[str, Any]) -> tuple[str, str]:
+    """Which runs are the same piece of the deployment: one workflow, one run
+    title. A failed run started again as a NEW run (a fresh trigger rather than
+    the Re-run button) has the same key, and the newer one replaces it."""
+    return (str(run.get("workflow") or run.get("name") or ""), str(run.get("title") or ""))
+
+
+def latest_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The newest run per run_key, newest first. Pure. The Re-run button keeps
+    the run id (its attempt goes up); a new trigger is a higher id."""
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for run in sorted(runs, key=lambda r: -int(r.get("id") or 0)):
+        out.setdefault(run_key(run), run)
+    return list(out.values())
+
+
 def runs_for(repo_obj: Any, merge_sha: str) -> list[dict[str, Any]]:
-    """The workflow runs on the merge commit that count as the deployment. No
-    commit, no runs — an empty SHA would list every run in the repo."""
+    """The workflow runs on the merge commit that count as the deployment, the
+    newest per workflow (latest_runs). No commit, no runs — an empty SHA would
+    list every run in the repo."""
     if not merge_sha:
         return []
     wanted = _wanted_workflows()
@@ -329,16 +384,26 @@ def runs_for(repo_obj: Any, merge_sha: str) -> list[dict[str, Any]]:
         item = _run_dict(run)
         if run_matches(item, wanted):
             found.append(item)
-    return found
+    return latest_runs(found)
+
+
+# A run that skipped itself (its `if:` was false) is not a failed deployment.
+_PASSED = ("success", "skipped", "neutral")
+
+
+def passed(runs: list[dict[str, Any]]) -> bool:
+    """Did the deployment succeed? Every run passed and at least one ran. Pure."""
+    return bool(runs) and all(r["conclusion"] in _PASSED for r in runs) and any(
+        r["conclusion"] == "success" for r in runs)
 
 
 def decisive(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    """The run the outcome is named after: the first that did not succeed, else
-    the last one."""
+    """The run the outcome is named after: the first that did not pass, else
+    the first that succeeded."""
     for run in runs:
-        if run["conclusion"] != "success":
+        if run["conclusion"] not in _PASSED:
             return run
-    return runs[-1]
+    return next((r for r in runs if r["conclusion"] == "success"), runs[-1])
 
 
 def failing_steps(run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -366,10 +431,18 @@ def _details(row: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def is_rerun(runs: list[dict[str, Any]], last_finished: dict[str, Any]) -> bool:
-    """A run id the last `finished` row knew, now at a higher attempt. Pure."""
-    known = _details(last_finished).get("attempts") or {}
-    return any(int(known.get(run_id, 0) or 0) < attempt for run_id, attempt in _attempts(runs).items()
-               if run_id in known)
+    """Something ran again since the last `finished` row. Pure. Either a run id
+    it knew, now at a higher attempt (the Re-run button: all jobs or the failed
+    ones), or a new run in the place of one that did not pass (same run_key —
+    the pipeline triggered again)."""
+    details = _details(last_finished)
+    known = details.get("attempts") or {}
+    if any(int(known.get(run_id, 0) or 0) < attempt for run_id, attempt in _attempts(runs).items()
+           if run_id in known):
+        return True
+    failed = {run_key(r) for r in details.get("runs") or []
+              if r.get("conclusion") not in _PASSED and "workflow" in r}
+    return any(str(r["id"]) not in known and run_key(r) in failed for r in runs)
 
 
 # ----- the one GitHub write --------------------------------------------------------
@@ -501,7 +574,10 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
         return
     merged_at = _when(when) or now
     last = known.get(scope)
-    beyond_window = now - merged_at > window()
+    # A failed deployment is still followed for TRACK_RERUN_HOURS after the
+    # failure: the window after the merge does not end it.
+    reopen = rerun_open(last, now)
+    beyond_window = now - merged_at > window() and not reopen
     if last is not None and (last.get("event_type") == _ABANDONED
                              or (last.get("event_type") == _FINISHED and beyond_window)):
         return                       # given up on, or a re-run after the window: not followed
@@ -549,14 +625,15 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
         return
 
     run = decisive(runs)
-    ok = all(r["conclusion"] == "success" for r in runs)
+    ok = passed(runs)
     failed = [] if ok else failing_steps(run)
     stage = "completed" if ok else "failed"
     dispatched = dispatch_notify_workflow(github, stage, chg=cols["chg"], base=base)
     _record({**common, "event_type": _FINISHED, "conclusion": "success" if ok else "failure",
              "run_id": run["id"] or None, "run_url": run["url"] or None, "workflow": run["workflow"] or run["name"],
              "details": {"attempts": _attempts(runs), "failed_steps": failed, "rerun": rerun,
-                         "runs": [{"id": r["id"], "name": r["name"], "conclusion": r["conclusion"]} for r in runs],
+                         "runs": [{"id": r["id"], "name": r["name"], "workflow": r["workflow"], "title": r["title"],
+                                   "conclusion": r["conclusion"]} for r in runs],
                          "base": base, **_sent(dispatched)}})
     if requester:
         after = " (after re-run)" if rerun else ""
@@ -667,7 +744,7 @@ def run_pass(*, github: Any = None, events: list[dict[str, Any]] | None = None,
     try:
         now = now or _now()
         events = _read_events() if events is None else events
-        cands = candidates(events, now)
+        cands = candidates(events, now, horizon=rerun_window())
         watch_repo = _watch_repo()
         if not cands and not watch_repo:
             finish(summary=summary)
@@ -681,6 +758,7 @@ def run_pass(*, github: Any = None, events: list[dict[str, Any]] | None = None,
             raise RuntimeError(f"the event log could not be read: {read.get('error')}")
         rows = read.get("rows") or []
         known = known_merges(rows)
+        cands = {k: v for k, v in cands.items() if still_followed(v, known.get(scope_for(*k)), now)}
         watched = watch_targets(rows, known, set(cands), now)
         if watch_repo:
             try:

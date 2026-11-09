@@ -16,7 +16,10 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   `deploy-tracking`, out of preview by default): a timed sweep that only WATCHES and tells — merged
   → `deploy/merged` + "Deployment starting"; every run on the merge SHA
   concluded → `deploy/finished` on the SAME scope (one bell item that changes),
-  a failure naming the job and step; a re-run → "(after re-run)"; past
+  a failure naming the job and step; a re-run → "(after re-run)" — the Re-run button or a new run of the same
+  workflow (the newest run per workflow counts; a skipped run is not a failure);
+  a failed deployment is followed
+  `TRACK_RERUN_HOURS` after the failure, so a later re-run still sends Complete; past
   `TRACK_RUN_MAX_MINUTES` → one "still running" item then `abandoned_tracking`.
   The same path follows PRD/PRL1 PRs nobody in the portal raised (listed
   each pass via `release_window._open_release_prs`, recorded `deploy/watching`,

@@ -140,8 +140,14 @@ started: `head_sha == merge_sha` and workflow name in `DEPLOY_WORKFLOWS`
 conclusion: `deploy/finished` with `conclusion` (success | failure + the
 failing jobs/steps via controls.py), notify `deploy_finished` (same scope as
 `deploy_started`: ONE bell item that changes), dispatch `NOTIFY_WORKFLOW`
-with `release_notification_type: "Complete"` — a failure dispatches nothing. A re-run on the same run id updates the
-same scope ("completed (after re-run)"). Token: `_resolve_github_token` as
+with `release_notification_type: "Complete"` — a failure dispatches nothing. A re-run updates the same scope ("completed
+(after re-run)"): the Re-run button (same run id, higher attempt) or the
+pipeline triggered again — only the newest run per workflow and run title
+counts, so a new run replaces the failed one. A run that skipped itself is not
+a failure. A FAILED deployment is followed for
+`TRACK_RERUN_HOURS` (24) after the failure, past the window after the merge —
+it is usually re-run once someone has read why, and that re-run's Complete must
+still be sent; each failed re-run restarts it, a success ends it. Token: `_resolve_github_token` as
 is — the session PAT when a thread is active, else `GH_TOKEN` (the bot; the
 values.yaml comment says so). Nothing here merges, re-runs or rolls back.
 

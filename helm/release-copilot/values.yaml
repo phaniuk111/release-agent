@@ -359,6 +359,7 @@ config:
   # are fixed: release_notification_type, change_request (the PR's CHG),
   # environment (PROD for the PRD branch, PRL1 for the PRL1 branch, else the
   # base branch), create_release_draft=true, test_notification=false. Empty =
+  TRACK_RERUN_HOURS: "24"          # a FAILED deployment is followed this long after the failure: a re-run that passes still sends Complete
   # no dispatch. This is the ONE GitHub write that never pauses for a yes
   # (adk_release_agent/approvals.py): it changes no deployment.
   NOTIFY_WORKFLOW: ""

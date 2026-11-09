@@ -807,6 +807,9 @@ class Settings(BaseSettings):
     # channel, for a dry run of the whole path.
     notify_test: bool = Field(default=False, validation_alias=AliasChoices("NOTIFY_TEST"))
 
+    # A deployment that FAILED is followed this long after the failure, so a
+    # re-run that passes still sends Complete; 0 = only inside TRACK_RUN_MAX_MINUTES.
+    track_rerun_hours: int = Field(default=24, validation_alias=AliasChoices("TRACK_RERUN_HOURS"))
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every
     # turn, model call and tool call — are exported to Langfuse; EMPTY = OFF, and

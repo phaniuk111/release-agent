@@ -23,7 +23,7 @@ _REAL_RECONCILE = R.reconcile_pending      # the fixture below stubs it; one tes
 
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch):
-    for name, value in (("track_open_minutes", 5), ("track_run_seconds", 60), ("track_run_max_minutes", 90),
+    for name, value in (("track_open_minutes", 5), ("track_run_seconds", 60), ("track_run_max_minutes", 90), ("track_rerun_hours", 24),
                         ("deploy_workflows", ""), ("notify_workflow", ""), ("ticket_prefixes", "CHG,RMG"),
                         ("notify_test", False)):
         monkeypatch.setattr(settings, name, value, raising=False)
@@ -312,6 +312,57 @@ def test_a_rerun_of_a_finished_run_updates_the_same_scope():
     assert [r["conclusion"] for r in _rows("finished")] == ["success", "failure"]
     (item,) = [i for i in _items() if i["kind"] == "deploy_finished"]
     assert item["title"] == "Deployment completed (after re-run): svc-a:2.0.0"
+
+
+def test_a_failed_deployment_re_run_after_the_window_still_completes():
+    # The usual case: it fails, someone reads why, and re-runs it hours later —
+    # well past TRACK_RUN_MAX_MINUTES after the merge, and pr_reconcile has
+    # settled the PR as merged by then.
+    pr = _PR(7, merged=True, state="closed", when=T0)
+    gh = _GitHub({7: pr}, runs={SHA: [_Run(1, status="completed", conclusion="failure")]})
+    DT.run_pass(github=gh, events=[_pending(7)], now=T0 + dt.timedelta(minutes=1))
+    settled = [_pending(7), {"event_type": "deployed", "deployment_repo": REPO, "pr_number": 7,
+                             "event_ts": T0.isoformat()}]
+    gh.runs[SHA] = [_Run(1, status="in_progress", conclusion=None, attempt=2)]
+    out = DT.run_pass(github=gh, events=settled, now=T0 + dt.timedelta(hours=3))
+    assert out["in_flight"] == 1 and out["abandoned"] == [], "a re-run in flight is followed, not given up on"
+    gh.runs[SHA] = [_Run(1, status="completed", conclusion="success", attempt=2)]
+    out = DT.run_pass(github=gh, events=settled, now=T0 + dt.timedelta(hours=3, minutes=5))
+    assert out["finished"] == [f"deploy:{REPO}#7"]
+    (item,) = [i for i in _items() if i["kind"] == "deploy_finished"]
+    assert item["title"] == "Deployment completed (after re-run): svc-a:2.0.0"
+    # Once it passed, the window after the merge applies again: no more reads.
+    pulls = len(gh.pulls)
+    DT.run_pass(github=gh, events=settled, now=T0 + dt.timedelta(hours=4))
+    assert len(gh.pulls) == pulls
+
+
+def test_a_failure_is_followed_for_track_rerun_hours_and_no_longer(monkeypatch):
+    pr = _PR(7, merged=True, state="closed", when=T0)
+    gh = _GitHub({7: pr}, runs={SHA: [_Run(1, status="completed", conclusion="failure")]})
+    DT.run_pass(github=gh, events=[_pending(7)], now=T0 + dt.timedelta(minutes=1))
+    settled = [_pending(7), {"event_type": "deployed", "deployment_repo": REPO, "pr_number": 7,
+                             "event_ts": T0.isoformat()}]
+    gh.runs[SHA] = [_Run(1, status="completed", conclusion="success", attempt=2)]
+    pulls = len(gh.pulls)
+    out = DT.run_pass(github=gh, events=settled, now=T0 + dt.timedelta(hours=26))
+    assert out["finished"] == [] and len(gh.pulls) == pulls, "a day after the failure it is left alone"
+    monkeypatch.setattr(settings, "track_rerun_hours", 0)
+    out = DT.run_pass(github=gh, events=settled, now=T0 + dt.timedelta(hours=3))
+    assert out["finished"] == [], "0 = only inside TRACK_RUN_MAX_MINUTES, as before"
+
+
+def test_rerun_open_is_a_recent_failure_only():
+    now = T0 + dt.timedelta(hours=5)
+
+    def row(conclusion, at=T0):
+        return {"event_type": "finished", "conclusion": conclusion, "event_ts": at.isoformat()}
+
+    assert DT.rerun_open(row("failure"), now) and DT.rerun_open(row("cancelled"), now)
+    assert not DT.rerun_open(row("success"), now) and not DT.rerun_open(row(None), now)
+    assert not DT.rerun_open(row("failure", T0 - dt.timedelta(hours=20)), now)
+    assert not DT.rerun_open({"event_type": "merged", "event_ts": T0.isoformat()}, now)
+    assert not DT.rerun_open(None, now)
 
 
 def test_after_the_window_with_no_conclusion_one_still_running_item_then_tracking_stops():
@@ -617,6 +668,75 @@ def test_a_watched_prs_failed_runs_dispatch_nothing_and_are_still_recorded(guard
     assert _rows("finished")[0]["conclusion"] == "failure" and _bell() == []
 
 
+def test_a_watched_prs_failed_run_re_run_hours_later_dispatches_complete(guard):
+    pr = _guard_pr()
+    gh = _GitHub({12: pr}, runs={SHA: [_Run(1, status="completed", conclusion="failure")]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=20))
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start"], "a failure sends nothing"
+    gh.runs[SHA] = [_Run(1, status="completed", conclusion="success", attempt=2)]
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(hours=2))
+    assert out["finished"] == [f"deploy:{REPO}#12"]
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start", "Complete"]
+
+
+def _failed_then(gh_runs_after, guard_pr=None):
+    """A watched PR merges, its pipeline fails (a flaky step), a dev gets it to
+    green some way; the dispatches the tracker made."""
+    pr = guard_pr or _guard_pr()
+    gh = _GitHub({12: pr}, runs={SHA: [_Run(1, status="completed", conclusion="failure"), _lint("success")]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=10))
+    gh.runs[SHA] = gh_runs_after
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=30))
+    return [i["release_notification_type"] for i in _inputs(gh)]
+
+
+def _lint(conclusion, id=5):
+    return _Run(id, name="Lint", path=".github/workflows/lint.yml", status="completed", conclusion=conclusion)
+
+
+def test_a_flaky_pipeline_re_run_with_the_button_sends_complete(guard):
+    after = [_Run(1, status="completed", conclusion="success", attempt=2), _lint("success")]
+    assert _failed_then(after) == ["Start", "Complete"]
+
+
+def test_a_flaky_pipeline_triggered_again_as_a_new_run_sends_complete(guard):
+    # GitHub lists both: the old failed run and the new one of the same workflow.
+    after = [_Run(9, status="completed", conclusion="success"),
+             _Run(1, status="completed", conclusion="failure"), _lint("success")]
+    assert _failed_then(after) == ["Start", "Complete"]
+    (done, failed) = _rows("finished")
+    assert (done["conclusion"], done["run_id"]) == ("success", 9) and failed["conclusion"] == "failure"
+
+
+def test_a_run_that_skipped_itself_is_not_a_failure(guard):
+    after = [_Run(1, status="completed", conclusion="success", attempt=2), _lint("skipped")]
+    assert _failed_then(after) == ["Start", "Complete"]
+
+
+def test_another_workflow_still_failing_sends_no_complete(guard):
+    pr = _guard_pr()
+    gh = _GitHub({12: pr}, runs={SHA: [_Run(1, status="completed", conclusion="failure"), _lint("failure")]})
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=10))
+    gh.runs[SHA] = [_Run(1, status="completed", conclusion="success", attempt=2), _lint("failure")]
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=30))
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start"], "still failed: nothing sent"
+
+
+def test_latest_runs_keeps_the_newest_per_workflow_and_title():
+    runs = [{"id": 3, "workflow": "deploy.yml", "title": "a"}, {"id": 7, "workflow": "deploy.yml", "title": "a"},
+            {"id": 4, "workflow": "deploy.yml", "title": "b"}, {"id": 5, "workflow": "lint.yml", "title": "a"}]
+    assert sorted(r["id"] for r in DT.latest_runs(runs)) == [4, 5, 7]
+    assert DT.passed([{"conclusion": "success"}, {"conclusion": "skipped"}])
+    assert not DT.passed([{"conclusion": "skipped"}]) and not DT.passed([])
+    assert not DT.passed([{"conclusion": "success"}, {"conclusion": "cancelled"}])
+
+
 def test_a_prl1_pr_dispatches_environment_prl1(guard):
     pr = _guard_pr(13, base="PRL1")
     gh = _GitHub({13: pr}, runs={SHA: [_Run(1)]})
@@ -720,13 +840,16 @@ def test_watch_targets_leave_out_the_taken_the_closed_and_the_long_finished():
         return {"event_type": kind, "scope": scope, "repo": REPO, "pr_number": n, "event_ts": ts.isoformat(), **more}
 
     now = T0 + dt.timedelta(hours=3)
-    rows = [row("finished", 4), row("merged", 4), row("watching", 4),                # finished, window over
+    rows = [row("finished", 4, conclusion="success"), row("merged", 4), row("watching", 4),  # finished, window over
+            row("finished", 11, conclusion="failure"), row("merged", 11), row("watching", 11),  # failed: re-run still followed
+            row("finished", 12, T0 - dt.timedelta(hours=22), conclusion="failure"),            # failed 25 h ago: over
+            row("merged", 12, T0 - dt.timedelta(hours=23)), row("watching", 12),
             row("finished", 5, now), row("merged", 5, now - dt.timedelta(minutes=10)), row("watching", 5),
             row("closed", 6), row("watching", 6), row("watching", 7), row("watching", 8),
             row("abandoned_tracking", 9), row("watching", 9), row("merged", 10), row("watching", 10)]
     known = DT.known_merges(rows)
     out = DT.watch_targets(rows, known, {(REPO, 8)}, now)
-    assert sorted(k[1] for k in out) == [5, 7, 10]
+    assert sorted(k[1] for k in out) == [5, 7, 10, 11]
     assert out[(REPO, 7)]["pending"] == [] and out[(REPO, 7)]["watched"]["event_type"] == "watching"
 
 
