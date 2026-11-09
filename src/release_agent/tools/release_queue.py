@@ -55,6 +55,7 @@ _SCHEMA = [
     ("build_run_url", "STRING"),  # the Actions run that built the tag — eligibility evidence
     ("target_envs", "STRING"),  # queue-time intent, e.g. "prd,prl1" — see the JSON schema
     ("allowed_failures", "STRING"),  # controls that FAILED but were allowed to queue
+    ("previous_tag", "STRING"),  # queued events: the tag the build run says it started from
 ]
 
 _lock = threading.Lock()
@@ -165,6 +166,13 @@ def _insert(rows: list[dict[str, Any]]) -> dict[str, Any]:
             logger.warning("release_intents has no allowed_failures column — add it (additive, nullable)")
             rows = [_fold_allowed_into_note(r) for r in rows]
             errors = client.insert_rows_json(_table_id(), rows, row_ids=[r["event_id"] for r in rows])
+        if errors and "previous_tag" in str(errors) and any("previous_tag" in r for r in rows):
+            # Same, for the tag the build started from: without the column the
+            # entry is still queued, and a CARE release reads that tag from the
+            # build run instead.
+            logger.warning("release_intents has no previous_tag column — add it (additive, nullable)")
+            rows = [{k: v for k, v in r.items() if k != "previous_tag"} for r in rows]
+            errors = client.insert_rows_json(_table_id(), rows, row_ids=[r["event_id"] for r in rows])
         if errors:
             return {"ok": False, "error": f"BigQuery insert failed: {errors}"}
         # state changed — drop the derived cache
@@ -217,6 +225,7 @@ def add_intent(
     build_run_url: str = "",
     target_envs: str = "",
     allowed_failures: list[str] | None = None,
+    previous_tag: str = "",
 ) -> dict[str, Any]:
     """Queue an artifact for the next release. Re-queuing the same chart
     replaces it in the derived queue (latest event wins) — that's how a dev
@@ -251,6 +260,8 @@ def add_intent(
         # Only when there is one: a table not yet migrated has no such column,
         # and every clean build would otherwise fail to queue on it.
         row["allowed_failures"] = ", ".join(allowed_failures)
+    if str(previous_tag or "").strip():
+        row["previous_tag"] = str(previous_tag).strip()      # same reason: only when there is one
     result = _insert([row])
     if result.get("ok"):
         result["intent"] = {k: v for k, v in row.items() if v is not None}
@@ -593,6 +604,7 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "jira_ticket": ev.get("jira_ticket") or "",
                 "change_details": ev.get("change_details") or "",
                 "build_run_url": ev.get("build_run_url") or "",
+                "previous_tag": ev.get("previous_tag") or "",
                 "target_envs": ev.get("target_envs") or "",
                 "allowed_failures": allowed,
             }
@@ -721,6 +733,7 @@ def requeue_from_history(artifact_name: str, artifact_version: str, actor: str) 
         build_verified=origin.get("build_verified"), jira_ticket=origin.get("jira_ticket") or "",
         change_details=origin.get("change_details") or "", build_run_url=origin.get("build_run_url") or "",
         target_envs=origin.get("target_envs") or "", allowed_failures=allowed_list or None,
+        previous_tag=origin.get("previous_tag") or "",
     )
     if result.get("ok"):
         result["artifact"] = f"{name}:{version}"
@@ -787,22 +800,30 @@ def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[
         })
         group["released_at"] = max(group["released_at"], ev.get("event_ts") or "")
         already = (name, version) in queued_now
+        same = bool(origin) and origin.get("artifact_version") == version
+        # A run, its base tag and its open controls belong to the version that
+        # run built: a version that never went through the queue borrows the
+        # chart's routing and ticket from its last queue entry, never its run —
+        # Re-run a job would act on another build, and the history would link it.
+        built = origin if same else {}
         group["items"].append({
             "artifact_name": name,
             "artifact_version": version,
             "jira_ticket": origin.get("jira_ticket") or "",
-            "build_run_url": origin.get("build_run_url") or "",
+            "build_run_url": built.get("build_run_url") or "",
+            "previous_tag": built.get("previous_tag") or "",
             "prl1_only": bool(origin.get("prl1_only")),
             "df_only": bool(origin.get("df_only")),
             "target_envs": origin.get("target_envs") or "",
             "change_details": origin.get("change_details") or "",
             "note": _allowed_and_note(origin)[1] if origin else "",
+            "allowed_failures": _allowed_and_note(built)[0] if built else "",
             "queued_by": origin.get("requested_by") or "",
             "in_queue": already,
             # It went through the gate once (at this version): it can go back
             # directly. Otherwise the gate must run, with a run and a ticket.
-            "from_queue": bool(origin) and origin.get("artifact_version") == version,
-            "requeueable": bool(origin.get("build_run_url")) and not already,
+            "from_queue": same,
+            "requeueable": bool(built.get("build_run_url")) and not already,
         })
     releases = sorted(groups.values(), key=lambda g: g["released_at"], reverse=True)
     return releases[:limit]

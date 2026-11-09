@@ -259,26 +259,16 @@ def tag_name_matches(configured: str, name: str) -> bool:
     return got == want or got.rsplit(" / ", 1)[-1].strip() == want
 
 
-def run_built_tags(repo_obj, repo_full: str, run) -> dict[str, Any]:
-    """What ``run`` says it built: {"tags": [...], "source": "trigger"|"log"|None,
-    "detail": why nothing was found}.
+def _logged_values(repo_full: str, run, step_name: str, marker: str) -> dict[str, Any]:
+    """Every value logged after ``marker`` by the step or job ``step_name`` names
+    in ``run``: {"values", "found", "unfinished", "unreadable", "error"}.
 
-    BUILD_TAG_STEP may name either a STEP inside a job or a whole JOB — the same
-    two shapes a control takes (_collect_controls). A pipeline that generates the
-    tag in a reusable-workflow job ("Create new tag") names that job for the tag
-    and its steps for the actions they run ("Tag this new commit"), so matching
-    step names alone finds nothing and every build reads as unverifiable.
+    The name may be a STEP inside a job or a whole JOB — a reusable workflow's
+    job ("<caller job> / <job>") names itself for what it does and its steps for
+    the actions they run. Only a step or job that SUCCEEDED counts: a failed one
+    vouches for nothing.
     """
-    head = str(getattr(run, "head_branch", "") or "")
-    if head and getattr(run, "event", "") == "push":
-        try:
-            repo_obj.get_git_ref(f"tags/{head}")          # a tag push, not a branch push
-            return {"tags": [head], "source": "trigger", "detail": ""}
-        except Exception:
-            pass
-    step_name = settings.build_tag_step
-    marker = settings.build_tag_marker
-    tags: list[str] = []
+    values: list[str] = []
     unfinished: list[str] = []
     found = unreadable = False
     try:
@@ -302,12 +292,40 @@ def run_built_tags(repo_obj, repo_full: str, run) -> dict[str, Any]:
                 # pipeline that never logged a tag unless we say so.
                 unreadable = True
                 continue
-            for tag in _tags_from_log(log, marker):
-                if tag not in tags:
-                    tags.append(tag)
+            for value in _tags_from_log(log, marker):
+                if value not in values:
+                    values.append(value)
     except Exception as e:
+        return {"values": [], "found": found, "unfinished": unfinished, "unreadable": unreadable,
+                "error": str(e)}
+    return {"values": values, "found": found, "unfinished": unfinished, "unreadable": unreadable,
+            "error": ""}
+
+
+def run_built_tags(repo_obj, repo_full: str, run) -> dict[str, Any]:
+    """What ``run`` says it built: {"tags": [...], "source": "trigger"|"log"|None,
+    "detail": why nothing was found}.
+
+    BUILD_TAG_STEP may name either a STEP inside a job or a whole JOB — the same
+    two shapes a control takes (_collect_controls). A pipeline that generates the
+    tag in a reusable-workflow job ("Create new tag") names that job for the tag
+    and its steps for the actions they run ("Tag this new commit"), so matching
+    step names alone finds nothing and every build reads as unverifiable.
+    """
+    head = str(getattr(run, "head_branch", "") or "")
+    if head and getattr(run, "event", "") == "push":
+        try:
+            repo_obj.get_git_ref(f"tags/{head}")          # a tag push, not a branch push
+            return {"tags": [head], "source": "trigger", "detail": ""}
+        except Exception:
+            pass
+    step_name = settings.build_tag_step
+    marker = settings.build_tag_marker
+    seen = _logged_values(repo_full, run, step_name, marker)
+    if seen["error"]:
         return {"tags": [], "source": None,
-                "detail": f"the run's jobs could not be read: {e}"[:200]}
+                "detail": f"the run's jobs could not be read: {seen['error']}"[:200]}
+    tags, found, unfinished, unreadable = seen["values"], seen["found"], seen["unfinished"], seen["unreadable"]
     if tags:
         return {"tags": tags, "source": "log", "detail": ""}
     if not found:
@@ -321,6 +339,43 @@ def run_built_tags(repo_obj, repo_full: str, run) -> dict[str, Any]:
     else:
         detail = f"'{step_name}' succeeded but its log has no '{marker}<tag>' line"
     return {"tags": [], "source": None, "detail": detail}
+
+
+def run_base_tag(run_url: str) -> dict[str, Any]:
+    """The previous tag a build run says it started from — the line its
+    base-tag step logs ("<BUILD_BASE_TAG_MARKER> 5.0.989"). Never raises.
+
+    {"ok": True, "tag": ...} or {"ok": False, "reason": ...}. One value only:
+    two different ones in a run say nothing about which is this chart's.
+    BUILD_BASE_TAG_STEP empty = off.
+    """
+    step_name = settings.build_base_tag_step.strip()
+    marker = settings.build_base_tag_marker.strip()
+    if not step_name or not marker:
+        return {"ok": False, "reason": "reading it from the build is off (BUILD_BASE_TAG_STEP)"}
+    repo_full, run_id = _parse_run_url(str(run_url or ""))
+    if not run_id:
+        return {"ok": False, "reason": "no build run on record"}
+    repo_full = repo_full or _build_repo_full()
+    try:
+        run = _get_github_client().get_repo(repo_full).get_workflow_run(int(run_id))
+    except Exception as e:
+        return {"ok": False, "reason": f"could not read run {run_id} in {repo_full}: {e}"[:200]}
+    seen = _logged_values(repo_full, run, step_name, marker)
+    values = seen["values"]
+    if len(values) == 1:
+        return {"ok": True, "tag": values[0]}
+    if len(values) > 1:
+        return {"ok": False, "reason": f"its build logged more than one base tag ({', '.join(values[:3])})"}
+    if seen["error"]:
+        return {"ok": False, "reason": f"the run's jobs could not be read: {seen['error']}"[:200]}
+    if not seen["found"]:
+        return {"ok": False, "reason": f"its build has no step or job named '{step_name}'"}
+    if seen["unfinished"]:
+        return {"ok": False, "reason": f"'{seen['unfinished'][0]}' did not succeed"}
+    if seen["unreadable"]:
+        return {"ok": False, "reason": f"the '{step_name}' log could not be read (the token needs actions:read)"}
+    return {"ok": False, "reason": f"the '{step_name}' log has no '{marker}' line"}
 
 
 def match_run_to_artifact(repo_full: str, run_id: int, image: str, version: str) -> dict[str, Any]:

@@ -947,6 +947,17 @@ def release_queue_get():
     return result
 
 
+@app.get("/api/care-release/dataflow")
+def care_release_dataflow_get():
+    """Read-only: the Dataflow block the CARE release file holds on its base
+    branch, asked as the CARE form opens — so a DF release the last CARE release
+    already named is offered unticked. Not part of /api/release-queue, which the
+    Insights panel polls."""
+    from .tools.care_release import current_dataflow
+
+    return current_dataflow()
+
+
 @app.post("/api/release-queue/batch")
 def release_queue_add_batch(req: QueueBatchRequest, request: Request):
     """Queue several charts in one submission.

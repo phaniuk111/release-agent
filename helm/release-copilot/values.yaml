@@ -170,6 +170,9 @@ config:
   RERUN_PROTECTED_JOBS: "build,publish,release,deploy"
   # The most distinct build runs one re-run batch may take.
   RERUN_MAX_RUNS: "50"
+  # Also offer the images released in the last N days (a release takes them out
+  # of the queue as soon as its PR is raised). "0" = the queue only.
+  RERUN_HISTORY_DAYS: "21"
   # ...and only with the run that built exactly that chart:version — read from
   # the tag that triggered the run, or the line its tag step logs (below).
   QUEUE_REQUIRE_RUN_MATCH: "true"
@@ -185,6 +188,12 @@ config:
   # must carry "<BUILD_TAG_MARKER> <tag>". Whitespace and case are ignored.
   BUILD_TAG_STEP: "Create new tag"
   BUILD_TAG_MARKER: "New tag is:"
+  # Where a build run logs the tag it started from: "<BUILD_BASE_TAG_MARKER> <tag>"
+  # in the step or job BUILD_BASE_TAG_STEP names. A CARE release writes that tag
+  # into CARE_PREVIOUS_TAGS_FILE for each chart whose queued build run logs one;
+  # a chart without one keeps the last release's version. Empty step = off.
+  BUILD_BASE_TAG_STEP: "Determine base tag"
+  BUILD_BASE_TAG_MARKER: "Using previous signed tag (N-1):"
   # Release intake queue + analytics (BigQuery). Table provisioned SEPARATELY
   # (terraform in bigquery/); SA needs dataEditor on the dataset + jobUser.
   # EMPTY BQ_DATASET DISABLES the whole feature cleanly.
@@ -350,6 +359,7 @@ config:
   TRACK_OPEN_MINUTES: "5"          # a pending PR open: check every 5 min (idle: one event-log read per 5 min)
   TRACK_RUN_SECONDS: "60"          # a merge with runs in flight: check every minute
   TRACK_RUN_MAX_MINUTES: "90"      # no conclusion after this: one "still running" item, then the merge is left alone
+  TRACK_RERUN_HOURS: "24"          # a FAILED deployment is followed this long after the failure: a re-run that passes still sends Complete
   # Which runs on the merge commit are the deployment: comma list of workflow
   # names or file names ("Deploy to UAT,deploy-prd.yml"); empty = every run.
   DEPLOY_WORKFLOWS: ""
@@ -525,9 +535,11 @@ config:
   CARE_RELEASE_BASE_BRANCH: "main"
   CARE_RELEASE_FILE: ".github/release/release_details.json"
   # The repo's {chart: version} record of the previous release. Mono mode first
-  # carries CARE_RELEASE_FILE's current artefacts (the last merged release) into
-  # it, then updates the release file — two commits, in that order, in one PR.
-  # "" = the release file only.
+  # writes each chart's previous version into it, then updates the release file —
+  # two commits, in that order, in one PR. The previous version is the tag the
+  # chart's build started from (BUILD_BASE_TAG_STEP, read when it was queued);
+  # a chart without one keeps CARE_RELEASE_FILE's current artefact (the last
+  # merged release). "" = the release file only.
   CARE_PREVIOUS_TAGS_FILE: ".github/release/previous_release_tags.json"
   # Names the PR's branch — and only open PRs into the base branch whose branch
   # starts with it count as "a release in flight" (a mono repo's base always has

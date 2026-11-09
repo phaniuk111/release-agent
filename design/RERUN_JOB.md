@@ -20,8 +20,12 @@ watch ten tabs.
 The person types **any job or step name**, for example `sdlc-peer-review`,
 `unit-tests` or `RCTLDEF0001691`. The name is matched the way controls are
 matched (`controls.control_matches`): `1691` finds `RCTLDEF0001691`, and
-`*scan*` is a wildcard. The person ticks the queued images, and the portal
-does four things:
+`*scan*` is a wildcard. The person ticks the images, and the portal
+does four things. The images are the queued ones, then those released in the
+last `RERUN_HISTORY_DAYS` (21; "0" = the queue only): a release takes its
+images out of the queue as soon as its PR is raised, and a control can still
+need a re-run after that. A released image is never pre-ticked, and its result
+writes no `reverified` event — there is no queue entry left for it to settle.
 
 1. **Preview (read-only).** It reads each distinct build run once. Images built
    by the same run share one re-run. Each image gets exactly one answer:

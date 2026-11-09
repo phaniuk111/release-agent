@@ -30,6 +30,13 @@ model only chooses which tool to call.
   block when `CARE_RELEASE_DF_KEY_PREFIX` is set (`df_block`: four keys, added
   if missing); its key names come from that setting, never from code, and the
   DF images it lists stay out of the change-request prose and the CARE queue drain.
+  The form offers queued DF images and those of DF releases already raised (a DF
+  release drains them first); `current_dataflow` reads the file's block, read-only,
+  so an image the file already names is offered unticked.
+  Its previous tags file takes each chart's `previous_tag` — the tag the build
+  started from, read from the build run by the queue gate (`controls.run_base_tag`)
+  — and only falls back to the last release's artefact; apply reuses the
+  previewed values and never reads a build log.
 - **BigQuery** (`release_queue.py`, `bq_cost.py`): INSERT only. Every cost
   statement passes `bq_guard.py`. An empty `BQ_DATASET` disables the queue
   cleanly; check `queue_enabled()` before reading.

@@ -393,7 +393,10 @@ def _split(artifact: str) -> tuple[str, str]:
 
 
 def candidates() -> dict[str, Any]:
-    """The queued charts this can act on: each with its build run's repo and id."""
+    """The images this can act on, each with its build run's repo and id: the
+    queued ones, then those of recent releases (Release history, the last
+    RERUN_HISTORY_DAYS). A release moves its images out of the queue as soon as
+    its PR is raised, and a control may still need a re-run after that."""
     from . import release_queue
     from .controls import _parse_run_url
 
@@ -401,16 +404,36 @@ def candidates() -> dict[str, Any]:
     if not q.get("ok"):
         return {"ok": False, "error": q.get("error") or "the release queue is unavailable",
                 "disabled": bool(q.get("disabled"))}
-    out = []
-    for item in q.get("queue") or []:
+
+    def entry(item: dict, **extra: Any) -> dict:
         url = item.get("build_run_url") or ""
         repo, run_id = _parse_run_url(url) if url else (None, None)
-        out.append({"artifact": f"{item.get('artifact_name')}:{item.get('artifact_version')}",
-                    "requested_by": item.get("requested_by") or "",
-                    "allowed_failures": item.get("allowed_failures") or "",
-                    "build_verified": item.get("build_verified"),
-                    "run_url": url, "repo": repo or "", "run_id": run_id})
-    return {"ok": True, "images": out}
+        return {"artifact": f"{item.get('artifact_name')}:{item.get('artifact_version')}",
+                "requested_by": item.get("requested_by") or item.get("queued_by") or "",
+                "allowed_failures": item.get("allowed_failures") or "",
+                "build_verified": item.get("build_verified"),
+                "run_url": url, "repo": repo or "", "run_id": run_id, **extra}
+
+    out = [entry(item, source="queued") for item in q.get("queue") or []]
+    seen = {c["artifact"] for c in out}
+    days = max(0, int(settings.rerun_history_days or 0))
+    history_error = ""
+    if days:
+        h = release_queue.history(days=days, limit=100)
+        if h.get("ok"):
+            for rel in h.get("releases") or []:          # newest first: one row per image
+                for item in rel.get("items") or []:
+                    c = entry(item, source="released", release_name=rel.get("release_name") or "",
+                              pr_number=rel.get("pr_number"), released_at=rel.get("released_at") or "")
+                    if c["artifact"] not in seen:
+                        seen.add(c["artifact"])
+                        out.append(c)
+        else:
+            history_error = h.get("error") or "the release history is unavailable"
+    res: dict[str, Any] = {"ok": True, "images": out, "history_days": days}
+    if history_error:
+        res["history_error"] = history_error
+    return res
 
 
 # ---------------------------------------------------------------- reading runs
@@ -500,7 +523,8 @@ def preview(job: str, images: list[str], *, include_passed: bool = False, owner:
         for art in picked:
             c = by_artifact.get(art)
             if c is None:
-                rows.append({"artifact": art, "state": "unreadable", "detail": "not in the release queue any more"})
+                rows.append({"artifact": art, "state": "unreadable",
+                             "detail": "not in the release queue or the recent release history any more"})
                 continue
             if not c["run_id"] or not c["repo"]:
                 rows.append({"artifact": art, "state": "unreadable", "detail": "no build run URL on its queue entry"})
@@ -510,7 +534,8 @@ def preview(job: str, images: list[str], *, include_passed: bool = False, owner:
                 runs[key] = {"repo": key[0], "run_id": key[1], "images": []}
                 order.append(key)
             runs[key]["images"].append(art)
-            rows.append({"artifact": art, "repo": key[0], "run_id": key[1], "run_url": c["run_url"]})
+            rows.append({"artifact": art, "repo": key[0], "run_id": key[1], "run_url": c["run_url"],
+                         "source": c.get("source") or "queued"})
         cap = max(1, int(settings.rerun_max_runs or 50))
         over = set(order[cap:])
         files: dict = {}
@@ -841,7 +866,15 @@ def _reverify(batch: dict, run: dict, jobs: list[dict]) -> None:
             return
         if not release_queue.queue_enabled():
             return
+        released = {r.get("artifact") for r in batch["rows"] if r.get("source") == "released"}
         for art in run["images"]:
+            if art in released:
+                # Its release already took it out of the queue: there is no
+                # queue entry for the result to settle.
+                for row in batch["rows"]:
+                    if row.get("artifact") == art:
+                        row["queue"] = "released — not in the queue, so nothing there changes"
+                continue
             res = release_queue.reverify(art, batch.get("requested_by") or "portal", failing,
                                          build_run_url=run.get("run_url") or "",
                                          note=f"re-run of {run['job']} (attempt {run.get('target_attempt')})")

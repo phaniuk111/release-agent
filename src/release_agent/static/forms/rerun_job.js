@@ -93,8 +93,24 @@ export async function showRerunJob(prefill) {
     }
     const usable = (cand.images || []).filter(i => i.run_url);
     const picked = new Set((prefill && prefill.images) || []);
-    if (!picked.size) usable.forEach(i => { if (i.allowed_failures) picked.add(i.artifact); });   // open controls: the usual case
+    // Open controls on QUEUED images are the usual case; a released image is
+    // offered (its release took it out of the queue) but never pre-ticked.
+    if (!picked.size) usable.forEach(i => { if (i.allowed_failures && i.source !== 'released') picked.add(i.artifact); });
     const openCount = usable.filter(i => i.allowed_failures).length;
+    const pickChip = (i, n) =>
+        '<label title="' + esc((i.allowed_failures ? i.allowed_failures + ' open · ' : '') +
+            (i.source === 'released' ? 'released in ' + (i.release_name || 'a release') +
+                (i.pr_number != null ? ' (PR #' + i.pr_number + ')' : '') + ' · ' : '') + 'run ' + (i.run_id || '')) +
+        '" class="rr-pick relative cursor-pointer select-none"><input type="checkbox" data-img="' + n + '"' +
+        (picked.has(i.artifact) ? ' checked' : '') + '><span class="rr-chip">' +
+        (i.allowed_failures ? '<span class="rr-dot warn"></span>' : '') +
+        esc(i.artifact) + '</span></label>';
+    const queuedIdx = [], releasedIdx = [];
+    usable.forEach((i, n) => (i.source === 'released' ? releasedIdx : queuedIdx).push(n));
+    const groupHtml = (label, idx) => idx.length
+        ? '<div class="text-[10px] uppercase tracking-wide text-slate-500 mt-2">' + esc(label) + ' (' + idx.length + ')</div>' +
+          '<div class="rr-list flex flex-wrap gap-1 mt-1">' + idx.map(n => pickChip(usable[n], n)).join('') + '</div>'
+        : '';
     wrap.innerHTML = title('Re-run a job') +
         '<div class="text-[11px] text-slate-500 mb-2">Any job or step name — e.g. <span class="font-mono">sdlc-peer-review</span>, ' +
         '<span class="font-mono">RCTLDEF0001691</span> or just <span class="font-mono">1691</span>. Nothing runs until you say yes.</div>' +
@@ -110,14 +126,11 @@ export async function showRerunJob(prefill) {
                   openCount + ')</button>·' : '') +
               '<button type="button" data-rr="sel-all" class="text-sky-400 hover:underline">all</button>·' +
               '<button type="button" data-rr="sel-none" class="text-sky-400 hover:underline">none</button></div>' +
-              '<div data-rr="list" class="rr-list flex flex-wrap gap-1 mt-1">' +
-              usable.map((i, n) =>
-                  '<label title="' + esc((i.allowed_failures ? i.allowed_failures + ' open · ' : '') + 'run ' + (i.run_id || '')) +
-                  '" class="rr-pick relative cursor-pointer select-none"><input type="checkbox" data-img="' + n + '"' +
-                  (picked.has(i.artifact) ? ' checked' : '') + '><span class="rr-chip">' +
-                  (i.allowed_failures ? '<span class="rr-dot warn"></span>' : '') +
-                  esc(i.artifact) + '</span></label>').join('') + '</div>'
-            : '<div class="text-xs text-slate-500 mt-2">Nothing queued has a build run to re-run.</div>') +
+              '<div data-rr="list">' + groupHtml('Queued', queuedIdx) +
+              groupHtml('Released in the last ' + (cand.history_days || 0) + ' days', releasedIdx) + '</div>'
+            : '<div class="text-xs text-slate-500 mt-2">Nothing queued or recently released has a build run to re-run.</div>') +
+        (cand.history_error ? '<div class="text-[11px] text-amber-400 mt-1">Release history is unavailable (' +
+            esc(cand.history_error) + ') — only queued images are listed.</div>' : '') +
         '<div class="flex gap-2 items-center flex-wrap mt-2">' +
         '<input data-rr="email" type="email" aria-label="Your email" class="' + FIELD_CLASS + ' rr-input" placeholder="your email (for the bell)">' +
         (usable.length ? '<button type="button" data-rr="preview" class="' + btnPri + '">Preview</button>' : '') +
@@ -127,7 +140,7 @@ export async function showRerunJob(prefill) {
     lockToSignedIn(email).catch(() => null);
     const boxes = [...wrap.querySelectorAll('[data-img]')];
     const count = wrap.querySelector('[data-rr="count"]');
-    const recount = () => { if (count) count.textContent = boxes.filter(b => b.checked).length + ' of ' + usable.length + ' queued images'; };
+    const recount = () => { if (count) count.textContent = boxes.filter(b => b.checked).length + ' of ' + usable.length + ' images'; };
     const pick = (fn) => { boxes.forEach(b => { b.checked = fn(usable[+b.dataset.img]); }); recount(); };
     boxes.forEach(b => b.addEventListener('change', recount));
     const on = (sel, fn) => { const el = wrap.querySelector(sel); if (el) el.addEventListener('click', fn); };

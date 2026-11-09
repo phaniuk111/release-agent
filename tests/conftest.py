@@ -53,6 +53,13 @@ def _no_github_at_preview(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_base_tag_read_from_github(monkeypatch):
+    """Reading the tag a build started from is a GitHub call (the queue gate and
+    a CARE release make it); off unless a test turns it on with a fake."""
+    monkeypatch.setattr(settings, "build_base_tag_step", "", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_wait_for_the_sit_to_uat_pr(monkeypatch):
     """A UAT deploy waits for the repository's SIT -> UAT PR to appear. No test
     has that workflow, so none may sit out the real wait."""

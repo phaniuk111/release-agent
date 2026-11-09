@@ -17,5 +17,6 @@
   {"name": "change_details", "type": "STRING", "mode": "NULLABLE", "description": "dev what-changed-and-why; aggregated into change_description"},
   {"name": "build_run_url", "type": "STRING", "mode": "NULLABLE", "description": "GitHub Actions run that built the tag — eligibility evidence checked at queue time"},
   {"name": "target_envs", "type": "STRING", "mode": "NULLABLE", "description": "queued events: environments the developer picked, comma-separated and ordered uat,prl1,prd (e.g. \"prd,prl1\"). Recorded intent — a Dataflow entry may name both pipelines and which one is triggered is decided at deploy time. Null on rows written before this column existed"},
-  {"name": "allowed_failures", "type": "STRING", "mode": "NULLABLE", "description": "queued events: controls that FAILED on the build run but were allowed to queue (QUEUE_ALLOWED_FAILING_CONTROLS), e.g. \"RCTLDEF0001691 in job build\". Null when every control passed"}
+  {"name": "allowed_failures", "type": "STRING", "mode": "NULLABLE", "description": "queued events: controls that FAILED on the build run but were allowed to queue (QUEUE_ALLOWED_FAILING_CONTROLS), e.g. \"RCTLDEF0001691 in job build\". Null when every control passed"},
+  {"name": "previous_tag", "type": "STRING", "mode": "NULLABLE", "description": "queued events: the tag the build run logged as the one it started from (BUILD_BASE_TAG_STEP / BUILD_BASE_TAG_MARKER); a CARE release writes it into CARE_PREVIOUS_TAGS_FILE for that chart. Additive, nullable: a table without it still queues, and the release reads the run instead."}
 ]

@@ -578,3 +578,74 @@ def test_a_failed_again_link_opens_the_failed_step():
     assert url == "https://github.com/o/r/actions/runs/1/job/9#step:2:1"
     jobs[0]["steps"][1].pop("number")
     assert R._job_result(jobs, "sdlc-peer-review")[2] == "https://github.com/o/r/actions/runs/1/job/9", "no number: the job"
+
+
+# ---- images a release already took out of the queue ---------------------------
+# A release moves its images to Release history as soon as its PR is raised; a
+# control may still need a re-run after that, so they stay pickable.
+
+def _history(monkeypatch, queue_items, releases, ok=True):
+    monkeypatch.setattr(release_queue, "current_queue", lambda *a, **k: {"ok": True, "queue": queue_items})
+    asked = {}
+
+    def history(days=21, limit=25, use_cache=True):
+        asked.update(days=days)
+        return {"ok": True, "releases": releases} if ok else {"ok": False, "error": "BigQuery unavailable: down"}
+
+    monkeypatch.setattr(release_queue, "history", history)
+    return asked
+
+
+def _run(rid):
+    return f"https://github.com/o/r/actions/runs/{rid}"
+
+
+def test_candidates_offer_the_queue_then_recently_released_images_once(monkeypatch):
+    monkeypatch.setattr(R.settings, "rerun_history_days", 14, raising=False)
+    asked = _history(monkeypatch,
+        [{"artifact_name": "svc-q", "artifact_version": "2.0", "requested_by": "dev@example.com",
+          "build_run_url": _run(5)}],
+        [{"release_name": "CARE Release 11.04", "pr_number": 260, "released_at": "2026-11-04T10:00:00Z",
+          "items": [{"artifact_name": "svc-a", "artifact_version": "1.0", "queued_by": "a@example.com",
+                     "allowed_failures": "RCTLDEF0001691", "build_run_url": _run(7)},
+                    {"artifact_name": "svc-q", "artifact_version": "2.0", "build_run_url": _run(5)}]},
+         {"release_name": "Older", "pr_number": 250, "released_at": "2026-10-28T10:00:00Z",
+          "items": [{"artifact_name": "svc-a", "artifact_version": "1.0", "build_run_url": _run(6)}]}])
+    out = R.candidates()
+    assert asked == {"days": 14} and out["ok"] and out["history_days"] == 14
+    assert [(c["artifact"], c["source"], c["run_id"]) for c in out["images"]] == [
+        ("svc-q:2.0", "queued", 5), ("svc-a:1.0", "released", 7)], "the newest release wins; queued is not repeated"
+    rel = out["images"][1]
+    assert (rel["release_name"], rel["pr_number"], rel["requested_by"], rel["allowed_failures"]) == (
+        "CARE Release 11.04", 260, "a@example.com", "RCTLDEF0001691")
+
+
+def test_a_history_outage_still_offers_the_queue_and_says_so(monkeypatch):
+    _history(monkeypatch, [{"artifact_name": "svc-q", "artifact_version": "2.0", "build_run_url": _run(5)}], [],
+             ok=False)
+    out = R.candidates()
+    assert out["ok"] and [c["artifact"] for c in out["images"]] == ["svc-q:2.0"]
+    assert "down" in out["history_error"]
+
+
+def test_zero_history_days_is_the_queue_only(monkeypatch):
+    monkeypatch.setattr(R.settings, "rerun_history_days", 0, raising=False)
+    _history(monkeypatch, [], [{"release_name": "x", "items": [{"artifact_name": "svc-a", "artifact_version": "1"}]}])
+    monkeypatch.setattr(release_queue, "history", lambda **k: pytest.fail("history is off"))
+    assert R.candidates()["images"] == []
+
+
+def test_a_released_image_is_re_run_but_never_reverified(queue, sinks, monkeypatch):
+    """Its release took it out of the queue, so a `reverified` event would settle
+    nothing — the row says so instead."""
+    told, reverified = sinks
+    items = R.candidates()["images"]
+    for c in items:
+        c["source"] = "released" if c["artifact"] == "svc-a:1.0" else "queued"
+    monkeypatch.setattr(R, "candidates", lambda: {"ok": True, "images": items})
+    api = FakeApi(gh_runs(ALL), rate=RATE)
+    b = go(api)["batch"]
+    a = next(r for r in b["rows"] if r["artifact"] == "svc-a:1.0")
+    assert a["result"] == "passed" and a["queue"].startswith("released")
+    assert "svc-a:1.0" not in [art for art, _ in reverified]
+    assert "svc-b:1.0" in [art for art, _ in reverified], "the queued image sharing its run still is"

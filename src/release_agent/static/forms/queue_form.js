@@ -1,5 +1,5 @@
 import { escapeHtml as esc, shortName } from '../core/format.js';
-import { batchRow, queueSubmissionProblems, tickHint } from '../core/queue.js';
+import { batchRow, previousTag, queueSubmissionProblems, tickHint } from '../core/queue.js';
 import { getContext, QUEUE_PATH, queueBatch } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
 import { ctxNote, fieldControl, labeledField, lockToSignedIn, opening, withDismiss } from './common.js';
@@ -343,7 +343,10 @@ export async function showQueueForm() {
                     ? '<span class="text-amber-400">⚠ ' + open.length + ' control(s) not passed yet: ' +
                       open.map(c => esc(c.control)).join(', ') + '</span>'
                     : '<span class="text-amber-400">⚠ no traceable build</span>';
-            return '<div class="text-[11px] font-mono mt-0.5">' + esc(q.artifact) + ' — ' + badge + '</div>';
+            const prev = previousTag(q);
+            return '<div class="text-[11px] font-mono mt-0.5">' + esc(q.artifact) + ' — ' + badge +
+                (prev ? ' <span class="text-slate-400" title="' + esc(prev.title) + '">· ' + esc(prev.text) + '</span>' : '') +
+                '</div>';
         };
         wrap.innerHTML =
             '<div class="font-semibold text-emerald-300 mb-1"><i class="fa-solid fa-circle-check"></i> Queued for the next release (' +

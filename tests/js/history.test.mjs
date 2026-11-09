@@ -163,7 +163,7 @@ test('a release with no charts says so', () => {
     assert.equal(releaseSummary(undefined), '0 charts');
 });
 
-import { missingInputs, safeRunHref, withTyped } from '../../src/release_agent/static/core/history.js';
+import { missingInputs, RUN_LINK, safeRunHref, withTyped } from '../../src/release_agent/static/core/history.js';
 
 test('Re-queue all under a filter ticks only the rows the filter shows', () => {
     const rel = { items: [
@@ -202,4 +202,10 @@ test('only an http(s) run URL becomes a link', () => {
     assert.equal(safeRunHref('JaVaScRiPt:alert(1)'), '');
     assert.equal(safeRunHref('data:text/html,x'), '');
     assert.equal(safeRunHref(''), '');
+});
+
+test('the run link says where it goes, not a bare "run"', () => {
+    assert.equal(RUN_LINK.label, 'GitHub run');
+    assert.match(RUN_LINK.title, /GitHub Actions run/);
+    assert.ok(Object.isFrozen(RUN_LINK));
 });

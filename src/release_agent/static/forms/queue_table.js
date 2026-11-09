@@ -1,5 +1,6 @@
 import { escapeHtml as esc, shortName, timeAgo } from '../core/format.js';
-import { buildSummary, controlsSummary, queueDestination } from '../core/queue.js';
+import { RUN_LINK, safeRunHref } from '../core/history.js';
+import { buildSummary, controlsSummary, previousTag, queueDestination } from '../core/queue.js';
 import { getContext, QUEUE_PATH, whoami, withdrawFromQueue } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
 import { ctxNote, opening, withDismiss } from './common.js';
@@ -80,16 +81,21 @@ async function _renderQueueTable(wrap, flash) {
                 '" title="' + esc(cs.title) + '"><i class="fa-solid ' +
                 (cs.state === 'passed' ? 'fa-circle-check' : cs.state === 'open' ? 'fa-circle-exclamation' : 'fa-circle-minus') +
                 ' mr-1"></i>' + esc(cs.label) + '</span>';
-            const run = q.build_run_url
-                ? ' <a href="' + esc(q.build_run_url) + '" target="_blank" rel="noopener" ' +
-                  'class="text-sky-400 hover:underline" title="The GitHub Actions run that built it">run</a>' : '';
+            const href = safeRunHref(q.build_run_url);
+            const run = href
+                ? '<span class="text-slate-600"> · </span><a href="' + esc(href) + '" target="_blank" rel="noopener" ' +
+                  'class="text-sky-400 underline hover:text-white" title="' + esc(RUN_LINK.title) + '">' +
+                  esc(RUN_LINK.label) + ' <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i></a>' : '';
+            const prev = previousTag(q);
+            const prevLine = prev ? '<div class="font-mono text-slate-500" title="' + esc(prev.title) + '">' +
+                esc(prev.text) + '</div>' : '';
             html += '<tr class="border-b border-slate-800 align-top" data-row="' + i + '">' +
                 '<td class="px-2 py-1.5 font-mono text-slate-200 whitespace-nowrap">' + label +
                 (detail ? '<div class="font-sans text-slate-500 max-w-[16rem] truncate" title="' + esc(detail) + '">' +
                     esc(detail) + '</div>' : '') + '</td>' +
                 '<td class="px-2 py-1.5 text-slate-300 whitespace-nowrap">' + esc(queueDestination(q)) + '</td>' +
                 '<td class="px-2 py-1.5 text-amber-300/80 whitespace-nowrap">' + esc(q.jira_ticket || '—') + '</td>' +
-                '<td class="px-2 py-1.5 whitespace-nowrap">' + build + run + '</td>' +
+                '<td class="px-2 py-1.5 whitespace-nowrap">' + build + run + prevLine + '</td>' +
                 '<td class="px-2 py-1.5 whitespace-nowrap">' + controls + '</td>' +
                 '<td class="px-2 py-1.5 text-slate-400 whitespace-nowrap" title="' +
                     esc((q.requested_by || '') + (q.requested_at ? ' · ' + q.requested_at : '')) + '">' +

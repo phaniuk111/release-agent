@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-    batchRow, buildSummary, envsOf, forRelease, queueDestination, queueSubmissionProblems,
+    batchRow, buildSummary, envsOf, forRelease, previousTag, queueDestination, queueSubmissionProblems,
     releaseRouteText, tickHint, tickProblem, ticksToFlags,
 } from '../../src/release_agent/static/core/queue.js';
 import { requeuePlan } from '../../src/release_agent/static/core/queue.js';
@@ -160,4 +160,74 @@ test('the Dataflow block of a CARE release: queued choice first, the form box fo
 
 test('no Dataflow lines means an empty block', () => {
     assert.deepEqual(dataflowFields([], {}, new Set()), { dataflow_artefact: [], dataflow_prl1_only: [] });
+});
+
+test('the tag a build started from is shown only when it was recorded', () => {
+    assert.equal(previousTag({ previous_tag: ' 5.0.989 ' }).text, 'previous 5.0.989');
+    assert.match(previousTag({ previous_tag: '5.0.989' }).title, /previous release tags file/);
+    assert.equal(previousTag({ previous_tag: '' }), null);
+    assert.equal(previousTag(null), null);
+});
+
+import { dfChoices } from '../../src/release_agent/static/core/queue.js';
+
+// A DF release moves its images out of the queue when its PR is raised; the
+// CARE form must still offer them for the release file's Dataflow keys.
+const DFQ = (name, version, extra) => Object.assign(
+    { artifact_name: name, artifact_version: version, df_only: true }, extra || {});
+const careRel = (at) => ({ release_name: 'CARE ' + at, pr_number: 1, released_at: at,
+    items: [{ artifact_name: 'svc-a', artifact_version: '1.0.0', df_only: false }] });
+const dfRel = (at, items, pr) => ({ release_name: 'DF ' + at, pr_number: pr || 9, released_at: at, items });
+
+test('dfChoices ticks a DF release raised after the last CARE release', () => {
+    const { rows } = dfChoices([], [dfRel('2026-11-03', [DFQ('df-agg', '2.1.0', { prl1_only: true })]),
+                                    careRel('2026-10-27')], { artefact: [] });
+    assert.deepEqual(rows.map(r => [r.line, r.source, r.ticked, r.prl1_only, r.release_name, r.pr_number]),
+        [['df-agg:2.1.0', 'released', true, true, 'DF 2026-11-03', 9]]);
+});
+
+test('dfChoices leaves a DF release from before the last CARE release unticked, saying why', () => {
+    const { rows } = dfChoices([], [careRel('2026-11-03'), dfRel('2026-10-30', [DFQ('df-agg', '2.0.0')])], null);
+    assert.equal(rows[0].ticked, false);
+    assert.match(rows[0].note, /before the last CARE release/);
+});
+
+test('dfChoices leaves unticked what the release file already carries (full URL compared by name:version)', () => {
+    const cur = { artefact: ['https://artifactory.example.com/docker/df-agg:2.1.0'] };
+    const { rows } = dfChoices([DFQ('df-q', '1.0.0')],
+        [dfRel('2026-11-03', [DFQ('df-agg', '2.1.0'), DFQ('df-new', '3.0.0')])],
+        { artefact: cur.artefact.concat(['df-q:1.0.0']) });
+    const by = Object.fromEntries(rows.map(r => [r.name, r]));
+    assert.equal(by['df-agg'].ticked, false);
+    assert.match(by['df-agg'].note, /already in the release file/);
+    assert.equal(by['df-new'].ticked, true);
+    assert.equal(by['df-q'].ticked, false);         // queued, but the file already names it
+});
+
+test('dfChoices offers each image once from history (the newest release) and skips a re-queued one', () => {
+    const { rows } = dfChoices([], [
+        dfRel('2026-11-03', [DFQ('df-agg', '2.1.0')], 12),
+        dfRel('2026-10-20', [DFQ('df-agg', '2.0.0'), DFQ('df-back', '1.0.0', { in_queue: true })], 11),
+    ], { artefact: [] });
+    assert.deepEqual(rows.map(r => r.line), ['df-agg:2.1.0']);
+});
+
+test('dfChoices: a ticked released version wins over the queued one of the same image', () => {
+    const { rows } = dfChoices([DFQ('df-agg', '2.2.0')], [dfRel('2026-11-03', [DFQ('df-agg', '2.1.0')])],
+        { artefact: [] });
+    const q = rows.find(r => r.source === 'queued');
+    const rel = rows.find(r => r.source === 'released');
+    assert.equal(rel.ticked, true);
+    assert.equal(q.ticked, false);
+    assert.match(q.note, /released version of it is ticked/);
+});
+
+test('dfChoices keeps queued DF images ticked when no DF release happened (today\'s behaviour)', () => {
+    const { rows } = dfChoices([DFQ('df-agg', '2.2.0'), { artifact_name: 'svc-a', artifact_version: '1' }],
+        [careRel('2026-10-27')], null);
+    assert.deepEqual(rows.map(r => [r.line, r.ticked]), [['df-agg:2.2.0', true]]);
+});
+
+test('dfChoices with no history and no file read still offers the queue', () => {
+    assert.deepEqual(dfChoices(null, null, null), { rows: [], lastCareAt: '' });
 });

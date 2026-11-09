@@ -444,6 +444,9 @@ class Settings(BaseSettings):
     )
     # The most distinct runs one batch may re-run.
     rerun_max_runs: int = Field(default=50, validation_alias=AliasChoices("RERUN_MAX_RUNS"))
+    # Re-run a job also offers the images released in the last this-many days
+    # (a release takes them out of the queue as soon as its PR is raised). 0 = queue only.
+    rerun_history_days: int = Field(default=21, validation_alias=AliasChoices("RERUN_HISTORY_DAYS"))
     queue_require_run_match: bool = Field(
         default=True,
         validation_alias=AliasChoices("QUEUE_REQUIRE_RUN_MATCH"),
@@ -463,6 +466,16 @@ class Settings(BaseSettings):
     )
     build_tag_marker: str = Field(
         default="New tag is:", validation_alias=AliasChoices("BUILD_TAG_MARKER"),
+    )
+    # Where a build run records the tag it started from — the previous signed tag
+    # a CARE release writes into CARE_PREVIOUS_TAGS_FILE for each of its charts,
+    # e.g. "Using previous signed tag (N-1): 5.0.989". A step or a whole job, like
+    # BUILD_TAG_STEP. Empty = off: the last release's versions are used instead.
+    build_base_tag_step: str = Field(
+        default="Determine base tag", validation_alias=AliasChoices("BUILD_BASE_TAG_STEP"),
+    )
+    build_base_tag_marker: str = Field(
+        default="Using previous signed tag (N-1):", validation_alias=AliasChoices("BUILD_BASE_TAG_MARKER"),
     )
     config_path: str = Field(
         default="image-workflows.json",
@@ -794,6 +807,9 @@ class Settings(BaseSettings):
     track_open_minutes: int = Field(default=5, validation_alias=AliasChoices("TRACK_OPEN_MINUTES"))
     track_run_seconds: int = Field(default=60, validation_alias=AliasChoices("TRACK_RUN_SECONDS"))
     track_run_max_minutes: int = Field(default=90, validation_alias=AliasChoices("TRACK_RUN_MAX_MINUTES"))
+    # A deployment that FAILED is followed this long after the failure, so a
+    # re-run that passes still sends Complete; 0 = only inside TRACK_RUN_MAX_MINUTES.
+    track_rerun_hours: int = Field(default=24, validation_alias=AliasChoices("TRACK_RERUN_HOURS"))
     # Which workflow runs on the merge commit count as the deployment (comma list
     # of workflow names or file names); empty = every run on that commit.
     deploy_workflows: str = Field(default="", validation_alias=AliasChoices("DEPLOY_WORKFLOWS"))

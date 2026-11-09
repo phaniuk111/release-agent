@@ -681,3 +681,46 @@ def test_outside_mono_mode_dataflow_artefacts_are_refused(monkeypatch, with_df):
     monkeypatch.setattr(CR.settings, "care_release_mode", "fileset")
     out = RF.prepare_release_fileset(_payload(dataflow_artefact=["df-agg:0.0.561"]))
     assert out["ok"] is False and "only in mono mode" in out["errors"][0]
+
+
+# ---- the release file's Dataflow block as it stands (the CARE form's offer) ----
+# A DF release moves its images out of the queue, so the CARE form also offers
+# DF releases from history and leaves unticked what the file already names.
+
+def test_dataflow_in_reads_the_block_and_treats_missing_keys_as_empty():
+    text = json.dumps({"artefact": [], f"{DFP}_release": "Yes", f"{DFP}_components": ["df-agg"],
+                       f"{DFP}_prl1_only": [], f"{DFP}_artefact": [DF_ART, " "]})
+    assert CR.dataflow_in(text, DFP) == {"release": "Yes", "artefact": [DF_ART], "prl1_only": []}
+    assert CR.dataflow_in(COMMITTED, DFP) == {"release": "", "artefact": [], "prl1_only": []}
+    assert CR.dataflow_in(COMMITTED, "") == {}
+
+
+def test_current_dataflow_reads_the_base_branch_file(repo, with_df):
+    doc = json.loads(COMMITTED)
+    doc.update({f"{DFP}_release": "Yes", f"{DFP}_components": ["df-agg"],
+                f"{DFP}_prl1_only": ["df-agg"], f"{DFP}_artefact": [DF_ART]})
+    repo.files["main"][FILE] = json.dumps(doc, indent=2)
+    out = CR.current_dataflow()
+    assert out == {"ok": True, "repo": MONO, "base": "main", "file": FILE,
+                   "release": "Yes", "artefact": [DF_ART], "prl1_only": ["df-agg"]}
+
+
+def test_current_dataflow_is_off_without_the_prefix_and_never_raises(repo, with_df, monkeypatch):
+    def boom():
+        raise RuntimeError("GitHub down")
+    monkeypatch.setattr(CR, "_get_github_client", boom)
+    out = CR.current_dataflow()
+    assert out["ok"] is False and "GitHub down" in out["error"]
+    monkeypatch.setattr(CR.settings, "care_release_df_key_prefix", "")
+    assert CR.current_dataflow() == {"ok": False, "disabled": True}
+
+
+def test_a_df_image_from_history_goes_into_the_block_like_a_queued_one(repo, with_df, monkeypatch):
+    """The backend takes the form's Dataflow lines as they are — nothing requires
+    them to be queued, so an image a DF release already took out of the queue
+    lands in the block."""
+    monkeypatch.setattr(CR.settings, "artifactory_base_url", ART + "/")
+    prep = _prepare(dataflow_artefact=["df-agg:0.0.561"], dataflow_prl1_only=[])
+    assert prep["ok"], prep
+    doc = _file_after(prep)
+    assert doc[f"{DFP}_release"] == "Yes" and doc[f"{DFP}_artefact"] == [DF_ART]

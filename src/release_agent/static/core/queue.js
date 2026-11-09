@@ -111,6 +111,85 @@ export function dataflowFields(lines, queuedByName, manualPrl1) {
     return { dataflow_artefact: artefacts, dataflow_prl1_only: prl1 };
 }
 
+/** {name, version} of an artefact line (full URL or name:version), or null. */
+function nameVersion(line) {
+    const name = artifactName(line);
+    if (!name) return null;
+    const l = String(line).trim();
+    return { name, version: l.slice(l.lastIndexOf(':') + 1).trim() };
+}
+
+/**
+ * The Dataflow images a mono-mode CARE release form offers for its release
+ * file's Dataflow block. A DF release moves its images from the queue to
+ * Release history as soon as its PR is raised, so a CARE release raised after
+ * it would otherwise find none — the queue alone is not enough.
+ *
+ * Offered: the queued DF images, and the DF images of past DF releases (the
+ * newest release per image name). Ticked:
+ *  - a released image when its release came after the last CARE release in the
+ *    history AND the release file does not already carry that name:version;
+ *  - a queued image unless the file already carries it, or a released version
+ *    of the same image is ticked (one version per image; ticking one replaces
+ *    the other on the form).
+ * Everything offered but not ticked says why in `note`.
+ *
+ * @param {object[]} queue      the whole queue (only df_only items are used)
+ * @param {object[]} releases   /api/release-history releases, newest first
+ * @param {{artefact?: string[]}|null} current  the release file's Dataflow
+ *        block (/api/care-release/dataflow), or null when it could not be read
+ * @returns {{rows: {name: string, version: string, line: string, prl1_only: boolean,
+ *            source: 'queued'|'released', release_name: string, pr_number: (number|null),
+ *            ticked: boolean, note: string}[], lastCareAt: string}}
+ */
+export function dfChoices(queue, releases, current) {
+    const inFile = new Set();
+    ((current && current.artefact) || []).forEach(a => {
+        const nv = nameVersion(a);
+        if (nv) inFile.add(nv.name + ':' + nv.version);
+    });
+    let lastCareAt = '';
+    (releases || []).forEach(rel => {
+        if (((rel && rel.items) || []).some(it => it && !it.df_only)) {
+            const at = String(rel.released_at || '');
+            if (at > lastCareAt) lastCareAt = at;
+        }
+    });
+    const released = [];
+    const seen = new Set();
+    (releases || []).forEach(rel => {
+        ((rel && rel.items) || []).forEach(it => {
+            if (!it || !it.df_only || !it.artifact_name || it.in_queue || seen.has(it.artifact_name)) return;
+            seen.add(it.artifact_name);
+            const version = String(it.artifact_version || '');
+            const line = it.artifact_name + ':' + version;
+            const after = !lastCareAt || String(rel.released_at || '') > lastCareAt;
+            const carried = inFile.has(line);
+            released.push({
+                name: it.artifact_name, version, line, prl1_only: !!it.prl1_only, source: 'released',
+                release_name: rel.release_name || '', pr_number: rel.pr_number == null ? null : rel.pr_number,
+                ticked: after && !carried,
+                note: carried ? 'already in the release file — the last CARE release named it'
+                    : !after ? 'released before the last CARE release' : '',
+            });
+        });
+    });
+    const tickedReleased = new Set(released.filter(r => r.ticked).map(r => r.name));
+    const queued = forRelease(queue, true).filter(q => q && q.artifact_name).map(q => {
+        const version = String(q.artifact_version || '');
+        const line = q.artifact_name + ':' + version;
+        const carried = inFile.has(line);
+        const replaced = tickedReleased.has(q.artifact_name);
+        return {
+            name: q.artifact_name, version, line, prl1_only: !!q.prl1_only, source: 'queued',
+            release_name: '', pr_number: null, ticked: !carried && !replaced,
+            note: carried ? 'already in the release file — the last CARE release named it'
+                : replaced ? 'a released version of it is ticked — tick this to use the queued one instead' : '',
+        };
+    });
+    return { rows: queued.concat(released), lastCareAt };
+}
+
 /**
  * Everything wrong with a queue submission, as sentences — every bad row at
  * once, named by chart, so one attempt tells the developer everything to fix.
@@ -170,6 +249,18 @@ function controlNumber(entry) {
  * @param {{build_verified?: boolean|null}} q
  * @returns {{state: 'verified'|'unverified'|'unknown', label: string, title: string}}
  */
+/**
+ * The tag a queued chart's build started from — read from its build run when it
+ * was queued ("Using previous signed tag (N-1): 5.0.989"); a CARE release writes
+ * it into the previous release tags file. '' when none was recorded.
+ */
+export function previousTag(q) {
+    const tag = String((q && q.previous_tag) || '').trim();
+    return tag ? { text: 'previous ' + tag,
+                   title: 'The tag its build started from — the CARE release writes it into the previous release tags file' }
+        : null;
+}
+
 export function buildSummary(q) {
     const v = q ? q.build_verified : null;
     if (v === true) {

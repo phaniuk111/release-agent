@@ -1,8 +1,8 @@
 import { escapeHtml as esc, shortName, timeAgo } from '../core/format.js';
 import {
-    filterReleases, itemKind, itemState, missingInputs, releaseSummary, requeueAllIndices, safeRunHref, withTyped,
+    filterReleases, itemKind, itemState, missingInputs, releaseSummary, requeueAllIndices, RUN_LINK, safeRunHref, withTyped,
 } from '../core/history.js';
-import { queueDestination, requeuePlan } from '../core/queue.js';
+import { previousTag, queueDestination, requeuePlan } from '../core/queue.js';
 import { getContext, HISTORY_PATH, queueBatch, requeueFromHistory } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
 import { ctxNote, lockToSignedIn, opening, withDismiss } from './common.js';
@@ -228,9 +228,12 @@ function _mountReleases(wrap, releases, view) {
             if (it.jira_ticket) bits.push('<span class="whitespace-nowrap text-amber-300/80">' + esc(it.jira_ticket) + '</span>');
             const href = safeRunHref(it.build_run_url);
             if (href) {
-                bits.push('<a href="' + esc(href) + '" target="_blank" rel="noopener" class="text-sky-400 hover:underline" ' +
-                    'title="The GitHub Actions run that built it">run</a>');
+                bits.push('<a href="' + esc(href) + '" target="_blank" rel="noopener" ' +
+                    'class="whitespace-nowrap text-sky-400 underline hover:text-white" title="' + esc(RUN_LINK.title) + '">' +
+                    esc(RUN_LINK.label) + ' <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i></a>');
             }
+            const prev = previousTag(it);
+            if (prev) bits.push('<span class="whitespace-nowrap font-mono" title="' + esc(prev.title) + '">' + esc(prev.text) + '</span>');
             if (detail) bits.push('<span class="min-w-0 truncate" title="' + esc(detail) + '">' + esc(detail) + '</span>');
             if (bits.length) {
                 line2 = '<div class="mt-0.5 flex flex-wrap items-center gap-x-3 text-[10px] text-slate-500">' +

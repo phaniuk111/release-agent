@@ -265,6 +265,19 @@ def queue_release_intent(
         warnings.append(
             f"The run built '{run_tag}', which doesn't obviously match {name}:{version} — double-check the URL."
         )
+    # The tag this build started from — what a CARE release writes into the
+    # previous release tags file for this chart. Read now, from the same run the
+    # gate just verified; a run that does not log one still queues.
+    previous_tag = ""
+    if _settings.build_base_tag_step.strip():
+        from release_agent.tools.controls import run_base_tag
+
+        base = run_base_tag((report.get("run") or {}).get("url") or run_url)
+        if base.get("ok"):
+            previous_tag = base["tag"]
+        else:
+            warnings.append(f"Could not read the previous tag from that run: {base.get('reason')}. "
+                            "The CARE release will use the last release's version for this chart.")
     result = _rq.add_intent(
         artifact=artifact,
         requested_by=requested_by,
@@ -277,9 +290,12 @@ def queue_release_intent(
         build_run_url=run_url,
         target_envs=target_envs,
         allowed_failures=allowed_failures,
+        previous_tag=previous_tag,
     )
     if result.get("ok"):
         result["eligible"] = True if verified else None
+        if previous_tag:
+            result["previous_tag"] = previous_tag
         if allowed_failures:
             result["allowed_failures"] = allowed_failures
             warnings.insert(0, (

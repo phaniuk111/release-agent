@@ -107,6 +107,10 @@ export function safeRunHref(url) {
     return l.startsWith('https://') || l.startsWith('http://') ? s : '';
 }
 
+/** The link to a chart's build run, worded the same in the queue and the history. A bare "run" beside the
+ *  build's "verified" read as one phrase, "verified run", so nobody saw a link there. */
+export const RUN_LINK = Object.freeze({ label: 'GitHub run', title: 'Open the GitHub Actions run that built it' });
+
 /**
  * The short summary shown on a (collapsed) release header, e.g. "3 charts · 2 ready · 1 in next release"
  * or "1 chart · needs run + ticket". Counts by state; omit zero counts; singular/plural correct.

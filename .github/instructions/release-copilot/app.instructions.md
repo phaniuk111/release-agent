@@ -79,7 +79,8 @@ Paths are relative to the app's root folder (`release-copilot/` in a monorepo).
   `SUPPORT_WATCH_MINUTES > 0` and `SUPPORT_TABLE` is set. Read-only throughout.
 - **Re-run a job** (`tools/rerun_job.py`, `rerun_api.py`, feature `rerun-job`,
   out of preview by default; design/RERUN_JOB.md): re-runs ONE job by any name in the picked
-  queued images' build runs — preview, a single-use plan bound to (owner,
+  images' build runs (queued, or released in the last RERUN_HISTORY_DAYS — a
+  released one is never `reverified`) — preview, a single-use plan bound to (owner,
   thread), then a yes. Never a build/publish job or one whose dependents build;
   the GitHub budget is checked before any start; an API limit stops the batch,
   a permission refusal the repo; no write is ever retried. A passed re-run

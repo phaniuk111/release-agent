@@ -12,7 +12,9 @@ workflow takes it from there to the deployment repo.
             With CARE_PREVIOUS_TAGS_FILE set, the release file's CURRENT
             artefacts — the last merged release — are first carried into that
             {chart: version} file (a chart new to it is added), and the preview
-            shows both diffs, that one first.
+            shows both diffs, that one first. A chart of this release whose
+            queued build run logged the tag it started from (BUILD_BASE_TAG_STEP)
+            takes that tag instead; the preview says which source each used.
   apply   : refuse unless the base still holds the previewed file(s), the
             splices reproduce the approved text, and no other release PR has
             opened since the preview (the guard runs again: only a PR already
@@ -124,6 +126,46 @@ def release_text(old_text: str, details: dict[str, Any], dataflow: dict[str, Any
     return text
 
 
+def dataflow_in(text: str, prefix: str) -> dict[str, Any]:
+    """PURE. The Dataflow block a release file holds now: ``{release,
+    artefact, prl1_only}`` from its keys, empty values for keys it lacks. The
+    CARE form leaves an image this file already carries unticked, so a DF
+    release the last CARE release named is not announced again."""
+    keys = df_keys(prefix)
+    if not keys:
+        return {}
+    doc = json.loads(text)
+    if not isinstance(doc, dict):
+        raise ValueError("the release file is not a JSON object")
+
+    def strings(key: str) -> list[str]:
+        value = doc.get(keys[key])
+        return [str(v).strip() for v in value if str(v).strip()] if isinstance(value, list) else []
+
+    return {"release": str(doc.get(keys["release"]) or ""), "artefact": strings("artefact"),
+            "prl1_only": strings("prl1_only")}
+
+
+def current_dataflow() -> dict[str, Any]:
+    """Read-only: the Dataflow block in the release file at the base branch's
+    head — what the last merged CARE release carried. Never raises."""
+    prefix = settings.care_release_df_key_prefix
+    if settings.care_release_mode != "mono" or not prefix.strip():
+        return {"ok": False, "disabled": True}
+    repo = settings.care_release_repo.strip()
+    base = settings.care_release_base_branch.strip()
+    path = settings.care_release_file.strip()
+    if not (repo and base and path):
+        return {"ok": False, "error": "CARE_RELEASE_REPO, CARE_RELEASE_BASE_BRANCH and CARE_RELEASE_FILE must be set."}
+    try:
+        _head, text, _sha = _read_base(_get_github_client().get_repo(repo), base, path)
+        block = dataflow_in(text, prefix)
+    except Exception as e:
+        logger.warning("care release: could not read the Dataflow block of %s on %s", path, base, exc_info=True)
+        return {"ok": False, "error": f"Could not read {path} on {base} in {repo}: {e}"}
+    return {"ok": True, "repo": repo, "base": base, "file": path, **block}
+
+
 def carried_tags(text: str) -> tuple[dict[str, str], list[str]]:
     """PURE. ``({chart: version}, entries skipped)`` of a release file's
     artefacts — what the previous release tags file takes before the release
@@ -137,6 +179,72 @@ def carried_tags(text: str) -> tuple[dict[str, str], list[str]]:
         else:
             skipped.append(str(entry))
     return tags, skipped
+
+
+def previous_tags(old_text: str, from_builds: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """PURE. ``({chart: version}, entries skipped)`` the previous release tags
+    file takes: the release file's current artefacts, then — the build being
+    the authority on what a chart was built on — the tag each chart's build run
+    logged as its starting point."""
+    tags, skipped = carried_tags(old_text)
+    tags.update(from_builds)
+    return tags, skipped
+
+
+def _base_tags_from_builds(details: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
+    """``({chart: tag}, {chart: why not})`` — the tag each chart's queued build
+    run logged as the one it started from. The queue gate reads it when the
+    chart is queued and records it on the entry; an entry queued before that
+    has its run read now. The run is the one the chart was queued with (the
+    gate verified it built exactly this version), so a chart typed straight
+    into the form has none. Reads only; never raises."""
+    charts = [nv for a in details["artefact"] if (nv := _artifact_name_version(a))]
+    if not charts or not settings.build_base_tag_step.strip():
+        return {}, {}
+    queued: dict[tuple[str, str], dict[str, Any]] = {}
+    try:
+        from .release_queue import current_queue
+        for item in current_queue().get("queue") or []:
+            queued[(str(item.get("artifact_name") or ""), str(item.get("artifact_version") or ""))] = item
+    except Exception as e:      # the queue is optional; the release is not
+        logger.warning("care release: could not read the queue for build runs: %s", e)
+    from .controls import run_base_tag
+
+    tags: dict[str, str] = {}
+    missing: dict[str, str] = {}
+    for name, version in charts:
+        item = queued.get((name, version)) or {}
+        recorded = str(item.get("previous_tag") or "").strip()
+        if recorded:            # read from its build run when it was queued
+            tags[name] = recorded
+            continue
+        url = str(item.get("build_run_url") or "")
+        if not url:
+            missing[name] = "no build run on record (it was not queued at this version)"
+            continue
+        progress.say(f"Reading which tag {name}:{version} was built on")
+        got = run_base_tag(url)
+        if got.get("ok"):
+            tags[name] = got["tag"]
+        else:
+            missing[name] = got.get("reason") or "its build logged no base tag"
+    return tags, missing
+
+
+def _previous_sources(charts: list[str], from_builds: dict[str, str], missing: dict[str, str],
+                      carried: dict[str, str]) -> list[str]:
+    """One line per chart of this release: which previous tag it takes, and from where."""
+    lines = []
+    for name in charts:
+        if name in from_builds:
+            last = carried.get(name)
+            differs = f" — the last release had {last}" if last and last != from_builds[name] else ""
+            lines.append(f"{name}: {from_builds[name]}, the tag its build started from{differs}")
+        elif name in carried:
+            lines.append(f"{name}: {carried[name]} from the last release — {missing.get(name, 'not read from the build')}")
+        elif name in missing:
+            lines.append(f"{name}: not written — {missing[name]}, and the last release did not carry it")
+    return lines
 
 
 def _raised_by(details: dict[str, Any]) -> tuple[str, bool]:
@@ -263,6 +371,8 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     prev_path = settings.care_previous_tags_file.strip()
     prev_old = prev_new = prev_blob = ""
     skipped: list[str] = []
+    from_builds: dict[str, str] = {}
+    sources: list[str] = []
     if prev_path:
         progress.say(f"Reading {prev_path}")
         try:
@@ -270,7 +380,10 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
         except Exception as e:
             return _refuse(f"Could not read {prev_path} on {base} in {repo}: {e} "
                            "(CARE_PREVIOUS_TAGS_FILE — set it empty to skip this step).")
-        tags, skipped = carried_tags(old_text)
+        from_builds, missing = _base_tags_from_builds(details)
+        tags, skipped = previous_tags(old_text, from_builds)
+        if settings.build_base_tag_step.strip():
+            sources = _previous_sources(care_names, from_builds, missing, carried_tags(old_text)[0])
         try:
             prev_new = json_splice.splice_top_level(prev_old, tags, add_missing=True)
         except ValueError as e:
@@ -282,8 +395,10 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     diff = (_diff(prev_old, prev_new, prev_path) if prev_changes else "") + _diff(old_text, new_text, path)
     previous_note = ""
     if prev_path:
-        previous_note = ("carries the last release's versions (first commit)" if prev_changes
-                         else "unchanged — it already holds the last release's versions")
+        previous_note = (("carries each chart's previous version (first commit)" if from_builds
+                          else "carries the last release's versions (first commit)") if prev_changes
+                         else "unchanged — it already holds "
+                         + ("these versions" if from_builds else "the last release's versions"))
         if skipped:
             previous_note += f"; skipped (no name:version): {', '.join(skipped)}"
     return {
@@ -307,6 +422,7 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
         "previous_blob_sha": prev_blob,
         "previous_changes": prev_changes,
         "previous_content_hash": _content_hash(prev_new) if prev_changes else "",
+        "previous_from_builds": from_builds,    # apply writes exactly these, never reads the logs again
         "pr_title": details["release_name"],
         "preview": {
             "release": details["release_name"],
@@ -320,6 +436,7 @@ def prepare(payload: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
             "environments": partition_environments(details),
             **({"dataflow": _df_preview(dataflow)} if dataflow else {}),
             **({"previous_tags_file": prev_path, "previous_tags": previous_note} if prev_path else {}),
+            **({"previous_tags_by_chart": sources} if sources else {}),
             # What CONFIRM approves: the exact bytes the PR will carry — the
             # previous tags' diff first (first commit), then the release file's.
             "file_diff": diff,
@@ -384,13 +501,18 @@ def _claim_branch(gh_repo: Any, repo: str, wanted: str, base: str, head: str,
                 "— delete those leftover branches, then start the release again. Nothing was pushed.")
 
 
-def _pr_body(details: dict[str, Any], path: str, previous: str = "") -> str:
+def _pr_body(details: dict[str, Any], path: str, previous: str = "", by_chart: list[str] | None = None,
+             from_builds: bool = False) -> str:
     email, verified = _raised_by(details)
     who = email if verified else f"{email} (unverified — typed on the form)"
     artefacts = "\n".join(f"- {a}" for a in details.get("artefact") or [])
-    first = (f"`{previous}` takes the last release's versions (first commit), then " if previous else "")
+    takes = "each chart's previous version" if from_builds else "the last release's versions"
+    first = (f"`{previous}` takes {takes} (first commit), then " if previous else "")
+    sources = ("Previous versions:\n" + "\n".join(f"- {line}" for line in by_chart) + "\n\n"
+               if previous and by_chart else "")
     return (
         f"Release **{details['release_name']}** — {first}updates `{path}`.\n\n"
+        f"{sources}"
         f"Window: {details['start_date']} → {details['end_date']}\n"
         f"Raised by: {who}\n\n"
         f"{artefacts}\n\n"
@@ -452,7 +574,8 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
             raise _Stop(f"{prev_path} on {base} changed since the preview — start the release again. "
                         "Nothing was pushed.")
         try:
-            prev_new = json_splice.splice_top_level(prev_old, carried_tags(old_text)[0], add_missing=True)
+            prev_new = json_splice.splice_top_level(
+                prev_old, previous_tags(old_text, prep.get("previous_from_builds") or {})[0], add_missing=True)
         except ValueError as e:
             raise _Stop(f"{prev_path} on {base} cannot take the previous release's tags: {e}. "
                         "Nothing was pushed.") from None
@@ -507,7 +630,9 @@ def _apply(prep: dict[str, Any]) -> dict[str, Any]:
         try:
             pr = gh_repo.create_pull(title=attribution.titled(title),
                                      body=attribution.with_trailer(
-                                         _pr_body(details, path, prev_path if len(commits) > 1 else "")),
+                                         _pr_body(details, path, prev_path if len(commits) > 1 else "",
+                                                  (prep.get("preview") or {}).get("previous_tags_by_chart"),
+                                                  bool(prep.get("previous_from_builds")))),
                                      head=branch, base=base)
             action = "release_pr_opened"
         except Exception as e:
