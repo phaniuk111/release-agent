@@ -209,3 +209,43 @@ test('the run link says where it goes, not a bare "run"', () => {
     assert.match(RUN_LINK.title, /GitHub Actions run/);
     assert.ok(Object.isFrozen(RUN_LINK));
 });
+
+// ---- the period the card shows -----------------------------------------------
+import { byDay, filterDeployments, periodLabel, periodQuery, weekOf } from '../../src/release_agent/static/core/history.js';
+
+test('a week runs Monday to Sunday in UTC, whichever day is given', () => {
+    assert.deepEqual(weekOf('2026-11-05'), { since: '2026-11-02', until: '2026-11-08' });
+    assert.deepEqual(weekOf('2026-11-02'), { since: '2026-11-02', until: '2026-11-08' });
+    assert.deepEqual(weekOf('2026-11-08'), { since: '2026-11-02', until: '2026-11-08' }, 'Sunday ends the week');
+    assert.deepEqual(weekOf('2027-01-01'), { since: '2026-12-28', until: '2027-01-03' }, 'across a year end');
+    assert.equal(weekOf('not a date'), null);
+});
+
+test('each period asks for its own window', () => {
+    const today = new Date('2026-11-10T08:00:00Z');   // a Tuesday
+    assert.deepEqual(periodQuery('recent', '', today), { days: 21 });
+    assert.deepEqual(periodQuery('this-week', '', today), { since: '2026-11-09', until: '2026-11-15' });
+    assert.deepEqual(periodQuery('last-week', '', today), { since: '2026-11-02', until: '2026-11-08' });
+    assert.deepEqual(periodQuery('week-of', '2026-10-21', today), { since: '2026-10-19', until: '2026-10-25' });
+    assert.deepEqual(periodQuery('week-of', '', today), { since: '2026-11-09', until: '2026-11-15' }, 'no date yet: this week');
+    assert.equal(periodLabel({ days: 21 }), 'in the last 3 weeks');
+    assert.equal(periodLabel({ since: '2026-11-02', until: '2026-11-08' }), 'from 2026-11-02 to 2026-11-08');
+});
+
+const DEPLOYS = [
+    { artifact_name: 'df-x', artifact_version: '3.0.0', environment: 'dataflow-uat', deployed_at: '2026-11-05T10:00:00+00:00' },
+    { artifact_name: 'svc-b', artifact_version: '2.0.0', environment: 'uat', deployed_at: '2026-11-05T08:00:00+00:00' },
+    { artifact_name: 'svc-a', artifact_version: '1.0.0', environment: 'uat', deployed_at: '2026-11-03T09:00:00+00:00' },
+];
+
+test('deploys filter by the same search and kind as the releases', () => {
+    assert.deepEqual(filterDeployments(DEPLOYS, { kind: 'DF' }).map(d => d.artifact_name), ['df-x']);
+    assert.deepEqual(filterDeployments(DEPLOYS, { kind: 'CARE' }).map(d => d.artifact_name), ['svc-b', 'svc-a']);
+    assert.deepEqual(filterDeployments(DEPLOYS, { query: ' SVC-A ' }).map(d => d.artifact_name), ['svc-a']);
+    assert.deepEqual(filterDeployments(DEPLOYS, { query: '2.0' }).map(d => d.artifact_name), ['svc-b']);
+    assert.equal(filterDeployments(null).length, 0);
+});
+
+test('deploys are grouped by day, newest day first', () => {
+    assert.deepEqual(byDay(DEPLOYS).map(g => [g.day, g.items.length]), [['2026-11-05', 2], ['2026-11-03', 1]]);
+});

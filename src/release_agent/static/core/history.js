@@ -141,3 +141,72 @@ export function releaseSummary(rel) {
     }
     return parts.join(' · ');
 }
+
+// ---- the period the card shows -----------------------------------------------
+// The card opens on the last three weeks (a release that has to be redone is
+// days old). A person can instead pick this week, last week, or the week of any
+// date — weeks run Monday to Sunday, in UTC like the event log — and the card
+// then shows the releases raised and the deploys that landed in that week.
+
+/** The periods offered, in order: [value, label]. */
+export const PERIODS = Object.freeze([
+    ['recent', 'Last 3 weeks'], ['this-week', 'This week'], ['last-week', 'Last week'], ['week-of', 'Week of…'],
+]);
+export const RECENT_DAYS = 21;
+
+const _isoDay = (d) => d.toISOString().slice(0, 10);
+const _utcDay = (value) => {
+    const d = value instanceof Date ? new Date(value.getTime()) : new Date(String(value || '') + 'T00:00:00Z');
+    return isNaN(d) ? null : new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+};
+
+/** { since, until } (YYYY-MM-DD, inclusive): the Monday-to-Sunday week holding `day`; null if `day` is not a date. */
+export function weekOf(day) {
+    const d = _utcDay(day);
+    if (!d) return null;
+    const monday = new Date(d.getTime() - ((d.getUTCDay() + 6) % 7) * 86400000);
+    return { since: _isoDay(monday), until: _isoDay(new Date(monday.getTime() + 6 * 86400000)) };
+}
+
+/**
+ * The request for a period: { days: 21 } for 'recent', else { since, until } for the week chosen —
+ * 'this-week' and 'last-week' from `today`, 'week-of' from `picked` (YYYY-MM-DD). A 'week-of' with no
+ * usable date falls back to this week rather than asking for nothing.
+ */
+export function periodQuery(period, picked = '', today = new Date()) {
+    if (period === 'this-week') return weekOf(today);
+    if (period === 'last-week') return weekOf(new Date(_utcDay(today).getTime() - 7 * 86400000));
+    if (period === 'week-of') return weekOf(picked) || weekOf(today);
+    return { days: RECENT_DAYS };
+}
+
+/** How the card names the window it shows: 'in the last 3 weeks', or 'from 2026-11-03 to 2026-11-09'. */
+export function periodLabel(q) {
+    return q && q.since ? 'from ' + q.since + ' to ' + q.until : 'in the last 3 weeks';
+}
+
+/**
+ * Deploys that landed, for display: query matches artifact_name, artifact_version or environment
+ * (case-insensitive, like filterReleases); kind 'DF' keeps Dataflow environments (dataflow-…), 'CARE' the rest.
+ */
+export function filterDeployments(deployments, { query = '', kind = 'all' } = {}) {
+    const q = String(query || '').trim().toLowerCase();
+    return (deployments || []).filter(d => {
+        if (!d) return false;
+        const df = String(d.environment || '').toLowerCase().startsWith('dataflow');
+        if ((kind === 'DF' && !df) || (kind === 'CARE' && df)) return false;
+        return !q || [d.artifact_name, d.artifact_version, d.environment]
+            .some(v => String(v || '').toLowerCase().includes(q));
+    });
+}
+
+/** Deploys grouped by their UTC day, in the order given (newest first): [{ day: 'YYYY-MM-DD', items }]. */
+export function byDay(deployments) {
+    const days = [];
+    (deployments || []).forEach(d => {
+        const day = String((d && d.deployed_at) || '').slice(0, 10) || 'unknown';
+        const last = days[days.length - 1];
+        if (last && last.day === day) last.items.push(d); else days.push({ day, items: [d] });
+    });
+    return days;
+}

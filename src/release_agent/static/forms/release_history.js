@@ -1,9 +1,10 @@
 import { escapeHtml as esc, shortName, timeAgo } from '../core/format.js';
 import {
-    filterReleases, itemKind, itemState, missingInputs, releaseSummary, requeueAllIndices, RUN_LINK, safeRunHref, withTyped,
+    byDay, filterDeployments, filterReleases, itemKind, itemState, missingInputs, PERIODS, periodLabel, periodQuery,
+    releaseSummary, requeueAllIndices, RUN_LINK, safeRunHref, withTyped,
 } from '../core/history.js';
 import { previousTag, queueDestination, requeuePlan } from '../core/queue.js';
-import { getContext, HISTORY_PATH, queueBatch, requeueFromHistory } from '../api.js';
+import { getContext, HISTORY_PATH, queueBatch, releaseHistoryXlsx, requeueFromHistory } from '../api.js';
 import { loadReleaseStatus } from '../status.js';
 import { ctxNote, lockToSignedIn, opening, withDismiss } from './common.js';
 import { showQueueTable } from './queue_table.js';
@@ -18,7 +19,11 @@ import { showQueueTable } from './queue_table.js';
 // run again. Only a chart that never went through the queue — typed straight
 // into a release form — takes the gate, with a run and a ticket given here.
 // Nothing here deploys, releases or edits history.
-const HISTORY_DAYS = 21;
+//
+// It opens on the last three weeks; the period menu picks this week, last week
+// or the week of any date instead, and the card then also answers "what went
+// out that week": the releases raised in it and every deploy that landed in it
+// (UAT, Dataflow UAT, a promotion merged), read-only, under the same search.
 
 const KINDS = [['all', 'All'], ['CARE', 'CARE'], ['DF', 'DF']];
 const CHIP_ON = 'bg-slate-800 text-slate-100 border border-slate-600';
@@ -41,28 +46,47 @@ export async function showReleaseHistory() {
     chat.scrollTop = chat.scrollHeight;
 }
 
-// `keep` carries the search and the kind filter across a refresh. Ticks, typed
-// values and open releases are keyed by position, and a refresh can add a
-// release at the top — so those start over.
+// `keep` carries the search, the kind filter and the period across a refresh.
+// Ticks, typed values and open releases are keyed by position, and a refresh
+// can add a release at the top — so those start over.
 async function _render(wrap, flash, keep) {
     wrap.innerHTML = '<div class="text-[11px] text-slate-500"><span class="dots"><span></span><span></span>' +
         '<span></span></span> Loading the release history…</div>';
-    // Three weeks: a release that has to be redone is days old, not months —
-    // and a shorter window is a smaller BigQuery scan on every open.
-    const ctx = await getContext(HISTORY_PATH + '?days=' + HISTORY_DAYS, { releases: [] });
-    const releases = ctx.releases || [];
     // Everything the person has done on this card lives here, not in the DOM:
     // the release list is rebuilt on every keystroke of the search.
     const view = {
         query: (keep && keep.query) || '', kind: (keep && keep.kind) || 'all',
+        period: (keep && keep.period) || 'recent', picked: (keep && keep.picked) || '',
         open: { 0: true }, searchClosed: {}, picks: {}, typed: {},
     };
+    // Three weeks unless a week is picked: a release that has to be redone is
+    // days old, not months — and a shorter window is a smaller BigQuery scan.
+    const q = periodQuery(view.period, view.picked);
+    view.label = periodLabel(q);
+    const qs = q.since ? 'since=' + q.since + '&until=' + q.until : 'days=' + q.days;
+    const ctx = await getContext(HISTORY_PATH + '?' + qs, { releases: [], deployments: [] });
+    const releases = ctx.releases || [];
+    const deploys = ctx.deployments || [];
+    const n = (k, one) => k + ' ' + one + (k === 1 ? '' : 's');
     wrap.innerHTML =
         '<div class="mb-2 flex flex-wrap items-center gap-2 pr-6">' +
         '<span class="font-semibold text-sky-300 whitespace-nowrap"><i class="fa-solid fa-clock-rotate-left mr-1"></i>Release history</span>' +
         '<span class="text-[11px] text-slate-500">' + (ctx.ok === false ? '' :
-            releases.length + ' release' + (releases.length === 1 ? '' : 's') + ' in the last 3 weeks') + '</span>' +
+            esc(n(releases.length, 'release') + ' · ' + n(deploys.length, 'deploy') + ' ' + view.label)) + '</span>' +
         '<span class="flex-1"></span>' +
+        '<select data-h="period" aria-label="Which period" class="bg-slate-900 border border-slate-700 rounded-lg ' +
+        'px-1.5 py-0.5 text-[11px] text-slate-300 focus:outline-none">' +
+        PERIODS.map(([v, label]) => '<option value="' + v + '"' + (v === view.period ? ' selected' : '') + '>' +
+            esc(label) + '</option>').join('') + '</select>' +
+        '<input type="date" data-h="picked" aria-label="A day in the week to show" value="' + esc(q.since || '') + '"' +
+        (view.period === 'week-of' ? '' : ' hidden') + ' class="bg-slate-900 border border-slate-700 rounded-lg ' +
+        'px-1.5 py-0.5 text-[11px] text-slate-300 focus:outline-none">' +
+        // The whole period, not the search: a file for the record, not a view.
+        (ctx.ok === false || (!releases.length && !deploys.length) ? '' :
+            '<a href="' + esc(releaseHistoryXlsx(q.since ? { since: q.since, until: q.until } : { days: q.days })) +
+            '" download class="text-[11px] text-emerald-300 hover:underline whitespace-nowrap" title="' +
+            esc('Every release and deploy ' + view.label + ' as a workbook — Releases and Deployed sheets') + '">' +
+            '<i class="fa-solid fa-file-excel mr-1"></i>Download Excel</a>') +
         '<button type="button" data-h="refresh" title="Refresh" class="text-slate-400 hover:text-white text-xs">' +
         '<i class="fa-solid fa-rotate-right"></i></button>' +
         '<button type="button" data-h="queue" class="text-[11px] text-emerald-400 hover:text-emerald-300 whitespace-nowrap">' +
@@ -81,20 +105,24 @@ async function _render(wrap, flash, keep) {
         d.textContent = ctx.disabled ? 'The history is off — no BigQuery dataset is configured.'
             : 'The history is unavailable: ' + (ctx.error || 'unknown error');
         wrap.appendChild(d);
-    } else if (!releases.length) {
+    } else if (!releases.length && !deploys.length) {
         const d = document.createElement('div');
         d.className = 'text-[11px] text-slate-500';
-        d.textContent = 'No release has shipped from the queue in the last 3 weeks.';
+        d.textContent = 'No release was raised and nothing was deployed ' + view.label + '.';
         wrap.appendChild(d);
     } else {
-        _mountReleases(wrap, releases, view);
+        _mountReleases(wrap, releases, view, deploys);
     }
     wrap.querySelector('[data-h="refresh"]').addEventListener('click', () => _render(wrap, null, view));
+    const period = wrap.querySelector('[data-h="period"]');
+    const picked = wrap.querySelector('[data-h="picked"]');
+    period.addEventListener('change', () => _render(wrap, null, { ...view, period: period.value, picked: picked.value }));
+    picked.addEventListener('change', () => { if (picked.value) _render(wrap, null, { ...view, picked: picked.value }); });
     wrap.querySelector('[data-h="queue"]').addEventListener('click', () => showQueueTable());
     withDismiss(wrap);
 }
 
-function _mountReleases(wrap, releases, view) {
+function _mountReleases(wrap, releases, view, deploys = []) {
     const uid = ++_cards;
     const key = (ri, ii) => ri + ':' + ii;
     const itemsOf = (rel) => (rel && rel.items) || [];
@@ -112,7 +140,7 @@ function _mountReleases(wrap, releases, view) {
         KINDS.map(([k, label]) => {
             const n = kindCount(k);
             const what = k === 'all' ? 'Every chart' : (k === 'DF' ? 'Dataflow images only' : 'CARE charts only');
-            return '<button type="button" data-kind="' + k + '" title="' + esc(what + ' — ' + n + ' in the last 3 weeks') +
+            return '<button type="button" data-kind="' + k + '" title="' + esc(what + ' — ' + n + ' released ' + view.label) +
                 '" class="rounded-full px-2.5 py-0.5 transition-colors whitespace-nowrap">' + esc(label) +
                 ' <span class="text-slate-500">' + n + '</span></button>';
         }).join('') + '</div>';
@@ -131,11 +159,18 @@ function _mountReleases(wrap, releases, view) {
     hint.textContent = 'Tick the charts to put back into the next release, or use “Re-queue all” on a release to tick ' +
         'every one that can go. A chart that came through the queue goes straight back — it already qualified; ' +
         'one that never did needs its run and ticket.';
+    hint.hidden = !releases.length;
     wrap.appendChild(hint);
 
     const list = document.createElement('div');
     list.className = 'space-y-2 text-[11px]';
     wrap.appendChild(list);
+
+    // What landed in the same window — read-only: the ticks are for releases.
+    const landed = document.createElement('div');
+    landed.className = 'mt-2 text-[11px]';
+    wrap.appendChild(landed);
+    let landedOpen = !releases.length || view.period !== 'recent';
 
     // ---- the action row: who is asking (recorded against the verified user
     // when signed in), and one button for every tick ------------------------
@@ -146,6 +181,7 @@ function _mountReleases(wrap, releases, view) {
         '<button type="button" class="h-go bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs ' +
         'rounded-lg px-3 py-1" disabled>' + ADD_ICON + 'Add selected to the next release</button>' +
         '<span class="h-err text-amber-400 text-[11px]"></span>';
+    act.hidden = !releases.length;
     wrap.appendChild(act);
     const email = act.querySelector('.h-email'), go = act.querySelector('.h-go'), err = act.querySelector('.h-err');
     try { email.value = localStorage.getItem('queue_email') || ''; } catch (e) {}
@@ -261,7 +297,9 @@ function _mountReleases(wrap, releases, view) {
         // Only rows the current search/filter shows: nothing is ticked out of sight.
         const n = requeueAllIndices(rel, items.map(x => x.index)).length;
         const total = itemsOf(rel).length;
-        const meta = [rel.pr_number ? 'PR #' + rel.pr_number : '', timeAgo(rel.released_at),
+        // In a picked week the day says more than "16d ago".
+        const when = view.period === 'recent' ? timeAgo(rel.released_at) : String(rel.released_at || '').slice(0, 10);
+        const meta = [rel.pr_number ? 'PR #' + rel.pr_number : '', when,
                       rel.released_by ? 'by ' + shortName(rel.released_by) : ''].filter(Boolean).join(' · ');
         const bodyId = 'history-' + uid + '-' + ri;
         return '<div class="rounded-lg border border-slate-700/60 bg-slate-950/40" data-rel="' + ri + '">' +
@@ -289,23 +327,51 @@ function _mountReleases(wrap, releases, view) {
             items.map((x, j) => rowHtml(ri, x.index, j === 0)).join('') + '</div></div>';
     };
 
+    const landedHtml = () => {
+        if (!deploys.length) return '';
+        const shown = filterDeployments(deploys, { query: view.query, kind: view.kind });
+        const head = '<button type="button" data-landed aria-expanded="' + landedOpen + '" ' +
+            'class="flex items-center gap-1.5 text-left text-slate-300 hover:text-white">' +
+            '<i class="fa-solid fa-fw ' + (landedOpen ? 'fa-chevron-down' : 'fa-chevron-right') + ' text-[10px] text-slate-500"></i>' +
+            '<i class="fa-solid fa-rocket text-emerald-400"></i><span class="font-semibold">Deployed ' + esc(view.label) +
+            '</span><span class="text-slate-500">· ' + shown.length + (shown.length < deploys.length ? ' of ' + deploys.length : '') +
+            '</span></button>';
+        if (!landedOpen) return head;
+        const rows = byDay(shown).map(g => '<div class="mt-1"><div class="text-slate-500">' + esc(g.day) + '</div>' +
+            g.items.map(d => '<div class="flex flex-wrap items-center gap-1.5 py-0.5 pl-4">' +
+                '<span class="font-mono text-slate-200">' + esc(d.artifact_name + ':' + d.artifact_version) + '</span>' +
+                chip(String(d.environment || '?').toUpperCase(), 'border border-slate-700 text-slate-400') +
+                '<span class="text-slate-500">' + esc([String(d.deployed_at || '').slice(11, 16) + ' UTC',
+                    d.pr_number ? 'PR #' + d.pr_number : '', d.requested_by ? 'by ' + shortName(d.requested_by) : '']
+                    .filter(Boolean).join(' · ')) + '</span></div>').join('') + '</div>').join('');
+        return head + (rows || '<div class="mt-1 text-slate-500">No deploy matches the search.</div>');
+    };
+
     const renderList = () => {
         const shown = filterReleases(releases, { query: view.query, kind: view.kind });
         visible = new Set();
         shown.forEach(s => s.items.forEach(x => visible.add(key(s.index, x.index))));
         if (shown.length) {
             list.innerHTML = shown.map(releaseHtml).join('');
+        } else if (!releases.length) {
+            list.innerHTML = '<div class="text-slate-500">No release was raised ' + esc(view.label) + '.</div>';
         } else {
             const q = view.query.trim();
             const what = view.kind === 'all' ? 'chart' : view.kind + ' chart';
             list.innerHTML = '<div class="text-slate-500">' + (q
-                ? 'No ' + esc(what) + ' matches “' + esc(q) + '” in the last 3 weeks. ' +
+                ? 'No ' + esc(what) + ' matches “' + esc(q) + '” ' + esc(view.label) + '. ' +
                   '<button type="button" data-clear class="text-sky-400 hover:underline">Clear search</button>'
-                : 'No ' + esc(what) + ' shipped in the last 3 weeks. ' +
+                : 'No ' + esc(what) + ' shipped ' + esc(view.label) + '. ' +
                   '<button type="button" data-all-kinds class="text-sky-400 hover:underline">Show all</button>') + '</div>';
         }
+        landed.innerHTML = landedHtml();
         updateGo();
     };
+    landed.addEventListener('click', (e) => {
+        if (!(e.target.closest && e.target.closest('button[data-landed]'))) return;
+        landedOpen = !landedOpen;
+        landed.innerHTML = landedHtml();
+    });
 
     // ---- events ---------------------------------------------------------------
     const clearSearch = () => {

@@ -89,6 +89,46 @@ def _open_release_prs(repo, branches: list[str], limit: int = 30) -> list:
     return found
 
 
+class _OpenPullsReadOnce:
+    """The repository, with each branch's newest open PRs read ONCE and all at
+    the same time. The status the banner polls asks GitHub for the guard
+    branches' open PRs and then, for the list it shows, for PRD's and PRL1's
+    again — six sequential list calls, ~5 s. Read once in parallel, the same
+    answers arrive in about the time of the slowest one.
+
+    Only the newest-first open list is served from what was read, and only the
+    first ``depth`` PRs of it (what the status's guard and banner look at); any
+    other question goes to GitHub as before. A branch whose read failed raises
+    the same error when asked, so the callers' per-branch handling is unchanged."""
+
+    def __init__(self, repo, branches: list[str], depth: int = 30):
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._repo, self._depth = repo, depth
+
+        def read(base):
+            try:
+                return list(itertools.islice(repo.get_pulls(state="open", base=base, sort="created",
+                                                            direction="desc"), depth))
+            except Exception as e:  # noqa: BLE001 — re-raised to the caller that asks
+                return e
+
+        unique = list(dict.fromkeys(b for b in branches if b))
+        with ThreadPoolExecutor(max_workers=max(1, min(len(unique), 6))) as pool:
+            self._pulls = dict(zip(unique, pool.map(read, unique)))
+
+    def get_pulls(self, state="open", base=None, sort="created", direction="desc", **kwargs):
+        cached = self._pulls.get(base)
+        if cached is None or kwargs or (state, sort, direction) != ("open", "created", "desc"):
+            return self._repo.get_pulls(state=state, base=base, sort=sort, direction=direction, **kwargs)
+        if isinstance(cached, Exception):
+            raise cached
+        return iter(cached)
+
+    def __getattr__(self, name):
+        return getattr(self._repo, name)
+
+
 def _pr_view(pr) -> dict:
     from .release_chain import env_of
 
@@ -118,15 +158,23 @@ def get_release_status(deployment_repo: str = "", kind: str = "care") -> dict:
         "now_utc": now.strftime("%H:%M"),
     }
     try:
+        from concurrent.futures import ThreadPoolExecutor
+
         repo = _get_github_client().get_repo(deployment_repo or active_deploy_repo())
-        uat = _charts(repo, "uat")
-        prd = _charts(repo, "prd")
-        blocker = _open_prd_pr_blocker(repo, branches=guard_branches(kind))
+        guard = guard_branches(kind)
         # What the banner lists: for CARE, the release PR into PRL1 and into PRD
         # whatever the guard holds (its default is PRD alone, and a UAT→PRL1
         # PR with its own CHG went unseen); for DF, its own chain.
-        shown = production_branches() if kind == "care" else guard_branches(kind)
-        open_prs = _open_release_prs(repo, shown)
+        shown = production_branches() if kind == "care" else guard
+        # The two deployment files and every branch's open PRs are independent
+        # reads: asked together, the status costs the slowest read, not the sum.
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            uat_f = pool.submit(_charts, repo, "uat")
+            prd_f = pool.submit(_charts, repo, "prd")
+            pulls_f = pool.submit(_OpenPullsReadOnce, repo, guard + shown)
+            uat, prd, pulls = uat_f.result(), prd_f.result(), pulls_f.result()
+        blocker = _open_prd_pr_blocker(pulls, branches=guard)
+        open_prs = _open_release_prs(pulls, shown)
     except Exception as e:
         return {
             **base, "error": str(e), "uat_charts": [], "prd_charts": [],

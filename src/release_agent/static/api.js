@@ -127,6 +127,8 @@ export const HISTORY_PATH = '/api/release-history';
 /** @param {{items: {artifact_name: string, artifact_version: string}[], requested_by: string}} body */
 export const requeueFromHistory = (body) => post('/api/release-queue/requeue', body);
 export const releaseHistory = (params) => get(HISTORY_PATH + (params ? '?' + query(params) : ''));
+// The period the history card shows, as a workbook (a link, not a fetch: the browser downloads it).
+export const releaseHistoryXlsx = (params) => API_BASE + HISTORY_PATH + '.xlsx?' + query(params);
 /** The Dataflow block the CARE release file holds on its base branch (mono mode). */
 export const CARE_DATAFLOW_PATH = '/api/care-release/dataflow';
 

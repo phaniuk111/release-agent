@@ -909,24 +909,122 @@ def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[
     return releases[:limit]
 
 
-def history(days: int = 21, limit: int = 25, use_cache: bool = True) -> dict[str, Any]:
-    """Past releases for the history table — cached like the queue, and
-    cleared by every write, so a chart just queued again shows as such."""
+# A chosen period is read with this much log before it, so a release in it is
+# still joined to the queue entries that carried its charts (they are queued
+# days, rarely weeks, before the release).
+_PERIOD_LOOKBACK_DAYS = 60
+_PERIOD_MAX_DAYS = 92          # one quarter at a time
+_PERIOD_OLDEST_DAYS = 730      # how far back a period may start
+
+
+def _period(since: str, until: str = "") -> tuple[tuple[Any, Any] | None, str]:
+    """``since``..``until`` (YYYY-MM-DD, both inclusive, UTC) as a half-open
+    [start, end) pair of datetimes; ``until`` empty = the week from ``since``.
+    (None, why) for anything that is not a usable period."""
+    import datetime as dt
+
+    try:
+        first = dt.date.fromisoformat(str(since).strip())
+        last = (dt.date.fromisoformat(str(until).strip()) if str(until or "").strip()
+                else first + dt.timedelta(days=6))
+    except ValueError:
+        return None, "Dates are YYYY-MM-DD."
+    if last < first:
+        return None, "The end date is before the start date."
+    if (last - first).days + 1 > _PERIOD_MAX_DAYS:
+        return None, f"At most {_PERIOD_MAX_DAYS} days at a time."
+    today = dt.datetime.now(dt.timezone.utc).date()
+    if (today - first).days > _PERIOD_OLDEST_DAYS:
+        return None, f"The event log is read at most {_PERIOD_OLDEST_DAYS} days back."
+    start = dt.datetime.combine(first, dt.time.min, dt.timezone.utc)
+    return (start, dt.datetime.combine(last + dt.timedelta(days=1), dt.time.min, dt.timezone.utc)), ""
+
+
+def _when(ts: Any):
+    """An event's time as an aware datetime (a naive one is UTC); None if unreadable."""
+    import datetime as dt
+
+    try:
+        t = ts if isinstance(ts, dt.datetime) else dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+
+def deployments(events: list[dict[str, Any]], start: Any = None, end: Any = None) -> list[dict[str, Any]]:
+    """PURE: what LANDED in [start, end) — the 'deployed' events (a UAT or
+    Dataflow UAT deploy, a release promotion merged), newest first. A change
+    still waiting on its PR is 'pending', not here: only what landed counts."""
+    out = []
+    for ev in events:
+        if ev.get("event_type") != "deployed" or not ev.get("artifact_name"):
+            continue
+        t = _when(ev.get("event_ts"))
+        if t is None or (start is not None and t < start) or (end is not None and t >= end):
+            continue
+        out.append({
+            "artifact_name": ev["artifact_name"],
+            "artifact_version": ev.get("artifact_version") or "",
+            "environment": _norm_env(ev.get("environment")) or "",
+            "deployed_at": ev.get("event_ts") or "",
+            "requested_by": ev.get("requested_by") or "",
+            "pr_number": ev.get("pr_number"),
+            "deployment_repo": ev.get("deployment_repo") or "",
+            "note": ev.get("note") or "",
+        })
+    return sorted(out, key=lambda d: d["deployed_at"], reverse=True)
+
+
+def history(days: int = 21, limit: int = 25, use_cache: bool = True,
+            since: str = "", until: str = "") -> dict[str, Any]:
+    """Past releases for the history table, and every deploy that landed in
+    the same window — the last ``days``, or the period ``since``..``until``
+    (a week, or any span up to a quarter). Cached like the queue, and cleared
+    by every write, so a chart just queued again shows as such.
+
+    A period is read from before it up to now: its releases are joined to the
+    queue entries that carried them, and "already in the next release" is
+    today's queue, not the queue as it stood then."""
+    import datetime as dt
     import time
 
     if not queue_enabled():
         return _disabled()
+    span = None
+    if str(since or "").strip():
+        span, why = _period(since, until)
+        if span is None:
+            return {"ok": False, "error": why}
+    key = ("period", span[0].isoformat(), span[1].isoformat()) if span else days
     cached = _history_cache
-    if use_cache and cached["value"] is not None and cached["days"] == days \
+    if use_cache and cached["value"] is not None and cached["days"] == key \
             and time.time() - cached["at"] < _QUEUE_TTL_SECONDS:
         return cached["value"]
+    now = dt.datetime.now(dt.timezone.utc)
+    start, end = span if span else (now - dt.timedelta(days=days), None)
+    window = (now - start).days + 1 + _PERIOD_LOOKBACK_DAYS if span else days
     try:
-        events = _fetch_events(days)
-        result = {"ok": True, "days": days, "events_considered": len(events),
-                  "releases": release_history(events, limit)}
+        events = _fetch_events(window)
+        # A deploy approved outside the chat lands in the log only once its PR
+        # is settled — as Release stats does, settle first (throttled, never raises).
+        from .pr_reconcile import reconcile_pending
+
+        if reconcile_pending(events):
+            try:
+                events = _fetch_events(window)
+            except Exception:
+                pass   # answer from what we had rather than fail the read
+        releases = release_history(events, len(events) if span else limit)
+        if span:
+            releases = [r for r in releases
+                        if (t := _when(r.get("released_at"))) is not None and start <= t < end][:max(limit, 100)]
+        result = {"ok": True, "days": days, "events_considered": len(events), "releases": releases,
+                  "deployments": deployments(events, start, end)}
+        if span:
+            result.update(since=start.date().isoformat(), until=(end - dt.timedelta(days=1)).date().isoformat())
     except Exception as e:
         result = {"ok": False, "error": f"BigQuery unavailable: {e}"}
-    cached.update(at=time.time(), days=days, value=result)
+    cached.update(at=time.time(), days=key, value=result)
     return result
 
 

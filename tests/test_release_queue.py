@@ -678,3 +678,80 @@ def test_changes_start_again_once_the_chart_leaves_the_queue():
         [q] = RQ.reduce_queue(events)
         assert q["jira_ticket"] == "REL-2" and q["change_details"] == "new"
 
+
+# ---- Release history for a chosen period ---------------------------------------
+import datetime as _dt  # noqa: E402
+
+
+def _days_ago(n, hour=9):
+    d = _dt.datetime.now(_dt.timezone.utc).date() - _dt.timedelta(days=n)
+    return f"{d.isoformat()}T{hour:02d}:00:00+00:00"
+
+
+def _iso_day(n):
+    return (_dt.datetime.now(_dt.timezone.utc).date() - _dt.timedelta(days=n)).isoformat()
+
+
+def test_a_period_is_a_week_by_default_and_refuses_what_is_not_one():
+    span, why = RQ._period("2026-11-02")
+    assert why == "" and span[0].isoformat() == "2026-11-02T00:00:00+00:00"
+    assert span[1].isoformat() == "2026-11-09T00:00:00+00:00", "Mon..Sun inclusive = up to next Monday"
+    assert RQ._period("2026-11-05", "2026-11-05")[0][1].isoformat() == "2026-11-06T00:00:00+00:00"
+    assert RQ._period("2026/11/02")[1] == "Dates are YYYY-MM-DD."
+    assert "before the start" in RQ._period("2026-11-09", "2026-11-02")[1]
+    assert "At most" in RQ._period("2026-01-01", "2026-12-31")[1]
+    assert "days back" in RQ._period("2019-01-01")[1]
+
+
+def test_deployments_are_what_landed_in_the_window_newest_first():
+    events = [
+        _ev("deployed", "svc-a", "2026-11-03T10:00:00+00:00", artifact_version="1.0.0", environment="uat",
+            pr_number=5, requested_by="ann@example.com"),
+        _ev("pending", "svc-b", "2026-11-04T10:00:00+00:00", artifact_version="2.0.0", environment="uat"),
+        _ev("deployed", "df-x", "2026-11-05T10:00:00", artifact_version="3.0.0", environment="dataflow-uat"),
+        _ev("deployed", "svc-c", "2026-11-09T00:00:00+00:00", artifact_version="4.0.0", environment="prod"),
+    ]
+    start, end = RQ._period("2026-11-02")[0]
+    got = RQ.deployments(events, start, end)
+    assert [(d["artifact_name"], d["environment"]) for d in got] == [("df-x", "dataflow-uat"), ("svc-a", "uat")]
+    assert got[1]["pr_number"] == 5 and got[1]["requested_by"] == "ann@example.com"
+    assert [d["environment"] for d in RQ.deployments(events) if d["artifact_name"] == "svc-c"] == ["prd"]
+
+
+def test_history_for_a_period_shows_its_releases_and_deploys_and_todays_queue(monkeypatch):
+    events = [
+        _ev("queued", "svc-a", _days_ago(20), artifact_version="1.0.0", build_run_url="https://x/run/1",
+            jira_ticket="ABC-1"),
+        _ev("released", "svc-a", _days_ago(14), artifact_version="1.0.0", release_name="R-old", pr_number=1),
+        _ev("deployed", "svc-u", _days_ago(14, 11), artifact_version="9.0.0", environment="uat"),
+        _ev("queued", "svc-b", _days_ago(9), artifact_version="2.0.0", build_run_url="https://x/run/2",
+            jira_ticket="ABC-2"),
+        _ev("released", "svc-b", _days_ago(8), artifact_version="2.0.0", release_name="R-week", pr_number=2),
+        _ev("deployed", "svc-v", _days_ago(8, 12), artifact_version="9.1.0", environment="uat"),
+        # Put back AFTER the period: "already in the next release" is today's queue.
+        _ev("queued", "svc-b", _days_ago(1), artifact_version="2.0.0", build_run_url="https://x/run/2",
+            jira_ticket="ABC-2"),
+    ]
+    asked = []
+    monkeypatch.setattr(RQ, "queue_enabled", lambda: True)
+    monkeypatch.setattr(RQ, "_fetch_events", lambda days=120: asked.append(days) or events)
+    RQ._history_cache.update(at=0.0, days=0, value=None)
+    out = RQ.history(since=_iso_day(10), until=_iso_day(4))
+    assert out["ok"] and (out["since"], out["until"]) == (_iso_day(10), _iso_day(4))
+    assert [r["release_name"] for r in out["releases"]] == ["R-week"]
+    item = out["releases"][0]["items"][0]
+    assert item["jira_ticket"] == "ABC-2" and item["in_queue"] is True and item["from_queue"] is True
+    assert [d["artifact_name"] for d in out["deployments"]] == ["svc-v"]
+    assert asked[0] >= 10 + RQ._PERIOD_LOOKBACK_DAYS, "read from before the period, up to now"
+
+    RQ.history(since=_iso_day(10), until=_iso_day(4))
+    assert len(asked) == 1, "the same period is served from the cache"
+    other = RQ.history(since=_iso_day(16), until=_iso_day(12))
+    assert [r["release_name"] for r in other["releases"]] == ["R-old"] and len(asked) == 2
+    assert [d["artifact_name"] for d in other["deployments"]] == ["svc-u"]
+
+    last = RQ.history(days=21)
+    assert {r["release_name"] for r in last["releases"]} == {"R-old", "R-week"}
+    assert [d["artifact_name"] for d in last["deployments"]] == ["svc-v", "svc-u"]
+    assert RQ.history(since="not-a-date") == {"ok": False, "error": "Dates are YYYY-MM-DD."}
+    RQ._history_cache.update(at=0.0, days=0, value=None)

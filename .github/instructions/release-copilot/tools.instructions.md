@@ -44,7 +44,16 @@ model only chooses which tool to call.
   person re-queuing the same ticket replaces their own entry. Release history
   shows, and a put-back restores, what each release shipped with — all of
   those tickets and words (`_queued_at_release`), the run still the shipped
-  version's own.
+  version's own. The card picks a period (`/api/release-history?since=&until=`,
+  Monday–Sunday weeks in UTC — `core/history.js` `periodQuery`) and also lists
+  the `deployed` events that landed in it; only what landed, never `pending`.
+  Its "Download Excel" is the same period (`/api/release-history.xlsx`,
+  `release_history_xlsx.py` over `bq_cost_xlsx.workbook_bytes` — no spreadsheet
+  library), the whole period rather than the search.
+- **Deploy status** (`release_window.get_release_status`): the two deployment
+  files and each branch's open PRs are read together, each branch once
+  (`_OpenPullsReadOnce`); a branch that cannot be read is left out, never an
+  error.
 - **BigQuery** (`release_queue.py`, `bq_cost.py`): INSERT only. Every cost
   statement passes `bq_guard.py`. An empty `BQ_DATASET` disables the queue
   cleanly; check `queue_enabled()` before reading.

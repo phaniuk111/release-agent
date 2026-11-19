@@ -1178,14 +1178,35 @@ def release_queue_requeue(req: RequeueRequest, request: Request):
 
 
 @app.get("/api/release-history")
-def release_history_get(days: int = 21, limit: int = 25):
+def release_history_get(days: int = 21, limit: int = 25, since: str = "", until: str = ""):
     """Past releases and what each shipped, each chart joined to the queue
     event that carried it — enough to put a chart back into the next release
-    after a release that had to be redone. Read-only: queueing again goes
+    after a release that had to be redone — and the deploys that landed in the
+    same window. ``since``/``until`` (YYYY-MM-DD, inclusive) pick a period, e.g.
+    a week, instead of the last ``days``. Read-only: queueing again goes
     through /api/release-queue/batch, so eligibility is checked afresh."""
     from .tools import release_queue
 
-    return release_queue.history(days=max(1, min(int(days), 365)), limit=max(1, min(int(limit), 100)))
+    return release_queue.history(days=max(1, min(int(days), 365)), limit=max(1, min(int(limit), 100)),
+                                 since=since, until=until)
+
+
+@app.get("/api/release-history.xlsx")
+def release_history_xlsx(days: int = 21, since: str = "", until: str = ""):
+    """The same period as a workbook to download — Releases and Deployed
+    sheets, from the same cached read as the card, so the file says what the
+    card shows. Read-only."""
+    from fastapi.responses import JSONResponse, Response
+
+    from .tools import release_history_xlsx as xlsx, release_queue
+
+    history = release_queue.history(days=max(1, min(int(days), 365)), limit=100, since=since, until=until)
+    if not history.get("ok"):
+        # Nothing to download — the JSON says why (disabled, a bad period, BigQuery down).
+        return JSONResponse(status_code=400 if history.get("error", "").startswith(("Dates", "The ", "At most"))
+                            else 503, content=history)
+    return Response(content=xlsx.workbook(history), media_type=xlsx.MEDIA_TYPE,
+                    headers={"Content-Disposition": f'attachment; filename="{xlsx.filename(history)}"'})
 
 
 @app.get("/api/release-insights")
