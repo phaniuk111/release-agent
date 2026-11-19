@@ -38,9 +38,10 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    never applied, and the new one gets its own token — and anything else is a
    reminder, not a rejection (`_reply_kind` in adk_service.py). Both pending
    stores are keyed by (owner, thread). Deploy-graph nodes never
-   raise (ADK 2.9 re-runs a failed node on resume, repeating side effects) — a
+   raise (ADK 2.9+ re-runs a failed node on resume, repeating side effects — still so in 2.14) — a
    failure is returned as an outcome — and do blocking GitHub/git work on a
-   thread (`FunctionNode` runs sync code on the event loop). A DF deploy raises
+   thread (`FunctionNode` runs sync code on the event loop unless
+   `RunConfig.tool_thread_pool_config` is set — ADK 2.12+, not set here). A DF deploy raises
    its Composer DAG PR right after the dispatch and links the run beside it —
    merging once the run is green is the person's call, never automatic.
    The app is ONE event loop shared by every user: chat tools are wrapped with
@@ -63,7 +64,7 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    A turn OUTLIVES its reader: it runs detached from the SSE transport (which
    would otherwise cancel it mid-flight when the tab closes), and only the
    free-form chat lane is ended when the reader leaves — through a private stop
-   signal given to ADK ONLY while no tool is in flight (ADK 2.11 cancels the
+   signal given to ADK ONLY while no tool is in flight (ADK 2.11+ — still 2.14 — cancels the
    await, not the worker thread: a tool running when the stop arrives would land
    and be recorded as aborted). The deploy and commands Workflows never get a
    stop, and every Workflow run is iterated to its natural END, pause included —
@@ -166,8 +167,12 @@ Working branch: `adk-release-agent`. **Never merge or push to `main`.**
    (60; `sweep_idle` in adk_service.py and session_creds.py); nothing
    sensitive in git or BQ. Spans (`adk_release_agent/telemetry.py`) carry
    metadata only — model, tokens, latency, tool names, errors — and name a
-   person by a stable digest, until `TRACE_CONTENT=true` deliberately admits
-   prompts, tool arguments and emails for a sink inside the bank.
+   person by a stable digest on every span, until `TRACE_CONTENT=true` deliberately admits
+   prompts, tool arguments and emails for a sink inside the bank. It is the ONLY
+   switch: `content_env` pins ADK's GenAI-semconv capture mode
+   (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, ADK 2.13+), ADK's
+   per-request lock, MCP bodies and OpenInference's hides, so a cluster value
+   cannot override it; `adk_trace_config` drops `tool.parameters` too.
    Identity comes only from a VERIFIED token (identity.py) —
    a header value is never trusted just because it is present. Every commit
    and PR the portal makes names that verified caller (`tools/attribution.py`:

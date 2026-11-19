@@ -23,8 +23,10 @@ from release_agent.tools.gh_tools import (  # noqa: E402
 def off_event_loop(fn):
     """The same tool, run on a worker thread when the chat agent calls it.
 
-    ADK runs a sync tool directly on the event loop (its thread-pool option only
-    applies to live/audio mode), and the whole app is one event loop: while one
+    ADK runs a sync tool directly on the event loop unless
+    ``RunConfig.tool_thread_pool_config`` is set (2.12+; this app does not set it
+    — its pool defaults to 4 workers, too few to share), and the whole app is one
+    event loop: while one
     person's tool waits on GitHub — a run poll can take ~12s — every other
     person's chat stream stalls. ``functools.wraps`` keeps the name, docstring
     and signature ADK builds the tool declaration from; the session PAT is a

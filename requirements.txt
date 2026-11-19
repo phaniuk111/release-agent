@@ -16,7 +16,7 @@ attrs==26.1.0
     # via
     #   jsonschema
     #   referencing
-authlib==1.8.0
+authlib==1.9.5
     # via google-adk
 certifi==2026.6.17
     # via
@@ -41,6 +41,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
 cryptography==50.0.1
     # via
     #   authlib
+    #   google-adk
     #   google-auth
     #   joserfc
     #   pyjwt
@@ -54,7 +55,7 @@ fastapi==0.138.1
     # via
     #   google-adk
     #   release-copilot
-google-adk==2.11.0
+google-adk==2.14.0
     # via release-copilot
 google-api-core==2.32.0
     # via
@@ -91,7 +92,7 @@ google-crc32c==1.8.0
     # via
     #   google-cloud-storage
     #   google-resumable-media
-google-genai==2.23.0
+google-genai==2.34.0
     # via
     #   google-adk
     #   google-cloud-aiplatform
@@ -146,15 +147,15 @@ markdown-it-py==4.2.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
-openinference-instrumentation==0.1.65
+openinference-instrumentation==0.1.75
     # via
     #   openinference-instrumentation-google-adk
     #   openinference-instrumentation-google-genai
-openinference-instrumentation-google-adk==0.1.28
+openinference-instrumentation-google-adk==1.1.2
     # via release-copilot
 openinference-instrumentation-google-genai==1.4.7
     # via release-copilot
-openinference-semantic-conventions==0.1.38
+openinference-semantic-conventions==0.1.43
     # via
     #   openinference-instrumentation
     #   openinference-instrumentation-google-adk

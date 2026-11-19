@@ -51,7 +51,10 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   side effects. Catch and return the failure as the node's output.
 - **Blocking work off the event loop**: `asyncio.to_thread` in nodes; chat tools
   are wrapped with `tools.off_event_loop`. A `FunctionNode` runs sync code on the
-  loop, which stalls every user.
+  loop, which stalls every user (ADK 2.12+ offers `RunConfig.tool_thread_pool_config`;
+  not used here — 4 workers by default, too few to share).
+- **Tracing content**: `TRACE_CONTENT` is the only switch; `telemetry.content_env`
+  pins every ADK / OpenTelemetry GenAI / OpenInference content flag from it.
 - **Type a node's input** (`node_input: str`, not `Any`): `FunctionNode` hands
   the message over as the annotated type; untyped it is the Content object.
 - **Drain the runner** (`async for` to the end) rather than `break` at an

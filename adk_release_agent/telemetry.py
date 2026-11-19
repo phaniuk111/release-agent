@@ -79,31 +79,77 @@ def exporter_env(
 
 def content_env(trace_content: bool) -> dict[str, str]:
     """PURE: the switches that keep prompts, arguments and results out of the
-    spans (or let them in) — ADK's for its own spans, OpenInference's for the
-    instrumented ones.
+    spans (or let them in) — ADK's, the OpenTelemetry GenAI convention's that
+    ADK 2.13+ follows by default, and OpenInference's.
 
     Unlike ``exporter_env``, which leaves an operator's own OTEL_* settings
-    alone, these are set unconditionally: the two families must agree, and a
-    half-set pair would let one path export what the other hides. TRACE_CONTENT
-    is the single switch that decides it."""
+    alone, these are set unconditionally: the families must agree, and a
+    half-set group would let one path export what another hides. TRACE_CONTENT
+    is the single switch — a cluster that sets the standard
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT must not be able to
+    override it.
+
+    Off: no content; ADK's lock makes a per-request RunConfig unable to ask for
+    it either; HTTP bodies and header allowlists stay empty. On: SPAN_ONLY, not
+    EVENT_ONLY or SPAN_AND_EVENT, because the sink (Langfuse) ingests traces
+    and no log records, so content sent as log events would simply be lost and
+    only add an exporter."""
     flag = "true" if trace_content else "false"
     hide = "false" if trace_content else "true"
-    return {
+    out = {
+        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY" if trace_content else "NO_CONTENT",
         "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": flag,
+        "ADK_TELEMETRY_IGNORE_RUN_CONFIG": "false" if trace_content else "true",
+        "ADK_CAPTURE_MCP_HTTP_BODIES": "false",
         "OPENINFERENCE_HIDE_INPUTS": hide,
         "OPENINFERENCE_HIDE_OUTPUTS": hide,
     }
+    if not trace_content:
+        out["OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST"] = ""
+        out["OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE"] = ""
+    return out
+
+
+def adk_trace_config():
+    """The OpenInference config for the ADK instrumentor: its own, plus one rule
+    it lacks. A tool span carries the call's arguments twice — as ``input.value``,
+    which OPENINFERENCE_HIDE_INPUTS redacts, and as ``tool.parameters``, which
+    NO hide switch covers (openinference-instrumentation-google-adk 1.1.2). With
+    inputs hidden the second is dropped too, so TRACE_CONTENT=false really keeps
+    tool arguments off the span.
+
+    The same hook names the person: ADK's runs are keyed by the verified email
+    and OpenInference copies it onto every span as ``user.id``, so with content
+    off it becomes the digest ``user_ref`` gives the turn span — one stable user
+    per person in Langfuse, never the address."""
+    from openinference.instrumentation import TraceConfig
+    from openinference.semconv.trace import SpanAttributes
+
+    class _ToolArgumentsHidden(TraceConfig):
+        def mask(self, key, value, **kwargs):
+            if self.hide_inputs and key == SpanAttributes.TOOL_PARAMETERS:
+                return None
+            if self.hide_inputs and key == SpanAttributes.USER_ID and isinstance(value, str):
+                value = user_ref(value, False)
+            return super().mask(key, value, **kwargs)
+
+    return _ToolArgumentsHidden()
 
 
 def _install() -> None:
     """Register the exporters ADK builds from the OTEL_* environment, then let
-    the OpenInference instrumentors take over ADK's spans and cover google-genai."""
+    the OpenInference instrumentors take over ADK's spans and cover google-genai.
+
+    ADK 2.13+ defaults to the OpenTelemetry GenAI schema, which has no
+    ``call_llm`` span; openinference-instrumentation-google-adk 1.x opens its
+    own LLM span there (``_start_call_llm_span``), so Langfuse still shows model
+    calls and the legacy ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN is not needed."""
     from google.adk.telemetry.setup import maybe_set_otel_providers
     from openinference.instrumentation.google_adk import GoogleADKInstrumentor
     from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
 
     maybe_set_otel_providers()
-    GoogleADKInstrumentor().instrument()
+    GoogleADKInstrumentor().instrument(config=adk_trace_config())
     GoogleGenAIInstrumentor().instrument()
 
 

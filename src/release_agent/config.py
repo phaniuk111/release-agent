@@ -520,7 +520,9 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("ADK_CONTEXT_CACHE", "RELEASE_ADK_CONTEXT_CACHE"),
     )
-    # Gemini 2.5 Flash caches from 1024 tokens; the old 2048 default sat ABOVE
+    # NOTE: ADK itself floors this at 2048 tokens for gemini-2.5-* and 4096 for
+    # gemini-3 (gemini_context_cache_manager), so a value below the floor has no
+    # effect. The old 2048 default sat ABOVE
     # this app's prompt prefix (~1.1k tokens), so nothing was ever cached
     # ("Previous request too small for caching (1079 < 2048)"). 1024 = cache
     # from the smallest size the model supports.

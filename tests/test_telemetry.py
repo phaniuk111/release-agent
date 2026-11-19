@@ -17,6 +17,9 @@ OTEL_KEYS = (
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_SERVICE_NAME",
     "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "OPENINFERENCE_HIDE_INPUTS", "OPENINFERENCE_HIDE_OUTPUTS",
+    "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "ADK_TELEMETRY_IGNORE_RUN_CONFIG",
+    "ADK_CAPTURE_MCP_HTTP_BODIES", "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST",
+    "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE",
 )
 
 
@@ -54,10 +57,11 @@ def test_a_generic_endpoint_without_keys_still_gets_a_service_name():
 
 
 def test_the_content_switches_agree_with_each_other():
-    assert T.content_env(False) == {"ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "false",
-                                    "OPENINFERENCE_HIDE_INPUTS": "true", "OPENINFERENCE_HIDE_OUTPUTS": "true"}
-    assert T.content_env(True) == {"ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "true",
-                                   "OPENINFERENCE_HIDE_INPUTS": "false", "OPENINFERENCE_HIDE_OUTPUTS": "false"}
+    off, on = T.content_env(False), T.content_env(True)
+    assert (off["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"], off["OPENINFERENCE_HIDE_INPUTS"],
+            off["OPENINFERENCE_HIDE_OUTPUTS"]) == ("false", "true", "true")
+    assert (on["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"], on["OPENINFERENCE_HIDE_INPUTS"],
+            on["OPENINFERENCE_HIDE_OUTPUTS"]) == ("true", "false", "false")
 
 
 # --- the turn span over a stream ------------------------------------------------
