@@ -37,6 +37,14 @@ model only chooses which tool to call.
   started from, read from the build run by the queue gate (`controls.run_base_tag`)
   — and only falls back to the last release's artefact; apply reuses the
   previewed values and never reads a build log.
+- **Queue** (`release_queue.reduce_queue`): one entry per chart, the latest
+  deciding the version; every developer's ticket and details since the chart
+  last left the queue are kept (`changes`); the change description joins their
+  words, in queue order, as one multi-line text signed by each — the same
+  person re-queuing the same ticket replaces their own entry. Release history
+  shows, and a put-back restores, what each release shipped with — all of
+  those tickets and words (`_queued_at_release`), the run still the shipped
+  version's own.
 - **BigQuery** (`release_queue.py`, `bq_cost.py`): INSERT only. Every cost
   statement passes `bq_guard.py`. An empty `BQ_DATASET` disables the queue
   cleanly; check `queue_enabled()` before reading.

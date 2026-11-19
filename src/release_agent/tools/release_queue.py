@@ -579,18 +579,62 @@ def _fetch_events(days: int = 120) -> list[dict[str, Any]]:
     return out
 
 
+def _jira_keys(text: Any) -> list[str]:
+    """The keys in a JIRA field as typed ("A-1 A-2", "A-1, A-2"), in order."""
+    return [k for k in str(text or "").replace(",", " ").split() if k]
+
+
+def _merge_change(changes: list[dict[str, Any]], ev: dict[str, Any]) -> list[dict[str, Any]]:
+    """The chart's changes since it last left the queue, with this entry's.
+    Several developers queue the same chart before a release — each a newer
+    build carrying everyone's work — and each one's ticket and "what changed"
+    must reach the change request, not only the last one's. The same person
+    queuing the same ticket again is a correction: it replaces their entry."""
+    change = {
+        "version": ev.get("artifact_version") or "",
+        "jira_ticket": str(ev.get("jira_ticket") or "").strip(),
+        "change_details": str(ev.get("change_details") or "").strip(),
+        "requested_by": ev.get("requested_by") or "",
+    }
+    same = (change["jira_ticket"].upper(), change["requested_by"])
+    kept = [c for c in changes if (c["jira_ticket"].upper(), c["requested_by"]) != same]
+    return kept + [change]
+
+
+def _combined(changes: list[dict[str, Any]]) -> tuple[str, str]:
+    """The JIRA field and the details of every change, as one entry's fields:
+    unique keys in the order they were queued, and everything the developers
+    wrote, in that order, as one multi-line text — their own words and line
+    breaks, nothing added between them."""
+    keys: list[str] = []
+    for c in changes:
+        for k in _jira_keys(c["jira_ticket"]):
+            if k.upper() not in (x.upper() for x in keys):
+                keys.append(k)
+    return " ".join(keys), "\n".join(c["change_details"] for c in changes if c["change_details"])
+
+
 def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Pure reduction: replay events chronologically; an artifact is queued when
     its LATEST event is 'queued' (withdrawn/released clear it). Re-queue after a
-    release naturally re-enters the next queue."""
+    release naturally re-enters the next queue. The latest entry decides the
+    version, routing and build; the tickets and details of every entry since
+    the chart last left the queue are kept (``changes``)."""
     state: dict[str, dict[str, Any]] = {}
     for ev in events:
-        name = ev.get("artifact_name")
-        if not name:
-            continue
+        _apply(state, ev)
+    return sorted(state.values(), key=lambda x: x.get("requested_at") or "")
+
+
+def _apply(state: dict[str, dict[str, Any]], ev: dict[str, Any]) -> None:
+    """One event onto the queue state ``reduce_queue`` replays."""
+    name = ev.get("artifact_name")
+    if name:
         etype = ev.get("event_type")
         if etype == "queued":
             allowed, note = _allowed_and_note(ev)
+            changes = _merge_change((state.get(name) or {}).get("changes") or [], ev)
+            jira, details = _combined(changes)
             state[name] = {
                 "artifact_name": name,
                 "artifact_version": ev.get("artifact_version"),
@@ -601,8 +645,9 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "note": note,
                 "deployment_repo": ev.get("deployment_repo") or "",
                 "build_verified": ev.get("build_verified"),
-                "jira_ticket": ev.get("jira_ticket") or "",
-                "change_details": ev.get("change_details") or "",
+                "jira_ticket": jira,
+                "change_details": details,
+                "changes": changes,
                 "build_run_url": ev.get("build_run_url") or "",
                 "previous_tag": ev.get("previous_tag") or "",
                 "target_envs": ev.get("target_envs") or "",
@@ -619,7 +664,22 @@ def reduce_queue(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 cur["reverified_at"] = ev.get("event_ts")
         elif etype in ("withdrawn", "released"):
             state.pop(name, None)
-    return sorted(state.values(), key=lambda x: x.get("requested_at") or "")
+
+
+def _queued_at_release(events: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """PURE, one pass: for each 'released' event (by index), the chart's queue
+    entry just before it — every developer's ticket and details merged — when
+    that entry is for the version released. What a release shipped is that
+    merged entry, so the history shows it and a put-back restores it."""
+    state: dict[str, dict[str, Any]] = {}
+    out: dict[int, dict[str, Any]] = {}
+    for i, ev in enumerate(events):
+        if ev.get("event_type") == "released":
+            entry = state.get(ev.get("artifact_name"))
+            if entry and entry.get("artifact_version") == ev.get("artifact_version"):
+                out[i] = entry
+        _apply(state, ev)
+    return out
 
 
 def last_shipped(events: list[dict[str, Any]], artifact_name: str) -> dict[str, Any] | None:
@@ -726,12 +786,13 @@ def requeue_from_history(artifact_name: str, artifact_version: str, actor: str) 
             "queue it with the run that built it and its ticket.")}
     allowed, note = _allowed_and_note(origin)
     allowed_list = [a.strip() for a in str(allowed or "").split(",") if a.strip()] if not isinstance(allowed, list) else list(allowed)
+    jira, details = _shipped_words(events, name, version, origin)
     result = add_intent(
         f"{name}:{version}", actor.strip(),
         prl1_only=bool(origin.get("prl1_only")), df_only=bool(origin.get("df_only")),
         note=note, deployment_repo=origin.get("deployment_repo") or "",
-        build_verified=origin.get("build_verified"), jira_ticket=origin.get("jira_ticket") or "",
-        change_details=origin.get("change_details") or "", build_run_url=origin.get("build_run_url") or "",
+        build_verified=origin.get("build_verified"), jira_ticket=jira,
+        change_details=details, build_run_url=origin.get("build_run_url") or "",
         target_envs=origin.get("target_envs") or "", allowed_failures=allowed_list or None,
         previous_tag=origin.get("previous_tag") or "",
     )
@@ -740,6 +801,21 @@ def requeue_from_history(artifact_name: str, artifact_version: str, actor: str) 
         result["note"] = "back in the next release with the run, ticket and details it first qualified with"
         _notify_requeued(events, name, version, origin)
     return result
+
+
+def _shipped_words(events: list[dict[str, Any]], name: str, version: str,
+                   origin: dict[str, Any]) -> tuple[str, str]:
+    """The tickets and details the newest release of ``name:version`` shipped
+    with — every developer's who queued it before that release, not only the
+    last entry's (``_queued_at_release``). The origin event's own when the
+    release cannot be matched to a queue entry."""
+    shipped = _queued_at_release(events)
+    for i in range(len(events) - 1, -1, -1):
+        ev = events[i]
+        if (i in shipped and ev.get("artifact_name") == name
+                and ev.get("artifact_version") == version):
+            return shipped[i].get("jira_ticket") or "", shipped[i].get("change_details") or ""
+    return origin.get("jira_ticket") or "", origin.get("change_details") or ""
 
 
 def _notify_requeued(events: list[dict[str, Any]], name: str, version: str, origin: dict[str, Any]) -> None:
@@ -783,6 +859,7 @@ def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[
     cannot write a duplicate intent.
     """
     queued_now = {(q["artifact_name"], q.get("artifact_version")) for q in reduce_queue(events)}
+    shipped = _queued_at_release(events)
     groups: dict[tuple, dict[str, Any]] = {}
     for i, ev in enumerate(events):
         if ev.get("event_type") != "released" or not ev.get("artifact_name"):
@@ -806,16 +883,19 @@ def release_history(events: list[dict[str, Any]], limit: int = 25) -> list[dict[
         # chart's routing and ticket from its last queue entry, never its run —
         # Re-run a job would act on another build, and the history would link it.
         built = origin if same else {}
+        # What it shipped with: every developer's ticket and words merged in
+        # the queue before this release, else what its queue entry recorded.
+        words = shipped.get(i) or origin
         group["items"].append({
             "artifact_name": name,
             "artifact_version": version,
-            "jira_ticket": origin.get("jira_ticket") or "",
+            "jira_ticket": words.get("jira_ticket") or "",
             "build_run_url": built.get("build_run_url") or "",
             "previous_tag": built.get("previous_tag") or "",
             "prl1_only": bool(origin.get("prl1_only")),
             "df_only": bool(origin.get("df_only")),
             "target_envs": origin.get("target_envs") or "",
-            "change_details": origin.get("change_details") or "",
+            "change_details": words.get("change_details") or "",
             "note": _allowed_and_note(origin)[1] if origin else "",
             "allowed_failures": _allowed_and_note(built)[0] if built else "",
             "queued_by": origin.get("requested_by") or "",

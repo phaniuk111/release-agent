@@ -581,6 +581,50 @@ def test_requeue_from_history_copies_the_original_verdict_and_refuses_the_never_
     assert RQ.release_history(events)[0]["items"][1]["from_queue"] is False
 
 
+def test_a_chart_two_developers_queued_keeps_both_in_history_and_when_put_back(monkeypatch):
+    """Two developers queue the same chart before a release; the release ships
+    both of their changes. Release history shows both, and putting it back
+    restores both — not only the last entry's ticket and words."""
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00", artifact_version="1.0.0", build_run_url="https://x/run/1",
+            jira_ticket="ABC-1", change_details="Adds the HA measure", requested_by="ann@example.com"),
+        _ev("queued", "svc-a", "2026-07-13T12:00:00", artifact_version="1.0.1", build_run_url="https://x/run/2",
+            jira_ticket="ABC-2", change_details="Fixes the rounding", requested_by="bob@example.com"),
+        _ev("released", "svc-a", "2026-07-14T09:00:00", artifact_version="1.0.1", release_name="R1", pr_number=1),
+    ]
+    item = RQ.release_history(events)[0]["items"][0]
+    assert item["jira_ticket"] == "ABC-1 ABC-2"
+    assert item["change_details"] == "Adds the HA measure\nFixes the rounding"
+    assert item["build_run_url"] == "https://x/run/2", "the run is still the shipped version's own"
+
+    written = []
+    monkeypatch.setattr(RQ, "queue_enabled", lambda: True)
+    monkeypatch.setattr(RQ, "_fetch_events", lambda days=120: events)
+    monkeypatch.setattr(RQ, "add_intent", lambda artifact, requested_by, **kw: written.append(kw) or {"ok": True})
+    assert RQ.requeue_from_history("svc-a", "1.0.1", "devops@example.com")["ok"]
+    kw = written[0]
+    assert kw["jira_ticket"] == "ABC-1 ABC-2" and kw["change_details"] == "Adds the HA measure\nFixes the rounding"
+    assert kw["build_run_url"] == "https://x/run/2"
+
+
+def test_history_words_belong_to_their_own_release():
+    """A chart released twice: each release shows the words queued before IT,
+    and a version released without a matching queue entry keeps its origin's."""
+    events = [
+        _ev("queued", "svc-a", "2026-07-13T10:00:00", artifact_version="1.0.0", jira_ticket="ABC-1",
+            change_details="first", requested_by="ann@example.com"),
+        _ev("released", "svc-a", "2026-07-14T09:00:00", artifact_version="1.0.0", release_name="R1", pr_number=1),
+        _ev("queued", "svc-a", "2026-07-15T10:00:00", artifact_version="2.0.0", jira_ticket="ABC-3",
+            change_details="second", requested_by="bob@example.com"),
+        _ev("released", "svc-a", "2026-07-16T09:00:00", artifact_version="2.0.0", release_name="R2", pr_number=2),
+        _ev("released", "svc-a", "2026-07-17T09:00:00", artifact_version="9.9.9", release_name="R3", pr_number=3),
+    ]
+    by = {g["release_name"]: g["items"][0] for g in RQ.release_history(events)}
+    assert (by["R1"]["jira_ticket"], by["R1"]["change_details"]) == ("ABC-1", "first")
+    assert (by["R2"]["jira_ticket"], by["R2"]["change_details"]) == ("ABC-3", "second")
+    assert by["R3"]["jira_ticket"] == "ABC-3" and by["R3"]["build_run_url"] == "", "borrows routing, never the run"
+
+
 def test_requeue_endpoint_answers_each_item_by_name(monkeypatch):
     from types import SimpleNamespace
 
@@ -595,3 +639,42 @@ def test_requeue_endpoint_answers_each_item_by_name(monkeypatch):
     out = APP.release_queue_requeue(req, SimpleNamespace(headers={}))
     assert [q["artifact"] for q in out["queued"]] == ["svc-a:1.0.0"]
     assert [r["artifact"] for r in out["refused"]] == ["df-x:2.0.0"] and not out["ok"]
+
+
+def test_several_developers_queuing_one_chart_keep_every_change():
+    """Two developers queue the same chart before a release: the newer build
+    ships, and both tickets and both descriptions reach the change request."""
+    events = [
+        _ev("queued", "svc-a", "2026-11-03T10:00:00", artifact_version="5.0.1029",
+            requested_by="ann@example.com", jira_ticket="REL-1", change_details="first change"),
+        _ev("queued", "svc-a", "2026-11-04T10:00:00", artifact_version="5.0.1030",
+            requested_by="bob@example.com", jira_ticket="REL-2 REL-3", change_details="second change"),
+    ]
+    [q] = RQ.reduce_queue(events)
+    assert q["artifact_version"] == "5.0.1030" and q["requested_by"] == "bob@example.com"
+    assert q["jira_ticket"] == "REL-1 REL-2 REL-3"
+    assert q["change_details"] == "first change\nsecond change"
+    assert [c["requested_by"] for c in q["changes"]] == ["ann@example.com", "bob@example.com"]
+
+
+def test_the_same_developer_requeuing_a_ticket_corrects_their_entry():
+    events = [
+        _ev("queued", "svc-a", "2026-11-03T10:00:00", jira_ticket="REL-1", change_details="typo"),
+        _ev("queued", "svc-a", "2026-11-03T11:00:00", artifact_version="1.0.1",
+            jira_ticket="rel-1", change_details="fixed wording"),
+    ]
+    [q] = RQ.reduce_queue(events)
+    assert len(q["changes"]) == 1 and q["change_details"] == "fixed wording"
+
+
+def test_changes_start_again_once_the_chart_leaves_the_queue():
+    for leaves in ("released", "withdrawn"):
+        events = [
+            _ev("queued", "svc-a", "2026-11-01T10:00:00", jira_ticket="REL-1", change_details="old"),
+            _ev(leaves, "svc-a", "2026-11-02T10:00:00"),
+            _ev("queued", "svc-a", "2026-11-03T10:00:00", requested_by="bob@example.com",
+                jira_ticket="REL-2", change_details="new"),
+        ]
+        [q] = RQ.reduce_queue(events)
+        assert q["jira_ticket"] == "REL-2" and q["change_details"] == "new"
+

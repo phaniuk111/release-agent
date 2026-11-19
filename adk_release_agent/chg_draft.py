@@ -281,7 +281,7 @@ def _standard_wording(items: list[dict[str, Any]]) -> dict[str, str]:
         {"name": _text(it.get("artifact_name")), "version": _text(it.get("artifact_version")),
          "jira_ticket": it.get("jira_ticket"), "change_details": it.get("change_details"),
          "requested_by": it.get("requested_by"), "build_verified": it.get("build_verified"),
-         "prl1_only": it.get("prl1_only")}
+         "prl1_only": it.get("prl1_only"), "changes": it.get("changes")}
         for it in items
     ], "care")
 
@@ -434,7 +434,7 @@ def _draft_df(items: list[dict[str, Any]]) -> dict[str, Any]:
             {"name": _text(it.get("artifact_name")), "version": _text(it.get("artifact_version")),
              "jira_ticket": it.get("jira_ticket"), "change_details": it.get("change_details"),
              "requested_by": it.get("requested_by"), "build_verified": it.get("build_verified"),
-             "prl1_only": it.get("prl1_only")}
+             "prl1_only": it.get("prl1_only"), "changes": it.get("changes")}
             for it in items
         ], "df")
         prompt = _DF_PROMPT + "\n" + DATA_CLAUSE + "\nFACTS:\n" + json.dumps(

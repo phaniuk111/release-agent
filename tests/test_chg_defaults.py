@@ -205,3 +205,31 @@ def test_the_queue_context_tells_the_form_where_a_care_release_goes(monkeypatch)
     assert r["care_release_mode"] == "mono"
     assert r["care_release_repo"] == "example-org/mono-repo"
     assert r["care_release_file"] == ".github/release/release_details.json"
+
+
+def test_a_chart_several_developers_queued_reads_as_one_paragraph_signed_by_each():
+    from release_agent.tools import chg_defaults as C
+    from release_agent.tools import release_queue as RQ
+
+    def ev(who, ts, version, jira, details):
+        return {"event_type": "queued", "artifact_name": "svc-a", "event_ts": ts,
+                "artifact_version": version, "requested_by": who, "jira_ticket": jira,
+                "change_details": details}
+
+    [q] = RQ.reduce_queue([
+        ev("ann@example.com", "2026-11-03T10:00:00", "5.0.1029", "REL-1",
+           "Disable X for weekends\nSeparate fetch scope"),
+        ev("bob@example.com", "2026-11-04T10:00:00", "5.0.1030", "REL-2",
+           "svc-b notes:\n• Faster fetch\n• Fallback logic"),
+    ])
+    item = {"name": q["artifact_name"], "version": q["artifact_version"],
+            "jira_ticket": q["jira_ticket"], "change_details": q["change_details"],
+            "requested_by": q["requested_by"], "changes": q["changes"]}
+    solo = {"name": "svc-b", "version": "2.0.0", "jira_ticket": "REL-3",
+            "change_details": "solo", "requested_by": "cy@example.com"}
+    out = C.build_defaults([item, solo], "care")
+    assert out["change_description"] == (
+        "- svc-a:5.0.1030 (REL-1 REL-2): Disable X for weekends\nSeparate fetch scope\n"
+        "svc-b notes:\n• Faster fetch\n• Fallback logic — ann, bob\n"
+        "- svc-b:2.0.0 (REL-3): solo — cy")
+    assert out["change_reason"] == "Delivers REL-1, REL-2, REL-3."

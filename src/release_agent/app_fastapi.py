@@ -1076,7 +1076,7 @@ def release_defaults(req: ReleaseDefaultsRequest):
             "name": name, "version": version,
             "jira_ticket": q.get("jira_ticket"), "change_details": q.get("change_details"),
             "requested_by": q.get("requested_by"), "build_verified": q.get("build_verified"),
-            "prl1_only": q.get("prl1_only"),
+            "prl1_only": q.get("prl1_only"), "changes": q.get("changes"),
         })
     # No release number is looked up and no name is suggested — the release
     # manager writes the name (a mono-mode team format aside: build_defaults).

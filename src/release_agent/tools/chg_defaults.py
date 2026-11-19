@@ -90,6 +90,22 @@ def render_template(template: str, values: dict[str, Any]) -> str:
         return str(template)
 
 
+def _described(item: dict[str, Any]) -> str:
+    """One chart's line in the change description: its JIRA keys, what the
+    developers wrote, and who. A chart several developers queued carries all of
+    their words already joined (tools/release_queue ``changes``), and is signed
+    by each of them."""
+    names = []
+    for c in item.get("changes") or [{"requested_by": item.get("requested_by")}]:
+        who = str(c.get("requested_by") or "").split("@")[0]
+        if who and who not in names:
+            names.append(who)
+    return (f"- {item['name']}:{item['version']}"
+            + (f" ({item['jira_ticket']})" if item.get("jira_ticket") else "")
+            + (f": {item['change_details']}" if item.get("change_details") else "")
+            + (f" — {', '.join(names)}" if names else ""))
+
+
 def build_defaults(
     items: list[dict[str, Any]], kind: str = "care", day: _dt.date | None = None,
 ) -> dict[str, str]:
@@ -109,9 +125,10 @@ def build_defaults(
 
     jira_keys = []
     for i in items:
-        key = str(i.get("jira_ticket") or "").strip()
-        if key and key not in jira_keys:
-            jira_keys.append(key)
+        # A JIRA field can hold several keys ("A-1 A-2", typed or merged).
+        for key in str(i.get("jira_ticket") or "").replace(",", " ").split():
+            if key not in jira_keys:
+                jira_keys.append(key)
     jira_text = ", ".join(jira_keys)
 
     verified = [i for i in items if i.get("build_verified") is True]
@@ -148,13 +165,7 @@ def build_defaults(
                              f"the {noun} stay on their current versions"),
     }
 
-    description = "\n".join(
-        f"- {i['name']}:{i['version']}"
-        + (f" ({i['jira_ticket']})" if i.get("jira_ticket") else "")
-        + (f": {i['change_details']}" if i.get("change_details") else "")
-        + (f" — {str(i['requested_by']).split('@')[0]}" if i.get("requested_by") else "")
-        for i in items
-    )
+    description = "\n".join(_described(i) for i in items)
 
     risk_default = ("Standard release of {count} {noun} ({items}) through the {pipeline} pipeline. "
                     "{prl1_note} {verification} {rollback}")
