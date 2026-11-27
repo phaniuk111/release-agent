@@ -13,7 +13,7 @@ dependencies = [
     # Vertex AI Gemini
     "google-genai>=1.0",
     # Web server (production UI)
-    "fastapi>=0.115",
+    "fastapi>=0.165.0",      # security floor: the image scan flagged 0.138.1
     "uvicorn[standard]>=0.30",
     # GitHub, config, utils
     "PyGithub>=2.3",
@@ -33,12 +33,12 @@ dependencies = [
     # the alternative is an image that boots and only fails once someone turns
     # the backend on.
     "google-cloud-aiplatform>=1.71",
-    "dulwich>=1.2.15",
+    "dulwich>=1.2.22",       # security floor: 1.2.15 has a high advisory
     "pyjwt[crypto]>=2.15.1",   # security floor: 2.13.0 has critical/high advisories (fixed in 2.14.0, 2.15.0)
     # Agent observability (adk_release_agent/telemetry.py): OTLP export of ADK's
     # own spans — to Langfuse — plus the OpenInference instrumentors Langfuse
     # documents for ADK and google-genai. Off unless LANGFUSE_HOST is set.
-    "opentelemetry-exporter-otlp-proto-http>=1.42.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.2",
     "openinference-instrumentation-google-adk>=1.1.2",
     "openinference-instrumentation-google-genai>=1.4.7",
 ]
@@ -56,11 +56,20 @@ dev = ["pytest>=8", "ruff>=0.6"]
 # with `uvicorn ... --app-dir src`.
 package = false
 # Security floors for transitive dependencies the image scan flagged: a lock
-# can never resolve below these (urllib3 via requests/PyGithub/Dulwich,
-# Authlib via google-adk).
+# can never resolve below these, on any Python the image may use (3.11-3.13).
+# urllib3 via requests/PyGithub/Dulwich; Authlib and joserfc via google-adk;
+# pyasn1 via google-auth; certifi via requests/httpx; AnyIO via
+# FastAPI/Starlette/httpx; OpenTelemetry via google-adk and the OTLP exporter.
 constraint-dependencies = [
     "urllib3>=2.8.0",
-    "authlib>=1.8.0",
+    "authlib>=1.9.10",           # 1.8.0: critical advisories
+    "joserfc>=1.7.6",            # 1.7.2: high advisories (fixed 1.7.5 / 1.7.6)
+    "pyasn1>=0.6.5",             # 0.6.4: four high advisories
+    "certifi>=2026.10.18",       # 2026.6.17: critical advisory
+    "anyio>=4.16.0",             # 4.14.2 flagged; uv kept it for Python < 3.13 without this
+    "starlette>=1.10.0",
+    "opentelemetry-api>=1.45.2", # 1.42.1: two advisories
+    "opentelemetry-sdk>=1.45.2",
 ]
 
 [tool.ruff]

@@ -10,11 +10,12 @@
 #
 # Internal-mirror build example:
 #   docker build \
-#     --build-arg BASE_IMAGE=registry.internal/library/python:3.11-slim \
+#     --build-arg BASE_IMAGE=registry.internal/library/python:3.12-slim \
 #     --build-arg PIP_INDEX_URL=https://artifactory.internal/api/pypi/pypi-remote/simple \
 #     -t release-copilot .
 ###############################################################################
-ARG BASE_IMAGE=python:3.11-slim
+# Python 3.12, as the production image (any 3.11-3.13 works: the lock covers all three).
+ARG BASE_IMAGE=python:3.12-slim
 
 # ---- builder: install locked deps into a self-contained venv ----
 FROM ${BASE_IMAGE} AS builder

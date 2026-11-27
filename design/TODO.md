@@ -24,6 +24,13 @@ writes nothing; Terraform is where the team applies a suggestion.
   the report collapses a template into one row and one suggestion.
 
 ### Image vulnerabilities (JFrog Xray) — parked 2026-09-26
+**Update 2026-11-27 — app libraries done.** The image scan flagged Authlib 1.8.0,
+joserfc 1.7.2, pyasn1 0.6.4, certifi 2026.6.17, dulwich 1.2.15, FastAPI
+0.138.1, AnyIO 4.14.2; pip-audit added opentelemetry-api 1.42.1. Fixed by ADK
+2.14 + `[tool.uv] constraint-dependencies` floors (pyproject.toml); pip-audit
+on the export is clean, tests pass on 3.12 and 3.13. Without the AnyIO floor uv
+kept 4.14.2 for Python < 3.13 — check `uv.lock` has one version per package.
+The base-image items below are still open.
 Scanned 2026-09-24 with pip-audit, osv-scanner, grype and trivy (the union
 approximates Xray's database). Parked by choice before any fix was tested.
 - **App libraries — all transitive, all fixable:** anyio 4.14.1 → 4.14.2
