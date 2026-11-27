@@ -14,9 +14,14 @@ applyTo: "release-copilot/adk_release_agent/**,release-copilot/src/release_agent
   tracker dispatching the team's `NOTIFY_WORKFLOW` (it changes no deployment).
 - **Deployment tracking** (`deploy_tracker.py`, `DEPLOY_TRACKING_ENABLED`; feature
   `deploy-tracking`, out of preview by default): a timed sweep that only WATCHES and tells — merged
-  → `deploy/merged` + "Deployment starting"; every run on the merge SHA
-  concluded → `deploy/finished` on the SAME scope (one bell item that changes),
-  a failure naming the job and step; a re-run → "(after re-run)" — the Re-run button or a new run of the same
+  → `deploy/merged` + "Deployment starting"; the deployment's runs concluded
+  → `deploy/finished` on the SAME scope (one bell item that changes), a failure
+  naming the job and step. Which runs: for PRD/PRL1 with their own pipeline set
+  (`PRD_PIPELINE` / `PRL1_PIPELINE`, `pipeline_runs`) the newest run of that
+  workflow started after the merge and before the next merge into the branch —
+  any trigger, commit or title (a `pull_request: closed` run is on the PR head,
+  never the merge commit); otherwise every run on the merge SHA
+  (`DEPLOY_WORKFLOWS`). A re-run → "(after re-run)" — the Re-run button or a new run of the same
   workflow (the newest run per workflow counts; a skipped run is not a failure);
   a failed deployment is followed
   `TRACK_RERUN_HOURS` after the failure, so a later re-run still sends Complete; past

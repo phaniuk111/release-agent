@@ -811,8 +811,19 @@ class Settings(BaseSettings):
     # re-run that passes still sends Complete; 0 = only inside TRACK_RUN_MAX_MINUTES.
     track_rerun_hours: int = Field(default=24, validation_alias=AliasChoices("TRACK_RERUN_HOURS"))
     # Which workflow runs on the merge commit count as the deployment (comma list
-    # of workflow names or file names); empty = every run on that commit.
+    # of workflow names or file names); empty = every run on that commit. Not
+    # used for a branch with its own pipeline below.
     deploy_workflows: str = Field(default="", validation_alias=AliasChoices("DEPLOY_WORKFLOWS"))
+    # The deployment repo's own pipeline for each release branch: the workflow's
+    # file name (deploy-prd.yml; a .github/workflows/ path works too) or its
+    # name. Set, a merge into that branch is followed by the newest run of THAT
+    # workflow started after the merge (and before the next merge
+    # into the branch) — however it is triggered (push, pull_request: closed, a
+    # dispatch) and whatever its commit or title; a re-run (the button, or the
+    # pipeline started again) is the newer run. Empty = the runs on the merge
+    # commit, as DEPLOY_WORKFLOWS picks them.
+    prd_pipeline: str = Field(default="", validation_alias=AliasChoices("PRD_PIPELINE"))
+    prl1_pipeline: str = Field(default="", validation_alias=AliasChoices("PRL1_PIPELINE"))
     # The team's own send-notification workflow, "owner/repo:workflow-file.yml",
     # dispatched when a deployment starts and when it completes (a failure sends
     # nothing) with inputs fixed in deploy_tracker.notify_inputs. Empty = no
@@ -823,9 +834,6 @@ class Settings(BaseSettings):
     # channel, for a dry run of the whole path.
     notify_test: bool = Field(default=False, validation_alias=AliasChoices("NOTIFY_TEST"))
 
-    # A deployment that FAILED is followed this long after the failure, so a
-    # re-run that passes still sends Complete; 0 = only inside TRACK_RUN_MAX_MINUTES.
-    track_rerun_hours: int = Field(default=24, validation_alias=AliasChoices("TRACK_RERUN_HOURS"))
     # --- Agent observability (adk_release_agent/telemetry.py) ---------------------
     # Set LANGFUSE_HOST (+ the two keys, from a Secret) and ADK's spans — every
     # turn, model call and tool call — are exported to Langfuse; EMPTY = OFF, and

@@ -44,6 +44,13 @@ function prHtml(p, everyMinutes) {
         lineHtml(openPrLine(p, everyMinutes)) + '</div>';
 }
 
+// Which runs count: a branch's own pipeline where one is set, else the runs on the merge commit.
+function countsLabel(cfg) {
+    const own = Object.entries(cfg.pipelines || {}).filter(([, p]) => p).map(([b, p]) => b + ': ' + p);
+    const rest = (cfg.deploy_workflows || []).join(', ') || 'every run on the merge commit';
+    return own.length ? own.join(', ') + (own.length < Object.keys(cfg.pipelines || {}).length ? '; else ' + rest : '') : rest;
+}
+
 async function render(wrap) {
     wrap.querySelectorAll('.dt-body').forEach(n => n.remove());
     const body = document.createElement('div');
@@ -78,7 +85,7 @@ async function render(wrap) {
         html += '<div class="text-[10px] text-slate-600 mt-2">Sends to ' +
             esc(cfg.notify_repo ? cfg.notify_repo + ':' + cfg.notify_workflow : 'nothing (NOTIFY_WORKFLOW empty)') +
             (cfg.notify_test ? ' as a test' : '') + ' · watches ' + esc(cfg.deploy_repo || '—') +
-            ' · counts ' + esc((cfg.deploy_workflows || []).join(', ') || 'every run on the merge commit') +
+            ' · counts ' + esc(countsLabel(cfg)) +
             ' · kept in ' + esc(cfg.store || '—') + '</div>';
     }
     body.innerHTML = html;

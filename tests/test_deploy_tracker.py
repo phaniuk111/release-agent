@@ -131,9 +131,10 @@ class _Job:
 
 class _Run:
     def __init__(self, id, name="Deploy to UAT", path=".github/workflows/deploy-uat.yml", status="in_progress",
-                 conclusion=None, attempt=1, jobs=()):
+                 conclusion=None, attempt=1, jobs=(), created_at=None, title=""):
         self.id, self.name, self.path, self.status, self.conclusion = id, name, path, status, conclusion
         self.run_attempt, self.html_url, self._jobs = attempt, f"https://github.com/{REPO}/actions/runs/{id}", list(jobs)
+        self.created_at, self.display_title = created_at, title
 
     def jobs(self):
         return self._jobs
@@ -168,6 +169,18 @@ class _Workflow:
         return {}, {"workflow_run_id": self.run_id, "html_url": f"https://github.com/example-org/ops/actions/runs/{self.run_id}"}
 
 
+class _Pipeline:
+    """A release branch's own pipeline workflow: its runs, filtered by GitHub's
+    `created` qualifier as the API does."""
+
+    def __init__(self, file, store):
+        self.path, self.name, self.state, self._file, self._store = f".github/workflows/{file}", "Deploy PRD", "active", file, store
+
+    def get_runs(self, created=None, **kw):
+        since = dt.datetime.fromisoformat(created[2:].replace("Z", "+00:00")) if created else None
+        return [r for r in self._store[self._file] if since is None or r.created_at >= since]
+
+
 class _GitHub:
     """PRs by number (an Exception in place of one is raised on read), runs by
     head SHA, and the workflow the NOTIFY_WORKFLOW dispatch reaches."""
@@ -177,6 +190,7 @@ class _GitHub:
         self.list_error = self.workflow_error = None
         self.files = {}
         self.workflow = workflow or (lambda log: _Workflow(log))
+        self.pipelines = {}           # a release branch's own pipeline: file -> its runs, newest anywhere
 
     def get_repo(self, full):
         gh = self
@@ -202,9 +216,16 @@ class _GitHub:
                 return list(gh.runs.get(head_sha, []))
 
             def get_workflow(self, file):
+                if file in gh.pipelines:
+                    return _Pipeline(file, gh.pipelines)
+                if not str(file).endswith((".yml", ".yaml")):
+                    raise Exception("404 Not Found")          # GitHub looks a workflow up by file, not by name
                 if gh.workflow_error:
                     raise gh.workflow_error
                 return gh.workflow(gh.dispatches)
+
+            def get_workflows(self):
+                return [_Pipeline(f, gh.pipelines) for f in gh.pipelines]
 
             def get_contents(self, path, ref=None):
                 if path not in gh.files:
@@ -726,6 +747,101 @@ def test_another_workflow_still_failing_sends_no_complete(guard):
     gh.runs[SHA] = [_Run(1, status="completed", conclusion="success", attempt=2), _lint("failure")]
     DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=30))
     assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start"], "still failed: nothing sent"
+
+
+@pytest.fixture
+def pipeline(guard, monkeypatch):
+    """PRD has its own pipeline; PRL1 has none."""
+    monkeypatch.setattr(settings, "prd_pipeline", "deploy-prd.yml", raising=False)
+    monkeypatch.setattr(settings, "prl1_pipeline", "", raising=False)
+
+
+def _prd_run(id, conclusion, created, attempt=1, title="UAT to PRD", status="completed"):
+    return _Run(id, name="Deploy PRD", path=".github/workflows/deploy-prd.yml", status=status,
+                conclusion=conclusion, attempt=attempt, created_at=created, title=title)
+
+
+def _merged_with_pipeline(runs):
+    pr = _guard_pr()
+    gh = _GitHub({12: pr})
+    gh.pipelines["deploy-prd.yml"] = runs
+    DT.run_pass(github=gh, events=[], now=T0)
+    _merge(pr, T0)
+    return gh
+
+
+def test_the_prd_pipeline_failed_then_re_run_sends_complete(pipeline):
+    """The pipeline runs on pull_request closed: its run is on no merge commit,
+    and the tracker follows it anyway — by workflow and time."""
+    gh = _merged_with_pipeline([_prd_run(1, "failure", T0 + dt.timedelta(seconds=5))])
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=10))
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start"], "a failure sends nothing"
+    assert (_rows("finished")[0]["conclusion"], _rows("finished")[0]["run_id"]) == ("failure", 1)
+    gh.pipelines["deploy-prd.yml"] = [_prd_run(1, "success", T0 + dt.timedelta(seconds=5), attempt=2)]
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=40))
+    assert out["finished"] == [f"deploy:{REPO}#12"]
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start", "Complete"]
+
+
+def test_the_prd_pipeline_started_again_under_another_title_sends_complete(pipeline):
+    gh = _merged_with_pipeline([_prd_run(1, "failure", T0 + dt.timedelta(seconds=5))])
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=10))
+    gh.pipelines["deploy-prd.yml"].insert(0, _prd_run(9, "success", T0 + dt.timedelta(minutes=20), title="Deploy PRD"))
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=30))
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start", "Complete"]
+    assert _rows("finished")[0]["run_id"] == 9
+
+
+def test_the_prd_pipeline_passing_first_time_sends_complete_and_a_run_still_going_waits(pipeline):
+    gh = _merged_with_pipeline([_prd_run(1, None, T0 + dt.timedelta(seconds=5), status="in_progress")])
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
+    assert out["in_flight"] == 1 and [i["release_notification_type"] for i in _inputs(gh)] == ["Start"]
+    gh.pipelines["deploy-prd.yml"] = [_prd_run(1, "success", T0 + dt.timedelta(seconds=5))]
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=4))
+    assert [i["release_notification_type"] for i in _inputs(gh)] == ["Start", "Complete"]
+
+
+def test_a_prd_pipeline_run_from_before_the_merge_or_after_the_next_merge_is_not_this_prs(pipeline):
+    later = _PR(14, merged=True, state="closed", when=T0 + dt.timedelta(minutes=15), base="PRD")
+    gh = _merged_with_pipeline([_prd_run(7, "success", T0 + dt.timedelta(minutes=16)),       # the next PR's
+                                _prd_run(1, "failure", T0 + dt.timedelta(seconds=5)),
+                                _prd_run(0, "success", T0 - dt.timedelta(hours=3))])         # last week's release
+    gh.prs[14] = later
+    DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=20))
+    mine = [r for r in _rows("finished") if r["scope"] == f"deploy:{REPO}#12"]
+    assert [(r["run_id"], r["conclusion"]) for r in mine] == [(1, "failure")], "the next PR's green run is not #12's"
+
+
+def test_no_prd_pipeline_run_yet_waits_without_sending(pipeline):
+    gh = _merged_with_pipeline([_prd_run(0, "success", T0 - dt.timedelta(hours=3))])
+    out = DT.run_pass(github=gh, events=[], now=T0 + dt.timedelta(minutes=2))
+    assert out["in_flight"] == 1 and [i["release_notification_type"] for i in _inputs(gh)] == ["Start"]
+
+
+def test_pipeline_for_maps_only_the_release_branches(pipeline, monkeypatch):
+    assert DT.pipeline_for("PRD") == "deploy-prd.yml"
+    assert DT.pipeline_for("PRL1") == "" and DT.pipeline_for("UAT") == "" and DT.pipeline_for("") == ""
+    monkeypatch.setattr(settings, "prl1_pipeline", "Deploy PRL1", raising=False)
+    assert DT.pipeline_for("PRL1") == "Deploy PRL1"
+
+
+def test_a_pipeline_is_found_by_its_name_too(pipeline):
+    gh = _GitHub({})
+    gh.pipelines["deploy-prd.yml"] = []
+    repo = gh.get_repo(REPO)
+    assert DT._pipeline_workflow(repo, "Deploy PRD").path.endswith("deploy-prd.yml")
+    assert DT._pipeline_workflow(repo, ".github/workflows/deploy-prd.yml").path.endswith("deploy-prd.yml")
+    with pytest.raises(LookupError):
+        DT._pipeline_workflow(SimpleNamespace(get_workflow=lambda f: (_ for _ in ()).throw(Exception("404")),
+                                              get_workflows=lambda: []), "nope.yml")
+
+
+def test_the_report_checks_each_release_branchs_pipeline(pipeline):
+    gh = _GitHub({})
+    gh.pipelines["deploy-prd.yml"] = []
+    checks = {c["name"]: c for c in DT._pipeline_checks(gh)}
+    assert checks["PRD pipeline"]["ok"] is True
+    assert checks["PRL1 pipeline"]["ok"] is None and "not set" in checks["PRL1 pipeline"]["detail"]
 
 
 def test_latest_runs_keeps_the_newest_per_workflow_and_title():

@@ -21,6 +21,14 @@ and a bell item per stage for the requester:
     TRACK_RUN_MAX_MINUTES -> one "still running" item, deploy/abandoned_tracking,
     with no conclusion       and the merge is left alone
 
+Which runs are the deployment. For PRD_BRANCH / PRL1_BRANCH with their own
+pipeline set (PRD_PIPELINE / PRL1_PIPELINE): the newest run of that workflow
+started after the merge and before the next merge into the branch
+(pipeline_runs) — the trigger, commit and title do not matter, which is what a
+`pull_request: closed` pipeline needs (GitHub records its run on the PR's head
+commit, never the merge commit). Otherwise: the runs on the merge commit
+(runs_for, DEPLOY_WORKFLOWS).
+
 It watches and tells; it never merges, re-runs, retries or rolls anything back.
 The one GitHub write is dispatching the team's own send-notification workflow
 (NOTIFY_WORKFLOW) when a deployment starts and when it completes — named in
@@ -387,6 +395,73 @@ def runs_for(repo_obj: Any, merge_sha: str) -> list[dict[str, Any]]:
     return latest_runs(found)
 
 
+# ----- a branch with its own pipeline (PRD_PIPELINE / PRL1_PIPELINE) ---------------
+
+def pipeline_for(base: str) -> str:
+    """The pipeline set for this release branch, or '' (follow the merge commit)."""
+    if base and base == str(settings.prd_branch or ""):
+        return str(settings.prd_pipeline or "").strip()
+    if base and base == str(settings.prl1_branch or ""):
+        return str(settings.prl1_pipeline or "").strip()
+    return ""
+
+
+def _pipeline_workflow(repo_obj: Any, pipeline: str) -> Any:
+    """The workflow by file name, else by its name; LookupError when neither.
+    A path (.github/workflows/x.yml) is taken as its file name: GitHub looks a
+    workflow up by file name alone."""
+    if pipeline.lower().endswith((".yml", ".yaml")):
+        pipeline = pipeline.split("/")[-1]
+    try:
+        return repo_obj.get_workflow(pipeline)
+    except Exception:  # noqa: BLE001 — a name, not a file: looked up below
+        pass
+    want = pipeline.lower()
+    for wf in repo_obj.get_workflows():
+        if str(getattr(wf, "name", "")).lower() == want or str(getattr(wf, "path", "")).split("/")[-1].lower() == want:
+            return wf
+    raise LookupError(f"pipeline {pipeline!r} is not a workflow in {getattr(repo_obj, 'full_name', 'the repo')}")
+
+
+def _next_merge(repo_obj: Any, base: str, merged_at: _dt.datetime) -> _dt.datetime | None:
+    """When the next PR merged into ``base`` after this one, from the newest
+    closed PRs; None when none has (or the listing cannot be read)."""
+    nxt = None
+    try:
+        pulls = repo_obj.get_pulls(state="closed", base=base, sort="updated", direction="desc")
+        for pr in itertools.islice(pulls, _MERGED_LISTED):
+            when = _when(getattr(pr, "merged_at", None))
+            if when is not None and when > merged_at and (nxt is None or when < nxt):
+                nxt = when
+    except Exception as e:  # noqa: BLE001
+        logger.warning("deploy_tracker: listing PRs merged into %s failed: %s", base, e)
+    return nxt
+
+
+def pipeline_runs(repo_obj: Any, pipeline: str, base: str, merged_at: _dt.datetime) -> list[dict[str, Any]]:
+    """The branch's pipeline, as the deployment: its newest run started at or
+    after the merge and before the next merge into the branch (a later run
+    belongs to that PR). However the pipeline is triggered — push, pull_request
+    closed (GitHub records those on the PR's head commit, never the merge), a
+    dispatch — and whatever it is titled. The Re-run button keeps the run (its
+    attempt goes up); starting the pipeline again is a newer run, which replaces
+    a failed one. [] until it has started."""
+    workflow = _pipeline_workflow(repo_obj, pipeline)
+    until = _next_merge(repo_obj, base, merged_at)
+    newest = None
+    for run in itertools.islice(workflow.get_runs(created=f">={merged_at.strftime('%Y-%m-%dT%H:%M:%SZ')}"), _MAX_RUNS):
+        created = _when(getattr(run, "created_at", None))
+        if created is None or created < merged_at or (until is not None and created >= until):
+            continue
+        if newest is None or int(run.id) > int(newest.id):
+            newest = run
+    if newest is None:
+        return []
+    item = _run_dict(newest)
+    item["title"] = ""      # one pipeline is one piece: a run started again under another title still replaces it
+    return [item]
+
+
 # A run that skipped itself (its `if:` was false) is not a failed deployment.
 _PASSED = ("success", "skipped", "neutral")
 
@@ -602,7 +677,9 @@ def _follow(github: Any, key: tuple[str, int], cand: dict[str, Any], known: dict
         summary["started"].append(scope)
         last = {"event_type": _MERGED, "event_ts": merged_at.isoformat()}
 
-    runs = runs_for(repo_obj, merge_sha)
+    pipeline = pipeline_for(base)
+    runs = (pipeline_runs(repo_obj, pipeline, base, merged_at) if pipeline
+            else runs_for(repo_obj, merge_sha))
     rerun = last.get("event_type") == _FINISHED
     if rerun and not is_rerun(runs, last):
         return
@@ -813,6 +890,29 @@ def _check(name: str, ok: bool | None, detail: str) -> dict[str, Any]:
     return {"name": name, "ok": ok, "detail": detail}
 
 
+def _pipeline_checks(github: Any) -> list[dict[str, Any]]:
+    """Is each release branch's pipeline a workflow the bot token can see? Reads only."""
+    out = []
+    repo_full = _watch_repo()
+    for base in notify_branches():
+        pipeline = pipeline_for(base)
+        label = f"{base} pipeline"
+        if not pipeline:
+            out.append(_check(label, None, "not set — following the runs on the merge commit, which misses a "
+                                           "pipeline triggered on pull_request closed"))
+            continue
+        try:
+            wf = _pipeline_workflow(github.get_repo(repo_full), pipeline)
+            state = str(getattr(wf, "state", "") or "")
+            out.append(_check(label, state in ("", "active"),
+                              f"{repo_full}: {getattr(wf, 'name', pipeline)} ({str(getattr(wf, 'path', ''))}), "
+                              f"state {state or 'unknown'}"))
+        except Exception as e:  # noqa: BLE001 — the reason IS the report
+            out.append(_check(label, False, f"{pipeline} cannot be found in {repo_full or 'DEPLOY_REPO'} "
+                                            f"({type(e).__name__}: {str(e)[:120]})"))
+    return out
+
+
 def _workflow_check(github: Any) -> dict[str, Any]:
     """Can the bot token see NOTIFY_WORKFLOW, and does it declare workflow_dispatch
     with the five inputs? Reads only — the same token the dispatch uses."""
@@ -907,7 +1007,8 @@ def report(github: Any = None, now: _dt.datetime | None = None) -> dict[str, Any
     config = {"enabled": bool(settings.deploy_tracking_enabled), "notify_repo": repo_full,
               "notify_workflow": workflow_file, "notify_test": bool(settings.notify_test),
               "deploy_repo": _watch_repo(), "branches": notify_branches(),
-              "deploy_workflows": sorted(_wanted_workflows()), "store": events_store.store_name(),
+              "deploy_workflows": sorted(_wanted_workflows()),
+              "pipelines": {b: pipeline_for(b) for b in notify_branches()}, "store": events_store.store_name(),
               "check_every_minutes": int(settings.track_open_minutes), "since": since.isoformat()}
     checks = [_check("Tracking switched on", config["enabled"],
                      "DEPLOY_TRACKING_ENABLED is true" if config["enabled"]
@@ -955,6 +1056,7 @@ def report(github: Any = None, now: _dt.datetime | None = None) -> dict[str, Any
 
             github = _get_github_client()
         checks.append(_workflow_check(github))
+        checks.extend(_pipeline_checks(github))
         prs, branches = _open_this_week(github, since, watched, config["enabled"])
         checks.append(branches)
     except Exception as e:  # noqa: BLE001
