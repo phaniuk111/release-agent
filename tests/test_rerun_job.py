@@ -203,6 +203,9 @@ def queue(monkeypatch):
               "repo": repo, "run_id": rid} for a, repo, rid in QUEUE]
     monkeypatch.setattr(R, "candidates", lambda: {"ok": True, "images": items})
     monkeypatch.setattr(R, "START_GAP_SECONDS", 0)
+    # The runs are dated just before NOW: without this the real date makes them
+    # older than GitHub's 30-day re-run limit once the calendar passes it.
+    monkeypatch.setattr(R, "_now", lambda: NOW)
     clock = {"t": 1_000_000.0}
 
     def sleep(seconds):
